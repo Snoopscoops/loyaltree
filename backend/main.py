@@ -47675,6 +47675,7 @@ GEOFENCE_DEFAULT_MESSAGE = "You're near us. Open your LoyaltyTree card."
 class GeofencePin(BaseModel):
     branch_public_id: Optional[str] = None
     label: Optional[str] = Field(default=None, max_length=80)
+    message: Optional[str] = Field(default=None, max_length=120)
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
 
@@ -47699,7 +47700,7 @@ def _geofence_public(config, branches=None) -> dict:
             lng = float(pin.get('longitude'))
         except (TypeError, ValueError):
             continue
-        pins.append({'branch_public_id': pin.get('branch_public_id'), 'label': pin.get('label') or '', 'latitude': lat, 'longitude': lng})
+        pins.append({'branch_public_id': pin.get('branch_public_id'), 'label': pin.get('label') or '', 'message': str(pin.get('message') or '')[:120], 'latitude': lat, 'longitude': lng})
     try:
         radius = int(raw.get('radius_meters') or 150)
     except (TypeError, ValueError):
@@ -47715,7 +47716,7 @@ def _geofence_public(config, branches=None) -> dict:
         'max_per_week': per_week,
         'pins': pins[:GEOFENCE_APPLE_LOCATION_CAP],
         'branches': branches or [],
-        'limits': {'min_radius_meters': GEOFENCE_MIN_RADIUS_METERS, 'max_radius_meters': GEOFENCE_MAX_RADIUS_METERS, 'max_pins': GEOFENCE_APPLE_LOCATION_CAP},
+        'limits': {'min_radius_meters': GEOFENCE_MIN_RADIUS_METERS, 'max_radius_meters': GEOFENCE_MAX_RADIUS_METERS, 'max_pins': min(GEOFENCE_APPLE_LOCATION_CAP, max(1, len(branches or pins) or 1))},
     }
 
 
@@ -47740,7 +47741,7 @@ def apple_geofence_locations(business: dict) -> list:
     return [{
         'latitude': float(pin['latitude']),
         'longitude': float(pin['longitude']),
-        'relevantText': config.get('message') or GEOFENCE_DEFAULT_MESSAGE,
+        'relevantText': (pin.get('message') or config.get('message') or GEOFENCE_DEFAULT_MESSAGE)[:120],
         'maxDistance': int(config.get('radius_meters') or GEOFENCE_MIN_RADIUS_METERS),
     } for pin in (config.get('pins') or [])][:GEOFENCE_APPLE_LOCATION_CAP]
 
@@ -47774,14 +47775,26 @@ def save_geofence_config(public_id: str, payload: GeofenceConfigUpdate, authoriz
         raise HTTPException(status_code=400, detail='Weekly cap cannot be lower than the daily cap.')
     if payload.enabled and not payload.pins:
         raise HTTPException(status_code=400, detail='Drop at least one pin before turning nearby notifications on.')
-    if len(payload.pins) > GEOFENCE_APPLE_LOCATION_CAP:
-        raise HTTPException(status_code=400, detail='Apple Wallet allows at most 10 locations on one pass.')
-    pins = [{
-        'branch_public_id': pin.branch_public_id,
-        'label': (pin.label or '').strip()[:80],
-        'latitude': round(float(pin.latitude), 6),
-        'longitude': round(float(pin.longitude), 6),
-    } for pin in payload.pins]
+    branches = _geofence_branch_rows(business.get('id'))
+    branch_cap = max(1, len(branches))
+    pin_cap = min(GEOFENCE_APPLE_LOCATION_CAP, branch_cap)
+    if len(payload.pins) > pin_cap:
+        raise HTTPException(status_code=400, detail=f'This business can save {pin_cap} location{"s" if pin_cap != 1 else ""}, one per branch. Apple Wallet also caps a pass at {GEOFENCE_APPLE_LOCATION_CAP}.')
+    seen = set()
+    pins = []
+    for pin in payload.pins:
+        branch_id = pin.branch_public_id or ''
+        if branch_id and branch_id in seen:
+            raise HTTPException(status_code=400, detail='Each branch can have only one nearby location.')
+        if branch_id:
+            seen.add(branch_id)
+        pins.append({
+            'branch_public_id': pin.branch_public_id,
+            'label': (pin.label or '').strip()[:80],
+            'message': (pin.message or payload.message or '').strip()[:120],
+            'latitude': round(float(pin.latitude), 6),
+            'longitude': round(float(pin.longitude), 6),
+        })
     config = {
         'enabled': bool(payload.enabled),
         'message': payload.message.strip()[:120],
@@ -47795,7 +47808,7 @@ def save_geofence_config(public_id: str, payload: GeofenceConfigUpdate, authoriz
         supabase.table('businesses').update({'geofence_config': config}).eq('id', business.get('id')).execute()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f'Run geofence_notifications.sql first. {friendly_db_error(exc)}')
-    return _geofence_public(config, _geofence_branch_rows(business.get('id')))
+    return _geofence_public(config, branches)
 
 
 class AdminCustomPriceUpdate(BaseModel):

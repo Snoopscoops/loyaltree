@@ -168,6 +168,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
           pins: (geofence.pins || []).map(pin => ({
             branch_public_id: pin.branch_public_id || null,
             label: pin.label || '',
+            message: pin.message || geofence.message || '',
             latitude: Number(pin.latitude),
             longitude: Number(pin.longitude),
           })),
@@ -1531,6 +1532,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
               </label>
             </div>
             <div style={styles.editorHelp}>Allowed radius: {geofence.limits?.min_radius_meters || 100}–{geofence.limits?.max_radius_meters || 1000} m. Apple is most reliable at 100–200 m. Max {geofence.limits?.max_pins || 10} pins. Day/week caps are your policy; Wallet suppresses repeats itself and will not hard-stop at that number.</div>
+            <div style={styles.editorHelp}>One location per branch. This account can save {Math.min(geofence.limits?.max_pins || 1, (geofence.branches || []).length || 1)} pin{(Math.min(geofence.limits?.max_pins || 1, (geofence.branches || []).length || 1)) === 1 ? '' : 's'}.</div>
             {(geofence.pins || []).map((pin, index) => (
               <div key={index} style={{...styles.formGrid2,marginTop:10}}>
                 <select style={styles.editorSelect} value={pin.branch_public_id || ''} onChange={e=>updateGeofencePin(index,{branch_public_id:e.target.value})}>
@@ -1539,12 +1541,13 @@ function AnalyticsDashboard({ API_BASE, user }) {
                 </select>
                 <input style={styles.editorInput} placeholder="Latitude" value={pin.latitude ?? ''} onChange={e=>updateGeofencePin(index,{latitude:e.target.value})} />
                 <input style={styles.editorInput} placeholder="Longitude" value={pin.longitude ?? ''} onChange={e=>updateGeofencePin(index,{longitude:e.target.value})} />
+                <input style={styles.editorInput} maxLength={120} placeholder="Message at this location" value={pin.message || ''} onChange={e=>updateGeofencePin(index,{message:e.target.value})} />
                 <button type="button" style={styles.actionBtnCompact} onClick={()=>useGeofenceLocation(index)}>Use my location</button>
+                <button type="button" style={styles.actionBtn} disabled={savingGeofence} onClick={saveGeofence}>{savingGeofence ? 'Saving…' : 'Save location and message'}</button>
               </div>
             ))}
             <div style={{display:'flex',gap:8,marginTop:12,flexWrap:'wrap'}}>
-              <button type="button" style={styles.actionBtnCompact} onClick={()=>setGeofence(s=>({...s,pins:[...(s.pins||[]),{branch_public_id:s.branches?.[0]?.public_id||'',label:'',latitude:'',longitude:''}]}))} disabled={(geofence.pins||[]).length >= (geofence.limits?.max_pins || 10)}>Add pin</button>
-              <button type="button" style={styles.actionBtn} disabled={savingGeofence} onClick={saveGeofence}>{savingGeofence ? 'Saving…' : 'Save Nearby Notification'}</button>
+              <button type="button" style={styles.actionBtnCompact} onClick={()=>setGeofence(s=>({...s,pins:[...(s.pins||[]),{branch_public_id:'',label:'',message:s.message||'',latitude:'',longitude:''}]}))} disabled={(geofence.pins||[]).length >= Math.min(geofence.limits?.max_pins || 1, (geofence.branches || []).length || 1)}>Add branch location</button>
             </div>
             {geofenceStatus && <div style={{marginTop:10,fontSize:13,fontWeight:700,color:geofenceStatus.startsWith('Saved')?'#166534':'#b91c1c'}}>{geofenceStatus}</div>}
           </div>
