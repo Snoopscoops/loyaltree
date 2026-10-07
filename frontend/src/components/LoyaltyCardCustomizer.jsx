@@ -108,6 +108,9 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     wallet_progress_type: 'auto',
     wallet_progress_filled_icon_url: '',
     wallet_progress_empty_icon_url: '',
+    wallet_progress_scale: 1,
+    wallet_progress_density: 0.56,
+    wallet_progress_align: 'center',
     wallet_style: 'gradient',
     wallet_secondary_color: '#14b8a6',
     wallet_show_background: true,
@@ -310,6 +313,9 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
           wallet_progress_type: ['auto','stamps','sessions','points','tier'].includes(data.wallet_progress_type) ? data.wallet_progress_type : 'auto',
           wallet_progress_filled_icon_url: data.wallet_progress_filled_icon_url || '',
           wallet_progress_empty_icon_url: data.wallet_progress_empty_icon_url || '',
+          wallet_progress_scale: Number(data.wallet_progress_scale) >= 0.7 && Number(data.wallet_progress_scale) <= 1.3 ? Number(data.wallet_progress_scale) : 1,
+          wallet_progress_density: Number(data.wallet_progress_density) >= 0.4 && Number(data.wallet_progress_density) <= 1.05 ? Number(data.wallet_progress_density) : 0.56,
+          wallet_progress_align: ['start','center','end'].includes(data.wallet_progress_align) ? data.wallet_progress_align : 'center',
           wallet_style: data.wallet_style === 'minimal' ? 'classic' : data.wallet_style === 'modern' ? 'gradient' : (['classic','gradient','premium'].includes(data.wallet_style) ? data.wallet_style : 'gradient'),
           wallet_secondary_color: data.wallet_secondary_color || '#14b8a6',
           wallet_show_background: data.wallet_show_background !== false,
@@ -905,6 +911,9 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     wallet_progress_type: ['auto','stamps','sessions','points','tier'].includes(form.wallet_progress_type) ? form.wallet_progress_type : 'auto',
     wallet_progress_filled_icon_url: form.wallet_progress_filled_icon_url || null,
     wallet_progress_empty_icon_url: form.wallet_progress_empty_icon_url || null,
+    wallet_progress_scale: Math.max(0.7, Math.min(1.3, Number(form.wallet_progress_scale) || 1)),
+    wallet_progress_density: Math.max(0.4, Math.min(1.05, Number(form.wallet_progress_density) || 0.56)),
+    wallet_progress_align: ['start','center','end'].includes(form.wallet_progress_align) ? form.wallet_progress_align : 'center',
     // UI calls the legacy backend styles Gradient/Classic. Persist the
     // schema-compatible values so FastAPI + the DB CHECK constraint accept it.
     wallet_style: form.wallet_style === 'classic' ? 'minimal' : form.wallet_style === 'gradient' ? 'modern' : (['modern','premium','minimal','dark'].includes(form.wallet_style) ? form.wallet_style : 'modern'),
@@ -1413,33 +1422,31 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     const emptyUrl = String(form.wallet_progress_empty_icon_url || '').trim()
     const fallbackFilled = effectiveWalletProgressType === 'stamps' ? selectedStampIcon.symbol : '●'
     const slotCount = Math.min(20, dynamicProgressPreview.slots)
-    // Match the real Wallet renderer: large icons, tight horizontal stride,
-    // and a pronounced alternating up/down wave.
     const availableWidth = compact ? 310 : 620
-    let cellSize
-    let stride
-    let totalWidth
-    if (slotCount <= 10) {
-      cellSize = compact ? 54 : 105
-      if (slotCount <= 1) {
-        stride = 0
-        totalWidth = cellSize
-      } else {
-        stride = Math.max(1, Math.round(cellSize * .56))
-        totalWidth = cellSize + ((slotCount - 1) * stride)
+    const scale = Math.max(0.7, Math.min(1.3, Number(form.wallet_progress_scale) || 1))
+    const density = Math.max(0.4, Math.min(1.05, Number(form.wallet_progress_density) || 0.56))
+    const align = ['start','center','end'].includes(form.wallet_progress_align) ? form.wallet_progress_align : 'center'
+    const sideMargin = align === 'center' ? 4 : 16
+    const fitWidth = availableWidth - sideMargin * 2
+    const base = slotCount <= 10 ? (compact ? 54 : 105) : Math.max(compact ? 24 : 38, Math.min(compact ? 48 : 86, Math.floor(fitWidth / (1 + Math.max(0, slotCount - 1) * 0.5))))
+    let cellSize = Math.max(compact ? 18 : 28, Math.min(compact ? 72 : 130, Math.round(base * scale)))
+    let stride = slotCount <= 1 ? 0 : Math.max(1, Math.round(cellSize * density))
+    let totalWidth = cellSize + Math.max(0, slotCount - 1) * stride
+    if (slotCount > 1 && totalWidth > fitWidth) {
+      stride = Math.max(1, Math.floor((fitWidth - cellSize) / (slotCount - 1)))
+      totalWidth = cellSize + (slotCount - 1) * stride
+      if (totalWidth > fitWidth) {
+        cellSize = Math.max(compact ? 16 : 22, Math.floor(fitWidth / (1 + (slotCount - 1) * density)))
+        stride = Math.max(1, Math.round(cellSize * density))
+        totalWidth = cellSize + (slotCount - 1) * stride
       }
-    } else {
-      const strideRatio = .50
-      const fittedCell = Math.floor(availableWidth / (1 + Math.max(0, slotCount - 1) * strideRatio))
-      cellSize = Math.max(compact ? 24 : 38, Math.min(compact ? 48 : 86, fittedCell))
-      stride = Math.max(14, Math.round(cellSize * strideRatio))
-      totalWidth = cellSize + Math.max(0, slotCount - 1) * stride
     }
+    const rowLeft = align === 'start' ? sideMargin : align === 'end' ? Math.max(sideMargin, availableWidth - sideMargin - totalWidth) : Math.max(0, (availableWidth - totalWidth) / 2)
     const wave = Math.max(compact ? 10 : 16, Math.min(compact ? 20 : 34, Math.round(cellSize * .25)))
     return (
       <div style={{marginTop:compact?6:10}}>
         <div style={{position:'relative',width:'100%',height:cellSize+(wave*2)+4,overflow:'hidden'}}>
-          <div style={{position:'absolute',left:'50%',top:'50%',width:totalWidth,height:cellSize,transform:'translate(-50%,-50%)'}}>
+          <div style={{position:'absolute',left:rowLeft,top:'50%',width:totalWidth,height:cellSize,transform:'translateY(-50%)'}}>
             {Array.from({length:slotCount}).map((_,i)=>{
               const filled = i < dynamicProgressPreview.filled
               const src = filled ? filledUrl : (emptyUrl || filledUrl)
@@ -3344,6 +3351,25 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
                   </div>
                 </div>
                 <p style={{...styles.hint,marginTop:10}}>Transparent PNG is recommended. You only upload these two source images once; LoyaltyTree composes every 0/N → N/N banner automatically. If the empty image is omitted, LoyaltyTree fades the filled image as a fallback.</p>
+                <div style={{display:'grid',gap:12,marginTop:14}}>
+                  <label style={{fontSize:12,fontWeight:800,color:'#334155'}}>
+                    Stamp size · {Math.round((Number(form.wallet_progress_scale)||1)*100)}%
+                    <input type="range" min="70" max="130" step="1" value={Math.round((Number(form.wallet_progress_scale)||1)*100)} onChange={e=>update('wallet_progress_scale', Number(e.target.value)/100)} style={{width:'100%',marginTop:6}} />
+                  </label>
+                  <label style={{fontSize:12,fontWeight:800,color:'#334155'}}>
+                    Spacing · {(Number(form.wallet_progress_density)||0.56) <= 0.48 ? 'Tight' : (Number(form.wallet_progress_density)||0.56) >= 0.8 ? 'Loose' : 'Normal'}
+                    <input type="range" min="40" max="105" step="1" value={Math.round((Number(form.wallet_progress_density)||0.56)*100)} onChange={e=>update('wallet_progress_density', Number(e.target.value)/100)} style={{width:'100%',marginTop:6}} />
+                  </label>
+                  <div>
+                    <div style={styles.miniLabel}>Stamp group</div>
+                    <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                      {[['start','Left · art on right'],['center','Center'],['end','Right · art on left']].map(([value,label]) => (
+                        <button key={value} type="button" onClick={()=>update('wallet_progress_align', value)} style={{...styles.walletStyleBtn,...(form.wallet_progress_align===value?styles.walletStyleBtnActive:{}),flex:'1 1 140px'}}>{label}</button>
+                      ))}
+                    </div>
+                    <p style={{...styles.hint,marginTop:6}}>Left leaves the background open on the right. Right leaves it open on the left. Center keeps today's look. Changing the stamp count reflows inside that side; it does not cover the art.</p>
+                  </div>
+                </div>
                 <div style={{marginTop:12,padding:12,borderRadius:14,background:walletPreviewBackground,color:'#fff',overflow:'hidden'}}>
                   <div style={{fontSize:10,fontWeight:900,letterSpacing:.8,opacity:.8}}>DYNAMIC BANNER PREVIEW</div>
                   {renderDynamicProgressPreview(false)}

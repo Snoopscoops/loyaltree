@@ -2449,6 +2449,12 @@ class LoyaltyConfig(BaseModel):
     wallet_progress_type: Literal['auto', 'stamps', 'sessions', 'points', 'tier'] = 'auto'
     wallet_progress_filled_icon_url: Optional[str] = None
     wallet_progress_empty_icon_url: Optional[str] = None
+    # Layout of the dynamic progress row. Scale and density are ratios, not
+    # pixels, so a stamp-count change still auto-fits. Align keeps the row as
+    # one group so background art can stay on the open side.
+    wallet_progress_scale: float = Field(default=1.0, ge=0.7, le=1.3)
+    wallet_progress_density: float = Field(default=0.56, ge=0.4, le=1.05)
+    wallet_progress_align: Literal['start', 'center', 'end'] = 'center'
     card_name: Optional[str] = None
     # --- LoyaltyTree Wallet 2.0 ---
     wallet_style: Literal['modern', 'premium', 'minimal', 'dark', 'classic', 'gradient'] = 'modern'
@@ -6320,6 +6326,29 @@ def normalize_wallet_progress_type(program: Optional[dict]) -> str:
     return value if value in ('auto', 'stamps', 'sessions', 'points', 'tier') else 'auto'
 
 
+
+def normalize_wallet_progress_scale(program: Optional[dict]) -> float:
+    try:
+        value = float((program or {}).get('wallet_progress_scale') if (program or {}).get('wallet_progress_scale') is not None else 1)
+    except (TypeError, ValueError):
+        value = 1.0
+    return max(0.7, min(1.3, value))
+
+
+def normalize_wallet_progress_density(program: Optional[dict]) -> float:
+    raw = (program or {}).get('wallet_progress_density')
+    try:
+        value = float(0.56 if raw is None else raw)
+    except (TypeError, ValueError):
+        value = 0.56
+    return max(0.4, min(1.05, value))
+
+
+def normalize_wallet_progress_align(program: Optional[dict]) -> str:
+    value = str((program or {}).get('wallet_progress_align') or 'center').strip().lower()
+    return value if value in ('start', 'center', 'end') else 'center'
+
+
 def wallet_progress_state(customer: Optional[dict], program: Optional[dict], business: Optional[dict] = None) -> Optional[dict]:
     """Resolve the member-specific progress shown in a Dynamic Progress Banner.
 
@@ -6625,6 +6654,9 @@ def _draw_dynamic_progress_row(
     fallback_icon: str = 'star',
     filled_icon_url: Optional[str] = None,
     empty_icon_url: Optional[str] = None,
+    progress_scale: float = 1.0,
+    progress_density: float = 0.56,
+    progress_align: str = 'center',
 ) -> bool:
     """Draw a reusable Wallet progress row from two owner-supplied PNGs.
 
@@ -6646,36 +6678,47 @@ def _draw_dynamic_progress_row(
     draw_layer = Image.new('RGBA', HERO_SIZE, (0, 0, 0, 0))
     draw = ImageDraw.Draw(draw_layer)
 
-    # Dynamic progress artwork is intentionally large and slightly overlapped.
-    # For the common 8-stamp card this renders icons up to ~152 px tall instead
-    # of the old ~54 px row. A 0.72 horizontal stride keeps the icons very close
-    # together while still allowing up to 20 progress slots to fit the banner.
+    # Size and gap are ratios so a count change reflows inside the banner
+    # instead of colliding with background art. Default scale=1 and
+    # density=0.56 matches the previous centered overlapping row.
+    try:
+        scale = max(0.7, min(1.3, float(progress_scale or 1)))
+    except (TypeError, ValueError):
+        scale = 1.0
+    try:
+        density = max(0.4, min(1.05, float(0.56 if progress_density is None else progress_density)))
+    except (TypeError, ValueError):
+        density = 0.56
+    align = progress_align if progress_align in ('start', 'center', 'end') else 'center'
+    side_margin = 28 if align != 'center' else 8
+    available = HERO_SIZE[0] - (side_margin * 2)
     if slots <= 10:
-        # Showcase mode: make the artwork deliberately large and run the row
-        # almost all the way to both banner edges. Larger tiles overlap more,
-        # so the row feels condensed even though it spans the full width.
-        side_margin = 4
-        size = max(86, min(182, int(round(HERO_SIZE[1] * 0.52))))
-        if slots <= 1:
-            stride = 0
-            total_w = size
-            start_x = (HERO_SIZE[0] - size) // 2
-        else:
-            # Keep the icons close together instead of stretching the row
-            # all the way to the banner edges.
-            stride = max(1, int(round(size * 0.56)))
-            total_w = size + ((slots - 1) * stride)
-            start_x = (HERO_SIZE[0] - total_w) // 2
+        base = max(86, min(182, int(round(HERO_SIZE[1] * 0.52))))
     else:
-        # Dense fallback for 11-20 markers.
-        side_margin = 8
-        available = HERO_SIZE[0] - (side_margin * 2)
-        stride_ratio = 0.50
-        fit_size = int(available / (1 + max(0, slots - 1) * stride_ratio))
-        size = max(42, min(132, fit_size))
-        stride = max(20, int(round(size * stride_ratio)))
-        total_w = size + max(0, slots - 1) * stride
-        start_x = (HERO_SIZE[0] - total_w) // 2
+        base = max(42, min(132, int(available / (1 + max(0, slots - 1) * 0.50))))
+    size = max(36, min(200, int(round(base * scale))))
+    if slots <= 1:
+        stride = 0
+        total_w = size
+    else:
+        stride = max(1, int(round(size * density)))
+        total_w = size + ((slots - 1) * stride)
+        if total_w > available:
+            stride = max(1, int((available - size) / (slots - 1)))
+            total_w = size + ((slots - 1) * stride)
+            if total_w > available:
+                size = max(28, int(available / (1 + (slots - 1) * density)))
+                stride = max(1, int(round(size * density)))
+                total_w = size + ((slots - 1) * stride)
+                if total_w > available:
+                    stride = max(1, int((available - size) / (slots - 1)))
+                    total_w = size + ((slots - 1) * stride)
+    if align == 'start':
+        start_x = side_margin
+    elif align == 'end':
+        start_x = HERO_SIZE[0] - side_margin - total_w
+    else:
+        start_x = max(0, (HERO_SIZE[0] - total_w) // 2)
 
     # Pronounced alternating wave: neighboring icons sit visibly higher/lower.
     # The offset scales with icon size so an 8-slot banner has a strong ~84 px
@@ -6893,6 +6936,9 @@ def generate_personalized_hero_image_bytes(
     dynamic_progress_state: Optional[dict] = None,
     progress_filled_icon_url: Optional[str] = None,
     progress_empty_icon_url: Optional[str] = None,
+    progress_scale: float = 1.0,
+    progress_density: float = 0.56,
+    progress_align: str = 'center',
 ) -> bytes:
     """Same gradient as generate_hero_image_bytes, but with a bottom banner
     burned in showing the reward/progress and short description - the
@@ -6973,6 +7019,9 @@ def generate_personalized_hero_image_bytes(
             fallback_icon=stamp_icon,
             filled_icon_url=progress_filled_icon_url,
             empty_icon_url=progress_empty_icon_url,
+            progress_scale=progress_scale,
+            progress_density=progress_density,
+            progress_align=progress_align,
         )
     elif stamp_visual_active:
         _draw_stamp_progress_row(
@@ -7879,6 +7928,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
                 f"{normalize_wallet_banner_mode(program)}|{normalize_wallet_progress_type(program)}|"
                 f"{(program or {}).get('wallet_progress_filled_icon_url') or ''}|"
                 f"{(program or {}).get('wallet_progress_empty_icon_url') or ''}|"
+                f"{normalize_wallet_progress_scale(program):.2f}|{normalize_wallet_progress_density(program):.2f}|{normalize_wallet_progress_align(program)}|"
                 f"{(program or {}).get('hero_image_url') or ''}|"
                 f"{design.get('style') or ''}|{design.get('background') or ''}|"
                 f"{design.get('secondary') or ''}"
@@ -10940,6 +10990,9 @@ def generate_apple_strip_bytes(customer: dict, business: dict, program: dict, wi
         dynamic_progress_state=wallet_progress_state(customer, program, business),
         progress_filled_icon_url=(program or {}).get('wallet_progress_filled_icon_url'),
         progress_empty_icon_url=(program or {}).get('wallet_progress_empty_icon_url'),
+        progress_scale=normalize_wallet_progress_scale(program),
+        progress_density=normalize_wallet_progress_density(program),
+        progress_align=normalize_wallet_progress_align(program),
     )
     img = Image.open(BytesIO(raw)).convert('RGB')
     src_ratio = img.width / img.height
@@ -22976,6 +23029,9 @@ async def get_loyalty_config(public_id: str, response: Response, program_id: Opt
             "wallet_progress_type": "auto",
             "wallet_progress_filled_icon_url": None,
             "wallet_progress_empty_icon_url": None,
+            "wallet_progress_scale": 1.0,
+            "wallet_progress_density": 0.56,
+            "wallet_progress_align": "center",
             "card_name": None,
             "wallet_style": "modern",
             "wallet_secondary_color": None,
@@ -23583,6 +23639,9 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
         'wallet_progress_type': config.wallet_progress_type,
         'wallet_progress_filled_icon_url': config.wallet_progress_filled_icon_url,
         'wallet_progress_empty_icon_url': config.wallet_progress_empty_icon_url,
+        'wallet_progress_scale': round(float(config.wallet_progress_scale or 1), 2),
+        'wallet_progress_density': round(float(config.wallet_progress_density or 0.56), 2),
+        'wallet_progress_align': config.wallet_progress_align if config.wallet_progress_align in ('start', 'center', 'end') else 'center',
         'reward_expiry_days': config.reward_expiry_days,
         # Shared card expiry remains for standalone cards only. Hybrid engines
         # persist isolated clocks below.
@@ -31608,6 +31667,9 @@ async def get_customer_hero_image(customer_public_id: str, s: Optional[str] = No
         dynamic_progress_state=wallet_progress_state(customer, program, business),
         progress_filled_icon_url=(program or {}).get('wallet_progress_filled_icon_url'),
         progress_empty_icon_url=(program or {}).get('wallet_progress_empty_icon_url'),
+        progress_scale=normalize_wallet_progress_scale(program),
+        progress_density=normalize_wallet_progress_density(program),
+        progress_align=normalize_wallet_progress_align(program),
     )
     return Response(
         content=png_bytes,
