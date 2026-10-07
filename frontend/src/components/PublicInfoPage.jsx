@@ -178,6 +178,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
   }
   const [pricingBranchTier, setPricingBranchTier] = useState('1')
   const [pricingBillingCycle, setPricingBillingCycle] = useState('monthly')
+  if (pricingContext.country_code === 'PH' && pricingBillingCycle === 'monthly') setPricingBillingCycle('3_months')
   const [pricingStep, setPricingStep] = useState(0)
   const [pricingContext, setPricingContext] = useState({
     country_code: 'PH',
@@ -922,7 +923,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
           </div>
 
           <div style={s.pricingBillingRow}>
-            {Object.entries(PRICING_BILLING_TERMS).map(([key,term])=><button key={key} onClick={()=>setPricingBillingCycle(key)} style={{...s.pricingBillingBtn,...(pricingBillingCycle===key?s.pricingBillingBtnActive:{})}}>{term.label}{term.savings&&<span style={s.pricingSaveBadge}>{term.savings}</span>}</button>)}
+            {Object.entries(PRICING_BILLING_TERMS).filter(([key]) => pricingContext.country_code === 'PH' ? key !== 'monthly' : true).map(([key,term])=><button key={key} onClick={()=>setPricingBillingCycle(key)} style={{...s.pricingBillingBtn,...(pricingBillingCycle===key?s.pricingBillingBtnActive:{})}}>{term.label}{term.savings&&<span style={s.pricingSaveBadge}>{term.savings}</span>}</button>)}
           </div>
 
           <div className="overview-pricing-branches" style={s.pricingBranchRow}>

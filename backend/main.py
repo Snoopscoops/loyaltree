@@ -609,6 +609,15 @@ def normalize_billing_cycle(value: Optional[str]) -> str:
     return raw if raw in BILLING_CYCLE_CONFIG else 'monthly'
 
 
+
+def self_serve_billing_cycle(value: Optional[str], pricing_region: Optional[str]) -> str:
+    """Philippines self-serve has a 3-month minimum. Other regions may pay monthly."""
+    cycle = normalize_billing_cycle(value)
+    if normalize_country_code(pricing_region) == 'PH' and cycle == 'monthly':
+        return '3_months'
+    return cycle
+
+
 def billing_cycle_label(value: Optional[str]) -> str:
     cycle = normalize_billing_cycle(value)
     return BILLING_CYCLE_CONFIG[cycle]['label']
@@ -1808,8 +1817,8 @@ def build_signup_agreement_document(*, name: str, email: str, phone: Optional[st
     if not plan_data:
         raise HTTPException(status_code=400, detail='Unknown subscription plan')
     branch_count = int(branch_count or 1)
-    billing_cycle = normalize_billing_cycle(billing_cycle)
     pricing_region = normalize_country_code(pricing_region)
+    billing_cycle = self_serve_billing_cycle(billing_cycle, pricing_region)
     region_cfg = pricing_region_config(pricing_region)
     currency = region_cfg['currency']
     price_month = int(get_price_for_plan(plan, branch_count, 'monthly', pricing_region) or 0)
@@ -13939,6 +13948,7 @@ async def register(biz: BusinessCreate, request: Request):
     else:
         plan = determine_plan_from_branch_count(biz.branch_count)
     pricing_region = normalize_country_code(biz.pricing_region or biz.country_code)
+    biz.billing_cycle = self_serve_billing_cycle(biz.billing_cycle, pricing_region)
     region_cfg = pricing_region_config(pricing_region)
     if biz.setup_kit_requested and pricing_region != 'PH':
         raise HTTPException(status_code=400, detail='The physical QR / PR Kit is currently available only in the Philippines.')
@@ -19785,10 +19795,11 @@ async def create_subscription_checkout(public_id: str, req: Optional[Subscriptio
         branch_count = 1
 
     plan = business.get('plan') or 'starter'
-    billing_cycle = normalize_billing_cycle(
-        req.billing_cycle if req is not None else business.get('billing_cycle')
-    )
     pricing_region = business_pricing_region(business)
+    billing_cycle = self_serve_billing_cycle(
+        req.billing_cycle if req is not None else business.get('billing_cycle'),
+        pricing_region,
+    )
     display_currency = business_currency(business)
     subscription_price = get_price_for_business(business, billing_cycle, branch_count)
 

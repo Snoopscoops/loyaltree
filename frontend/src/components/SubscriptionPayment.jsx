@@ -26,8 +26,11 @@ const BILLING_TERMS = {
   annual: { label: '1 Year', payLabel: '1 Year', pricingKey: 'annual', summary: '12 months of access for the price of 10 monthly periods.', savings: '2 months free' },
 }
 
-function normalizeBillingCycle(value) {
-  return ['monthly', '3_months', '6_months', 'annual'].includes(value) ? value : 'monthly'
+function normalizeBillingCycle(value, region='PH') {
+  const allowed = String(region || 'PH').toUpperCase() === 'PH'
+    ? ['3_months', '6_months', 'annual']
+    : ['monthly', '3_months', '6_months', 'annual']
+  return allowed.includes(value) ? value : allowed[0]
 }
 
 function billingCycleLabel(value) {
@@ -63,7 +66,7 @@ function SubscriptionPayment({
   const [checkout, setCheckout] = useState(null)
   const [secondsLeft, setSecondsLeft] = useState(0)
   const [paidJustNow, setPaidJustNow] = useState(false)
-  const [billingCycle, setBillingCycle] = useState(normalizeBillingCycle(initialBillingCycle))
+  const [billingCycle, setBillingCycle] = useState(normalizeBillingCycle(initialBillingCycle, 'PH'))
   const [paymentMethod, setPaymentMethod] = useState('qrph')
   const [card, setCard] = useState({ number: '', expMonth: '', expYear: '', cvc: '' })
   const pollRef = useRef(null)
@@ -76,7 +79,7 @@ function SubscriptionPayment({
         const data = await res.json()
         setSubscription(data)
         if (!initialBillingCycle && data?.billing_cycle) {
-          setBillingCycle(normalizeBillingCycle(data.billing_cycle))
+          setBillingCycle(normalizeBillingCycle(data.billing_cycle, data.pricing_region))
         }
         if (data?.pricing_region && data.pricing_region !== 'PH') setPaymentMethod('card')
       }
@@ -342,7 +345,7 @@ function SubscriptionPayment({
         {!checkout ? (
           <>
             <div style={styles.billingToggle}>
-              {Object.entries(BILLING_TERMS).map(([key, term]) => (
+              {Object.entries(BILLING_TERMS).filter(([key]) => (isPH ? key !== 'monthly' : true)).map(([key, term]) => (
                 <button
                   key={key}
                   type="button"

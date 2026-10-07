@@ -469,6 +469,8 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
     detected_by: 'fallback',
   })
   const [homeBillingCycle, setHomeBillingCycle] = useState('monthly')
+  const homeBillingCycles = Object.keys(HOME_BILLING_TERMS).filter(key => pricingContext.country_code === 'PH' ? key !== 'monthly' : true)
+  if (pricingContext.country_code === 'PH' && homeBillingCycle === 'monthly' && homeBillingCycles[0]) setHomeBillingCycle(homeBillingCycles[0])
 
   const loadPricingContext = async (country) => {
     const configuredBase = (API_BASE || import.meta.env.VITE_API_BASE_URL || 'https://api.theloyaltytree.com').replace(/\/$/, '')
@@ -1220,7 +1222,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
             <span style={{fontSize:10.5,color:'#94a3b8'}}>Pricing is locked to your detected market.</span>
           </div>
           <div style={styles.homeBillingRow}>
-            {Object.entries(HOME_BILLING_TERMS).map(([key, term]) => (
+            {Object.entries(HOME_BILLING_TERMS).filter(([key]) => pricingContext.country_code === 'PH' ? key !== 'monthly' : true).map(([key, term]) => (
               <button
                 key={key}
                 type="button"
