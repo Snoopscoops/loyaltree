@@ -47790,11 +47790,16 @@ class AdminCustomPriceUpdate(BaseModel):
     custom_monthly_price: Optional[int] = Field(default=None, ge=1, le=1000000)
     clear_custom_price: bool = False
     pricing_region: Optional[str] = None
+    currency: Optional[str] = Field(default=None, min_length=3, max_length=3)
 
 
 @app.put('/api/v1/admin/businesses/{public_id}/custom-price')
 async def admin_set_custom_price(public_id: str, payload: AdminCustomPriceUpdate, _: bool = Depends(require_admin)):
-    """Set or clear one business's monthly price without changing the region list."""
+    """Set one business's price and the currency that price is billed in.
+
+    PayMongo still settles the card charge in PHP. The selected currency is
+    the customer-facing price; the checkout discloses the PHP equivalent.
+    """
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail='Business not found')
@@ -47806,9 +47811,15 @@ async def admin_set_custom_price(public_id: str, payload: AdminCustomPriceUpdate
     if payload.pricing_region:
         patch['pricing_region'] = normalize_country_code(payload.pricing_region)
         patch['country_code'] = patch['pricing_region']
-        patch['display_currency'] = pricing_region_config(patch['pricing_region'])['currency']
+        if not payload.currency:
+            patch['display_currency'] = pricing_region_config(patch['pricing_region'])['currency']
+    if payload.currency:
+        currency = str(payload.currency).upper()
+        if currency not in _fx_to_php_map():
+            raise HTTPException(status_code=400, detail=f'Unsupported currency. Use one of: {", ".join(sorted(_fx_to_php_map()))}.')
+        patch['display_currency'] = currency
     if len(patch) == 1:
-        raise HTTPException(status_code=400, detail='Send custom_monthly_price, clear_custom_price, or pricing_region.')
+        raise HTTPException(status_code=400, detail='Send custom_monthly_price, currency, pricing_region, or clear_custom_price.')
     try:
         supabase.table('businesses').update(patch).eq('id', business.get('id')).execute()
     except Exception as exc:
@@ -47822,4 +47833,6 @@ async def admin_set_custom_price(public_id: str, payload: AdminCustomPriceUpdate
         'pricing_locked': True,
         'monthly': get_price_for_business(updated, 'monthly'),
         'annual': get_price_for_business(updated, 'annual'),
+        'processor_currency': 'PHP',
+        'supported_currencies': sorted(_fx_to_php_map()),
     }
