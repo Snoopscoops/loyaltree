@@ -47,6 +47,9 @@ function AnalyticsDashboard({ API_BASE, user }) {
   const [retentionSettingsMessage, setRetentionSettingsMessage] = useState('')
   const [automationStats, setAutomationStats] = useState({ tracking: 'log', birthday: {}, win_back: {}, recent: [] })
   const [redemptionDrilldown, setRedemptionDrilldown] = useState({ open: false, loading: false, error: '', rows: [], total: 0 })
+  const [geofence, setGeofence] = useState({ enabled: false, message: "You're near us. Open your LoyaltyTree card.", radius_meters: 150, max_per_day: 1, max_per_week: 3, pins: [], branches: [], limits: { min_radius_meters: 100, max_radius_meters: 1000, max_pins: 10 } })
+  const [geofenceStatus, setGeofenceStatus] = useState('')
+  const [savingGeofence, setSavingGeofence] = useState(false)
 
   useEffect(() => {
     fetchAnalytics()
@@ -59,6 +62,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
   useEffect(() => {
     fetchExtendedAnalytics()
     fetchAutomationStats()
+    fetchGeofence()
   }, [user.business_slug, user.token])
 
   const authFetch = (url, options = {}) => {
@@ -126,6 +130,74 @@ function AnalyticsDashboard({ API_BASE, user }) {
       const data = await res.json().catch(() => ({}))
       if (res.ok) setAutomationStats(data)
     } catch (err) { /* stats are optional; leave previous numbers */ }
+  }
+
+
+  const fetchGeofence = async () => {
+    if (!user?.business_slug || !user?.token) return
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/geofence`)
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) return
+      setGeofence({
+        enabled: !!data.enabled,
+        message: data.message || "You're near us. Open your LoyaltyTree card.",
+        radius_meters: data.radius_meters || 150,
+        max_per_day: data.max_per_day || 1,
+        max_per_week: data.max_per_week || 3,
+        pins: Array.isArray(data.pins) ? data.pins : [],
+        branches: Array.isArray(data.branches) ? data.branches : [],
+        limits: data.limits || { min_radius_meters: 100, max_radius_meters: 1000, max_pins: 10 },
+      })
+    } catch (err) { /* nearby settings are optional until the column exists */ }
+  }
+
+  const saveGeofence = async () => {
+    setSavingGeofence(true)
+    setGeofenceStatus('')
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/geofence`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          enabled: !!geofence.enabled,
+          message: geofence.message,
+          radius_meters: Number(geofence.radius_meters),
+          max_per_day: Number(geofence.max_per_day),
+          max_per_week: Number(geofence.max_per_week),
+          pins: (geofence.pins || []).map(pin => ({
+            branch_public_id: pin.branch_public_id || null,
+            label: pin.label || '',
+            latitude: Number(pin.latitude),
+            longitude: Number(pin.longitude),
+          })),
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not save nearby notification')
+      setGeofence(current => ({ ...current, ...data, branches: data.branches || current.branches, limits: data.limits || current.limits }))
+      setGeofenceStatus('Saved. Customers need an updated Wallet pass before the new pin is on their card.')
+    } catch (err) {
+      setGeofenceStatus(err.message || 'Save failed')
+    }
+    setSavingGeofence(false)
+  }
+
+  const updateGeofencePin = (index, patch) => setGeofence(current => ({
+    ...current,
+    pins: current.pins.map((pin, i) => i === index ? { ...pin, ...patch } : pin),
+  }))
+
+  const useGeofenceLocation = (index) => {
+    if (!navigator.geolocation) {
+      setGeofenceStatus('This browser cannot read the current location.')
+      return
+    }
+    navigator.geolocation.getCurrentPosition(
+      pos => updateGeofencePin(index, { latitude: Number(pos.coords.latitude.toFixed(6)), longitude: Number(pos.coords.longitude.toFixed(6)) }),
+      () => setGeofenceStatus('Location permission was denied. Enter the pin manually.'),
+      { enableHighAccuracy: true, timeout: 10000 },
+    )
   }
 
   const saveRetentionSettings = async () => {
@@ -1433,6 +1505,49 @@ function AnalyticsDashboard({ API_BASE, user }) {
             <span style={styles.mutedText}>days without loyalty activity</span>
           </div>
           {retentionSettingsMessage && <div style={{marginTop:10,fontSize:13,fontWeight:700,color:retentionSettingsMessage.includes('Saved')?'#166534':'#b91c1c'}}>{retentionSettingsMessage}</div>}
+
+          <div style={{...styles.insightCard,marginTop:16}}>
+            <div style={styles.settingRow}>
+              <div>
+                <div style={styles.settingTitle}>📍 Nearby notification</div>
+                <div style={styles.mutedText}>Pin the branch, set the radius, then write the lock-screen message. Apple shows it when the saved card is nearby. Google gets the same pin as a merchant location.</div>
+              </div>
+              <label style={styles.checkboxLabel}>
+                <input type="checkbox" checked={geofence.enabled === true} onChange={e=>setGeofence(s=>({...s,enabled:e.target.checked}))} />
+                {geofence.enabled ? 'On' : 'Off'}
+              </label>
+            </div>
+            <label style={styles.editorLabel}>Notification message</label>
+            <input style={styles.editorInput} maxLength={120} value={geofence.message || ''} onChange={e=>setGeofence(s=>({...s,message:e.target.value}))} />
+            <div style={styles.formGrid2}>
+              <label style={styles.editorLabel}>Radius in meters
+                <input type="number" min={geofence.limits?.min_radius_meters || 100} max={geofence.limits?.max_radius_meters || 1000} style={styles.editorInput} value={geofence.radius_meters} onChange={e=>setGeofence(s=>({...s,radius_meters:e.target.value}))} />
+              </label>
+              <label style={styles.editorLabel}>Max times / day
+                <input type="number" min="1" max="5" style={styles.editorInput} value={geofence.max_per_day} onChange={e=>setGeofence(s=>({...s,max_per_day:e.target.value}))} />
+              </label>
+              <label style={styles.editorLabel}>Max times / week
+                <input type="number" min="1" max="20" style={styles.editorInput} value={geofence.max_per_week} onChange={e=>setGeofence(s=>({...s,max_per_week:e.target.value}))} />
+              </label>
+            </div>
+            <div style={styles.editorHelp}>Allowed radius: {geofence.limits?.min_radius_meters || 100}–{geofence.limits?.max_radius_meters || 1000} m. Apple is most reliable at 100–200 m. Max {geofence.limits?.max_pins || 10} pins. Day/week caps are your policy; Wallet suppresses repeats itself and will not hard-stop at that number.</div>
+            {(geofence.pins || []).map((pin, index) => (
+              <div key={index} style={{...styles.formGrid2,marginTop:10}}>
+                <select style={styles.editorSelect} value={pin.branch_public_id || ''} onChange={e=>updateGeofencePin(index,{branch_public_id:e.target.value})}>
+                  <option value="">Branch</option>
+                  {(geofence.branches || []).map(branch => <option key={branch.public_id} value={branch.public_id}>{branch.name}</option>)}
+                </select>
+                <input style={styles.editorInput} placeholder="Latitude" value={pin.latitude ?? ''} onChange={e=>updateGeofencePin(index,{latitude:e.target.value})} />
+                <input style={styles.editorInput} placeholder="Longitude" value={pin.longitude ?? ''} onChange={e=>updateGeofencePin(index,{longitude:e.target.value})} />
+                <button type="button" style={styles.actionBtnCompact} onClick={()=>useGeofenceLocation(index)}>Use my location</button>
+              </div>
+            ))}
+            <div style={{display:'flex',gap:8,marginTop:12,flexWrap:'wrap'}}>
+              <button type="button" style={styles.actionBtnCompact} onClick={()=>setGeofence(s=>({...s,pins:[...(s.pins||[]),{branch_public_id:s.branches?.[0]?.public_id||'',label:'',latitude:'',longitude:''}]}))} disabled={(geofence.pins||[]).length >= (geofence.limits?.max_pins || 10)}>Add pin</button>
+              <button type="button" style={styles.actionBtn} disabled={savingGeofence} onClick={saveGeofence}>{savingGeofence ? 'Saving…' : 'Save Nearby Notification'}</button>
+            </div>
+            {geofenceStatus && <div style={{marginTop:10,fontSize:13,fontWeight:700,color:geofenceStatus.startsWith('Saved')?'#166534':'#b91c1c'}}>{geofenceStatus}</div>}
+          </div>
           </div>
         </div>
       </>}

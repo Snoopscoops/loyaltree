@@ -272,7 +272,7 @@ SUBSCRIPTION_PLANS = {
         'max_loyalty_cards': 1,
         'win_back': False,
         'max_branches': 10,
-        'geofence_notifications': False,
+        'geofence_notifications': True,
         # Growth-tier product modules. Starter cannot create/edit these.
         'hybrid_cards': False,
         'gift_cards': False,
@@ -293,7 +293,7 @@ SUBSCRIPTION_PLANS = {
         'max_loyalty_cards': 2,
         'win_back': True,
         'max_branches': 10,
-        'geofence_notifications': False,
+        'geofence_notifications': True,
         'hybrid_cards': True,
         'gift_cards': True,
         'pos_integration': False,
@@ -313,8 +313,7 @@ SUBSCRIPTION_PLANS = {
         'max_loyalty_cards': 3,
         'win_back': True,
         'max_branches': 10,
-        # Reserved until geotag/geofence delivery is implemented and enabled.
-        'geofence_notifications': False,
+        'geofence_notifications': True,
         # Pro inherits Growth product modules and includes POS Integration.
         'hybrid_cards': True,
         'gift_cards': True,
@@ -10303,6 +10302,9 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     # The logo image already carries the brand - headerFields already carry
     # the member context - logoText is redundant and the most common source
     # of the overlapping-text look on real devices.
+    geofence_locations = apple_geofence_locations(business)
+    if geofence_locations:
+        pass_dict['locations'] = geofence_locations
     return pass_dict
 
 
@@ -47615,3 +47617,135 @@ def lending_delete_document(public_id: str, document_public_id: str, authorizati
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+
+
+GEOFENCE_MIN_RADIUS_METERS = 100
+GEOFENCE_MAX_RADIUS_METERS = 1000
+GEOFENCE_APPLE_LOCATION_CAP = 10
+GEOFENCE_DEFAULT_MESSAGE = "You're near us. Open your LoyaltyTree card."
+
+
+class GeofencePin(BaseModel):
+    branch_public_id: Optional[str] = None
+    label: Optional[str] = Field(default=None, max_length=80)
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+
+
+class GeofenceConfigUpdate(BaseModel):
+    enabled: bool = False
+    message: str = Field(default=GEOFENCE_DEFAULT_MESSAGE, min_length=3, max_length=120)
+    radius_meters: int = Field(default=150, ge=GEOFENCE_MIN_RADIUS_METERS, le=GEOFENCE_MAX_RADIUS_METERS)
+    max_per_day: int = Field(default=1, ge=1, le=5)
+    max_per_week: int = Field(default=3, ge=1, le=20)
+    pins: List[GeofencePin] = Field(default_factory=list)
+
+
+def _geofence_public(config, branches=None) -> dict:
+    raw = config if isinstance(config, dict) else {}
+    pins = []
+    for pin in raw.get('pins') or []:
+        if not isinstance(pin, dict):
+            continue
+        try:
+            lat = float(pin.get('latitude'))
+            lng = float(pin.get('longitude'))
+        except (TypeError, ValueError):
+            continue
+        pins.append({'branch_public_id': pin.get('branch_public_id'), 'label': pin.get('label') or '', 'latitude': lat, 'longitude': lng})
+    try:
+        radius = int(raw.get('radius_meters') or 150)
+    except (TypeError, ValueError):
+        radius = 150
+    radius = max(GEOFENCE_MIN_RADIUS_METERS, min(GEOFENCE_MAX_RADIUS_METERS, radius))
+    per_day = max(1, min(5, int(raw.get('max_per_day') or 1)))
+    per_week = max(per_day, min(20, int(raw.get('max_per_week') or 3)))
+    return {
+        'enabled': bool(raw.get('enabled')),
+        'message': str(raw.get('message') or GEOFENCE_DEFAULT_MESSAGE)[:120],
+        'radius_meters': radius,
+        'max_per_day': per_day,
+        'max_per_week': per_week,
+        'pins': pins[:GEOFENCE_APPLE_LOCATION_CAP],
+        'branches': branches or [],
+        'limits': {'min_radius_meters': GEOFENCE_MIN_RADIUS_METERS, 'max_radius_meters': GEOFENCE_MAX_RADIUS_METERS, 'max_pins': GEOFENCE_APPLE_LOCATION_CAP},
+    }
+
+
+def _geofence_load(business: dict) -> dict:
+    config = business.get('geofence_config') if isinstance(business.get('geofence_config'), dict) else None
+    if config:
+        return config
+    if not supabase or not business.get('id'):
+        return {}
+    try:
+        rows = supabase.table('businesses').select('geofence_config').eq('id', business.get('id')).limit(1).execute().data or []
+        stored = rows[0].get('geofence_config') if rows else None
+        return stored if isinstance(stored, dict) else {}
+    except Exception:
+        return {}
+
+
+def apple_geofence_locations(business: dict) -> list:
+    config = _geofence_public(_geofence_load(business or {}))
+    if not config.get('enabled'):
+        return []
+    return [{
+        'latitude': float(pin['latitude']),
+        'longitude': float(pin['longitude']),
+        'relevantText': config.get('message') or GEOFENCE_DEFAULT_MESSAGE,
+        'maxDistance': int(config.get('radius_meters') or GEOFENCE_MIN_RADIUS_METERS),
+    } for pin in (config.get('pins') or [])][:GEOFENCE_APPLE_LOCATION_CAP]
+
+
+def _geofence_branch_rows(business_id) -> list:
+    try:
+        rows = supabase.table('branches').select('id,public_id,name,address,is_active').eq('business_id', business_id).execute().data or []
+    except Exception:
+        rows = []
+    return [{'public_id': row.get('public_id'), 'name': row.get('name'), 'address': row.get('address')} for row in rows]
+
+
+@app.get('/api/v1/business/{public_id}/geofence')
+def get_geofence_config(public_id: str, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    return _geofence_public(_geofence_load(business), _geofence_branch_rows(business.get('id')))
+
+
+@app.put('/api/v1/business/{public_id}/geofence')
+def save_geofence_config(public_id: str, payload: GeofenceConfigUpdate, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    if not business_has_plan_feature(business, 'geofence_notifications'):
+        raise HTTPException(status_code=403, detail='Nearby notifications are not included in this plan.')
+    if payload.max_per_week < payload.max_per_day:
+        raise HTTPException(status_code=400, detail='Weekly cap cannot be lower than the daily cap.')
+    if payload.enabled and not payload.pins:
+        raise HTTPException(status_code=400, detail='Drop at least one pin before turning nearby notifications on.')
+    if len(payload.pins) > GEOFENCE_APPLE_LOCATION_CAP:
+        raise HTTPException(status_code=400, detail='Apple Wallet allows at most 10 locations on one pass.')
+    pins = [{
+        'branch_public_id': pin.branch_public_id,
+        'label': (pin.label or '').strip()[:80],
+        'latitude': round(float(pin.latitude), 6),
+        'longitude': round(float(pin.longitude), 6),
+    } for pin in payload.pins]
+    config = {
+        'enabled': bool(payload.enabled),
+        'message': payload.message.strip()[:120],
+        'radius_meters': int(payload.radius_meters),
+        'max_per_day': int(payload.max_per_day),
+        'max_per_week': int(payload.max_per_week),
+        'pins': pins,
+        'updated_at': datetime.utcnow().isoformat(),
+    }
+    try:
+        supabase.table('businesses').update({'geofence_config': config}).eq('id', business.get('id')).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f'Run geofence_notifications.sql first. {friendly_db_error(exc)}')
+    return _geofence_public(config, _geofence_branch_rows(business.get('id')))
