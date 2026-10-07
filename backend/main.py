@@ -31140,7 +31140,7 @@ async def unlock_cashier_device(public_id: str, device_public_id: str, authoriza
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
 @app.post("/api/v1/business/{public_id}/reward/redeem")
-async def redeem_reward(public_id: str, req: RedeemRequest, authorization: str = Header(default=""), x_idempotency_key: str = Header(default="", alias="X-Idempotency-Key")):
+async def redeem_reward(public_id: str, req: RedeemRequest, background_tasks: BackgroundTasks, authorization: str = Header(default=""), x_idempotency_key: str = Header(default="", alias="X-Idempotency-Key")):
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
