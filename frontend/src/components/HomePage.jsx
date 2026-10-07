@@ -1214,20 +1214,10 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
             Localized pricing for {pricingContext.country_name || 'your market'}, with Google Wallet and Apple Wallet support included.
           </p>
           <div style={{display:'flex',justifyContent:'center',alignItems:'center',gap:9,flexWrap:'wrap',marginTop:16}}>
-            <label style={{fontSize:11,fontWeight:850,color:'#64748b'}}>Pricing region</label>
-            <select
-              value={pricingContext.country_code || 'PH'}
-              onChange={e=>changePricingCountry(e.target.value)}
-              style={{border:'1px solid #cbd5e1',background:'#fff',borderRadius:10,padding:'9px 11px',fontSize:12,fontWeight:750,color:'#334155'}}
-              aria-label="Pricing region"
-            >
-              {COUNTRY_OPTIONS.map(country => (
-                <option key={country.code} value={country.code}>{country.flag} {country.label} · {country.currency}</option>
-              ))}
-            </select>
-            <span style={{fontSize:10.5,color:'#94a3b8'}}>
-              {pricingContext.detected_by === 'selector' ? 'Selected manually' : 'Market detected automatically'}
+            <span style={{border:'1px solid #99f6e4',background:'#f0fdfa',borderRadius:999,padding:'8px 12px',fontSize:12,fontWeight:800,color:'#0f766e'}}>
+              {pricingContext.country_name || 'Philippines'} · {pricingContext.currency || 'PHP'} only
             </span>
+            <span style={{fontSize:10.5,color:'#94a3b8'}}>Pricing is locked to your detected market.</span>
           </div>
           <div style={styles.homeBillingRow}>
             {Object.entries(HOME_BILLING_TERMS).map(([key, term]) => (

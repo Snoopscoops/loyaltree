@@ -334,13 +334,14 @@ PRICING_REGIONS = {
     'US': {'country_name':'United States','currency':'USD','symbol':'$','locale':'en-US','plans':{'starter':15,'growth':39,'pro':69}},
     'NZ': {'country_name':'New Zealand','currency':'NZD','symbol':'NZ$','locale':'en-NZ','plans':{'starter':19,'growth':39,'pro':69}},
     'MY': {'country_name':'Malaysia','currency':'MYR','symbol':'RM','locale':'en-MY','plans':{'starter':49,'growth':79,'pro':119}},
+    'AE': {'country_name':'United Arab Emirates','currency':'AED','symbol':'AED ','locale':'en-AE','plans':{'starter':150,'growth':150,'pro':150}},
 }
 SUPPORTED_PRICING_COUNTRIES = set(PRICING_REGIONS)
-COUNTRY_ALIASES = {'UK':'GB','GBR':'GB','USA':'US','SGP':'SG','HKG':'HK','NZL':'NZ','MYS':'MY','PHL':'PH'}
+COUNTRY_ALIASES = {'UK':'GB','GBR':'GB','USA':'US','SGP':'SG','HKG':'HK','NZL':'NZ','MYS':'MY','PHL':'PH','UAE':'AE','ARE':'AE'}
 # Snapshot conversion rates are only for internal normalized reporting and for
 # a PHP-settlement fallback. Override in Render without a deploy using
 # LOYALTYTREE_FX_TO_PHP_JSON, e.g. {"SGD":49.48,"GBP":84.85}.
-DEFAULT_FX_TO_PHP = {'PHP':1.0,'SGD':49.48,'GBP':84.85,'HKD':8.01,'USD':62.89,'NZD':36.31,'MYR':15.41}
+DEFAULT_FX_TO_PHP = {'PHP':1.0,'SGD':49.48,'GBP':84.85,'HKD':8.01,'USD':62.89,'NZD':36.31,'MYR':15.41,'AED':16.30}
 
 def _fx_to_php_map() -> dict:
     rates = dict(DEFAULT_FX_TO_PHP)
@@ -386,7 +387,7 @@ def price_tiers_for_region(plan: str, region: Optional[str]) -> dict:
     return tiers
 
 def money_text(amount, currency='PHP') -> str:
-    symbols={'PHP':'₱','SGD':'S$','GBP':'£','HKD':'HK$','USD':'$','NZD':'NZ$','MYR':'RM'}
+    symbols={'PHP':'₱','SGD':'S$','GBP':'£','HKD':'HK$','USD':'$','NZD':'NZ$','MYR':'RM','AED':'AED '}
     value=float(amount or 0)
     digits=0 if value.is_integer() else 2
     return f"{symbols.get(currency,currency+' ')}{value:,.{digits}f}"
@@ -646,6 +647,30 @@ def get_price_for_plan(plan: Optional[str], branch_count: int, billing_cycle: st
     cycle = normalize_billing_cycle(billing_cycle)
     multiplier = int(BILLING_CYCLE_CONFIG[cycle]['billable_months'])
     return monthly_price * multiplier
+
+
+
+def business_custom_monthly_price(business: Optional[dict]) -> Optional[int]:
+    """Case-by-case monthly price set by super-admin. None means use the region price."""
+    raw = (business or {}).get('custom_monthly_price')
+    if raw in (None, ''):
+        return None
+    try:
+        value = int(float(raw))
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def get_price_for_business(business: Optional[dict], billing_cycle: str = 'monthly', branch_count: Optional[int] = None) -> int:
+    row = business or {}
+    cycle = normalize_billing_cycle(billing_cycle)
+    multiplier = int(BILLING_CYCLE_CONFIG[cycle]['billable_months'])
+    custom = business_custom_monthly_price(row)
+    if custom:
+        return custom * multiplier
+    count = branch_count if branch_count is not None else row.get('branch_count') or 1
+    return get_price_for_plan(row.get('plan'), count, cycle, business_pricing_region(row))
 
 
 def subscription_plans_payload(pricing_region: str = 'PH') -> dict:
@@ -6201,11 +6226,13 @@ def business_summary(biz: dict) -> dict:
         "country_code": business_pricing_region(biz),
         "pricing_region": business_pricing_region(biz),
         "currency": business_currency(biz),
-        "price_month": get_price_for_plan(plan, branch_count, 'monthly', business_pricing_region(biz)),
-        "price_3_months": get_price_for_plan(plan, branch_count, '3_months', business_pricing_region(biz)),
-        "price_6_months": get_price_for_plan(plan, branch_count, '6_months', business_pricing_region(biz)),
-        "price_annual": get_price_for_plan(plan, branch_count, 'annual', business_pricing_region(biz)),
-        "price_current": get_price_for_plan(plan, branch_count, normalize_billing_cycle(biz.get("billing_cycle")), business_pricing_region(biz)),
+        "price_month": get_price_for_business(biz, 'monthly', branch_count),
+        "price_3_months": get_price_for_business(biz, '3_months', branch_count),
+        "price_6_months": get_price_for_business(biz, '6_months', branch_count),
+        "price_annual": get_price_for_business(biz, 'annual', branch_count),
+        "price_current": get_price_for_business(biz, normalize_billing_cycle(biz.get("billing_cycle")), branch_count),
+        "custom_monthly_price": business_custom_monthly_price(biz),
+        "pricing_locked": True,
         "business_type": biz.get("business_type", "other"),
         "address": biz.get("address"),
         "logo_url": biz.get("logo_url"),
@@ -14304,12 +14331,9 @@ async def public_pricing_context(request: Request, country: Optional[str] = Quer
     """
     selected = None
     source = 'fallback'
-    if country:
-        raw = str(country).strip().upper()
-        normalized = COUNTRY_ALIASES.get(raw, raw)
-        if normalized in SUPPORTED_PRICING_COUNTRIES:
-            selected = normalized
-            source = 'selector'
+    # Public pricing is locked to the visitor's detected market. A country
+    # query is ignored so a US visitor cannot switch the page to PH/UAE prices.
+    country = None
 
     if not selected:
         header_geo = _analytics_header_geo(dict(request.headers))
@@ -19766,7 +19790,7 @@ async def create_subscription_checkout(public_id: str, req: Optional[Subscriptio
     )
     pricing_region = business_pricing_region(business)
     display_currency = business_currency(business)
-    subscription_price = get_price_for_plan(plan, branch_count, billing_cycle, pricing_region)
+    subscription_price = get_price_for_business(business, billing_cycle, branch_count)
 
     # Physical PR/QR kits remain Philippines-only. Existing PH businesses can
     # still settle a requested kit together with the subscription.
@@ -20013,10 +20037,10 @@ async def get_subscription_status(public_id: str):
         "billing_cycle": billing_cycle,
         "branch_count": branch_count,
         "pricing": {
-            "monthly": get_price_for_plan(plan, branch_count, 'monthly', pricing_region),
-            "3_months": get_price_for_plan(plan, branch_count, '3_months', pricing_region),
-            "6_months": get_price_for_plan(plan, branch_count, '6_months', pricing_region),
-            "annual": get_price_for_plan(plan, branch_count, 'annual', pricing_region),
+            "monthly": get_price_for_business(business, 'monthly', branch_count),
+            "3_months": get_price_for_business(business, '3_months', branch_count),
+            "6_months": get_price_for_business(business, '6_months', branch_count),
+            "annual": get_price_for_business(business, 'annual', branch_count),
             "annual_savings_months": 2,
         },
         "payment_capabilities": {
@@ -39121,7 +39145,7 @@ async def run_subscription_reminders(_: bool = Depends(require_cron)):
             branch_count = branch_res.count or 1
         except Exception:
             branch_count = 1
-        price = get_price_for_plan(business.get('plan'), branch_count, normalize_billing_cycle(business.get('billing_cycle')), business_pricing_region(business))
+        price = get_price_for_business(business, normalize_billing_cycle(business.get('billing_cycle')), branch_count)
 
         subject, html_body = build_subscription_reminder_email(business, days_left, price)
         ok = send_email(business.get('email'), subject, html_body, from_email=SUBSCRIPTION_REMINDER_FROM)
@@ -47749,3 +47773,42 @@ def save_geofence_config(public_id: str, payload: GeofenceConfigUpdate, authoriz
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f'Run geofence_notifications.sql first. {friendly_db_error(exc)}')
     return _geofence_public(config, _geofence_branch_rows(business.get('id')))
+
+
+class AdminCustomPriceUpdate(BaseModel):
+    custom_monthly_price: Optional[int] = Field(default=None, ge=1, le=1000000)
+    clear_custom_price: bool = False
+    pricing_region: Optional[str] = None
+
+
+@app.put('/api/v1/admin/businesses/{public_id}/custom-price')
+async def admin_set_custom_price(public_id: str, payload: AdminCustomPriceUpdate, _: bool = Depends(require_admin)):
+    """Set or clear one business's monthly price without changing the region list."""
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    patch = {'updated_at': datetime.utcnow().isoformat()}
+    if payload.clear_custom_price:
+        patch['custom_monthly_price'] = None
+    elif payload.custom_monthly_price is not None:
+        patch['custom_monthly_price'] = int(payload.custom_monthly_price)
+    if payload.pricing_region:
+        patch['pricing_region'] = normalize_country_code(payload.pricing_region)
+        patch['country_code'] = patch['pricing_region']
+        patch['display_currency'] = pricing_region_config(patch['pricing_region'])['currency']
+    if len(patch) == 1:
+        raise HTTPException(status_code=400, detail='Send custom_monthly_price, clear_custom_price, or pricing_region.')
+    try:
+        supabase.table('businesses').update(patch).eq('id', business.get('id')).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f'Run custom_business_price.sql first. {friendly_db_error(exc)}')
+    updated = safe_get_business(public_id) or {**business, **patch}
+    return {
+        'public_id': public_id,
+        'pricing_region': business_pricing_region(updated),
+        'currency': business_currency(updated),
+        'custom_monthly_price': business_custom_monthly_price(updated),
+        'pricing_locked': True,
+        'monthly': get_price_for_business(updated, 'monthly'),
+        'annual': get_price_for_business(updated, 'annual'),
+    }
