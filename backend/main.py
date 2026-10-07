@@ -7495,11 +7495,22 @@ def build_loyalty_class(
     # Card/program branding wins. Fall back to the business-wide logo only
     # when this specific loyalty card has no logo of its own.
     source_logo_url = (program or {}).get('program_logo_url') or business.get('logo_url') or ''
-    # Always hand Google our transparent-PNG renderer. A raw Cloudinary/JPEG
-    # URL is often flattened, which paints a box behind the logo.
-    logo_url = google_wallet_program_logo_uri(business, program, source_logo_url)
+    # programLogo is circular-masked by Google and ignores transparency, so
+    # that slot is painted with the pass color after the white plate is removed.
+    # wideProgramLogo is the transparent header and is not circular-masked.
+    logo_url = google_wallet_program_logo_uri(business, program, source_logo_url, primary_color, 'program')
+    wide_logo_url = google_wallet_program_logo_uri(business, program, source_logo_url, primary_color, 'wide')
     loyalty_class['programLogo'] = {
         'sourceUri': {'uri': logo_url},
+        'contentDescription': {
+            'defaultValue': {
+                'language': 'en-US',
+                'value': f"{business.get('name') or 'LoyaltyTree'} logo",
+            }
+        },
+    }
+    loyalty_class['wideProgramLogo'] = {
+        'sourceUri': {'uri': wide_logo_url},
         'contentDescription': {
             'defaultValue': {
                 'language': 'en-US',
@@ -8752,59 +8763,107 @@ def apple_logo_from_image_bytes(logo_bytes: bytes, width: int, height: int) -> O
         print(f"APPLE LOGO from image error: {e}")
         return None
 
-def google_wallet_logo_png_bytes(logo_bytes: Optional[bytes], fallback_label: str = 'L', size: int = 660) -> bytes:
-    """Square Google Wallet programLogo on a fully transparent canvas.
+def _knock_out_logo_plate(img: "Image.Image") -> "Image.Image":
+    """Turn a baked-in white/off-white logo plate into transparency.
 
-    Google composites programLogo onto hexBackgroundColor. Flattening the
-    upload onto white or the brand color leaves a visible plate, so alpha is
-    preserved and only near-invisible fringe pixels are trimmed.
+    Google Wallet circular-masks programLogo. A white disc in the upload
+    stays white inside that mask, which is the plate in the pass screenshot.
+    Near-white pixels become transparent; the wordmark is kept.
+    """
+    img = img.convert('RGBA')
+    pixels = img.load()
+    width, height = img.size
+    corners = [pixels[0, 0], pixels[width - 1, 0], pixels[0, height - 1], pixels[width - 1, height - 1]]
+    # Only knock out when the source actually has an opaque light plate.
+    light_corners = sum(1 for r, g, b, a in corners if a > 200 and r > 225 and g > 225 and b > 225)
+    if light_corners < 2:
+        return img
+    for y in range(height):
+        for x in range(width):
+            r, g, b, a = pixels[x, y]
+            if a < 16:
+                continue
+            if r > 236 and g > 236 and b > 236:
+                pixels[x, y] = (r, g, b, 0)
+            elif r > 214 and g > 214 and b > 214 and abs(r - g) < 18 and abs(g - b) < 18:
+                # Soft fringe around the white plate.
+                fade = max(0, min(255, int((min(r, g, b) - 214) * 10)))
+                pixels[x, y] = (r, g, b, max(0, a - fade))
+    return img
+
+
+def google_wallet_logo_png_bytes(
+    logo_bytes: Optional[bytes],
+    fallback_label: str = 'L',
+    size: int = 660,
+    background: Optional[str] = None,
+    wide: bool = False,
+) -> bytes:
+    """Google Wallet logo.
+
+    wide=False is programLogo. Google masks this to a circle and does not
+    reliably honor transparency there, so the canvas is the pass color. The
+    white plate is removed first, so the circle matches the card instead of
+    showing a white disc.
+
+    wide=True is wideProgramLogo: a real transparent PNG, no circular mask.
     """
     from PIL import ImageDraw, ImageFont
-    canvas = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    canvas_size = (1280, 400) if wide else (size, size)
+    plate = None if wide else _hex_to_rgb(background or '#0f172a')
+    canvas = Image.new('RGBA', canvas_size, (0, 0, 0, 0) if wide else (*plate, 255))
     placed = False
     if logo_bytes:
         try:
-            img = Image.open(BytesIO(logo_bytes)).convert('RGBA')
+            img = _knock_out_logo_plate(Image.open(BytesIO(logo_bytes)))
             alpha = img.getchannel('A')
             visible = alpha.point(lambda value: 255 if value >= 16 else 0)
             bbox = visible.getbbox()
             if bbox:
                 img = img.crop(bbox)
             if img.width >= 1 and img.height >= 1:
-                inset = 36
-                scale = min((size - inset * 2) / img.width, (size - inset * 2) / img.height)
+                inset_x = int(canvas_size[0] * (0.08 if wide else 0.16))
+                inset_y = int(canvas_size[1] * (0.12 if wide else 0.16))
+                scale = min(
+                    (canvas_size[0] - inset_x * 2) / img.width,
+                    (canvas_size[1] - inset_y * 2) / img.height,
+                )
                 new_w = max(1, int(round(img.width * scale)))
                 new_h = max(1, int(round(img.height * scale)))
                 img = img.resize((new_w, new_h), Image.LANCZOS)
-                canvas.alpha_composite(img, ((size - new_w) // 2, (size - new_h) // 2))
+                canvas.alpha_composite(img, ((canvas_size[0] - new_w) // 2, (canvas_size[1] - new_h) // 2))
                 placed = True
         except Exception as e:
-            print(f"GOOGLE LOGO transparent render error: {e}")
+            print(f"GOOGLE LOGO render error: {e}")
     if not placed:
         draw = ImageDraw.Draw(canvas)
         letter = (str(fallback_label or 'L').strip()[:1] or 'L').upper()
         try:
-            font = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 280)
+            font = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 180 if wide else 280)
         except Exception:
             font = ImageFont.load_default()
         bbox = draw.textbbox((0, 0), letter, font=font)
         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        draw.text(((size - tw) / 2 - bbox[0], (size - th) / 2 - bbox[1]), letter, font=font, fill=(255, 255, 255, 230))
+        fill = (255, 255, 255, 230)
+        draw.text(((canvas_size[0] - tw) / 2 - bbox[0], (canvas_size[1] - th) / 2 - bbox[1]), letter, font=font, fill=fill)
     return _hero_to_png(canvas)
 
 
-def google_wallet_program_logo_uri(business: dict, program: Optional[dict] = None, source_logo_url: Optional[str] = None) -> str:
-    """Stable, cache-busted URL Google Wallet fetches for programLogo.
-
-    The handler re-encodes the owner upload as a transparent PNG. `v` changes
-    when the source URL changes so Google does not keep a flattened copy.
-    """
+def google_wallet_program_logo_uri(
+    business: dict,
+    program: Optional[dict] = None,
+    source_logo_url: Optional[str] = None,
+    background: Optional[str] = None,
+    kind: str = 'program',
+) -> str:
+    """Cache-busted logo URL. kind=program is the circular slot; kind=wide is transparent."""
     public_id = str((business or {}).get('public_id') or '').strip()
     program_id = str((program or {}).get('public_id') or '').strip()
-    digest = hashlib.sha1(str(source_logo_url or '').encode()).hexdigest()[:12]
+    color = str(background or '').lstrip('#')
+    digest = hashlib.sha1(f"{source_logo_url}|{color}|{kind}|plate-v2".encode()).hexdigest()[:12]
     return (
         f"{BASE_URL.rstrip('/')}/api/v1/business/{quote(public_id, safe='')}/wallet-logo.png"
-        f"?p={quote(program_id, safe='')}&v={digest}"
+        f"?p={quote(program_id, safe='')}&v={digest}&c={quote(color, safe='')}&kind={quote(kind, safe='')}"
     )
 
 
@@ -31738,10 +31797,17 @@ async def get_hero_image(
 
 
 @app.get("/api/v1/business/{public_id}/wallet-logo.png")
-async def get_wallet_logo(public_id: str, p: Optional[str] = None, v: Optional[str] = None):
-    """Google Wallet programLogo. Always a PNG with a transparent background.
+async def get_wallet_logo(
+    public_id: str,
+    p: Optional[str] = None,
+    v: Optional[str] = None,
+    c: Optional[str] = None,
+    kind: Optional[str] = None,
+):
+    """Google Wallet logo. kind=wide is a transparent PNG; kind=program matches the pass color.
 
-    `v` is ignored except as a cache buster generated with the source logo URL.
+    Google circular-masks programLogo and paints transparency white, which is
+    the white disc on the pass. The wide logo is not masked.
     """
     business = safe_get_business(public_id)
     if not business:
@@ -31756,16 +31822,19 @@ async def get_wallet_logo(public_id: str, p: Optional[str] = None, v: Optional[s
         or ''
     )
     logo_bytes = _fetch_image_bytes(source_logo_url, timeout=4.0) if source_logo_url else None
+    wide = str(kind or '').lower() == 'wide'
     png_bytes = google_wallet_logo_png_bytes(
         logo_bytes,
         fallback_label=(business.get('name') or 'L'),
+        background=None if wide else (f"#{str(c).strip().lstrip('#')}" if c else None),
+        wide=wide,
     )
     return Response(
         content=png_bytes,
         media_type="image/png",
         headers={
             "Cache-Control": "public, max-age=86400",
-            "X-Logo-Background": "transparent",
+            "X-Logo-Background": "transparent" if wide else "pass-color",
         },
     )
 
