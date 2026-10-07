@@ -1987,9 +1987,10 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
                 Add your logo and optional background image. You can skip either one and add it later from Edit Card.
               </p>
               <label style={styles.label}>Business / card logo</label>
-              <input type="file" accept="image/*" onChange={e=>uploadImage('program_logo_url',e.target.files?.[0])}/>
+              <input type="file" accept="image/png,image/webp,image/*" onChange={e=>uploadImage('program_logo_url',e.target.files?.[0])}/>
               {imageUpload.program_logo_url.uploading && <p style={styles.hint}>Uploading logo…</p>}
-              {form.program_logo_url && <img src={form.program_logo_url} alt="Logo preview" style={{width:72,height:72,objectFit:'cover',borderRadius:14,marginTop:10,border:'1px solid #e2e8f0'}}/>}
+              <p style={styles.hint}>PNG with a transparent background works on Google Wallet. Do not export the logo on a white square.</p>
+              {form.program_logo_url && <img src={form.program_logo_url} alt="Logo preview" style={{width:72,height:72,objectFit:'contain',borderRadius:14,marginTop:10,border:'1px solid #e2e8f0',background:'repeating-conic-gradient(#e2e8f0 0% 25%, #fff 0% 50%) 50% / 12px 12px'}}/>}
               <div style={{height:18}}/>
               <label style={styles.label}>Card background / hero image <span style={{fontWeight:500,color:'#94a3b8'}}>(optional)</span></label>
               <input type="file" accept="image/*" onChange={e=>uploadImage('hero_image_url',e.target.files?.[0])}/>
@@ -3284,12 +3285,12 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
                 <input style={styles.input} placeholder="https://..." value={form.program_logo_url} onChange={e=>update('program_logo_url',e.target.value)}/>
                 <label style={{...styles.uploadBtn,...(imageUpload.program_logo_url.uploading?styles.uploadBtnDisabled:{})}}>
                   {imageUpload.program_logo_url.uploading?'Uploading…':'📤 Upload logo'}
-                  <input type="file" accept="image/*" style={styles.uploadInputHidden} disabled={imageUpload.program_logo_url.uploading} onChange={e=>{uploadImage('program_logo_url',e.target.files[0]);e.target.value=''}}/>
+                  <input type="file" accept="image/png,image/webp,image/*" style={styles.uploadInputHidden} disabled={imageUpload.program_logo_url.uploading} onChange={e=>{uploadImage('program_logo_url',e.target.files[0]);e.target.value=''}}/>
                 </label>
               </div>
-              {form.program_logo_url && <img src={form.program_logo_url} alt="" style={styles.uploadPreview} onError={e=>{e.target.style.display='none'}}/>}
+              {form.program_logo_url && <img src={form.program_logo_url} alt="" style={{...styles.uploadPreview,objectFit:'contain',background:'repeating-conic-gradient(#e2e8f0 0% 25%, #fff 0% 50%) 50% / 12px 12px'}} onError={e=>{e.target.style.display='none'}}/>}
               {imageUpload.program_logo_url.error && <p style={styles.uploadError}>{imageUpload.program_logo_url.error}</p>}
-              <p style={styles.hint}>Use a square or circular logo with a clean background. LoyaltyTree places it appropriately on both wallet cards.</p>
+              <p style={styles.hint}>Upload a square PNG with a transparent background for Google Wallet. LoyaltyTree keeps the alpha channel and places the logo on the card color, so a white or colored plate is not added. Apple Wallet uses the same transparent artwork in the logo slot.</p>
             </div>
 
             <details style={styles.optionalBranding}>

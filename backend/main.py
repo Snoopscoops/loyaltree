@@ -7494,14 +7494,19 @@ def build_loyalty_class(
 
     # Card/program branding wins. Fall back to the business-wide logo only
     # when this specific loyalty card has no logo of its own.
-    logo_url = (program or {}).get('program_logo_url') or business.get('logo_url')
-    if not logo_url:
-        # Google Wallet requires a programLogo to create a class - fall back to a
-        # generic placeholder so publishing never hard-fails when a business hasn't
-        # uploaded their own logo yet. Businesses should still be encouraged to set
-        # a real logo_url via signup or loyalty-config for a branded look.
-        logo_url = DEFAULT_LOGO_URL
-    loyalty_class['programLogo'] = {'sourceUri': {'uri': logo_url}}
+    source_logo_url = (program or {}).get('program_logo_url') or business.get('logo_url') or ''
+    # Always hand Google our transparent-PNG renderer. A raw Cloudinary/JPEG
+    # URL is often flattened, which paints a box behind the logo.
+    logo_url = google_wallet_program_logo_uri(business, program, source_logo_url)
+    loyalty_class['programLogo'] = {
+        'sourceUri': {'uri': logo_url},
+        'contentDescription': {
+            'defaultValue': {
+                'language': 'en-US',
+                'value': f"{business.get('name') or 'LoyaltyTree'} logo",
+            }
+        },
+    }
 
     hero_url = (program.get('hero_image_url') if program else None) if design['show_background'] else None
     if not hero_url and design['show_background']:
@@ -8746,6 +8751,62 @@ def apple_logo_from_image_bytes(logo_bytes: bytes, width: int, height: int) -> O
     except Exception as e:
         print(f"APPLE LOGO from image error: {e}")
         return None
+
+def google_wallet_logo_png_bytes(logo_bytes: Optional[bytes], fallback_label: str = 'L', size: int = 660) -> bytes:
+    """Square Google Wallet programLogo on a fully transparent canvas.
+
+    Google composites programLogo onto hexBackgroundColor. Flattening the
+    upload onto white or the brand color leaves a visible plate, so alpha is
+    preserved and only near-invisible fringe pixels are trimmed.
+    """
+    from PIL import ImageDraw, ImageFont
+    canvas = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    placed = False
+    if logo_bytes:
+        try:
+            img = Image.open(BytesIO(logo_bytes)).convert('RGBA')
+            alpha = img.getchannel('A')
+            visible = alpha.point(lambda value: 255 if value >= 16 else 0)
+            bbox = visible.getbbox()
+            if bbox:
+                img = img.crop(bbox)
+            if img.width >= 1 and img.height >= 1:
+                inset = 36
+                scale = min((size - inset * 2) / img.width, (size - inset * 2) / img.height)
+                new_w = max(1, int(round(img.width * scale)))
+                new_h = max(1, int(round(img.height * scale)))
+                img = img.resize((new_w, new_h), Image.LANCZOS)
+                canvas.alpha_composite(img, ((size - new_w) // 2, (size - new_h) // 2))
+                placed = True
+        except Exception as e:
+            print(f"GOOGLE LOGO transparent render error: {e}")
+    if not placed:
+        draw = ImageDraw.Draw(canvas)
+        letter = (str(fallback_label or 'L').strip()[:1] or 'L').upper()
+        try:
+            font = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 280)
+        except Exception:
+            font = ImageFont.load_default()
+        bbox = draw.textbbox((0, 0), letter, font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        draw.text(((size - tw) / 2 - bbox[0], (size - th) / 2 - bbox[1]), letter, font=font, fill=(255, 255, 255, 230))
+    return _hero_to_png(canvas)
+
+
+def google_wallet_program_logo_uri(business: dict, program: Optional[dict] = None, source_logo_url: Optional[str] = None) -> str:
+    """Stable, cache-busted URL Google Wallet fetches for programLogo.
+
+    The handler re-encodes the owner upload as a transparent PNG. `v` changes
+    when the source URL changes so Google does not keep a flattened copy.
+    """
+    public_id = str((business or {}).get('public_id') or '').strip()
+    program_id = str((program or {}).get('public_id') or '').strip()
+    digest = hashlib.sha1(str(source_logo_url or '').encode()).hexdigest()[:12]
+    return (
+        f"{BASE_URL.rstrip('/')}/api/v1/business/{quote(public_id, safe='')}/wallet-logo.png"
+        f"?p={quote(program_id, safe='')}&v={digest}"
+    )
+
 
 def apple_strip_from_image_bytes(image_bytes: bytes, width: int, height: int) -> Optional[bytes]:
     """Center-crops/resizes the business's real hero photo to the strip
@@ -11960,8 +12021,17 @@ def build_cl_wallet_class(business: dict) -> dict:
             {'header': 'About', 'body': 'Your loan balance and next payment due date, always up to date.'},
         ],
     }
-    logo_url = business.get('logo_url') or DEFAULT_LOGO_URL
-    loyalty_class['programLogo'] = {'sourceUri': {'uri': logo_url}}
+    source_logo_url = business.get('logo_url') or ''
+    logo_url = google_wallet_program_logo_uri(business, None, source_logo_url)
+    loyalty_class['programLogo'] = {
+        'sourceUri': {'uri': logo_url},
+        'contentDescription': {
+            'defaultValue': {
+                'language': 'en-US',
+                'value': f"{business.get('name') or 'LoyaltyTree'} logo",
+            }
+        },
+    }
     return loyalty_class
 
 def build_cl_wallet_object(customer: dict, business: dict, contract: Optional[dict]) -> dict:
@@ -31666,6 +31736,40 @@ async def get_hero_image(
         headers={"Cache-Control": "public, max-age=86400"},
     )
 
+
+@app.get("/api/v1/business/{public_id}/wallet-logo.png")
+async def get_wallet_logo(public_id: str, p: Optional[str] = None, v: Optional[str] = None):
+    """Google Wallet programLogo. Always a PNG with a transparent background.
+
+    `v` is ignored except as a cache buster generated with the source logo URL.
+    """
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    program = safe_get_loyalty_program(
+        business.get('id'),
+        program_public_id=(str(p).strip() if p else None),
+    ) if p else None
+    source_logo_url = (
+        ((program or {}).get('program_logo_url') if program else None)
+        or business.get('logo_url')
+        or ''
+    )
+    logo_bytes = _fetch_image_bytes(source_logo_url, timeout=4.0) if source_logo_url else None
+    png_bytes = google_wallet_logo_png_bytes(
+        logo_bytes,
+        fallback_label=(business.get('name') or 'L'),
+    )
+    return Response(
+        content=png_bytes,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "public, max-age=86400",
+            "X-Logo-Background": "transparent",
+        },
+    )
+
+
 @app.get("/api/v1/customer/{customer_public_id}/hero-image.png")
 async def get_customer_hero_image(customer_public_id: str, s: Optional[str] = None, g: Optional[str] = None, c: Optional[str] = None):
     """Serves the personalized hero image build_loyalty_object() points a
@@ -41174,9 +41278,9 @@ def ensure_google_gift_card_class(business: dict) -> bool:
             'multipleDevicesAndHoldersAllowedStatus': 'ONE_USER_ALL_DEVICES',
             'hexBackgroundColor': _gift_brand_color(business),
         }
-        if logo_url:
+        if logo_url or business.get('public_id'):
             body['programLogo'] = {
-                'sourceUri': {'uri': logo_url},
+                'sourceUri': {'uri': google_wallet_program_logo_uri(business, None, logo_url)},
                 'contentDescription': {
                     'defaultValue': {
                         'language': 'en-US',
