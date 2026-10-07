@@ -8867,6 +8867,27 @@ def google_wallet_program_logo_uri(
     )
 
 
+def _strip_bottom_rgb(png_bytes: bytes) -> Optional[tuple]:
+    """Median color of the strip's bottom edge, so the pass body can match the banner."""
+    try:
+        img = Image.open(BytesIO(png_bytes)).convert('RGB')
+        width, height = img.size
+        if width < 1 or height < 1:
+            return None
+        band = img.crop((0, max(0, height - 8), width, height))
+        pixels = list(band.getdata())
+        if not pixels:
+            return None
+        mid = len(pixels) // 2
+        rs = sorted(px[0] for px in pixels)
+        gs = sorted(px[1] for px in pixels)
+        bs = sorted(px[2] for px in pixels)
+        return int(rs[mid]), int(gs[mid]), int(bs[mid])
+    except Exception as e:
+        print(f"APPLE STRIP edge color error: {e}")
+        return None
+
+
 def apple_strip_from_image_bytes(image_bytes: bytes, width: int, height: int) -> Optional[bytes]:
     """Center-crops/resizes the business's real hero photo to the strip
     banner's aspect ratio - used instead of generate_apple_strip_bytes's
@@ -11272,6 +11293,18 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
             'strip@2x.png': strip_2x,
             'strip@3x.png': strip_3x,
         })
+        edge = _strip_bottom_rgb(strip_3x)
+        if edge:
+            er, eg, eb = edge
+            pass_json['backgroundColor'] = f'rgb({er}, {eg}, {eb})'
+            luma = (0.2126 * er) + (0.7152 * eg) + (0.0722 * eb)
+            if luma > 170:
+                pass_json['foregroundColor'] = 'rgb(15, 23, 42)'
+                pass_json['labelColor'] = 'rgba(15, 23, 42, 0.72)'
+            else:
+                pass_json['foregroundColor'] = 'rgb(255, 255, 255)'
+                pass_json['labelColor'] = 'rgba(255, 255, 255, 0.75)'
+            files['pass.json'] = json.dumps(pass_json).encode('utf-8')
 
     manifest = {name: hashlib.sha1(content).hexdigest() for name, content in files.items()}
     manifest_bytes = json.dumps(manifest).encode('utf-8')
