@@ -9870,23 +9870,14 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                 *cycle_auxiliary_fields,
             ]
 
-    detail_size = 'small' if normalize_wallet_detail_font_scale(program) <= 0.85 else 'large' if normalize_wallet_detail_font_scale(program) >= 1.2 else 'medium'
     reward_field = {**stamp_next_reward_front, 'textAlignment': 'PKTextAlignmentLeft'}
     stamp_field = {**stamp_balance_front, 'textAlignment': 'PKTextAlignmentRight'}
-    # Apple has no exact font size. These three slots are the real sizes:
-    # auxiliary = small, secondary = medium (usual row), primary = large.
-    if detail_size == 'large':
-        stamp_detail_primary_fields = [reward_field, stamp_field]
-        stamp_detail_secondary_fields = []
-        stamp_detail_auxiliary_fields = [*cycle_auxiliary_fields]
-    elif detail_size == 'small':
-        stamp_detail_primary_fields = []
-        stamp_detail_secondary_fields = []
-        stamp_detail_auxiliary_fields = [reward_field, stamp_field, *cycle_auxiliary_fields]
-    else:
-        stamp_detail_primary_fields = []
-        stamp_detail_secondary_fields = [reward_field, stamp_field]
-        stamp_detail_auxiliary_fields = [*cycle_auxiliary_fields]
+    # Fixed smaller row. Apple has no font-size setting; auxiliaryFields is the
+    # smaller native style. Do not put these in secondary/primary or they render
+    # at the large "150 Off" size.
+    stamp_detail_primary_fields = []
+    stamp_detail_secondary_fields = []
+    stamp_detail_auxiliary_fields = [reward_field, stamp_field, *cycle_auxiliary_fields]
 
     hybrid_has_points = card_type == 'hybrid' and hybrid_points_enabled(program)
 

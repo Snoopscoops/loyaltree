@@ -3381,15 +3381,6 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
                     </label>
                     <p style={{...styles.hint,marginTop:6}}>0% sits the whole stamp group on the left edge, so the background stays open on the right. 100% sits it on the right edge. Anything in between parks the group between those edges. Count changes still reflow as one group.</p>
                   </div>
-                  <div>
-                    <div style={styles.miniLabel}>Detail text size</div>
-                    <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                      {[[0.8,'small','Small'],[1,'medium','Medium'],[1.35,'large','Large']].map(([scale,key,label]) => (
-                        <button key={key} type="button" onClick={()=>update('wallet_detail_font_scale', scale)} style={{...styles.walletStyleBtn,...((key==='small'?(Number(form.wallet_detail_font_scale)||1)<=0.85:key==='large'?(Number(form.wallet_detail_font_scale)||1)>=1.2: (Number(form.wallet_detail_font_scale)||1)>0.85 && (Number(form.wallet_detail_font_scale)||1)<1.2)?styles.walletStyleBtnActive:{}),flex:'1 1 90px'}}>{label}</button>
-                      ))}
-                    </div>
-                    <p style={{...styles.hint,marginTop:6}}>Stays in the usual row under the artwork. Apple has no exact font size, so Small uses the smaller row, Medium is today's row, and Large uses the biggest row. Republish so the pass updates.</p>
-                  </div>
                 </div>
                 <div style={{marginTop:12,padding:12,borderRadius:14,background:walletPreviewBackground,color:'#fff',overflow:'hidden'}}>
                   <div style={{fontSize:10,fontWeight:900,letterSpacing:.8,opacity:.8}}>DYNAMIC BANNER PREVIEW</div>
