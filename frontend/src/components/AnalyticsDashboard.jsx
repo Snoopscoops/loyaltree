@@ -1,4 +1,88 @@
 import React, { useState, useEffect } from 'react'
+
+function parseMapPoint(raw) {
+  const text = String(raw || '').trim()
+  const at = text.match(/@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/)
+  if (at) return { latitude: Number(at[1]), longitude: Number(at[2]) }
+  const q = text.match(/[?&]q=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/)
+  if (q) return { latitude: Number(q[1]), longitude: Number(q[2]) }
+  const pair = text.match(/(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/)
+  if (pair) return { latitude: Number(pair[1]), longitude: Number(pair[2]) }
+  return null
+}
+
+function NearbyPinMap({ latitude, longitude, radius, onMove }) {
+  const holder = React.useRef(null)
+  const mapRef = React.useRef(null)
+  const markerRef = React.useRef(null)
+  const circleRef = React.useRef(null)
+  const lat = Number(latitude)
+  const lng = Number(longitude)
+  const hasPoint = Number.isFinite(lat) && Number.isFinite(lng)
+  const center = hasPoint ? [lat, lng] : [14.5995, 120.9842]
+  React.useEffect(() => {
+    let cancelled = false
+    const boot = () => {
+      if (cancelled || !holder.current || !window.L || mapRef.current) return
+      const map = window.L.map(holder.current, { scrollWheelZoom: false }).setView(center, hasPoint ? 16 : 12)
+      window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap' }).addTo(map)
+      const marker = window.L.marker(center, { draggable: true }).addTo(map)
+      const circle = window.L.circle(center, { radius: Number(radius) || 150, color: '#0f766e', fillColor: '#14b8a6', fillOpacity: 0.18 }).addTo(map)
+      marker.on('dragend', () => {
+        const pos = marker.getLatLng()
+        circle.setLatLng(pos)
+        onMove(Number(pos.lat.toFixed(6)), Number(pos.lng.toFixed(6)))
+      })
+      map.on('click', event => {
+        marker.setLatLng(event.latlng)
+        circle.setLatLng(event.latlng)
+        onMove(Number(event.latlng.lat.toFixed(6)), Number(event.latlng.lng.toFixed(6)))
+      })
+      mapRef.current = map
+      markerRef.current = marker
+      circleRef.current = circle
+      setTimeout(() => map.invalidateSize(), 200)
+    }
+    if (!document.getElementById('lt-leaflet-css')) {
+      const link = document.createElement('link')
+      link.id = 'lt-leaflet-css'
+      link.rel = 'stylesheet'
+      link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'
+      document.head.appendChild(link)
+    }
+    if (window.L) boot()
+    else if (!document.getElementById('lt-leaflet-js')) {
+      const script = document.createElement('script')
+      script.id = 'lt-leaflet-js'
+      script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'
+      script.onload = boot
+      document.body.appendChild(script)
+    } else {
+      const timer = setInterval(() => { if (window.L) { clearInterval(timer); boot() } }, 200)
+      return () => { cancelled = true; clearInterval(timer) }
+    }
+    return () => { cancelled = true }
+  }, [])
+  React.useEffect(() => {
+    if (!mapRef.current || !hasPoint) return
+    const pos = [lat, lng]
+    markerRef.current?.setLatLng(pos)
+    circleRef.current?.setLatLng(pos)
+    circleRef.current?.setRadius(Number(radius) || 150)
+    mapRef.current.panTo(pos)
+  }, [lat, lng, radius, hasPoint])
+  const mapsUrl = hasPoint ? `https://www.google.com/maps/search/?api=1&query=${lat},${lng}` : 'https://www.google.com/maps'
+  return (
+    <div style={{gridColumn:'1 / -1'}}>
+      <div ref={holder} style={{height:280,borderRadius:14,border:'1px solid #e2e8f0',overflow:'hidden'}} />
+      <div style={{display:'flex',justifyContent:'space-between',gap:8,marginTop:8,flexWrap:'wrap'}}>
+        <span style={{fontSize:12,color:'#64748b'}}>{hasPoint ? `${lat.toFixed(5)}, ${lng.toFixed(5)}` : 'Click the map or drop the business pin.'}</span>
+        <a href={mapsUrl} target="_blank" rel="noreferrer" style={{fontSize:12,fontWeight:800,color:'#0f766e'}}>Open in Google Maps</a>
+      </div>
+    </div>
+  )
+}
+
 import InterBranchAnalytics from './InterBranchAnalytics'
 
 function AnalyticsDashboard({ API_BASE, user }) {
@@ -199,6 +283,35 @@ function AnalyticsDashboard({ API_BASE, user }) {
       () => setGeofenceStatus('Location permission was denied. Enter the pin manually.'),
       { enableHighAccuracy: true, timeout: 10000 },
     )
+  }
+
+  const testGeofenceNotification = () => {
+    if (!navigator.geolocation) {
+      setGeofenceStatus('This browser cannot read the current location.')
+      return
+    }
+    navigator.geolocation.getCurrentPosition(async pos => {
+      const lat = pos.coords.latitude
+      const lng = pos.coords.longitude
+      const radius = Number(geofence.radius_meters) || 150
+      const inside = (geofence.pins || []).map(pin => {
+        const plat = Number(pin.latitude)
+        const plng = Number(pin.longitude)
+        if (!Number.isFinite(plat) || !Number.isFinite(plng)) return null
+        const distance = 6371000 * Math.acos(Math.min(1, Math.sin(lat * Math.PI / 180) * Math.sin(plat * Math.PI / 180) + Math.cos(lat * Math.PI / 180) * Math.cos(plat * Math.PI / 180) * Math.cos((lng - plng) * Math.PI / 180)))
+        return { pin, distance }
+      }).filter(Boolean).filter(item => item.distance <= radius)
+      if (!inside.length) {
+        setGeofenceStatus('You are outside the radius. The test notification only fires inside the circle.')
+        return
+      }
+      const message = inside[0].pin.message || geofence.message || "You're near us. Open your LoyaltyTree card."
+      if (window.Notification && Notification.permission !== 'granted') await Notification.requestPermission()
+      if (window.Notification && Notification.permission === 'granted') {
+        new Notification(inside[0].pin.label || 'LoyaltyTree nearby', { body: message })
+      }
+      setGeofenceStatus(`Test sent. You are ${Math.round(inside[0].distance)} m from the pin, inside the ${radius} m radius.`)
+    }, () => setGeofenceStatus('Location permission was denied, so the radius test could not run.'), { enableHighAccuracy: true, timeout: 10000 })
   }
 
   const saveRetentionSettings = async () => {
@@ -1521,8 +1634,12 @@ function AnalyticsDashboard({ API_BASE, user }) {
             <label style={styles.editorLabel}>Notification message</label>
             <input style={styles.editorInput} maxLength={120} value={geofence.message || ''} onChange={e=>setGeofence(s=>({...s,message:e.target.value}))} />
             <div style={styles.formGrid2}>
-              <label style={styles.editorLabel}>Radius in meters
-                <input type="number" min={geofence.limits?.min_radius_meters || 100} max={geofence.limits?.max_radius_meters || 1000} style={styles.editorInput} value={geofence.radius_meters} onChange={e=>setGeofence(s=>({...s,radius_meters:e.target.value}))} />
+              <label style={styles.editorLabel}>Radius
+                <div style={{display:'flex',gap:10,alignItems:'center'}}>
+                  <input type="range" min={geofence.limits?.min_radius_meters || 100} max={geofence.limits?.max_radius_meters || 1000} step="10" value={geofence.radius_meters || 150} onChange={e=>setGeofence(s=>({...s,radius_meters:Number(e.target.value)}))} style={{flex:1}} />
+                  <input type="number" min={geofence.limits?.min_radius_meters || 100} max={geofence.limits?.max_radius_meters || 1000} style={{...styles.editorInput,width:90}} value={geofence.radius_meters} onChange={e=>setGeofence(s=>({...s,radius_meters:e.target.value}))} />
+                  <span style={styles.mutedText}>m</span>
+                </div>
               </label>
               <label style={styles.editorLabel}>Max times / day
                 <input type="number" min="1" max="5" style={styles.editorInput} value={geofence.max_per_day} onChange={e=>setGeofence(s=>({...s,max_per_day:e.target.value}))} />
@@ -1539,11 +1656,12 @@ function AnalyticsDashboard({ API_BASE, user }) {
                   <option value="">Branch</option>
                   {(geofence.branches || []).map(branch => <option key={branch.public_id} value={branch.public_id}>{branch.name}</option>)}
                 </select>
-                <input style={styles.editorInput} placeholder="Latitude" value={pin.latitude ?? ''} onChange={e=>updateGeofencePin(index,{latitude:e.target.value})} />
-                <input style={styles.editorInput} placeholder="Longitude" value={pin.longitude ?? ''} onChange={e=>updateGeofencePin(index,{longitude:e.target.value})} />
+                <input style={styles.editorInput} placeholder="Paste a Google Maps link" onBlur={e=>{ const point = parseMapPoint(e.target.value); if (point) updateGeofencePin(index, point) }} />
                 <input style={styles.editorInput} maxLength={120} placeholder="Message at this location" value={pin.message || ''} onChange={e=>updateGeofencePin(index,{message:e.target.value})} />
                 <button type="button" style={styles.actionBtnCompact} onClick={()=>useGeofenceLocation(index)}>Use my location</button>
+                <NearbyPinMap latitude={pin.latitude} longitude={pin.longitude} radius={geofence.radius_meters} onMove={(latitude, longitude)=>updateGeofencePin(index,{latitude,longitude})} />
                 <button type="button" style={styles.actionBtn} disabled={savingGeofence} onClick={saveGeofence}>{savingGeofence ? 'Saving…' : 'Save location and message'}</button>
+                <button type="button" style={styles.actionBtnCompact} onClick={testGeofenceNotification}>Test notification</button>
               </div>
             ))}
             <div style={{display:'flex',gap:8,marginTop:12,flexWrap:'wrap'}}>
