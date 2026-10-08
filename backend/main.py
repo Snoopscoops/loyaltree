@@ -47811,6 +47811,45 @@ def save_geofence_config(public_id: str, payload: GeofenceConfigUpdate, authoriz
     return _geofence_public(config, branches)
 
 
+@app.post('/api/v1/business/{public_id}/geofence/test')
+def test_geofence_notification(public_id: str, authorization: str = Header(default='')):
+    """Wake every saved Apple and Google card for this business.
+
+    LoyaltyTree cannot see which phones are physically inside the radius.
+    Wallet delivers this test to every saved card. Apple still shows the
+    location alert only when that phone is inside the saved pin.
+    """
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    config = _geofence_load(business)
+    if not config.get('enabled') or not config.get('pins'):
+        raise HTTPException(status_code=400, detail='Save an enabled pin before sending a test.')
+    message = (config.get('message') or GEOFENCE_DEFAULT_MESSAGE)[:120]
+    try:
+        customers = supabase.table('customers').select('public_id').eq('business_id', business.get('id')).limit(5000).execute().data or []
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+    public_ids = [row.get('public_id') for row in customers if row.get('public_id')]
+    apple_sent = _push_apple_wallet_to_customer_public_ids(public_ids)
+    google_sent = 0
+    program = safe_get_loyalty_program(business.get('id')) or {}
+    class_id = str(program.get('google_wallet_class_id') or '').strip()
+    if not class_id and GOOGLE_WALLET_ISSUER_ID:
+        class_id = f"{GOOGLE_WALLET_ISSUER_ID}.{business.get('public_id')}"
+    if class_id and send_wallet_class_message(class_id, business.get('name') or 'LoyaltyTree', message, f"geo-test-{business.get('public_id')}-{int(datetime.utcnow().timestamp())}"):
+        google_sent = 1
+    return {
+        'apple_pushes_sent': apple_sent,
+        'google_class_notified': bool(google_sent),
+        'members_checked': len(public_ids),
+        'message': message,
+        'radius_filter': 'unavailable',
+        'note': 'Sent to every saved Wallet card. The server cannot see who is inside the radius.',
+    }
+
+
 class AdminCustomPriceUpdate(BaseModel):
     custom_monthly_price: Optional[int] = Field(default=None, ge=1, le=1000000)
     clear_custom_price: bool = False

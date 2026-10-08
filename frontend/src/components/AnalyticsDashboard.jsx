@@ -285,33 +285,16 @@ function AnalyticsDashboard({ API_BASE, user }) {
     )
   }
 
-  const testGeofenceNotification = () => {
-    if (!navigator.geolocation) {
-      setGeofenceStatus('This browser cannot read the current location.')
-      return
+  const testGeofenceNotification = async () => {
+    setGeofenceStatus('Sending test to saved Apple and Google cards...')
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/geofence/test`, { method: 'POST' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Test notification failed')
+      setGeofenceStatus(`Test sent to saved cards. Apple wakes: ${data.apple_pushes_sent || 0}. Google class: ${data.google_class_notified ? 'sent' : 'not sent'}. Wallet cannot filter by who is standing inside the radius.`)
+    } catch (err) {
+      setGeofenceStatus(err.message || 'Test notification failed')
     }
-    navigator.geolocation.getCurrentPosition(async pos => {
-      const lat = pos.coords.latitude
-      const lng = pos.coords.longitude
-      const radius = Number(geofence.radius_meters) || 150
-      const inside = (geofence.pins || []).map(pin => {
-        const plat = Number(pin.latitude)
-        const plng = Number(pin.longitude)
-        if (!Number.isFinite(plat) || !Number.isFinite(plng)) return null
-        const distance = 6371000 * Math.acos(Math.min(1, Math.sin(lat * Math.PI / 180) * Math.sin(plat * Math.PI / 180) + Math.cos(lat * Math.PI / 180) * Math.cos(plat * Math.PI / 180) * Math.cos((lng - plng) * Math.PI / 180)))
-        return { pin, distance }
-      }).filter(Boolean).filter(item => item.distance <= radius)
-      if (!inside.length) {
-        setGeofenceStatus('You are outside the radius. The test notification only fires inside the circle.')
-        return
-      }
-      const message = inside[0].pin.message || geofence.message || "You're near us. Open your LoyaltyTree card."
-      if (window.Notification && Notification.permission !== 'granted') await Notification.requestPermission()
-      if (window.Notification && Notification.permission === 'granted') {
-        new Notification(inside[0].pin.label || 'LoyaltyTree nearby', { body: message })
-      }
-      setGeofenceStatus(`Test sent. You are ${Math.round(inside[0].distance)} m from the pin, inside the ${radius} m radius.`)
-    }, () => setGeofenceStatus('Location permission was denied, so the radius test could not run.'), { enableHighAccuracy: true, timeout: 10000 })
   }
 
   const saveRetentionSettings = async () => {
@@ -1661,7 +1644,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
                 <button type="button" style={styles.actionBtnCompact} onClick={()=>useGeofenceLocation(index)}>Use my location</button>
                 <NearbyPinMap latitude={pin.latitude} longitude={pin.longitude} radius={geofence.radius_meters} onMove={(latitude, longitude)=>updateGeofencePin(index,{latitude,longitude})} />
                 <button type="button" style={styles.actionBtn} disabled={savingGeofence} onClick={saveGeofence}>{savingGeofence ? 'Saving…' : 'Save location and message'}</button>
-                <button type="button" style={styles.actionBtnCompact} onClick={testGeofenceNotification}>Test notification</button>
+                <button type="button" style={styles.actionBtnCompact} onClick={testGeofenceNotification}>Test notification to saved cards</button>
               </div>
             ))}
             <div style={{display:'flex',gap:8,marginTop:12,flexWrap:'wrap'}}>
