@@ -47832,6 +47832,11 @@ def test_geofence_notification(public_id: str, authorization: str = Header(defau
     except Exception as exc:
         raise HTTPException(status_code=500, detail=friendly_db_error(exc))
     public_ids = [row.get('public_id') for row in customers if row.get('public_id')]
+    try:
+        supabase.table('businesses').update({'updated_at': datetime.utcnow().isoformat()}).eq('id', business.get('id')).execute()
+    except Exception as exc:
+        print(f'GEOFENCE TEST stamp error: {exc}')
+    _mark_apple_pass_dirty(public_ids)
     apple_sent = _push_apple_wallet_to_customer_public_ids(public_ids)
     google_sent = 0
     program = safe_get_loyalty_program(business.get('id')) or {}
