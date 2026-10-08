@@ -236,6 +236,42 @@ function AnalyticsDashboard({ API_BASE, user }) {
     } catch (err) { /* nearby settings are optional until the column exists */ }
   }
 
+  const deleteGeofencePin = async (index) => {
+    const pins = (geofence.pins || []).filter((_, pinIndex) => pinIndex !== index)
+    const next = { ...geofence, pins, enabled: pins.length ? geofence.enabled : false }
+    setGeofence(next)
+    setSavingGeofence(true)
+    setGeofenceStatus('')
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/geofence`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          enabled: !!next.enabled,
+          message: next.message,
+          radius_meters: Number(next.radius_meters),
+          max_per_day: Number(next.max_per_day),
+          max_per_week: Number(next.max_per_week),
+          pins: pins.map(pin => ({
+            branch_public_id: pin.branch_public_id || null,
+            label: pin.label || '',
+            message: pin.message || next.message || '',
+            latitude: Number(pin.latitude),
+            longitude: Number(pin.longitude),
+          })),
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not delete location')
+      setGeofence(current => ({ ...current, ...data, branches: data.branches || current.branches, limits: data.limits || current.limits }))
+      setGeofenceStatus(pins.length ? 'Location deleted. Save is already done.' : 'Location deleted and nearby notifications turned off.')
+    } catch (err) {
+      setGeofenceStatus(err.message || 'Could not delete location')
+    } finally {
+      setSavingGeofence(false)
+    }
+  }
+
   const saveGeofence = async () => {
     setSavingGeofence(true)
     setGeofenceStatus('')
@@ -1639,12 +1675,13 @@ function AnalyticsDashboard({ API_BASE, user }) {
                   <option value="">Branch</option>
                   {(geofence.branches || []).map(branch => <option key={branch.public_id} value={branch.public_id}>{branch.name}</option>)}
                 </select>
-                <input style={styles.editorInput} placeholder="Paste a Google Maps link" onBlur={e=>{ const point = parseMapPoint(e.target.value); if (point) updateGeofencePin(index, point) }} />
+                <input style={styles.editorInput} placeholder="Paste a Google Maps share link" onBlur={async e=>{ const raw = e.target.value.trim(); if (!raw) return; const point = parseMapPoint(raw); if (point) { updateGeofencePin(index, point); return } setGeofenceStatus('Reading the Maps link...'); try { const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/geofence/resolve-link`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ url: raw }) }); const data = await res.json().catch(()=>({})); if (!res.ok) throw new Error(data.detail || 'Could not read that link'); updateGeofencePin(index, { latitude: data.latitude, longitude: data.longitude }); setGeofenceStatus('Pin placed from the Google Maps link. Save location and message.') } catch (err) { setGeofenceStatus(err.message || 'Could not read that link') } }} />
                 <input style={styles.editorInput} maxLength={120} placeholder="Message at this location" value={pin.message || ''} onChange={e=>updateGeofencePin(index,{message:e.target.value})} />
                 <button type="button" style={styles.actionBtnCompact} onClick={()=>useGeofenceLocation(index)}>Use my location</button>
                 <NearbyPinMap latitude={pin.latitude} longitude={pin.longitude} radius={geofence.radius_meters} onMove={(latitude, longitude)=>updateGeofencePin(index,{latitude,longitude})} />
                 <button type="button" style={styles.actionBtn} disabled={savingGeofence} onClick={saveGeofence}>{savingGeofence ? 'Saving…' : 'Save location and message'}</button>
                 <button type="button" style={styles.actionBtnCompact} onClick={testGeofenceNotification}>Test notification to saved cards</button>
+                <button type="button" style={{...styles.actionBtnCompact,color:'#b91c1c',borderColor:'#fecaca'}} disabled={savingGeofence} onClick={()=>deleteGeofencePin(index)}>Delete location</button>
               </div>
             ))}
             <div style={{display:'flex',gap:8,marginTop:12,flexWrap:'wrap'}}>

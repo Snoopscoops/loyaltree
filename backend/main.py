@@ -47811,6 +47811,54 @@ def save_geofence_config(public_id: str, payload: GeofenceConfigUpdate, authoriz
     return _geofence_public(config, branches)
 
 
+
+@app.post('/api/v1/business/{public_id}/geofence/resolve-link')
+def resolve_geofence_link(public_id: str, payload: dict, authorization: str = Header(default='')):
+    """Turn a Google Maps share link into a pin. Short links have no coordinates."""
+    require_owner_session(public_id, authorization)
+    raw = str((payload or {}).get('url') or '').strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail='Paste a Google Maps link.')
+    direct = None
+    import re
+    match = re.search(r'@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)', raw) or re.search(r'(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)', raw)
+    if match:
+        direct = (float(match.group(1)), float(match.group(2)))
+    final_url = raw
+    if direct is None and raw.startswith('http'):
+        try:
+            import httpx
+            with httpx.Client(follow_redirects=True, timeout=12) as client:
+                response = client.get(raw, headers={'User-Agent': 'LoyaltyTree'})
+                final_url = str(response.url)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f'Could not open that Maps link. {exc}')
+        match = re.search(r'@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)', final_url)
+        if match:
+            direct = (float(match.group(1)), float(match.group(2)))
+    if direct is None:
+        place = ''
+        marker = '/maps/place/'
+        if marker in final_url:
+            place = final_url.split(marker, 1)[1].split('/', 1)[0]
+            place = place.replace('+', ' ')
+            from urllib.parse import unquote
+            place = unquote(place)
+        if not place:
+            raise HTTPException(status_code=400, detail='That link has no coordinates. Paste the numbers, for example 25.785531,55.937361.')
+        try:
+            import httpx
+            with httpx.Client(timeout=12) as client:
+                geo = client.get('https://nominatim.openstreetmap.org/search', params={'q': place, 'format': 'json', 'limit': 1}, headers={'User-Agent': 'LoyaltyTree'})
+                rows = geo.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f'Could not look up that place. {exc}')
+        if not rows:
+            raise HTTPException(status_code=400, detail='No pin found for that place. Paste the coordinates instead.')
+        direct = (float(rows[0]['lat']), float(rows[0]['lon']))
+    return {'latitude': round(direct[0], 6), 'longitude': round(direct[1], 6), 'source_url': final_url}
+
+
 @app.post('/api/v1/business/{public_id}/geofence/test')
 def test_geofence_notification(public_id: str, authorization: str = Header(default='')):
     """Wake every saved Apple and Google card for this business.
