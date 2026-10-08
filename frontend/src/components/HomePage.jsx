@@ -1161,7 +1161,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
         <div style={styles.cardTypeGroup}>
           <div style={styles.cardTypeGroupLabel}>Available now</div>
           <div className="lt-card-available" style={styles.cardTypesAvailableGrid}>
-            {CARD_TYPES.filter(c => c.available).map(c => (
+            {CARD_TYPES.filter(c => c.available && !(c.key === 'giftcard' && pricingContext.country_code !== 'PH')).map(c => (
               <button
                 key={c.key}
                 onClick={() => openCard(c)}
@@ -1260,7 +1260,12 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
             <p style={styles.homePriceText}>Advanced loyalty tools with POS Integration for businesses ready to connect loyalty activity with operations.</p>
           </div>
         </div>
-        {pricingContext.country_code !== 'PH' && (
+        {pricingContext.country_code === 'AU' && (
+          <p style={{fontSize:11.5,color:'#64748b',margin:'16px auto 0',maxWidth:720,lineHeight:1.55}}>
+            Australian prices include GST. Starter is A$26/month (A$78 for 3 months), Growth is A$50/month (A$150 for 3 months), and Pro is A$83/month (A$249 for 3 months). Gift Cards and the physical QR / PR Kit are Philippines-only, so an Australian account stays fully digital. Payment is by card; PayMongo charges the PHP equivalent and your bank may add its own conversion fee.
+          </p>
+        )}
+        {pricingContext.country_code !== 'PH' && pricingContext.country_code !== 'AU' && (
           <p style={{fontSize:11.5,color:'#64748b',margin:'16px auto 0',maxWidth:720,lineHeight:1.55}}>
             Gift Cards and the physical QR / PR Kit are currently available only in the Philippines. International accounts remain fully digital.
           </p>

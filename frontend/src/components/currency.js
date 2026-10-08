@@ -7,6 +7,7 @@ export const CURRENCY_META = {
   NZD: { symbol:'NZ$', locale:'en-NZ', name:'New Zealand Dollar' },
   MYR: { symbol:'RM', locale:'en-MY', name:'Malaysian Ringgit' },
   AED: { symbol:'AED ', locale:'en-AE', name:'UAE Dirham' },
+  AUD: { symbol:'A$', locale:'en-AU', name:'Australian Dollar' },
 }
 
 export const COUNTRY_OPTIONS = [
@@ -18,6 +19,7 @@ export const COUNTRY_OPTIONS = [
   { code:'NZ', label:'New Zealand', currency:'NZD', flag:'🇳🇿' },
   { code:'MY', label:'Malaysia', currency:'MYR', flag:'🇲🇾' },
   { code:'AE', label:'United Arab Emirates', currency:'AED', flag:'🇦🇪' },
+  { code:'AU', label:'Australia', currency:'AUD', flag:'🇦🇺' },
 ]
 
 export function currencyMeta(currency='PHP') {

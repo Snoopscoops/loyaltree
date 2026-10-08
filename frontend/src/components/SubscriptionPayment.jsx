@@ -371,7 +371,8 @@ function SubscriptionPayment({
 
             {!isPH && (
               <div style={styles.processorNotice}>
-                <b>International card payment via PayMongo.</b><br />
+                <b>{subscription?.currency === 'AUD' ? 'Australian card payment via PayMongo.' : 'International card payment via PayMongo.'}</b><br />
+                {subscription?.currency === 'AUD' ? 'Your Loyalty Tree price is fixed in AUD and includes GST. ' : ''}
                 Your Loyalty Tree price stays fixed in {subscription?.currency}. PayMongo will charge the disclosed PHP equivalent to your Visa/Mastercard; your card issuer handles conversion and may apply its own FX fee.
               </div>
             )}

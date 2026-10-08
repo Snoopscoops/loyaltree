@@ -335,13 +335,16 @@ PRICING_REGIONS = {
     'NZ': {'country_name':'New Zealand','currency':'NZD','symbol':'NZ$','locale':'en-NZ','plans':{'starter':19,'growth':39,'pro':69}},
     'MY': {'country_name':'Malaysia','currency':'MYR','symbol':'RM','locale':'en-MY','plans':{'starter':49,'growth':79,'pro':119}},
     'AE': {'country_name':'United Arab Emirates','currency':'AED','symbol':'AED ','locale':'en-AE','plans':{'starter':150,'growth':150,'pro':150}},
+    # Australia: GST-inclusive monthly rates. 3-month checkout is monthly x 3
+    # (A$78 / A$150 / A$249). Gift cards and the physical QR kit stay PH-only.
+    'AU': {'country_name':'Australia','currency':'AUD','symbol':'A$','locale':'en-AU','plans':{'starter':26,'growth':50,'pro':83}},
 }
 SUPPORTED_PRICING_COUNTRIES = set(PRICING_REGIONS)
-COUNTRY_ALIASES = {'UK':'GB','GBR':'GB','USA':'US','SGP':'SG','HKG':'HK','NZL':'NZ','MYS':'MY','PHL':'PH','UAE':'AE','ARE':'AE'}
+COUNTRY_ALIASES = {'UK':'GB','GBR':'GB','USA':'US','SGP':'SG','HKG':'HK','NZL':'NZ','MYS':'MY','PHL':'PH','UAE':'AE','ARE':'AE','AUS':'AU'}
 # Snapshot conversion rates are only for internal normalized reporting and for
 # a PHP-settlement fallback. Override in Render without a deploy using
 # LOYALTYTREE_FX_TO_PHP_JSON, e.g. {"SGD":49.48,"GBP":84.85}.
-DEFAULT_FX_TO_PHP = {'PHP':1.0,'SGD':49.48,'GBP':84.85,'HKD':8.01,'USD':62.89,'NZD':36.31,'MYR':15.41,'AED':16.30}
+DEFAULT_FX_TO_PHP = {'PHP':1.0,'SGD':49.48,'GBP':84.85,'HKD':8.01,'USD':62.89,'NZD':36.31,'MYR':15.41,'AED':16.30,'AUD':43.67}
 
 def _fx_to_php_map() -> dict:
     rates = dict(DEFAULT_FX_TO_PHP)
@@ -387,7 +390,7 @@ def price_tiers_for_region(plan: str, region: Optional[str]) -> dict:
     return tiers
 
 def money_text(amount, currency='PHP') -> str:
-    symbols={'PHP':'₱','SGD':'S$','GBP':'£','HKD':'HK$','USD':'$','NZD':'NZ$','MYR':'RM','AED':'AED '}
+    symbols={'PHP':'₱','SGD':'S$','GBP':'£','HKD':'HK$','USD':'$','NZD':'NZ$','MYR':'RM','AED':'AED ','AUD':'A$'}
     value=float(amount or 0)
     digits=0 if value.is_integer() else 2
     return f"{symbols.get(currency,currency+' ')}{value:,.{digits}f}"
