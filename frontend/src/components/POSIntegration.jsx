@@ -217,6 +217,33 @@ function POSIntegration({
     }
   }
 
+
+  const setMappingActive = async (branchPublicId, isActive) => {
+    const mapping = branchMappings[branchPublicId]
+    if (!slug || !mapping?.mapping_id) {
+      setError('Save this branch mapping before turning it off.')
+      return
+    }
+    setSaving(true)
+    setError('')
+    setMessage('')
+    try {
+      const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/branch-mappings/${mapping.mapping_id}/active`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_active: isActive }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not update outlet.')
+      setMessage(isActive ? 'Outlet turned on.' : 'Outlet turned off. Go Live will ignore it.')
+      await loadPOS()
+    } catch (err) {
+      setError(err.message || 'Could not update outlet.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   const saveQuickBranchMapping = async () => {
     if (!slug) return
     const branch = branches.find(item => item.public_id === quickBranchId) || branches[0]
@@ -309,6 +336,8 @@ function POSIntegration({
       ;(data.branch_mappings || []).forEach(row => {
         if (!row.branch_public_id) return
         mappings[row.branch_public_id] = {
+          mapping_id: row.id || '',
+          is_active: row.is_active !== false,
           external_branch_id: row.external_branch_id || '',
           external_branch_name: row.external_branch_name || '',
           saved_mapping: true,
@@ -1435,6 +1464,14 @@ function POSIntegration({
                                   {(CHECKOUT_MODES.find(item => item.id === (branchMappings[branch.public_id]?.checkout_mode || 'auto')) || CHECKOUT_MODES[0]).note}
                                 </div>
                                 <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginTop:8}}>
+                                  <button
+                                    type="button"
+                                    style={s.secondaryButton}
+                                    disabled={saving || !branchMappings[branch.public_id]?.mapping_id}
+                                    onClick={() => setMappingActive(branch.public_id, branchMappings[branch.public_id]?.is_active === false)}
+                                  >
+                                    {branchMappings[branch.public_id]?.is_active === false ? 'Turn on' : 'Turn off'}
+                                  </button>
                                   <button
                                     type="button"
                                     style={s.secondaryButton}

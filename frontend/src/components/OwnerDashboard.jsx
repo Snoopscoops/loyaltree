@@ -3952,14 +3952,17 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
         )}
 
         {activeTab === 'pos' && (
-          <POSIntegration
-            API_BASE={API_BASE}
-            user={user}
-            business={{...business, plan: subscription?.plan || business?.plan}}
-            branches={branches}
-            authFetch={authFetch}
-            onUpgrade={()=>setActiveTab('billing')}
-          />
+          <>
+            <PosOutletSwitch API_BASE={API_BASE} user={user} authFetch={authFetch} setMessage={setMessage} />
+            <POSIntegration
+              API_BASE={API_BASE}
+              user={user}
+              business={{...business, plan: subscription?.plan || business?.plan}}
+              branches={branches}
+              authFetch={authFetch}
+              onUpgrade={()=>setActiveTab('billing')}
+            />
+          </>
         )}
 
         {activeTab === 'billing' && (
@@ -7150,6 +7153,66 @@ const styles = {
   industryInsightText:{fontSize:12,color:'#64748b',marginTop:3,lineHeight:1.4},
   satisfactionIntro:{margin:'5px 0 0',fontSize:13,color:'#64748b'}, satisfactionError:{padding:12,borderRadius:10,background:'#fef2f2',color:'#b91c1c',marginBottom:14}, satisfactionMetrics:{display:'grid',gridTemplateColumns:'repeat(5,minmax(0,1fr))',gap:10,marginBottom:18}, satisfactionMetricsMobile:{gridTemplateColumns:'repeat(2,minmax(0,1fr))'}, satisfactionMetricCard:{background:'#fff',border:'1px solid #e2e8f0',borderRadius:14,padding:15,display:'flex',flexDirection:'column',gap:4}, satisfactionMetricLabel:{fontSize:10,fontWeight:850,color:'#64748b',textTransform:'uppercase'}, satisfactionMetricValue:{fontSize:25,color:'#0f172a'}, satisfactionMetricHint:{fontSize:10.5,color:'#94a3b8'}, satisfactionList:{display:'grid',gap:10}, satisfactionRow:{background:'#fff',border:'1px solid #e2e8f0',borderRadius:14,padding:16}, satisfactionRowTop:{display:'flex',justifyContent:'space-between',gap:12}, satisfactionName:{display:'block',fontSize:14}, satisfactionDate:{display:'block',fontSize:10.5,color:'#94a3b8',marginTop:3}, satisfactionStars:{fontSize:16,color:'#f59e0b'}, satisfactionSubratings:{display:'flex',gap:8,flexWrap:'wrap',marginTop:11,fontSize:11,color:'#64748b'}, satisfactionComment:{margin:'12px 0 0',fontSize:13.5,color:'#475569',background:'#f8fafc',padding:'10px 12px',borderRadius:10}, satisfactionEmpty:{padding:24,textAlign:'center',color:'#94a3b8',background:'#fff',border:'1px dashed #cbd5e1',borderRadius:14},
 
+}
+
+
+function PosOutletSwitch({ API_BASE, user, authFetch, setMessage }) {
+  const [rows, setRows] = React.useState([])
+  const [busy, setBusy] = React.useState('')
+  const slug = user?.business_slug
+  const load = async () => {
+    if (!slug) return
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${slug}/pos/status?provider=storehub`)
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not load POS outlets')
+      setRows(data.branch_mappings || [])
+    } catch (e) {
+      setMessage?.(e.message || 'Could not load POS outlets')
+    }
+  }
+  React.useEffect(() => { load() }, [slug])
+  const toggle = async (row) => {
+    const next = row.is_active === false
+    setBusy(String(row.id))
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${slug}/pos/branch-mappings/${row.id}/active`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_active: next }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not update outlet')
+      await load()
+    } catch (e) {
+      setMessage?.(e.message || 'Could not update outlet')
+    } finally {
+      setBusy('')
+    }
+  }
+  if (!rows.length) return null
+  return (
+    <div style={{background:'#fff',border:'1px solid #99f6e4',borderRadius:16,padding:16,marginBottom:16}}>
+      <div style={{fontSize:11,fontWeight:900,color:'#0f766e'}}>OUTLET SWITCH</div>
+      <h3 style={{margin:'4px 0 6px'}}>Turn off outlets you are not taking live</h3>
+      <p style={{margin:'0 0 12px',fontSize:12,color:'#64748b'}}>Go Live ignores off outlets. Leave the real StoreHub outlet on, and turn off every LoyaltyTree Test outlet.</p>
+      {rows.map(row => {
+        const on = row.is_active !== false
+        const test = String(row.external_branch_id || '').toLowerCase().startsWith('test-') || String(row.external_branch_id || '').toLowerCase().startsWith('mock-')
+        return (
+          <div key={row.id} style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',padding:'10px 0',borderTop:'1px solid #e2e8f0'}}>
+            <div>
+              <b>{row.branch_name || 'Branch'}</b>
+              <div style={{fontSize:12,color:'#64748b'}}>{row.external_branch_name || row.external_branch_id || 'No outlet'}{test ? ' · Test outlet' : ''}</div>
+            </div>
+            <button disabled={busy === String(row.id)} onClick={() => toggle(row)} style={{border:'1px solid #cbd5e1',background:on?'#fef2f2':'#f0fdfa',color:on?'#b91c1c':'#0f766e',borderRadius:999,padding:'7px 12px',fontWeight:800,cursor:'pointer'}}>
+              {busy === String(row.id) ? 'Saving…' : on ? 'Turn off' : 'Turn on'}
+            </button>
+          </div>
+        )
+      })}
+    </div>
+  )
 }
 
 export default OwnerDashboard

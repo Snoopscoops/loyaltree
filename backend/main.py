@@ -29608,6 +29608,43 @@ async def storehub_test_transaction(
         raise HTTPException(status_code=500, detail=f'POS test transaction failed: {friendly_db_error(exc)}')
 
 
+
+class POSMappingActiveUpdate(BaseModel):
+    is_active: bool
+
+
+@app.post('/api/v1/business/{public_id}/pos/branch-mappings/{mapping_id}/active')
+async def set_pos_branch_mapping_active(public_id: str, mapping_id: str, req: POSMappingActiveUpdate, authorization: str = Header(default='')):
+    """Owner-controlled outlet switch. Off mappings are ignored by Go Live and earning."""
+    business = _require_pos_pro_business(public_id, authorization)
+    try:
+        rows = (
+            supabase.table('pos_branch_mappings')
+            .select('*')
+            .eq('id', mapping_id)
+            .eq('business_id', business.get('id'))
+            .limit(1)
+            .execute()
+            .data or []
+        )
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    if not rows:
+        raise HTTPException(status_code=404, detail='Branch mapping not found.')
+    try:
+        updated = (
+            supabase.table('pos_branch_mappings')
+            .update({'is_active': bool(req.is_active)})
+            .eq('id', mapping_id)
+            .execute()
+            .data or []
+        )
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    row = updated[0] if updated else {**rows[0], 'is_active': bool(req.is_active)}
+    return {'ok': True, 'mapping_id': str(mapping_id), 'is_active': row.get('is_active') is not False}
+
+
 @app.post('/api/v1/business/{public_id}/pos/go-live')
 async def pos_go_live(public_id: str, req: POSGoLiveRequest, authorization: str = Header(default='')):
     """Enable live loyalty earning after the provider read/mapping path is proven.
@@ -29660,7 +29697,7 @@ async def pos_go_live(public_id: str, req: POSGoLiveRequest, authorization: str 
             status_code=409,
             detail=(
                 'One or more branches are still mapped to a LoyaltyTree Test outlet. '
-                'Refresh StoreHub, choose the real StoreHub outlet for every active branch, then retry Go Live.'
+                'Turn off the test outlet in the owner dashboard, keep the real StoreHub outlet on, then retry Go Live.'
             ),
         )
 
@@ -44909,6 +44946,22 @@ def _storehub_tx_fetch_log(
     )
 
 
+
+def _ph_time_text(value) -> str:
+    """Display a StoreHub UTC timestamp in Philippine time."""
+    if not value:
+        return ''
+    raw = str(value).strip()
+    if not raw:
+        return ''
+    try:
+        parsed = datetime.fromisoformat(raw.replace('Z', '+00:00'))
+    except ValueError:
+        return raw
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(LOYALTY_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')
+
 def _storehub_fetch_recent_transaction_rows(
     integration: dict,
     *,
@@ -45315,7 +45368,7 @@ def _companion_provider_rows(device: dict, integration: dict, limit: int, deep_p
                 'invoiceNumber': str((row or {}).get('invoiceNumber') or ''),
                 'storeId': str((row or {}).get('storeId') or (row or {}).get('store_id') or ''),
                 'terminal': str((row or {}).get('terminalId') or (row or {}).get('registerId') or ''),
-                'transactionTime': (row or {}).get('transactionTime') or (row or {}).get('createdAt'),
+                'transactionTime': _ph_time_text((row or {}).get('transactionTime') or (row or {}).get('createdAt')),
                 'total': (row or {}).get('total'),
                 'transactionType': str((row or {}).get('transactionType') or ''),
                 'isCancelled': bool((row or {}).get('isCancelled')),
@@ -46080,7 +46133,7 @@ def companion_pos_peek(
             'receipt_number': str(tx.get('external_receipt_number') or ''),
             'gross_amount': float(tx.get('gross_amount') or 0),
             'currency': str(tx.get('currency') or 'PHP'),
-            'transacted_at': tx.get('transacted_at') or tx.get('created_at') or '',
+            'transacted_at': _ph_time_text(tx.get('transacted_at') or tx.get('created_at')),
             'status': str(tx.get('status') or ''),
         })
     rows.sort(key=lambda row: row.get('transacted_at') or '', reverse=True)
