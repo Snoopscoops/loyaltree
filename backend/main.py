@@ -43885,6 +43885,45 @@ def pos_companion_device_config(x_lt_device_token: str = Header(default='', alia
     }
 
 
+
+class POSDeviceRegisterUpdate(BaseModel):
+    external_terminal_id: str = Field(min_length=4, max_length=120)
+
+
+@app.post('/api/v1/business/{public_id}/pos/devices/{device_id}/register')
+async def set_pos_device_register(public_id: str, device_id: str, req: POSDeviceRegisterUpdate, authorization: str = Header(default='')):
+    """Save the StoreHub registerId on one Companion device. Check POS then filters to that register."""
+    business = _require_pos_pro_business(public_id, authorization)
+    register_id = str(req.external_terminal_id or '').strip()
+    try:
+        rows = (
+            supabase.table('pos_devices')
+            .select('*')
+            .eq('id', device_id)
+            .eq('business_id', business.get('id'))
+            .limit(1)
+            .execute()
+            .data or []
+        )
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    if not rows:
+        raise HTTPException(status_code=404, detail='Companion device not found.')
+    metadata = rows[0].get('metadata') if isinstance(rows[0].get('metadata'), dict) else {}
+    metadata = {**metadata, 'external_terminal_id': register_id}
+    try:
+        updated = (
+            supabase.table('pos_devices')
+            .update({'metadata': metadata})
+            .eq('id', device_id)
+            .execute()
+            .data or []
+        )
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    return {'ok': True, 'device_id': device_id, 'external_terminal_id': register_id, 'device': updated[0] if updated else {'id': device_id, 'metadata': metadata}}
+
+
 @app.patch('/api/v1/companion/device/preferences')
 @app.patch('/api/v1/pos-companion/device/preferences')
 def companion_device_preferences(
