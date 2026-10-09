@@ -256,10 +256,7 @@ function POSIntegration({
     let externalBranchId = String(existing.external_branch_id || '').trim()
     let externalBranchName = String(existing.external_branch_name || '').trim()
 
-    if (simulatorReady) {
-      externalBranchId = externalBranchId || `test-${branch.public_id}`
-      externalBranchName = externalBranchName || branch.name || branch.public_id
-    } else if (quickOutletId) {
+    if (quickOutletId) {
       const selected = providerLocations.find(item => String(item.id) === String(quickOutletId))
       externalBranchId = String(quickOutletId)
       externalBranchName = selected?.name || externalBranchName || String(quickOutletId)
@@ -1102,14 +1099,6 @@ function POSIntegration({
                   <b>Connect your own StoreHub account</b>
                   <div style={s.smallMuted}>
                     The API token is sent only to the Loyalty Tree backend, encrypted, and never shown again.
-                  </div>
-                </div>
-                <div style={s.infoBanner}>
-                  <b>Want to test before StoreHub gives API access?</b> Start Simulator Mode. It uses the same branch mapping, point reservation, net-amount earning and Wallet flow, but the StoreHub discount call is simulated.
-                  <div style={{marginTop:8}}>
-                    <button type="button" style={s.secondaryButton} disabled={saving || !apiAvailable} onClick={startStoreHubSimulator}>
-                      {saving ? 'Starting…' : 'Start StoreHub simulator'}
-                    </button>
                   </div>
                 </div>
                 {!storeHubConnection?.encryption_configured && (
@@ -1965,22 +1954,9 @@ function QuickCompanionSetup({
             </button>
           </div>
 
-          {provider === 'storehub' ? (
-            <button
-              type="button"
-              style={s.primaryButton}
-              disabled={saving || !apiAvailable}
-              onClick={startStoreHubSimulator}
-            >
-              {saving ? 'Starting…' : 'Start StoreHub Simulator'}
-            </button>
-          ) : (
-            <div style={s.infoBanner}>
-              Open <b>Advanced POS setup & diagnostics</b> below to enter the Loyverse access token.
-            </div>
-          )}
-
-          <div style={s.quickHint}>Already have real StoreHub API access? Use Advanced setup below instead of Simulator Mode.</div>
+          <div style={s.infoBanner}>
+            Use the real StoreHub store name and API token in Advanced setup. Simulator mode is removed.
+          </div>
         </div>
       )}
 
