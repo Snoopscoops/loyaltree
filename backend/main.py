@@ -44625,7 +44625,7 @@ def _companion_normalize_provider_transaction(provider: str, raw: dict) -> Optio
         tx_type = 'void' if cancelled else ('refund' if any(x in raw_type for x in ('refund', 'return')) else 'sale')
         amount = _companion_money_value(raw.get('total'))
         occurred = raw.get('transactionTime') or raw.get('createdAt') or raw.get('created_at')
-        terminal = raw.get('terminalId') or raw.get('terminal_id') or raw.get('registerId') or raw.get('register_id')
+        terminal = raw.get('terminal') or raw.get('terminalId') or raw.get('terminal_id') or raw.get('registerId') or raw.get('register_id')
     elif provider == 'loyverse':
         external_id = raw.get('id') or raw.get('receipt_number')
         branch_id = raw.get('store_id')
@@ -45334,6 +45334,70 @@ def _storehub_fetch_recent_transaction_rows(
     }
 
 
+
+def _companion_reverse_voided_sales(device: dict, integration: dict, provider_rows: list) -> int:
+    """Claw back points when a previously awarded StoreHub sale is later voided."""
+    reversed_count = 0
+    cancelled = []
+    for raw in provider_rows or []:
+        if not isinstance(raw, dict) or not raw.get('isCancelled'):
+            continue
+        external_id = str(raw.get('refId') or raw.get('id') or raw.get('invoiceNumber') or '').strip()
+        receipt = str(raw.get('invoiceNumber') or '').strip()
+        if external_id or receipt:
+            cancelled.append((external_id, receipt))
+        if len(cancelled) >= 40:
+            break
+    for external_id, receipt in cancelled:
+        try:
+            query = supabase.table('pos_transactions').select('*').eq('integration_id', integration.get('id')).eq('status', 'loyalty_applied')
+            rows = []
+            if external_id:
+                rows = query.eq('external_transaction_id', external_id).limit(1).execute().data or []
+            if not rows and receipt:
+                rows = (
+                    supabase.table('pos_transactions').select('*')
+                    .eq('integration_id', integration.get('id'))
+                    .eq('status', 'loyalty_applied')
+                    .eq('external_receipt_number', receipt)
+                    .limit(1).execute().data or []
+                )
+        except Exception:
+            continue
+        tx = rows[0] if rows else None
+        if not tx or not tx.get('customer_id'):
+            continue
+        points = int(tx.get('points_earned') or 0)
+        try:
+            customer_rows = supabase.table('customers').select('*').eq('id', tx.get('customer_id')).limit(1).execute().data or []
+            customer = customer_rows[0] if customer_rows else None
+            if customer and points > 0:
+                old_balance = int(customer.get('points_balance') or 0)
+                new_balance = max(0, old_balance - points)
+                supabase.table('customers').update({
+                    'points_balance': new_balance,
+                    'updated_at': datetime.utcnow().isoformat(),
+                }).eq('id', customer.get('id')).execute()
+                log_points_event(
+                    customer.get('business_id'),
+                    customer.get('id'),
+                    -float(tx.get('gross_amount') or 0),
+                    -points,
+                    branch_id=tx.get('branch_id'),
+                )
+            processing = tx.get('processing_metadata') if isinstance(tx.get('processing_metadata'), dict) else {}
+            supabase.table('pos_transactions').update({
+                'status': 'voided',
+                'processing_metadata': {**processing, 'void_reversed_at': datetime.now(timezone.utc).isoformat(), 'points_reversed': points},
+                'updated_at': datetime.now(timezone.utc).isoformat(),
+            }).eq('id', tx.get('id')).eq('status', 'loyalty_applied').execute()
+            reversed_count += 1
+            _companion_debug('void_points_reversed', external_transaction_id=external_id or receipt, points_reversed=points, device_id=str(device.get('id') or ''))
+        except Exception as exc:
+            _companion_debug('void_points_reverse_failed', external_transaction_id=external_id or receipt, error=str(exc))
+    return reversed_count
+
+
 def _companion_provider_rows(device: dict, integration: dict, limit: int, deep_probe: bool = False) -> list:
     provider = str(device.get('provider') or '').lower()
     now = datetime.now(timezone.utc)
@@ -45398,6 +45462,7 @@ def _companion_provider_rows(device: dict, integration: dict, limit: int, deep_p
         # The transaction schema is already known. Keep full row tracing opt-in.
         if config.get('trace_transactions'):
             _storehub_trace_transactions(payload, provider_rows)
+        _companion_reverse_voided_sales(device, integration, provider_rows)
 
         device_metadata = device.get('metadata') if isinstance(device.get('metadata'), dict) else {}
         mapping_settings = mapping.get('settings') if isinstance(mapping, dict) and isinstance(mapping.get('settings'), dict) else {}
