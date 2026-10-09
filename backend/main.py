@@ -45386,9 +45386,26 @@ def _companion_reverse_voided_sales(device: dict, integration: dict, provider_ro
                     branch_id=tx.get('branch_id'),
                 )
             processing = tx.get('processing_metadata') if isinstance(tx.get('processing_metadata'), dict) else {}
+            loyalty_result = processing.get('loyalty_result') if isinstance(processing.get('loyalty_result'), dict) else {}
+            reservation_id = loyalty_result.get('redemption_reservation_id') or tx.get('redemption_reservation_id')
+            redemption_reversed = False
+            if reservation_id:
+                try:
+                    _pos_rpc_first('pos_reverse_points_redemption', {
+                        'p_reservation_id': str(reservation_id),
+                        'p_reason': 'storehub_void_or_refund',
+                    })
+                    redemption_reversed = True
+                except Exception as exc:
+                    _companion_debug('void_redemption_reverse_failed', reservation_id=str(reservation_id), error=str(exc))
             supabase.table('pos_transactions').update({
                 'status': 'voided',
-                'processing_metadata': {**processing, 'void_reversed_at': datetime.now(timezone.utc).isoformat(), 'points_reversed': points},
+                'processing_metadata': {
+                    **processing,
+                    'void_reversed_at': datetime.now(timezone.utc).isoformat(),
+                    'points_reversed': points,
+                    'redemption_reversed': redemption_reversed,
+                },
                 'updated_at': datetime.now(timezone.utc).isoformat(),
             }).eq('id', tx.get('id')).eq('status', 'loyalty_applied').execute()
             reversed_count += 1
