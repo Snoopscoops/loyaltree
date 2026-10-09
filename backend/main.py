@@ -157,13 +157,11 @@ POS_COMPANION_SESSION_TTL_SECONDS = max(30, min(300, int(os.getenv('POS_COMPANIO
 POS_COMPANION_DEBUG = _env_bool('POS_COMPANION_DEBUG', True)
 
 # StoreHub transaction-feed compatibility.
-# ANGKAN's /transactions endpoint has been observed returning exactly 5,000
-# historical rows even when startDate/endDate target the current day.  Keep the
-# normal single-request path, but allow the read-only POS Peek / owner preview
-# to discover a working tail-page cursor (offset or page) without changing any
-# StoreHub data.  Once discovered, the cursor is persisted in the integration
-# config and reused by live Companion polling so every checkout does not have
-# to rescan years of history.
+# StoreHub transaction-feed compatibility.
+# Official Get Transactions params are from/to (YYYY-MM-DD) and storeId.
+# startDate/endDate are ignored, so the API defaults from to 1970-01-01 and
+# returns the first 5,000 historical rows. The 5,000 cap is per call. Peek may
+# still probe offset/page only if one store on one day is still capped.
 STOREHUB_TX_PAGE_SIZE = max(
     100,
     min(5000, int(os.getenv('STOREHUB_TX_PAGE_SIZE', '5000') or '5000')),
@@ -4210,8 +4208,8 @@ def _storehub_discover_outlets_with_credentials(store_name: str, api_token: str)
             api_token,
             '/transactions',
             params={
-                'startDate': (now - timedelta(days=1)).strftime('%Y-%m-%d'),
-                'endDate': now.strftime('%Y-%m-%d'),
+                'from': (now - timedelta(days=1)).strftime('%Y-%m-%d'),
+                'to': now.strftime('%Y-%m-%d'),
             },
         )
         stores = _storehub_outlets_from_transactions(_storehub_list(transactions_payload))
@@ -44921,31 +44919,25 @@ def _storehub_fetch_recent_transaction_rows(
 ) -> tuple[object, list, dict]:
     """Read the freshest StoreHub transaction page available.
 
-    The known-safe StoreHub request remains startDate/endDate only. During the
-    ANGKAN pilot that request returns a capped 5,000-row historical page, so the
-    explicitly read-only POS Peek / owner preview may probe common pagination
-    variants (`offset` first, then `page`). A variant is accepted only when its
-    response fingerprint is different from the first page.
-
-    Tail discovery uses exponential jumps plus a short binary search rather
-    than walking every historical page. This matters for a multi-year merchant
-    account that may have hundreds of thousands or millions of transactions.
-    Once a working tail cursor is found, it is persisted in the integration
-    config and normal Companion checkout polling reuses it.
+    Official query params are from/to (YYYY-MM-DD) and optional storeId.
+    startDate/endDate are not in the StoreHub contract and were ignored, which
+    defaulted the feed to 1970-01-01 and the first 5,000 historical rows.
+    A single call still caps at 5,000 rows. Peek may probe offset/page only if
+    that official window is still capped.
     """
     start_utc = start if start.tzinfo else start.replace(tzinfo=timezone.utc)
     end_utc = end if end.tzinfo else end.replace(tzinfo=timezone.utc)
     store_id = str(external_branch_id or '').strip()
     page_size = int(STOREHUB_TX_PAGE_SIZE)
 
-    # Keep the baseline request identical to the already-working StoreHub call.
-    # storeId is enforced locally below; we do not assume StoreHub accepts it as
-    # a transaction-query parameter.
+    # Official Get Transactions filter. from is the inclusive lower created date,
+    # to is the inclusive upper created date. storeId limits the page to the mapped outlet.
     base_params = {
-        'startDate': start_utc.strftime('%Y-%m-%d'),
-        'endDate': end_utc.strftime('%Y-%m-%d'),
+        'from': start_utc.strftime('%Y-%m-%d'),
+        'to': end_utc.strftime('%Y-%m-%d'),
     }
-
+    if store_id and not _storehub_is_placeholder_location_id(store_id):
+        base_params['storeId'] = store_id
     def cursor_for_page(strategy: str, page_number: int) -> int:
         page_number = max(1, int(page_number))
         return (page_number - 1) * page_size if strategy == 'offset' else page_number
