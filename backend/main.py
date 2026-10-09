@@ -44845,7 +44845,7 @@ def _companion_debug(event: str, **fields) -> None:
 def _storehub_register_id(raw: dict) -> str:
     if not isinstance(raw, dict):
         return ''
-    return str(raw.get('registerId') or raw.get('terminalId') or raw.get('terminal_id') or raw.get('register_id') or '').strip()
+    return str(raw.get('terminal') or raw.get('registerId') or raw.get('terminalId') or raw.get('terminal_id') or raw.get('register_id') or '').strip()
 
 
 def _storehub_recent_rows(rows: list, limit: int, external_branch_id: Optional[str] = None, register_id: Optional[str] = None) -> list:
