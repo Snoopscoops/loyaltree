@@ -44803,7 +44803,13 @@ def _companion_debug(event: str, **fields) -> None:
         print(f'COMPANION_DEBUG event={event} fields={cleaned}')
 
 
-def _storehub_recent_rows(rows: list, limit: int, external_branch_id: Optional[str] = None) -> list:
+def _storehub_register_id(raw: dict) -> str:
+    if not isinstance(raw, dict):
+        return ''
+    return str(raw.get('registerId') or raw.get('terminalId') or raw.get('terminal_id') or raw.get('register_id') or '').strip()
+
+
+def _storehub_recent_rows(rows: list, limit: int, external_branch_id: Optional[str] = None, register_id: Optional[str] = None) -> list:
     """Pick the newest StoreHub rows locally instead of trusting provider ordering.
 
     The live ANGKAN trace returned 5,000 rows and began with 2023 transactions even
@@ -44814,12 +44820,15 @@ def _storehub_recent_rows(rows: list, limit: int, external_branch_id: Optional[s
     """
     safe_limit = max(1, min(int(limit or 20), 100))
     branch_key = str(external_branch_id or '').strip()
+    register_key = str(register_id or '').strip()
     ranked = []
     for index, raw in enumerate(rows or []):
         if not isinstance(raw, dict):
             continue
         raw_branch = raw.get('storeId') or raw.get('store_id')
         if branch_key and str(raw_branch or '').strip() != branch_key:
+            continue
+        if register_key and _storehub_register_id(raw) != register_key:
             continue
         happened = _storehub_transaction_event_time(raw)
         rank = happened.timestamp() if happened else float('-inf')
@@ -45351,12 +45360,23 @@ def _companion_provider_rows(device: dict, integration: dict, limit: int, deep_p
         if config.get('trace_transactions'):
             _storehub_trace_transactions(payload, provider_rows)
 
-        rows = _storehub_recent_rows(provider_rows, limit, mapped_store_id)
+        device_metadata = device.get('metadata') if isinstance(device.get('metadata'), dict) else {}
+        mapping_settings = mapping.get('settings') if isinstance(mapping, dict) and isinstance(mapping.get('settings'), dict) else {}
+        mapped_register_id = str(
+            device_metadata.get('external_terminal_id')
+            or (mapping.get('external_terminal_id') if isinstance(mapping, dict) else '')
+            or mapping_settings.get('external_terminal_id')
+            or ''
+        ).strip()
+        rows = _storehub_recent_rows(provider_rows, limit, mapped_store_id, mapped_register_id or None)
+        seen_registers = sorted({_storehub_register_id(row) for row in provider_rows if _storehub_register_id(row)})[:8]
         _companion_debug(
             'storehub_poll_rows',
             device_id=str(device.get('id') or ''),
             branch_id=str(device.get('branch_id') or ''),
             mapped_store_id=str(mapped_store_id or ''),
+            mapped_register_id=mapped_register_id,
+            seen_register_ids=seen_registers,
             provider_row_count=len(provider_rows),
             selected_row_count=len(rows),
             fetch_strategy=str((fetch_meta or {}).get('strategy') or ''),
