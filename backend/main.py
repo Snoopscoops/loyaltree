@@ -46095,6 +46095,51 @@ async def _companion_process_transaction(
         raise
 
 
+
+@app.get('/api/v1/companion/members/snapshot')
+@app.get('/api/v1/pos-companion/members/snapshot')
+def pos_companion_members_snapshot(
+    updated_since: Optional[str] = None,
+    limit: int = 500,
+    x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token'),
+):
+    """Lean member list for offline QR scan. No points history."""
+    device = _require_pos_device(x_lt_device_token)
+    safe_limit = max(1, min(int(limit or 500), 500))
+    query = (
+        supabase.table('customers')
+        .select('public_id,name,updated_at')
+        .eq('business_id', device.get('business_id'))
+        .order('updated_at')
+        .limit(safe_limit)
+    )
+    since = str(updated_since or '').strip()
+    if since:
+        query = query.gt('updated_at', since)
+    try:
+        rows = query.execute().data or []
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    members = [
+        {
+            'public_id': row.get('public_id'),
+            'name': row.get('name') or 'Member',
+            'updated_at': row.get('updated_at'),
+        }
+        for row in rows
+        if row.get('public_id')
+    ]
+    cursor = members[-1].get('updated_at') if members else since or None
+    return {
+        'ok': True,
+        'count': len(members),
+        'updated_since': since or None,
+        'next_updated_since': cursor,
+        'members': members,
+        'sync_interval_seconds': 300,
+    }
+
+
 @app.post('/api/v1/companion/session/start')
 @app.post('/api/v1/pos-companion/session/start')
 def companion_session_start(
@@ -46594,6 +46639,32 @@ def _pos_offline_resolve_and_match(device: dict, event: POSCompanionOfflineEvent
                     error_message = 'Reservation belongs to a different branch.'
 
         external_tx = str(event.external_transaction_id or '').strip()
+        if not error_message and not external_tx and event.event_type == 'earn':
+            scanned_at = event.occurred_at if event.occurred_at.tzinfo else event.occurred_at.replace(tzinfo=timezone.utc)
+            expires_at = scanned_at + timedelta(seconds=int(POS_COMPANION_SESSION_TTL_SECONDS))
+            try:
+                supabase.table('pos_companion_sessions').insert({
+                    'device_id': device.get('id'),
+                    'business_id': business_id,
+                    'branch_id': branch_id,
+                    'integration_id': integration_id,
+                    'provider': device.get('provider') or 'storehub',
+                    'source_customer_public_id': customer.get('public_id'),
+                    'customer_id': (loyalty_customer or customer).get('id'),
+                    'customer_public_id': (loyalty_customer or customer).get('public_id'),
+                    'customer_name': customer.get('name'),
+                    'status': 'waiting_for_sale',
+                    'scanned_at': scanned_at.isoformat(),
+                    'expires_at': expires_at.isoformat(),
+                    'candidate_transactions': [],
+                    'result': {'offline_client_event_id': event.client_event_id},
+                    'created_at': datetime.now(timezone.utc).isoformat(),
+                    'updated_at': datetime.now(timezone.utc).isoformat(),
+                }).execute()
+            except Exception as exc:
+                raise _pos_schema_error(exc)
+            status = 'received'
+            error_message = 'Offline scan queued. It will match the StoreHub sale from the original scan time when the register is back online.'
         if not error_message:
             if not external_tx:
                 status = 'manual_match_required'
