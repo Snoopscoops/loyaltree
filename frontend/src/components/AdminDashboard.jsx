@@ -1365,10 +1365,11 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
           </div>
 
           {clientPerfError && <div style={styles.analyticsError}>{clientPerfError}</div>}
+          <CustomerObservationNotice />
           <div style={styles.analyticsMetricGrid}>
             <AnalyticsMetric label="Active clients" value={(clientPerformance?.client_count ?? 0).toLocaleString()} hint={`${clientPerformance?.summary?.trend_counts?.improving ?? 0} improving`} />
             <AnalyticsMetric label="Active members" value={(clientPerformance?.summary?.active_members ?? 0).toLocaleString()} hint={`across ${clientPerfDays} days`} />
-            <AnalyticsMetric label="Returning members" value={(clientPerformance?.summary?.returning_members ?? 0).toLocaleString()} hint={`${clientPerformance?.summary?.returning_rate ?? 0}% of active members`} />
+            <AnalyticsMetric label="Returning members" value={(clientPerformance?.summary?.returning_members ?? 0).toLocaleString()} hint={Number(clientPerformance?.summary?.active_members) > 0 ? `${formatReturningShare(clientPerformance?.summary?.returning_rate, clientPerformance?.summary?.active_members)} of active members` : 'Share unavailable — no active-member baseline'} />
             <AnalyticsMetric label="New members" value={(clientPerformance?.summary?.new_customers ?? 0).toLocaleString()} hint="joined in selected period" />
             <AnalyticsMetric label="Redemptions" value={(clientPerformance?.summary?.redemptions ?? 0).toLocaleString()} hint="recorded reward usage" />
             <AnalyticsMetric label="POS connected" value={(clientPerformance?.summary?.pos_connected_clients ?? 0).toLocaleString()} hint={`${clientPerformance?.summary?.pos_live_clients ?? 0} live`} />
@@ -1416,11 +1417,12 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                     <span style={{...styles.clientTrendBadge,...clientTrendStyle(row.trend)}}>{clientTrendLabel(row.trend)}</span>
                   </div>
                   <div style={styles.clientSourceBadge}>● {source}</div>
+                  <CustomerAnalyticsMilestone milestone={row.analytics_activation} />
                   <div style={styles.clientMetricGrid}>
                     <ClientMetric label="Active" value={crm.active_members||0} />
                     <ClientMetric label="New" value={crm.new_customers||0} />
                     <ClientMetric label="Returning" value={crm.returning_members||0} />
-                    <ClientMetric label="Returning share" value={`${crm.returning_rate||0}%`} />
+                    <ClientMetric label="Returning share" value={formatReturningShare(crm.returning_rate, crm.active_members)} />
                     <ClientMetric label="Activity" value={activity.events||0} />
                     <ClientMetric label="Redemptions" value={activity.redemptions||0} />
                   </div>
@@ -2546,12 +2548,13 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
             <p style={styles.presentationSubtitle}>
               Aggregated LoyaltyTree client activity. Metrics are based on recorded loyalty/card activity unless a live POS connection is explicitly identified.
             </p>
+            <CustomerObservationNotice />
 
             <div style={styles.presentationMetricGrid}>
               <PresentationMetric label="Clients in view" value={presentationSummary.clients} />
               <PresentationMetric label="Active members" value={presentationSummary.active_members.toLocaleString()} />
               <PresentationMetric label="Returning members" value={presentationSummary.returning_members.toLocaleString()} />
-              <PresentationMetric label="Returning-member share" value={`${presentationSummary.returning_rate}%`} />
+              <PresentationMetric label="Returning-member share" value={formatReturningShare(presentationSummary.returning_rate, presentationSummary.active_members)} />
               <PresentationMetric label="New members" value={presentationSummary.new_customers.toLocaleString()} />
               <PresentationMetric label="Reward redemptions" value={presentationSummary.redemptions.toLocaleString()} />
             </div>
@@ -2579,8 +2582,9 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                       </div>
                       <span style={{...styles.clientTrendBadge,...clientTrendStyle(row.trend)}}>{clientTrendLabel(row.trend)}</span>
                     </div>
+                    <CustomerAnalyticsMilestone milestone={row.analytics_activation} />
                     <div style={styles.presentationEvidenceRow}><span>Active members</span><b>{crm.active_members||0}</b></div>
-                    <div style={styles.presentationEvidenceRow}><span>Returning share</span><b>{crm.returning_rate||0}%</b></div>
+                    <div style={styles.presentationEvidenceRow}><span>Returning share</span><b>{formatReturningShare(crm.returning_rate, crm.active_members)}</b></div>
                     <div style={styles.presentationEvidenceRow}><span>New members</span><b>{crm.new_customers||0}</b></div>
                     <div style={styles.presentationEvidenceRow}><span>Redemptions</span><b>{activity.redemptions||0}</b></div>
                   </div>
@@ -2682,6 +2686,48 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   )
 }
 
+
+function formatReturningShare(rate, activeMembers) {
+  if (!(Number(activeMembers) > 0) || rate == null || !Number.isFinite(Number(rate))) return '—'
+  return `${Number(rate)}%`
+}
+
+function CustomerObservationNotice() {
+  return <aside aria-label="Customer analytics observation status" style={{background:'#fffbeb',border:'1px solid #fde68a',borderRadius:14,padding:'16px 18px',marginBottom:18,color:'#78350f',fontSize:12,lineHeight:1.6}}>
+    <strong style={{display:'block',fontSize:13,marginBottom:6}}>Under observation — first month of data collection</strong>
+    <p style={{margin:'0 0 8px'}}>These figures reflect early recorded LoyaltyTree activity and are not yet established customer trends.</p>
+    <ul style={{margin:0,paddingLeft:18}}>
+      <li><b>Analytics activation:</b> Reached after more than 10 registered members (11 minimum). The date comes from retained signup records, may change after deletions, and is separate from subscription activation.</li>
+      <li><b>Monthly retention: Pending.</b> Needs two complete months of recorded activity per business. Returning-member share below is a separate measure, not monthly retention.</li>
+      <li>Peak-hour and demographic patterns, when available, are preliminary and may change as more data comes in.</li>
+      <li>Member growth and activity counts show the actual recorded numbers.</li>
+    </ul>
+  </aside>
+}
+
+function customerMilestoneText(milestone) {
+  if (!milestone || milestone.status === 'unavailable') {
+    return {title: 'Analytics activation: data unavailable', detail: 'Refresh when member records are available.'}
+  }
+  const minimum = milestone.minimum_members || 11
+  const count = Number(milestone.total_members)
+  if (milestone.status === 'under_observation') {
+    return {title: 'Under observation — awaiting member milestone', detail: `${count.toLocaleString()} / ${minimum} registered members · Activation date pending`}
+  }
+  const date = milestone.reached_at ? new Date(milestone.reached_at) : null
+  const label = date && Number.isFinite(date.getTime())
+    ? new Intl.DateTimeFormat('en-GB', {day:'numeric',month:'short',year:'numeric',timeZone:'UTC'}).format(date) + ' (UTC)'
+    : 'Date not recorded'
+  return {title: `Analytics activation: ${label}`, detail: `${minimum}-member milestone reached · ${count.toLocaleString()} registered members now · Under observation`}
+}
+
+function CustomerAnalyticsMilestone({milestone}) {
+  const {title, detail} = customerMilestoneText(milestone)
+  return <div style={{background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:10,padding:'10px 12px',margin:'10px 0',fontSize:11.5,lineHeight:1.5}}>
+    <div style={{fontWeight:750,color:'#0f172a'}}>{title}</div>
+    <div style={{color:'#64748b',marginTop:2}}>{detail}</div>
+  </div>
+}
 
 function AnalyticsMetric({label,value,hint}) {
   return <div style={styles.analyticsMetricCard}>

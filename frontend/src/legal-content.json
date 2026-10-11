@@ -567,7 +567,7 @@
         ],
         [
           "Pro",
-          "Growth + compatible POS integration",
+          "Growth + compatible POS integration; geo-based notifications included for UAE Pro",
           "7",
           "Unlimited",
           "Chat and call customer service"
@@ -580,15 +580,15 @@
           "As quoted"
         ]
       ],
-      "version": "2026-10-11-v4"
+      "version": "2026-10-11-v5"
     }
   },
   "versions": {
-    "business_agreement": "2026-10-11-v4",
+    "business_agreement": "2026-10-11-v5",
     "terms": "2026-10-11-v2",
     "privacy": "2026-10-11-v2",
     "dpa": "2026-10-11-v2",
-    "presentation": "2026-10-11-v1",
+    "presentation": "2026-10-11-v2",
     "membership_notice": "2026-10-11-v3"
   }
 }

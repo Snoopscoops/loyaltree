@@ -131,7 +131,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
   const [retentionSettingsMessage, setRetentionSettingsMessage] = useState('')
   const [automationStats, setAutomationStats] = useState({ tracking: 'log', birthday: {}, win_back: {}, recent: [] })
   const [redemptionDrilldown, setRedemptionDrilldown] = useState({ open: false, loading: false, error: '', rows: [], total: 0 })
-  const [geofence, setGeofence] = useState({ enabled: false, message: "You're near us. Open your LoyaltyTree card.", radius_meters: 150, max_per_day: 1, max_per_week: 3, pins: [], branches: [], limits: { min_radius_meters: 100, max_radius_meters: 1000, max_pins: 10 } })
+  const [geofence, setGeofence] = useState({ feature_enabled: false, access_message: 'Geo-based notifications are included in UAE Pro or an agreed Special setup.', enabled: false, message: "You're near us. Open your LoyaltyTree card.", radius_meters: 150, max_per_day: 1, max_per_week: 3, pins: [], branches: [], limits: { min_radius_meters: 100, max_radius_meters: 1000, max_pins: 10 } })
   const [geofenceStatus, setGeofenceStatus] = useState('')
   const [savingGeofence, setSavingGeofence] = useState(false)
 
@@ -224,6 +224,8 @@ function AnalyticsDashboard({ API_BASE, user }) {
       const data = await res.json().catch(() => ({}))
       if (!res.ok) return
       setGeofence({
+        feature_enabled: data.feature_enabled === true,
+        access_message: data.access_message || 'Geo-based notifications are included in UAE Pro or an agreed Special setup.',
         enabled: !!data.enabled,
         message: data.message || "You're near us. Open your LoyaltyTree card.",
         radius_meters: data.radius_meters || 150,
@@ -1646,10 +1648,11 @@ function AnalyticsDashboard({ API_BASE, user }) {
                 <div style={styles.mutedText}>Pin the branch, set the radius, then write the lock-screen message. Apple shows it when the saved card is nearby. Google gets the same pin as a merchant location.</div>
               </div>
               <label style={styles.checkboxLabel}>
-                <input type="checkbox" checked={geofence.enabled === true} onChange={e=>setGeofence(s=>({...s,enabled:e.target.checked}))} />
+                <input type="checkbox" disabled={!geofence.feature_enabled} checked={geofence.enabled === true} onChange={e=>setGeofence(s=>({...s,enabled:e.target.checked}))} />
                 {geofence.enabled ? 'On' : 'Off'}
               </label>
             </div>
+            {geofence.feature_enabled ? <>
             <label style={styles.editorLabel}>Notification message</label>
             <input style={styles.editorInput} maxLength={120} value={geofence.message || ''} onChange={e=>setGeofence(s=>({...s,message:e.target.value}))} />
             <div style={styles.formGrid2}>
@@ -1688,6 +1691,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
               <button type="button" style={styles.actionBtnCompact} onClick={()=>setGeofence(s=>({...s,pins:[...(s.pins||[]),{branch_public_id:'',label:'',message:s.message||'',latitude:'',longitude:''}]}))} disabled={(geofence.pins||[]).length >= Math.min(geofence.limits?.max_pins || 1, (geofence.branches || []).length || 1)}>Add branch location</button>
             </div>
             {geofenceStatus && <div style={{marginTop:10,fontSize:13,fontWeight:700,color:geofenceStatus.startsWith('Saved')?'#166534':'#b91c1c'}}>{geofenceStatus}</div>}
+            </> : <p style={styles.mutedText}>{geofence.access_message}</p>}
           </div>
           </div>
         </div>

@@ -176,6 +176,12 @@ priceButtons.forEach(button=>button.disabled=true);
   }
   if(!active)return;
   pricingContext=data;tiers=next;pricingReady=true;
+  const geoFeature=document.querySelector('[data-uae-pro-geofence]');
+  geoFeature.hidden=!(data.country_code==='AE'&&data.plans.pro.geofence_notifications===true);
+  geoFeature.style.display=geoFeature.hidden?'none':'';
+  const giftFeature=document.querySelector('[data-feature="gift_cards"]');
+  giftFeature.hidden=data.plans.growth.gift_cards!==true;
+  giftFeature.style.display=giftFeature.hidden?'none':'';
   $('pricingRegionLabel').textContent=`${data.country_name} pricing · ${data.currency}`;
   document.querySelector('[data-cycle="1"]').hidden=data.country_code==='PH';
   $('pricingStatus').textContent=data.country_code==='PH'?'Minimum 3 months. Prices are confirmed during signup.':'Prices for your market. Prices are confirmed during signup.';

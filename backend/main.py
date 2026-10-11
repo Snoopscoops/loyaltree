@@ -270,7 +270,7 @@ SUBSCRIPTION_PLANS = {
         'max_loyalty_cards': 1,
         'win_back': False,
         'max_branches': 10,
-        'geofence_notifications': True,
+        'geofence_notifications': False,
         # Growth-tier product modules. Starter cannot create/edit these.
         'hybrid_cards': False,
         'gift_cards': False,
@@ -291,7 +291,7 @@ SUBSCRIPTION_PLANS = {
         'max_loyalty_cards': 2,
         'win_back': True,
         'max_branches': 10,
-        'geofence_notifications': True,
+        'geofence_notifications': False,
         'hybrid_cards': True,
         'gift_cards': True,
         'pos_integration': False,
@@ -311,7 +311,7 @@ SUBSCRIPTION_PLANS = {
         'max_loyalty_cards': 3,
         'win_back': True,
         'max_branches': 10,
-        'geofence_notifications': True,
+        'geofence_notifications': False,
         # Pro inherits Growth product modules and includes POS Integration.
         'hybrid_cards': True,
         'gift_cards': True,
@@ -332,7 +332,7 @@ PRICING_REGIONS = {
     'US': {'country_name':'United States','currency':'USD','symbol':'$','locale':'en-US','plans':{'starter':15,'growth':39,'pro':69}},
     'NZ': {'country_name':'New Zealand','currency':'NZD','symbol':'NZ$','locale':'en-NZ','plans':{'starter':19,'growth':39,'pro':69}},
     'MY': {'country_name':'Malaysia','currency':'MYR','symbol':'RM','locale':'en-MY','plans':{'starter':49,'growth':79,'pro':119}},
-    'AE': {'country_name':'United Arab Emirates','currency':'AED','symbol':'AED ','locale':'en-AE','plans':{'starter':150,'growth':150,'pro':150}},
+    'AE': {'country_name':'United Arab Emirates','currency':'AED','symbol':'AED ','locale':'en-AE','plans':{'starter':120,'growth':135,'pro':150}},
     # Australia: GST-inclusive monthly rates. 3-month checkout is monthly x 3
     # (A$78 / A$150 / A$249). Gift cards and the physical QR kit stay PH-only.
     'AU': {'country_name':'Australia','currency':'AUD','symbol':'A$','locale':'en-AU','plans':{'starter':26,'growth':50,'pro':83}},
@@ -397,11 +397,24 @@ def fx_to_php(amount: float, currency: str) -> tuple[float,float]:
     rate=float(_fx_to_php_map().get(str(currency or 'PHP').upper(),1.0))
     return round(float(amount or 0)*rate,2), rate
 
-def get_plan_features(plan: Optional[str]) -> dict:
+def get_plan_features(plan: Optional[str], pricing_region: Optional[str] = None) -> dict:
     """Feature/limit config for a plan name, falling back to Starter for an
     unrecognized or missing plan so a bad value never silently unlocks
     Pro-only features."""
-    return SUBSCRIPTION_PLANS.get(plan or 'starter', SUBSCRIPTION_PLANS['starter'])
+    features = dict(SUBSCRIPTION_PLANS.get(plan or 'starter', SUBSCRIPTION_PLANS['starter']))
+    code = normalize_country_code(pricing_region)
+    features['geofence_notifications'] = code == 'AE' and plan == 'pro'
+    if code != 'PH':
+        features['gift_cards'] = False
+    return features
+
+def business_plan_features(business: Optional[dict]) -> dict:
+    row = business or {}
+    features = get_plan_features(row.get('plan'), business_pricing_region(row))
+    # Special agreements are provisioned by admins, not by owner signup.
+    if str(row.get('billing_mode') or '').strip().lower() == 'special':
+        features['geofence_notifications'] = True
+    return features
 
 def business_has_plan_feature(business: dict, feature: str) -> bool:
     """Central plan gate for product modules.
@@ -409,9 +422,7 @@ def business_has_plan_feature(business: dict, feature: str) -> bool:
     Hybrid and Gift Cards are Growth-tier features. Pro inherits Growth
     features. Unknown plans fall back to Starter via get_plan_features().
     """
-    if feature == 'gift_cards' and business_pricing_region(business) != 'PH':
-        return False
-    return bool(get_plan_features((business or {}).get('plan')).get(feature, False))
+    return bool(business_plan_features(business).get(feature, False))
 
 def get_effective_announcement_limit(business: dict) -> Optional[int]:
     """Announcements included in one paid subscription cycle.
@@ -697,7 +708,7 @@ def subscription_plans_payload(pricing_region: str = 'PH') -> dict:
     code=normalize_country_code(pricing_region)
     payload = {}
     for key, plan in SUBSCRIPTION_PLANS.items():
-        item = dict(plan)
+        item = get_plan_features(key, code)
         monthly_tiers = price_tiers_for_region(key, code)
         item['price_month']=monthly_tiers['1']
         item['price_tiers']=monthly_tiers
@@ -1656,6 +1667,9 @@ def build_signup_agreement_document(*, name: str, email: str, phone: Optional[st
     selected_features = next((row for row in _LEGAL_CONTENT['documents']['business-agreement']['plans']
                               if row[0].lower() == plan.lower()), None)
     if selected_features:
+        selected_features = list(selected_features)
+        if plan == 'pro' and pricing_region == 'AE':
+            selected_features[1] = 'Growth + compatible POS integration + geo-based notifications'
         sections.append({
             'title': 'Selected plan feature summary',
             'paragraphs': [f'{selected_features[0]}: {selected_features[1]}. '
@@ -6094,7 +6108,7 @@ def business_summary(biz: dict) -> dict:
         "status": biz.get("status", "PENDING"),
         "plan": plan,
         "plan_label": SUBSCRIPTION_PLANS.get(plan, {}).get("label", plan),
-        "plan_features": get_plan_features(plan),
+        "plan_features": business_plan_features(biz),
         "announcement_limit_adjustment": biz.get("announcement_limit_adjustment") or 0,
         "announcements_per_month_effective": get_effective_announcement_limit(biz),
         "branch_count": branch_count,
@@ -21692,7 +21706,7 @@ async def get_plan_info(public_id: str):
         raise HTTPException(status_code=404, detail="Business not found")
 
     plan = business.get('plan', 'starter')
-    features = get_plan_features(plan)
+    features = business_plan_features(business)
     limit = get_effective_announcement_limit(business)
     cycle_start = get_announcement_cycle_start(business)
 
@@ -39944,6 +39958,52 @@ def _admin_period_change(current: int, previous: int):
     return round(((current - previous) / previous) * 100, 1)
 
 
+def _admin_customer_milestone(business_id) -> dict:
+    """Infer the 11-member milestone from retained signups, not billing status.
+
+    Exact count and the earliest 11 timestamps avoid the CRM dataset's row cap.
+    Unknown timestamps sort first so we never guess the date when an earlier
+    registration could be missing. Deletions can change this derived milestone;
+    it is deliberately not represented as an immutable activation audit record.
+    """
+    milestone = {
+        'minimum_members': 11,
+        'total_members': None,
+        'status': 'unavailable',
+        'reached_at': None,
+        'date_status': 'unavailable',
+        'source': 'retained_member_signup_records',
+        'time_zone': 'UTC',
+    }
+    try:
+        response = (
+            supabase.table('customers')
+            .select('created_at', count='exact')
+            .eq('business_id', business_id)
+            .order('created_at', desc=False, nullsfirst=True)
+            .limit(11)
+            .execute()
+        )
+        if response.count is None:
+            return milestone
+        total = int(response.count)
+        milestone['total_members'] = total
+        if total < 11:
+            milestone.update(status='under_observation', date_status='pending')
+            return milestone
+        milestone.update(status='milestone_reached', date_status='not_recorded')
+        dates = [_parse_ts(row.get('created_at')) for row in (response.data or [])]
+        if len(dates) == 11 and all(date is not None for date in dates):
+            milestone.update(
+                reached_at=sorted(dates)[10].replace(tzinfo=timezone.utc).isoformat(),
+                date_status='derived',
+            )
+    except Exception:
+        # Keep the rest of a client's report available if this query fails.
+        pass
+    return milestone
+
+
 def _admin_client_performance_record(business: dict, days: int) -> dict:
     """Summarize one client's loyalty/CRM movement without exposing customer PII.
 
@@ -40137,6 +40197,7 @@ def _admin_client_performance_record(business: dict, days: int) -> dict:
         'plan': business.get('plan') or 'starter',
         'logo_url': business.get('logo_url'),
         'days': days,
+        'analytics_activation': _admin_customer_milestone(business_id),
         'data_source': 'loyalty_tree_plus_pos' if pos_connected else 'loyalty_tree_activity',
         'pos': {
             'connected': pos_connected,
@@ -40255,6 +40316,7 @@ async def admin_client_performance(
             'non_pos': 'Loyalty activity only: joins, recorded loyalty transactions, visits, rewards and redemptions. It is not presented as sales or revenue.',
             'pos': 'POS connection status is shown separately. Sales/revenue claims should only be used when the provider is live and transaction values are verified.',
             'returning_member': 'Active in the selected period and has earlier recorded loyalty activity.',
+            'analytics_activation': 'More than 10 registered members (11 minimum). Date is derived from retained member signup records in UTC and may change after records are deleted. This is not subscription activation or proof of monthly retention.',
             'at_risk': 'CRM segment is at_risk, inactive_60 or inactive_90 using LoyaltyTree activity history.',
         },
     }
@@ -47907,6 +47969,8 @@ def _geofence_load(business: dict) -> dict:
 
 
 def apple_geofence_locations(business: dict) -> list:
+    if not business_has_plan_feature(business, 'geofence_notifications'):
+        return []
     config = _geofence_public(_geofence_load(business or {}))
     if not config.get('enabled'):
         return []
@@ -47932,7 +47996,13 @@ def get_geofence_config(public_id: str, authorization: str = Header(default=''))
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail='Business not found')
-    return _geofence_public(_geofence_load(business), _geofence_branch_rows(business.get('id')))
+    available = business_has_plan_feature(business, 'geofence_notifications')
+    return {
+        **_geofence_public(_geofence_load(business), _geofence_branch_rows(business.get('id'))),
+        'feature_enabled': available,
+        'pricing_region': business_pricing_region(business),
+        'access_message': 'Geo-based notifications are included in UAE Pro or an agreed Special setup.',
+    }
 
 
 @app.put('/api/v1/business/{public_id}/geofence')
@@ -47942,7 +48012,7 @@ def save_geofence_config(public_id: str, payload: GeofenceConfigUpdate, authoriz
     if not business:
         raise HTTPException(status_code=404, detail='Business not found')
     if not business_has_plan_feature(business, 'geofence_notifications'):
-        raise HTTPException(status_code=403, detail='Nearby notifications are not included in this plan.')
+        raise HTTPException(status_code=403, detail='Geo-based notifications require UAE Pro or an agreed Special setup.')
     if payload.max_per_week < payload.max_per_day:
         raise HTTPException(status_code=400, detail='Weekly cap cannot be lower than the daily cap.')
     if payload.enabled and not payload.pins:
@@ -47988,6 +48058,11 @@ def save_geofence_config(public_id: str, payload: GeofenceConfigUpdate, authoriz
 def resolve_geofence_link(public_id: str, payload: dict, authorization: str = Header(default='')):
     """Turn a Google Maps share link into a pin. Short links have no coordinates."""
     require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    if not business_has_plan_feature(business, 'geofence_notifications'):
+        raise HTTPException(status_code=403, detail='Geo-based notifications require UAE Pro or an agreed Special setup.')
     raw = str((payload or {}).get('url') or '').strip()
     if not raw:
         raise HTTPException(status_code=400, detail='Paste a Google Maps link.')
@@ -48043,6 +48118,8 @@ def test_geofence_notification(public_id: str, authorization: str = Header(defau
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail='Business not found')
+    if not business_has_plan_feature(business, 'geofence_notifications'):
+        raise HTTPException(status_code=403, detail='Geo-based notifications require UAE Pro or an agreed Special setup.')
     config = _geofence_load(business)
     if not config.get('enabled') or not config.get('pins'):
         raise HTTPException(status_code=400, detail='Save an enabled pin before sending a test.')

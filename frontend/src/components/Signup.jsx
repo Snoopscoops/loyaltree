@@ -85,6 +85,7 @@ function planHighlights(planData) {
   const items = []
   if (planData.hybrid_cards) items.push('Hybrid Cards')
   if (planData.gift_cards) items.push('Gift Cards')
+  if (planData.geofence_notifications) items.push('Geo-based notifications')
   return items
 }
 
