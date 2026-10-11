@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import logo192 from './logo-192.png'
 import { trackEvent } from '../analytics'
+import { sendBusinessInquiry } from './businessInquiry'
 import { COUNTRY_OPTIONS, formatMoney } from './currency'
 import customerStep1Scan from '../assets/customer-step-1-scan.png'
 import customerStep2Form from '../assets/customer-step-2-form.png'
@@ -144,6 +145,9 @@ function pricingAmount(monthlyAmount, billingCycle) {
 
 function PublicInfoPage({ type='overview', API_BASE='' }) {
   const navigate = useNavigate()
+  const companyPage = type === 'about' || type === 'contact'
+  const s = companyPage ? companyStyles : baseStyles
+  const inquiryRequest = useRef(null)
   const page = PAGE_CONTENT[type] || PAGE_CONTENT.overview
   const [customerStep, setCustomerStep] = useState(0)
   const [businessStep, setBusinessStep] = useState(0)
@@ -151,29 +155,48 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
   const [inquiry, setInquiry] = useState({ name:'', business_name:'', business_type:'', address:'', current_system:'', card_interest:'', phone:'', email:'', message:'', website:'' })
   const [inquiryStatus, setInquiryStatus] = useState({ state:'idle', error:'' })
 
+  useEffect(() => {
+    setInquiryStatus({ state:'idle', error:'' })
+    return () => { inquiryRequest.current?.abort(); inquiryRequest.current = null }
+  }, [type])
+
+  useEffect(() => {
+    const previousTitle = document.title
+    document.title = `${type === 'about' ? 'About Us' : type === 'contact' ? 'Contact Us' : page.eyebrow} | LoyaltyTree`
+    window.scrollTo(0, 0)
+    setMobileMenuOpen(false)
+    return () => { document.title = previousTitle }
+  }, [type])
+
   const submitInquiry = async (e) => {
     e.preventDefault()
-    if (inquiryStatus.state === 'sending') return
+    if (inquiryRequest.current) return
+    const controller = new AbortController()
+    inquiryRequest.current = controller
     setInquiryStatus({ state:'sending', error:'' })
+    const timeout = window.setTimeout(() => controller.abort('timeout'), 60000)
     const q = new URLSearchParams(window.location.search)
     const base = (API_BASE || import.meta.env.VITE_API_BASE_URL || 'https://api.theloyaltytree.com').replace(/\/$/, '')
     try {
-      const res = await fetch(`${base}/api/v1/public/business-inquiry`, {
-        method:'POST',
-        headers:{ 'Content-Type':'application/json' },
-        body: JSON.stringify({
-          ...inquiry,
-          source: q.get('ref') || q.get('utm_source') || 'direct',
-          source_business: q.get('biz') || null,
-          page: `public-${type}`,
-        }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Could not send. Please check your details and try again.')
-      trackEvent(API_BASE, 'business_inquiry_submit', { page_name: `Public Info - ${type}`, metadata: { source: q.get('ref') || 'direct' } })
-      setInquiryStatus({ state:'sent', error:'' })
+      await sendBusinessInquiry(base, {
+        ...inquiry,
+        source: q.get('ref') || q.get('utm_source') || 'direct',
+        source_business: q.get('biz') || null,
+        page: `public-${type}`,
+      }, controller.signal)
+      if (!controller.signal.aborted) {
+        setInquiryStatus({ state:'sent', error:'' })
+        trackEvent(API_BASE, 'business_inquiry_submit', { page_name: `Public Info - ${type}`, metadata: { source: q.get('ref') || 'direct' } })
+      }
     } catch (err) {
-      setInquiryStatus({ state:'error', error: err.message || 'Could not send. Please try again.' })
+      if (!controller.signal.aborted || controller.signal.reason === 'timeout') {
+        setInquiryStatus({ state:'error', error: controller.signal.aborted
+          ? 'Receipt could not be confirmed in time. Please email theloyaltytree@gmail.com before trying again.'
+          : err.message || 'Could not send. Please try again.' })
+      }
+    } finally {
+      window.clearTimeout(timeout)
+      if (inquiryRequest.current === controller) inquiryRequest.current = null
     }
   }
   const [pricingBranchTier, setPricingBranchTier] = useState('1')
@@ -208,9 +231,10 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
   }
 
   useEffect(() => {
+    if (type !== 'overview' && type !== 'start') return
     const requestedCountry = new URLSearchParams(window.location.search).get('country')
     loadPricingContext(requestedCountry || undefined)
-  }, [API_BASE])
+  }, [API_BASE, type])
 
   const changePricingCountry = (countryCode) => {
     loadPricingContext(countryCode)
@@ -252,6 +276,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
       metadata: { placement: 'public_info_navigation' },
     })
     setMobileMenuOpen(false)
+    if (companyPage) { navigate('/#pricing'); return }
     if (type === 'overview') {
       window.history.replaceState(null, '', '/how-it-works#pricing')
       window.requestAnimationFrame(() => {
@@ -272,6 +297,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
         currency: pricingContext.currency,
       },
     })
+    if (companyPage) { navigate('/signup'); return }
     navigate(`/signup?country=${encodeURIComponent(pricingContext.country_code || 'PH')}&billing_cycle=${encodeURIComponent(pricingBillingCycle)}`)
   }
 
@@ -446,8 +472,18 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
     setCustomerStep(safeIndex)
   }
 
-  return <div style={s.page}>
+  return <div className={companyPage ? "lt-company" : undefined} style={s.page}>
     <style>{`
+      .lt-company button, .lt-company input, .lt-company select, .lt-company textarea { font-family:inherit; }
+      .lt-company :focus-visible { outline:3px solid #b18c52; outline-offset:4px; }
+      .lt-company .public-nav { max-width:1280px; margin:auto; }
+      .lt-company .public-links.mobile-open { background:#073f36; border-color:#315e52; }
+      .lt-company .company-contact-grid { grid-template-columns:repeat(2,minmax(0,1fr)) !important; max-width:850px !important; }
+      @media(max-width:600px) {
+        .lt-company .company-contact-grid { grid-template-columns:1fr !important; }
+        .lt-company .public-login-desktop { display:none; }
+        .lt-company .public-mobile-toggle { margin-left:auto; }
+      }
       .public-nav { display:flex; align-items:center; width:100%; max-width:none; gap:18px; }
       .public-links { display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap; margin-left:auto; }
       .public-login-desktop { margin-left:8px; flex:0 0 auto; }
@@ -1127,7 +1163,52 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
               </div>}
             </div>
           </>}
-          <button style={s.primary} onClick={()=>contactLoyaltyTree('pricing_or_cta')}>Contact LoyaltyTree</button>
+          <button style={s.primary} onClick={()=>navigate('/contact')}>Contact LoyaltyTree</button>
+        </div>
+      </section>}
+
+      {page.contact && <section style={s.section}>
+        <div style={s.contactIntroCard}>
+          <span style={s.contactKicker}>LET'S CONNECT</span>
+          <h2 style={s.contactHeading}>Talk directly with LoyaltyTree.</h2>
+          <p style={s.contactLead}>For business onboarding, product questions, support, partnerships, or general inquiries, use any of the contact channels below.</p>
+        </div>
+
+        <div className={companyPage ? "company-contact-grid" : undefined} style={s.contactGrid}>
+          <div style={s.contactCard}>
+            <div style={s.contactIconBox}>🏢</div>
+            <div>
+              <div style={s.contactLabel}>BUSINESS</div>
+              <div style={s.contactValue}>LoyaltyTree Information Technology Solutions</div>
+              <div style={s.contactMeta}>Isabela, Philippines</div>
+            </div>
+          </div>
+
+          <div style={s.contactCard}>
+            <div style={s.contactIconBox}>📱</div>
+            <div>
+              <div style={s.contactLabel}>MOBILE NUMBER</div>
+              <a href="tel:+639397992144" style={s.contactValue}>+63 939 799 2144</a>
+              <div style={s.contactMeta}>Smart</div>
+            </div>
+          </div>
+
+          <div style={s.contactCard}>
+            <div style={s.contactIconBox}>✉️</div>
+            <div>
+              <div style={s.contactLabel}>EMAIL</div>
+              <a href="mailto:theloyaltytree@gmail.com" style={s.contactValue}>theloyaltytree@gmail.com</a>
+            </div>
+          </div>
+
+          <div style={s.contactCard}>
+            <div style={s.contactIconBox}>🤝</div>
+            <div>
+              <div style={s.contactLabel}>BUSINESS & PARTNERSHIPS</div>
+              <div style={s.contactText}>Interested in LoyaltyTree for your business or in becoming a city or regional partner?</div>
+              <button style={{...s.secondary,marginTop:14}} onClick={openMessenger}>Message LoyaltyTree</button>
+            </div>
+          </div>
         </div>
       </section>}
 
@@ -1137,7 +1218,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
             <div style={{textAlign:'center',padding:'12px 0'}}>
               <div style={{fontSize:42}}>✅</div>
               <h2 style={{...s.contactHeading,fontSize:26}}>Thank you! We got your message.</h2>
-              <p style={s.contactLead}>We will contact you within 24 hours using the details you gave.</p>
+              <p style={s.contactLead}>Our team will get back to you using the details you provided.</p>
               <button type="button" onClick={()=>applyBusiness('inquiry_thank_you')} style={{...s.primary,marginTop:18}}>Don't want to wait? Sign up your business now →</button>
             </div>
           ) : (
@@ -1150,10 +1231,10 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
               <button type="button" onClick={()=>applyBusiness('inquiry_signup_now')} style={{...s.primary,whiteSpace:'nowrap'}}>Sign up your business now →</button>
             </div>
             <div style={s.orDivider}><span>or let us contact you</span></div>
-            <form onSubmit={submitInquiry}>
+            <form onSubmit={submitInquiry} aria-busy={inquiryStatus.state === 'sending'}>
               <span style={s.contactKicker}>GET STARTED</span>
               <h2 style={{...s.contactHeading,fontSize:'clamp(22px,3.5vw,30px)',margin:'8px 0 6px'}}>Tell us about your business</h2>
-              <p style={{...s.contactLead,marginBottom:18}}>It takes a minute. We will reach out within 24 hours.</p>
+              <p style={{...s.contactLead,marginBottom:18}}>Share your details and our team will help you get started.</p>
               <div style={s.inquiryGrid}>
                 <label style={s.inquiryLabel}>Your name *
                   <input style={s.inquiryInput} required minLength={2} maxLength={120} value={inquiry.name} onChange={e=>setInquiry(v=>({...v,name:e.target.value}))} autoComplete="name" />
@@ -1194,6 +1275,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
                 {/* Honeypot: hidden from people, bots fill it in */}
                 <input tabIndex={-1} autoComplete="off" aria-hidden="true" value={inquiry.website} onChange={e=>setInquiry(v=>({...v,website:e.target.value}))} style={{position:'absolute',left:'-9999px',width:1,height:1,opacity:0}} />
               </div>
+              <p style={{fontSize:12,color:'#64748b',lineHeight:1.6}}>We use these details to respond to your inquiry. <a href="/privacy" onClick={e=>{e.preventDefault();navigate('/privacy')}}>Read our Privacy Policy.</a></p>
               <div style={{fontSize:12,color:'#64748b',margin:'4px 0 14px'}}>* Please give a mobile number or an email so we can reach you.</div>
               {inquiryStatus.state === 'error' && <div role="alert" style={{color:'#b91c1c',fontSize:13,fontWeight:700,marginBottom:12}}>{inquiryStatus.error}</div>}
               <button type="submit" disabled={inquiryStatus.state === 'sending'} style={{...s.primary,width:'100%',opacity:inquiryStatus.state === 'sending' ? .7 : 1}}>
@@ -1205,50 +1287,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
         </div>
       </section>}
 
-      {page.contact && <section style={s.section}>
-        <div style={s.contactIntroCard}>
-          <span style={s.contactKicker}>LET'S CONNECT</span>
-          <h2 style={s.contactHeading}>Talk directly with LoyaltyTree.</h2>
-          <p style={s.contactLead}>For business onboarding, product questions, support, partnerships, or general inquiries, use any of the contact channels below.</p>
-        </div>
 
-        <div style={s.contactGrid}>
-          <div style={s.contactCard}>
-            <div style={s.contactIconBox}>🏢</div>
-            <div>
-              <div style={s.contactLabel}>BUSINESS</div>
-              <div style={s.contactValue}>LoyaltyTree Information Technology Solutions</div>
-              <div style={s.contactMeta}>Isabela, Philippines</div>
-            </div>
-          </div>
-
-          <div style={s.contactCard}>
-            <div style={s.contactIconBox}>📱</div>
-            <div>
-              <div style={s.contactLabel}>MOBILE NUMBER</div>
-              <a href="tel:+639397992144" style={s.contactValue}>0939 799 2144</a>
-              <div style={s.contactMeta}>Smart</div>
-            </div>
-          </div>
-
-          <div style={s.contactCard}>
-            <div style={s.contactIconBox}>✉️</div>
-            <div>
-              <div style={s.contactLabel}>EMAIL</div>
-              <a href="mailto:theloyaltytree@gmail.com" style={s.contactValue}>theloyaltytree@gmail.com</a>
-            </div>
-          </div>
-
-          <div style={s.contactCard}>
-            <div style={s.contactIconBox}>🤝</div>
-            <div>
-              <div style={s.contactLabel}>BUSINESS & PARTNERSHIPS</div>
-              <div style={s.contactText}>Interested in LoyaltyTree for your business or in becoming a city or regional partner?</div>
-              <button style={{...s.secondary,marginTop:14}} onClick={openMessenger}>Message LoyaltyTree</button>
-            </div>
-          </div>
-        </div>
-      </section>}
     </main>
 
     <footer style={s.footer}>
@@ -1258,6 +1297,8 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
         <span>© {new Date().getFullYear()} LoyaltyTree. All rights reserved.</span>
       </div>
       <div style={s.footerActions}>
+        <button onClick={()=>navigate('/about')} style={s.footerLink}>About Us</button>
+        <button onClick={()=>navigate('/contact')} style={s.footerLink}>Contact Us</button>
         <button onClick={()=>navigate('/privacy')} style={s.footerLink}>Privacy</button>
         <button onClick={()=>navigate('/terms')} style={s.footerLink}>Terms</button>
         <button onClick={()=>navigate('/business-agreement')} style={s.footerLink}>Business Agreement</button>
@@ -1267,7 +1308,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
   </div>
 }
 
-const s={
+const baseStyles={
   page:{minHeight:'100vh',background:'#fff',fontFamily:'-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',color:'#0f172a'},
   header:{position:'sticky',top:0,zIndex:50,background:'rgba(255,255,255,.96)',backdropFilter:'blur(12px)',borderBottom:'1px solid #e2e8f0',padding:'14px clamp(16px,4vw,54px)'},
   brand:{display:'flex',alignItems:'center',gap:9,border:0,background:'transparent',padding:0,cursor:'pointer'},
@@ -1521,5 +1562,36 @@ const s={
   footerActions:{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'},
   footerLink:{border:0,background:'transparent',color:'#0f766e',fontWeight:800,cursor:'pointer'},
 }
+
+// Match the approved homepage palette while keeping the other information pages intact.
+const companyStyles = Object.fromEntries(Object.entries(baseStyles).map(([key, style]) => [key, { ...style }]))
+const overrides = {
+  page: { background:'#f8f6ef', color:'#123c32', fontFamily:'Avenir Next, Avenir, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' },
+  header: { background:'#073f36', borderBottom:'1px solid #315e52' },
+  brandName: { color:'#f8f6ef' }, navLink:{color:'#f8f6ef'},
+  loginBtn:{background:'#d7b578',color:'#073f36'}, mobileLoginBtn:{background:'#d7b578',color:'#073f36'},
+  hero:{background:'#073f36',color:'#f8f6ef'},
+  eyebrow:{color:'#d7b578',letterSpacing:2},
+  intro:{color:'#d4e1d8'}, h1:{fontWeight:800,fontSize:'clamp(36px,5.4vw,64px)',lineHeight:1.1},
+  primary:{background:'#073f36',borderRadius:8}, secondary:{color:'#073f36',borderColor:'#073f36',borderRadius:8},
+  storyCard:{border:'1px solid #dce3de',boxShadow:'none',background:'#fffdf8',padding:'clamp(22px,5vw,48px)'},
+  storyText:{fontSize:17,color:'#536961',lineHeight:1.85},
+  founderCard:{background:'#e7eee7',borderColor:'#dce3de'}, founderAvatar:{background:'#073f36'},
+  founderBioCard:{background:'#fffdf8',borderColor:'#dce3de'}, founderBioTitle:{color:'#123c32'},
+  founderBioText:{color:'#536961',fontSize:16}, founderRole:{color:'#0f766e'},
+  founderCredentials:{gridTemplateColumns:'repeat(auto-fit,minmax(min(100%,220px),1fr))'},
+  founderCredentialCard:{background:'#f8f6ef',borderColor:'#dce3de'},
+  founderMediaBlock:{background:'#e7eee7',borderColor:'#dce3de'}, founderMediaLink:{color:'#073f36',borderColor:'#dce3de'},
+  inquiryCard:{maxWidth:740,borderColor:'#dce3de',boxShadow:'none',background:'#fffdf8',borderRadius:16},
+  signupNowBox:{background:'#e7eee7',borderColor:'#dce3de'},
+  inquiryGrid:{gridTemplateColumns:'repeat(auto-fit,minmax(min(100%,220px),1fr))'},
+  inquiryInput:{color:'#123c32',borderColor:'#b7c7bd',borderRadius:8},
+  contactHeading:{color:'#123c32'}, contactLead:{color:'#536961'},
+  contactGrid:{gridTemplateColumns:'repeat(auto-fit,minmax(min(100%,260px),340px))'},
+  contactCard:{borderColor:'#dce3de',boxShadow:'none',background:'#fffdf8'},
+  contactIconBox:{background:'#e7eee7'},contactValue:{color:'#123c32'},
+  footer:{background:'#073f36',color:'#d4e1d8',borderColor:'#315e52',fontSize:13}, footerLink:{color:'#f8f6ef'},
+}
+for (const [key, style] of Object.entries(overrides)) Object.assign(companyStyles[key], style)
 
 export default PublicInfoPage

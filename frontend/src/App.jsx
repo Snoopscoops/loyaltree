@@ -1,20 +1,20 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useParams, useLocation } from 'react-router-dom'
-import Login from './components/Login'
-import Signup from './components/Signup'
+const Login = lazy(() => import('./components/Login'))
+const Signup = lazy(() => import('./components/Signup'))
 import HomePage from './components/HomePage'
-import PublicInfoPage from './components/PublicInfoPage'
-import LegalPage from './components/LegalPages'
-import OwnerDashboard from './components/OwnerDashboard'
-import CarLendingDashboard from './components/CarLendingDashboard'
-import LendingDashboard from './components/LendingDashboard'
-import CockpitDashboard from './components/CockpitDashboard'
-import CashierApp from './components/CashierApp'
-import AnalyticsDashboard from './components/AnalyticsDashboard'
-import AdminDashboard from './components/AdminDashboard'
-import PartnerDashboard from './components/PartnerDashboard'
-import MotoliteApp from './components/MotoliteApp'
-import CustomerJoin from './components/CustomerJoin'
+const PublicInfoPage = lazy(() => import('./components/PublicInfoPage'))
+const LegalPage = lazy(() => import('./components/LegalPages'))
+const OwnerDashboard = lazy(() => import('./components/OwnerDashboard'))
+const CarLendingDashboard = lazy(() => import('./components/CarLendingDashboard'))
+const LendingDashboard = lazy(() => import('./components/LendingDashboard'))
+const CockpitDashboard = lazy(() => import('./components/CockpitDashboard'))
+const CashierApp = lazy(() => import('./components/CashierApp'))
+const AnalyticsDashboard = lazy(() => import('./components/AnalyticsDashboard'))
+const AdminDashboard = lazy(() => import('./components/AdminDashboard'))
+const PartnerDashboard = lazy(() => import('./components/PartnerDashboard'))
+const MotoliteApp = lazy(() => import('./components/MotoliteApp'))
+const CustomerJoin = lazy(() => import('./components/CustomerJoin'))
 import { trackEvent } from './analytics'
 
 const API_BASE = (
@@ -141,6 +141,7 @@ function App() {
           background: #f0fdf4;
         }
       `}</style>
+      <Suspense fallback={<p role="status" style={{ padding: 32 }}>Loading…</p>}>
       <Routes>
         <Route path="/motolite/*" element={<MotoliteApp API_BASE={API_BASE} />} />
         <Route path="/" element={
@@ -214,6 +215,7 @@ function App() {
           user?.role === 'partner' ? <PartnerDashboard API_BASE={API_BASE} user={user} onLogout={handleLogout} /> : <Navigate to="/login" />
         } />
       </Routes>
+      </Suspense>
     </BrowserRouter>
   )
 }

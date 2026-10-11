@@ -13415,6 +13415,7 @@ API_LOGIN_PER_MINUTE = int(os.getenv("API_LOGIN_PER_MINUTE", "12"))
 API_CASHIER_LOGIN_PER_MINUTE = int(os.getenv("API_CASHIER_LOGIN_PER_MINUTE", "12"))
 API_TRANSACTION_PER_MINUTE = int(os.getenv("API_TRANSACTION_PER_MINUTE", "90"))
 API_PUBLIC_PER_MINUTE = int(os.getenv("API_PUBLIC_PER_MINUTE", "180"))
+API_COMMUNITY_STATS_PER_MINUTE = max(1, int(os.getenv("API_COMMUNITY_STATS_PER_MINUTE", "20")))
 AUTH_FAILURE_WINDOW_SECONDS = int(os.getenv("AUTH_FAILURE_WINDOW_SECONDS", "900"))
 AUTH_FAILURE_LIMIT = int(os.getenv("AUTH_FAILURE_LIMIT", "8"))
 
@@ -13482,6 +13483,8 @@ def _clear_auth_failures(kind: str, request: Request, identity: str = ""):
 
 def _api_limit_for_path(path: str, method: str):
     p = path.lower()
+    if p.rstrip("/") == "/api/v1/public/community-stats":
+        return "community-stats", API_COMMUNITY_STATS_PER_MINUTE
     if p in ("/api/v1/login", "/api/v1/auth/login"):
         return "owner-login", API_LOGIN_PER_MINUTE
     if p in ("/api/v1/auth/password-reset/request", "/api/v1/auth/password-reset/confirm"):
@@ -14260,7 +14263,7 @@ async def list_plans():
     return subscription_plans_payload('PH')
 
 # --- Public business inquiry ("Connect with LoyaltyTree") -------------------
-# Lead form on /start and /contact. Saves the lead (best-effort) and emails it
+# Lead form on /start and /contact. Acknowledge only after saving or emailing it
 # to LEAD_NOTIFY_EMAILS (comma-separated; defaults to the two LoyaltyTree inboxes).
 LEAD_NOTIFY_EMAILS = [
     e.strip() for e in (os.getenv(
@@ -14323,10 +14326,14 @@ async def submit_business_inquiry(req: BusinessInquiry, request: Request):
         'status': 'new',
         'created_at': datetime.utcnow().isoformat(),
     }
+    saved = False
     try:
-        supabase.table('business_leads').insert(row).execute()
+        result = await asyncio.to_thread(lambda: supabase.table('business_leads').insert(row).execute())
+        if getattr(result, 'error', None):
+            raise RuntimeError('Lead storage failed')
+        saved = True
     except Exception as exc:
-        print(f"BUSINESS LEAD save skipped: {exc}")
+        print(f"BUSINESS LEAD storage failed: {type(exc).__name__}")
 
     esc = html_lib.escape
     def line(label, value):
@@ -14342,13 +14349,22 @@ async def submit_business_inquiry(req: BusinessInquiry, request: Request):
         + "</div>"
     )
     subject = f"New lead: {row['business_name']} ({row['name']})"
-    delivered = False
-    for to in LEAD_NOTIFY_EMAILS:
-        ok = await asyncio.to_thread(send_email, to, subject, body, None, email or None)
-        delivered = delivered or ok
+    async def notify(to):
+        try:
+            return bool(await asyncio.to_thread(send_email, to, subject, body, None, email or None))
+        except Exception as exc:
+            print(f"BUSINESS LEAD notification failed: {type(exc).__name__}")
+            return False
+
+    delivered = any(await asyncio.gather(*(notify(to) for to in LEAD_NOTIFY_EMAILS)))
     if not delivered:
-        print(f"BUSINESS LEAD email NOT delivered (check RESEND_API_KEY / sender): {row}")
+        print("BUSINESS LEAD email not delivered; check notification configuration")
+    if not saved and not delivered:
+        raise HTTPException(status_code=503,
+                            detail="We could not receive your inquiry. Please email theloyaltytree@gmail.com or try again later.",
+                            headers={"Retry-After": "60"})
     return {"ok": True}
+
 
 
 @app.get("/api/v1/public/pricing-context")
@@ -14496,7 +14512,7 @@ async def admin_update_setup_kit_order(order_public_id: str, item: SetupKitAdmin
 # Cached briefly so a busy homepage does not repeatedly scan aggregate tables.
 # ============================================================
 
-_COMMUNITY_STATS_CACHE = {"value": None, "expires_at": 0.0}
+_COMMUNITY_STATS_CACHE = {"value": None, "expires_at": 0.0, "retry_at": 0.0, "saved_at": 0.0}
 _COMMUNITY_STATS_LOCK = Lock()
 
 def _sum_numeric_column_all(table_name: str, column_name: str, max_rows: int = 250000) -> int:
@@ -14524,33 +14540,43 @@ def _sum_numeric_column_all(table_name: str, column_name: str, max_rows: int = 2
     return total
 
 @app.get("/api/v1/public/community-stats")
-async def public_community_stats():
-    """Live lifetime platform totals for the public homepage.
+def public_community_stats(response: Response):
+    """Public aggregates only, refreshed at most once per five minutes/worker.
 
-    This intentionally returns aggregate counts only:
-    - businesses: same all-business count used by the super-admin overview
-    - members: all customer/member records
-    - stamps: lifetime stamp-event count
-    - points: lifetime points issued (sum of positive points_earned)
+    Synchronous DB work runs in FastAPI's thread pool. A non-blocking refresh
+    lock prevents concurrent misses from starting duplicate table scans.
+    Existing middleware limits this route to 20 requests/minute/client.
     """
-    if not supabase:
-        raise HTTPException(status_code=503, detail="Database not connected")
-
     now_ts = time.time()
     cached = _COMMUNITY_STATS_CACHE.get("value")
+    response.headers["Cache-Control"] = "public, max-age=60, s-maxage=60, stale-while-revalidate=240"
+    response.headers["X-Content-Type-Options"] = "nosniff"
     if cached is not None and now_ts < float(_COMMUNITY_STATS_CACHE.get("expires_at") or 0):
         return cached
 
-    try:
-        businesses_res = supabase.table("businesses").select("id", count="exact").execute()
-        members_res = supabase.table("customers").select("id", count="exact").execute()
-        stamps_res = supabase.table("stamp_events").select("id", count="exact").execute()
+    def stale_or_unavailable(retry_after=30):
+        # A stale result is still aggregate-only; do not cache a failed refresh
+        # as fresh or expose database messages to anonymous visitors.
+        if cached is not None and now_ts - float(_COMMUNITY_STATS_CACHE.get("saved_at") or 0) <= 1800:
+            response.headers["Cache-Control"] = "public, max-age=30"
+            return cached
+        raise HTTPException(status_code=503, detail="Community totals temporarily unavailable", headers={"Retry-After": str(retry_after), "Cache-Control": "no-store"})
 
+    if now_ts < float(_COMMUNITY_STATS_CACHE.get("retry_at") or 0):
+        return stale_or_unavailable()
+    if not _COMMUNITY_STATS_LOCK.acquire(blocking=False):
+        return stale_or_unavailable(3)
+    try:
+        # Re-check after acquiring in case another refresh just completed.
+        cached = _COMMUNITY_STATS_CACHE.get("value")
+        if cached is not None and time.time() < float(_COMMUNITY_STATS_CACHE.get("expires_at") or 0):
+            return cached
+        if not supabase:
+            raise RuntimeError("Database unavailable")
+        businesses_res = supabase.table("businesses").select("id", count="exact").limit(1).execute()
+        members_res = supabase.table("customers").select("id", count="exact").limit(1).execute()
+        stamps_res = supabase.table("stamp_events").select("id", count="exact").limit(1).execute()
         points_total = _sum_numeric_column_all("points_events", "points_earned")
-        # "Points issued" should never be reduced by redemption/adjustment rows.
-        # If a historical row is negative, exclude that negative effect.
-        # Re-read in pages only when negatives are possible would add more load,
-        # so the event writer is expected to store issued points as non-negative.
         result = {
             "businesses": int(businesses_res.count or 0),
             "stamps": int(stamps_res.count or 0),
@@ -14558,13 +14584,14 @@ async def public_community_stats():
             "members": int(members_res.count or 0),
             "updated_at": datetime.utcnow().isoformat(),
         }
-
-        with _COMMUNITY_STATS_LOCK:
-            _COMMUNITY_STATS_CACHE["value"] = result
-            _COMMUNITY_STATS_CACHE["expires_at"] = time.time() + 30
+        saved_at = time.time()
+        _COMMUNITY_STATS_CACHE.update(value=result, saved_at=saved_at, expires_at=saved_at + 300, retry_at=0.0)
         return result
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Could not load community stats: {friendly_db_error(exc)}")
+    except Exception:
+        _COMMUNITY_STATS_CACHE["retry_at"] = time.time() + 30
+        return stale_or_unavailable()
+    finally:
+        _COMMUNITY_STATS_LOCK.release()
 
 
 # ============================================================
