@@ -178,7 +178,6 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
   }
   const [pricingBranchTier, setPricingBranchTier] = useState('1')
   const [pricingBillingCycle, setPricingBillingCycle] = useState('monthly')
-  if (pricingContext.country_code === 'PH' && pricingBillingCycle === 'monthly') setPricingBillingCycle('3_months')
   const [pricingStep, setPricingStep] = useState(0)
   const [pricingContext, setPricingContext] = useState({
     country_code: 'PH',
@@ -188,6 +187,10 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
     plans: null,
     detected_by: 'fallback',
   })
+
+  useEffect(() => {
+    if (pricingContext.country_code === 'PH' && pricingBillingCycle === 'monthly') setPricingBillingCycle('3_months')
+  }, [pricingContext.country_code, pricingBillingCycle])
 
   const loadPricingContext = async (country) => {
     const configuredBase = (API_BASE || import.meta.env.VITE_API_BASE_URL || 'https://api.theloyaltytree.com').replace(/\/$/, '')
@@ -379,15 +382,13 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
       key: 'starter',
       name: 'Starter',
       prices: withTenBranchPrice(regionalPriceTiers('starter', { '1': 350, '3': 1000, '5': 1600 })),
-      tagline: 'A complete digital loyalty system for smaller businesses getting started.',
+      tagline: 'Start with digital points and stamp cards.',
       features: [
-        'Google Wallet & Apple Wallet',
+        'Points and stamp cards only',
         '2 announcements per subscription cycle',
-        'Full digital loyalty system',
-        'Full loyalty card customization',
-        'Analytics',
-        'Birthday automated greetings',
-        'Customer service',
+        'Unlimited members',
+        'Unlimited stamps and points',
+        'Automated chat support',
       ],
     },
     {
@@ -395,64 +396,34 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
       name: 'Growth',
       highlight: true,
       prices: withTenBranchPrice(regionalPriceTiers('growth', { '1': 550, '3': 1600, '5': 2600 })),
-      tagline: 'More customer engagement and retention tools — including 2-in-1 Loyalty Cards and Gift Cards — for growing businesses.',
+      tagline: 'Offer more ways to reward your customers.',
       features: [
-        'Google Wallet & Apple Wallet',
-        'Up to 5 announcements per subscription cycle',
-        'Full digital loyalty system',
-        'Full loyalty card customization',
-        'Analytics',
-        'Google review prompt',
-        'Birthday automated greetings',
-        '2-in-1 Loyalty Cards',
+        'All card types',
+        '5 announcements per subscription cycle',
         'Gift Cards',
-        'Win-back system after 30 days without a stamp',
-        'Customer service',
+        'Unlimited members',
+        'Real person chat support',
       ],
     },
     {
       key: 'pro',
       name: 'Pro',
       prices: withTenBranchPrice(regionalPriceTiers('pro', { '1': 750, '3': 2100, '5': 3600 })),
-      tagline: 'Advanced loyalty tools for businesses ready to run more complex programs.',
+      tagline: 'Everything in Growth, with more announcements and POS Integration.',
       features: [
-        'Google Wallet & Apple Wallet',
-        'Up to 7 announcements per subscription cycle',
-        'Full digital loyalty system',
-        'Full loyalty card customization',
-        'Analytics',
+        'Everything in Growth',
+        '7 announcements per subscription cycle',
         'POS Integration',
-        'Google review prompt',
-        'Birthday automated greetings',
-        'Up to 3 loyalty cards in circulation',
-        '2-in-1 Loyalty Cards',
-        'Gift Cards',
-        'Win-back system after 30 days without a stamp',
-        'Geo tagging',
-        'Advance ordering',
-        'Customer service',
       ],
     },
     {
       key: 'specialized',
-      name: 'Specialized System',
-      tagline: 'Maximize your business with a specialized digital loyalty system built around your operational needs — designed to boost efficiency, customer retention, and long-term growth.',
-      benefits: ['Efficiency', 'Retention', 'Growth'],
+      name: 'Special',
+      tagline: 'Contact us for a loyalty system tailored to your business.',
+      benefits: ['Custom setup', 'Location exclusivity'],
       features: [
-        'Specialized digital loyalty system for your business',
-        'Website integration',
-        'Location services & geo tagging',
-        'NFC & contactless integration',
-        'Booking & reservation system integration',
-        'Payment system integration',
-        'Google Wallet & Apple Wallet',
-        'Custom loyalty card configuration',
-        'Analytics & customer insights',
-        'Announcements & birthday greetings',
-        'Google review prompt',
-        'Win-back system',
-        'Advance ordering',
-        'Customer service',
+        'Geo-based notifications — exclusive per location',
+        'Tailored to your business needs',
       ],
     },
   ]
@@ -1003,11 +974,11 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
                       ))}
                     </div>
 
-                    <div style={s.pricingDiscuss}>Pricing upon discussion</div>
+                    <div style={s.pricingDiscuss}>Contact us for pricing</div>
                   </div>
 
                   <div>
-                    <div style={s.pricingSpecializedFeatureTitle}>Connect LoyaltyTree with your business systems</div>
+                    <div style={s.pricingSpecializedFeatureTitle}>Built for your business</div>
                     <div style={s.pricingSpecializedFeatures}>
                       {plan.features.slice(0,8).map(feature => (
                         <div key={feature} style={s.pricingSpecializedFeature}>
@@ -1019,7 +990,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
                   </div>
 
                   <button onClick={()=>contactLoyaltyTree('pricing_or_cta')} style={s.pricingPrimaryBtn}>
-                    Discuss Your System
+                    Contact us
                   </button>
                 </div>
               </article>
@@ -1046,7 +1017,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
                   </div>}
                   {specialized && <>
                     <div style={s.pricingSpecializedBenefits}>{plan.benefits?.map(x=><span key={x} style={s.pricingSpecializedBenefit}>{x}</span>)}</div>
-                    <div style={{...s.pricingDiscuss,color:'#99f6e4'}}>Pricing upon discussion</div>
+                    <div style={{...s.pricingDiscuss,color:'#99f6e4'}}>Contact us for pricing</div>
                   </>}
                 </div>
 
@@ -1059,7 +1030,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
                 </div>
 
                 <button onClick={()=>specialized?contactLoyaltyTree('pricing_or_cta'):applyBusiness(`pricing_${plan.key}`)} style={specialized||plan.highlight?s.pricingPrimaryBtn:s.pricingSecondaryBtn}>
-                  {specialized?'Discuss Your System':'Get Started'}
+                  {specialized?'Contact us':'Get Started'}
                 </button>
 
                 <div style={s.pricingMobileDots}>

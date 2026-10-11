@@ -337,13 +337,11 @@ const PLANS = [
     name: 'Starter',
     prices: { '1': 350, '2': 700, '3': 1000, '5': 1600, '10': 3350 },
     features: [
-      'Google Wallet & Apple Wallet',
-      '2 active announcements',
-      'Full digital system',
-      'Full loyalty card customization',
-      'Analytics',
-      'Birthday automated greetings',
-      'Customer service',
+      'Points and stamp cards only',
+      '2 announcements per subscription cycle',
+      'Unlimited members',
+      'Unlimited stamps and points',
+      'Automated chat support',
     ],
   },
   {
@@ -352,59 +350,29 @@ const PLANS = [
     highlight: true,
     prices: { '1': 550, '2': 1100, '3': 1600, '5': 2600, '10': 5350 },
     features: [
-      'Google Wallet & Apple Wallet',
-      'Up to 5 active announcements',
-      'Full digital system',
-      'Full loyalty card customization',
-      'Analytics',
-      'Google review prompt',
-      'Birthday automated greetings',
-      "Win-back system (message if 30 days pass without a stamp)",
-      'Hybrid Cards',
+      'All card types',
+      '5 announcements per subscription cycle',
       'Gift Cards',
-      'Customer service',
+      'Unlimited members',
+      'Real person chat support',
     ],
   },
   {
     key: 'pro',
     name: 'Pro',
-    comingSoon: true,
     prices: { '1': 750, '2': 1500, '3': 2100, '5': 3600, '10': 7350 },
     features: [
-      'Google Wallet & Apple Wallet',
-      'Up to 7 active announcements',
-      'Full digital system',
-      'Full loyalty card customization',
-      'Analytics',
-      'Google review prompt',
-      'Birthday automated greetings',
-      'Up to 3 different loyalty cards in circulation',
-      'Hybrid Cards',
-      'Gift Cards',
-      "Win-back system (message if 30 days pass without a stamp)",
-      'Geo tagging',
-      'Advance ordering',
-      'Customer service',
+      'Everything in Growth',
+      '7 announcements per subscription cycle',
+      'POS Integration',
     ],
   },
   {
     key: 'specialized',
-    name: 'Specialized System',
+    name: 'Special',
     features: [
-      'Specialized system for your business',
-      'NFC & contactless integration — available for Specialized Businesses',
-      'Google Wallet & Apple Wallet',
-      'Up to 5 active announcements',
-      'Full digital system',
-      'Full loyalty card customization',
-      'Analytics',
-      'Google review prompt',
-      'Birthday automated greetings',
-      'Up to 3 different loyalty cards in circulation',
-      "Win-back system (message if 30 days pass without a stamp)",
-      'Geo tagging',
-      'Advance ordering',
-      'Customer service',
+      'Geo-based notifications — exclusive per location',
+      'Tailored to your business needs',
     ],
   },
 ]
@@ -1240,7 +1208,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
             <span style={styles.homePriceLabel}>Starter</span>
             <div style={styles.homePrice}>{formatMoney(homePlanPrice('starter',350), pricingContext.currency)}<span style={styles.homePriceUnit}>{HOME_BILLING_TERMS[homeBillingCycle]?.unit || '/mo'}</span></div>
             {HOME_BILLING_TERMS[homeBillingCycle]?.note && <div style={styles.homePriceTermNote}>{HOME_BILLING_TERMS[homeBillingCycle].note} · {HOME_BILLING_TERMS[homeBillingCycle].savings}</div>}
-            <p style={styles.homePriceText}>Core digital loyalty, customization, analytics, announcements, birthday greetings, and support.</p>
+            <p style={styles.homePriceText}>Points and stamp cards, 2 announcements, unlimited members, unlimited stamps and points, and automated chat support.</p>
           </div>
           <div style={{...styles.homePriceCard,...styles.homePriceCardFeatured}}>
             <span style={styles.homePricePopular}>MOST POPULAR</span>
@@ -1249,15 +1217,15 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
             {HOME_BILLING_TERMS[homeBillingCycle]?.note && <div style={styles.homePriceTermNote}>{HOME_BILLING_TERMS[homeBillingCycle].note} · {HOME_BILLING_TERMS[homeBillingCycle].savings}</div>}
             <p style={styles.homePriceText}>
               {pricingContext.country_code === 'PH'
-                ? 'Includes Hybrid Cards and Gift Cards, plus review prompts, more announcements, and automated win-back tools.'
-                : 'Includes Hybrid Cards, review prompts, more announcements, and automated win-back tools.'}
+                ? 'All card types, 5 announcements, Gift Cards, unlimited members, and real person chat support.'
+                : 'All card types, 5 announcements, unlimited members, and real person chat support.'}
             </p>
           </div>
           <div style={styles.homePriceCard}>
             <span style={styles.homePriceLabel}>Pro</span>
             <div style={styles.homePrice}>{formatMoney(homePlanPrice('pro',750), pricingContext.currency)}<span style={styles.homePriceUnit}>{HOME_BILLING_TERMS[homeBillingCycle]?.unit || '/mo'}</span></div>
             {HOME_BILLING_TERMS[homeBillingCycle]?.note && <div style={styles.homePriceTermNote}>{HOME_BILLING_TERMS[homeBillingCycle].note} · {HOME_BILLING_TERMS[homeBillingCycle].savings}</div>}
-            <p style={styles.homePriceText}>Advanced loyalty tools with POS Integration for businesses ready to connect loyalty activity with operations.</p>
+            <p style={styles.homePriceText}>Everything in Growth, with 7 announcements and POS Integration.</p>
           </div>
         </div>
         {pricingContext.country_code === 'AU' && (
@@ -1435,7 +1403,7 @@ function HomePage({ onNavigateLogin, API_BASE = '' }) {
                           {p.comingSoon && <div style={styles.planPriceComingSoon}>Coming soon</div>}
                         </>
                       ) : (
-                        <div style={styles.planPriceComingSoon}>Upon discussion</div>
+                        <div style={styles.planPriceComingSoon}>Contact us</div>
                       )}
                       <ul style={styles.planFeatureList}>
                         {p.features.map(f => (
