@@ -2,6 +2,46 @@ import React, { useState, useEffect } from 'react'
 import PlatformAnnouncementsAdmin from './PlatformAnnouncementsAdmin'
 import GiftCardPrintRequestsAdmin from './GiftCardPrintRequestsAdmin'
 
+function BillingBranchEditor({ detail, onSave }) {
+  const [count, setCount] = useState(String(detail.branch_count || 1))
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const save = async (reset = false) => {
+    const value = Number(count)
+    if (!reset && (!Number.isInteger(value) || value < 1 || value > 10000)) {
+      setError('Enter a whole number from 1 to 10,000.')
+      return
+    }
+    setSaving(true)
+    setError('')
+    try {
+      await onSave(reset ? { clear_billing_branch_count: true } : { billing_branch_count: value })
+    } catch (err) {
+      setError(err.message || 'Could not save branch count.')
+    } finally {
+      setSaving(false)
+    }
+  }
+  if (detail.billing_mode === 'special') return <DetailRow label="Branches" value={detail.branch_count} />
+  return <div style={styles.detailRow}>
+    <span style={styles.detailLabel}>Operating branches (billing)</span>
+    <div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <input aria-label="Operating branches for billing" type="number" min="1" max="10000" step="1"
+          value={count} disabled={saving} onChange={e => setCount(e.target.value)} style={{ ...styles.addressInput, width: 100 }} />
+        <button type="button" style={styles.viewBtn} disabled={saving} onClick={() => save()}>{saving ? 'Saving…' : 'Save count'}</button>
+        {detail.billing_branch_count != null && <button type="button" style={styles.viewBtn} disabled={saving} onClick={() => save(true)}>Use automatic count</button>}
+      </div>
+      <p style={{ fontSize: 12, margin: '8px 0', color: '#64748b' }}>
+        {detail.configured_branch_count ?? detail.branch_count} branch records · {detail.billing_branch_count == null ? 'Automatic count' : 'Admin count'}.
+        {' '}Applies to future subscription payments. Existing payments stay the same.
+        {detail.custom_monthly_price ? ' The custom monthly price stays fixed.' : ''}
+      </p>
+      {error && <div role="alert" style={{ color: '#b91c1c' }}>{error}</div>}
+    </div>
+  </div>
+}
+
 const STATUS_OPTIONS = ['PENDING', 'ACTIVE', 'SUSPENDED', 'REJECTED']
 
 const BUSINESS_TYPE_OPTIONS=[
@@ -422,11 +462,14 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
       if (!res.ok) throw new Error(data.detail || 'Update failed')
       setMessage(`Updated ${public_id}`)
       loadData()
-      if (selected?.public_id === public_id) openDetail(selected)
+      if (selected?.public_id === public_id) await openDetail(selected)
+      return true
     } catch (err) {
       setMessage(err.message)
+      return false
+    } finally {
+      setTimeout(() => setMessage(''), 3000)
     }
-    setTimeout(() => setMessage(''), 3000)
   }
 
   const sendBusinessPasswordReset = async (business) => {
@@ -2207,7 +2250,11 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                 </div>
                 <DetailRow label="Status" value={detail.status} />
                 <DetailRow label="Plan" value={detail.plan_label} />
-                <DetailRow label="Branches" value={detail.branch_count} />
+                <BillingBranchEditor key={`${detail.public_id}-${detail.branch_count}-${detail.billing_branch_count ?? 'auto'}`}
+                  detail={detail} onSave={async patch => {
+                    const saved = await updateBusiness(selected.public_id, patch)
+                    if (!saved) throw new Error('Could not save branch count. Check the dashboard message and try again.')
+                  }} />
                 <DetailRow label="Onboarding" value={`${onboardingLabel(detail)} · Step ${detail.onboarding_step||0}/9`} />
                 <div style={styles.detailRow}><span style={styles.detailLabel}>Customer Join QR</span><div style={styles.joinQrAdmin}><img src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(joinUrl(detail))}`} alt="Business join QR" style={styles.joinQrImage}/><div><button style={styles.viewBtn} onClick={()=>navigator.clipboard?.writeText(joinUrl(detail))}>Copy join link</button><div style={styles.joinUrlText}>{joinUrl(detail)}</div></div></div></div>
                 <DetailRow label="Effective price" value={detail.price_month != null ? `${detail.currency || 'PHP'} ${Number(detail.price_month).toLocaleString()}/mo` : '—'} />

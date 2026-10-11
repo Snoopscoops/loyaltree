@@ -672,6 +672,15 @@ def business_custom_monthly_price(business: Optional[dict]) -> Optional[int]:
     return value if value > 0 else None
 
 
+def billing_branch_count(business: Optional[dict], configured_count: Optional[int] = None) -> int:
+    """Admin operating-count override, otherwise the configured branch count."""
+    row = business or {}
+    override = row.get('billing_branch_count')
+    if override is not None:
+        return max(1, int(override))
+    return max(1, int(configured_count if configured_count is not None else row.get('branch_count') or 1))
+
+
 def get_price_for_business(business: Optional[dict], billing_cycle: str = 'monthly', branch_count: Optional[int] = None) -> int:
     row = business or {}
     cycle = normalize_billing_cycle(billing_cycle)
@@ -679,7 +688,7 @@ def get_price_for_business(business: Optional[dict], billing_cycle: str = 'month
     custom = business_custom_monthly_price(row)
     if custom:
         return custom * multiplier
-    count = branch_count if branch_count is not None else row.get('branch_count') or 1
+    count = billing_branch_count(row, branch_count)
     return get_price_for_plan(row.get('plan'), count, cycle, business_pricing_region(row))
 
 
@@ -3089,6 +3098,8 @@ class AdminBusinessUpdate(BaseModel):
     announcement_limit_adjustment: Optional[int] = None  # +/- adjustment to the plan's announcements_per_month for this business only
     custom_monthly_price: Optional[int] = Field(default=None, ge=1, le=1000000)
     clear_custom_price: bool = False
+    billing_branch_count: Optional[int] = Field(default=None, strict=True, ge=1, le=10000)
+    clear_billing_branch_count: bool = False
     currency: Optional[str] = Field(default=None, min_length=3, max_length=3)
 
 class AdminNfcTrialUpdate(BaseModel):
@@ -6206,6 +6217,9 @@ def business_summary(biz: dict) -> dict:
     except Exception:
         pass
 
+    configured_branch_count = branch_count
+    branch_count = billing_branch_count(biz, configured_branch_count)
+
     subscription_expires_at = biz.get('subscription_expires_at')
     subscription_status = 'none'
     if subscription_expires_at:
@@ -6235,6 +6249,9 @@ def business_summary(biz: dict) -> dict:
         "announcement_limit_adjustment": biz.get("announcement_limit_adjustment") or 0,
         "announcements_per_month_effective": get_effective_announcement_limit(biz),
         "branch_count": branch_count,
+        "configured_branch_count": configured_branch_count,
+        "billing_branch_count": biz.get("billing_branch_count"),
+        "billing_mode": biz.get("billing_mode") or "standard",
         "billing_cycle": normalize_billing_cycle(biz.get("billing_cycle")),
         "country_code": business_pricing_region(biz),
         "pricing_region": business_pricing_region(biz),
@@ -15072,7 +15089,7 @@ async def admin_overview(_: bool = Depends(require_admin)):
             region = business_pricing_region(b)
             currency = business_currency(b)
             cycle = normalize_billing_cycle(b.get('billing_cycle'))
-            billed_amount = get_price_for_plan(b.get('plan'), count, cycle, region)
+            billed_amount = get_price_for_business(b, cycle, count)
             access_months = max(1, int(BILLING_CYCLE_CONFIG[cycle]['access_months']))
             monthly_equivalent = float(billed_amount) / access_months
             currency_mrr[currency] += monthly_equivalent
@@ -17950,6 +17967,14 @@ async def admin_update_business(public_id: str, update: AdminBusinessUpdate, _: 
         data['address'] = update.address
     if update.announcement_limit_adjustment is not None:
         data['announcement_limit_adjustment'] = update.announcement_limit_adjustment
+    if (update.clear_billing_branch_count or update.billing_branch_count is not None) and str(business.get('billing_mode') or 'standard').lower() == 'special':
+        raise HTTPException(status_code=400, detail='Use contracted branches in the custom billing agreement for this business')
+    if update.clear_billing_branch_count and update.billing_branch_count is not None:
+        raise HTTPException(status_code=400, detail='Choose a branch count or reset to automatic, not both')
+    if update.clear_billing_branch_count:
+        data['billing_branch_count'] = None
+    elif update.billing_branch_count is not None:
+        data['billing_branch_count'] = update.billing_branch_count
     if update.clear_custom_price:
         data['custom_monthly_price'] = None
     elif update.custom_monthly_price is not None:
@@ -17967,6 +17992,8 @@ async def admin_update_business(public_id: str, update: AdminBusinessUpdate, _: 
         supabase.table("businesses").update(data).eq("id", business.get("id")).execute()
         return {"success": True, **data}
     except Exception as e:
+        if 'billing_branch_count' in data and 'billing_branch_count' in str(e):
+            raise HTTPException(status_code=503, detail='Apply backend/billing_branch_count.sql before saving operating branches')
         raise HTTPException(status_code=500, detail=f"Update failed: {str(e)}")
 
 @app.delete("/api/v1/admin/businesses/{public_id}")
@@ -19807,6 +19834,9 @@ async def create_subscription_checkout(public_id: str, req: Optional[Subscriptio
     except Exception:
         branch_count = 1
 
+    configured_branch_count = branch_count
+    branch_count = billing_branch_count(business, configured_branch_count)
+
     plan = business.get('plan') or 'starter'
     pricing_region = business_pricing_region(business)
     billing_cycle = self_serve_billing_cycle(
@@ -19823,7 +19853,7 @@ async def create_subscription_checkout(public_id: str, req: Optional[Subscriptio
         and bool(business.get('setup_kit_requested'))
         and not bool(business.get('setup_kit_paid'))
     )
-    setup_kit_price = (SETUP_KIT_PRICE_PER_BRANCH * branch_count) if kit_due else 0
+    setup_kit_price = (SETUP_KIT_PRICE_PER_BRANCH * configured_branch_count) if kit_due else 0
     display_total = subscription_price + setup_kit_price
     processor_amount_php, fx_rate_snapshot = fx_to_php(display_total, display_currency)
 
@@ -19841,8 +19871,8 @@ async def create_subscription_checkout(public_id: str, req: Optional[Subscriptio
     cycle_label = billing_cycle_label(billing_cycle)
     description = f"LoyaltyTree {plan_label} {cycle_label} subscription - {business.get('name', '')}"
     if kit_due:
-        branch_word = 'branch' if branch_count == 1 else 'branches'
-        description += f" + Sintra Board QR / PR Kit ({branch_count} {branch_word})"
+        branch_word = 'branch' if configured_branch_count == 1 else 'branches'
+        description += f" + Sintra Board QR / PR Kit ({configured_branch_count} {branch_word})"
         try:
             supabase.table('setup_kit_orders').update({
                 'amount': setup_kit_price,
@@ -19864,7 +19894,7 @@ async def create_subscription_checkout(public_id: str, req: Optional[Subscriptio
         'subscription_amount': str(subscription_price),
         'setup_kit_included': 'true' if kit_due else 'false',
         'setup_kit_price_per_branch': str(SETUP_KIT_PRICE_PER_BRANCH),
-        'setup_kit_branch_count': str(branch_count if kit_due else 0),
+        'setup_kit_branch_count': str(configured_branch_count if kit_due else 0),
         'setup_kit_amount': str(setup_kit_price),
     }
 
@@ -20046,6 +20076,8 @@ async def get_subscription_status(public_id: str):
         branch_count = branch_res.count or 1
     except Exception:
         branch_count = 1
+    configured_branch_count = branch_count
+    branch_count = billing_branch_count(business, configured_branch_count)
     plan = business.get('plan', 'starter')
     pricing_region = business_pricing_region(business)
     currency = business_currency(business)
@@ -20060,6 +20092,8 @@ async def get_subscription_status(public_id: str):
         "currency": currency,
         "billing_cycle": billing_cycle,
         "branch_count": branch_count,
+        "configured_branch_count": configured_branch_count,
+        "billing_branch_count": business.get("billing_branch_count"),
         "pricing": {
             "monthly": get_price_for_business(business, 'monthly', branch_count),
             "3_months": get_price_for_business(business, '3_months', branch_count),
