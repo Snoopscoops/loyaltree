@@ -1,0 +1,594 @@
+{
+  "version": "2026-10-11-v4",
+  "status": "prepared_for_deployment",
+  "prepared_at": "2026-10-11",
+  "effective_date": "2026-10-11",
+  "operator": {
+    "name": "LoyaltyTree Information Technology Solutions",
+    "location": "Isabela, Philippines",
+    "email": "theloyaltytree@gmail.com",
+    "phone": "+63 939 799 2144"
+  },
+  "documents": {
+    "privacy": {
+      "title": "Privacy Policy",
+      "intro": "This Privacy Policy explains how LoyaltyTree collects, uses, stores, shares, protects, and otherwise processes personal data when businesses, staff, customers, members, and website visitors use the LoyaltyTree platform.",
+      "summary": [
+        "Clear controller/processor roles and limited data use",
+        "No selling or renting personal data",
+        "Membership acknowledgement is not blanket marketing consent",
+        "Access, objection, withdrawal and other statutory rights remain available"
+      ],
+      "sections": [
+        {
+          "title": "Scope and privacy roles",
+          "paragraphs": [
+            "This policy applies to LoyaltyTree website visitors, businesses that apply for or use LoyaltyTree, authorized business staff, and customers or members who join a participating business loyalty program. For customer information processed to operate a business-configured loyalty program, the participating business ordinarily determines the customer-facing purpose and rules and generally acts as the personal information controller, while LoyaltyTree generally processes the information on the business’s behalf as a personal information processor. LoyaltyTree may separately act as a personal information controller for processing it determines for its own purposes, including platform accounts, subscription administration, security, fraud prevention, support, legal compliance, and first-party website analytics. Actual roles depend on the specific processing activity and applicable law."
+          ]
+        },
+        {
+          "title": "Information we process",
+          "paragraphs": [
+            "The information depends on the account, loyalty programme and enabled features. We receive information from you, the participating business, authorised staff, your browser or device, Wallet platforms and payment confirmations."
+          ],
+          "bullets": [
+            "Business and account details: legal or trade name, address, contact details, branches, owner/staff accounts, permissions and support requests.",
+            "Customer programme data: name, contact details, card identifiers, points, stamps, visits, tiers, rewards, redemptions, membership, multipass and gift-card activity. Optional birthday, age or profile fields depend on the business configuration.",
+            "Payment and agreement records: subscription selections, payment status, transaction references, invoices, authorised signer details, signature image, acceptance records, document version and hash. Payment providers handle payment credentials according to their own notices.",
+            "Website and technical data: browser/device information, page and Wallet actions, referral/campaign information, pseudonymous visitor/session identifiers, security records and approximate IP-based location.",
+            "Feature-specific data: order/pickup details when ordering is enabled, uploaded business materials, and feedback or support messages."
+          ]
+        },
+        {
+          "title": "Sensitive personal information and data minimization",
+          "paragraphs": [
+            "Philippine law treats age as sensitive personal information. A date of birth can reveal age, so LoyaltyTree treats birthday and age-related processing with heightened safeguards. Businesses should collect birthday, age, health-related, government-issued, or other sensitive information only when necessary for a clearly disclosed and lawful purpose and when the required lawful basis, including specific consent where applicable, exists. LoyaltyTree is not designed as an electronic medical-record system, and businesses must not use general loyalty notes or fields to store diagnoses, medical histories, treatment records, or other unnecessary sensitive health information unless a separate compliant implementation has been expressly agreed."
+          ]
+        },
+        {
+          "title": "Browser storage, analytics and location",
+          "paragraphs": [
+            "The production website uses localStorage for a pseudonymous visitor identifier and sessionStorage for session, campaign and event-deduplication information. Other account and ordering features may use browser storage or cookies for sign-in, security and carts. Browser settings can restrict or clear this storage; some features may then behave differently.",
+            "Public website analytics measure page visits, referral sources and actions. The current analytics application stores coarse country, region and city information rather than raw IP addresses in its analytics event table. An IP address may be processed by infrastructure and, when the fallback lookup is enabled, shared with ipapi.co to estimate this coarse location. Hosting and security logs may be governed by separate retention practices.",
+            "This IP-based website analytics is separate from any location-aware Wallet offer. Any precise-location processing or new tracking integration requires a feature-specific notice and the permissions or lawful basis applicable to that feature. This policy does not promise that device location will always be available."
+          ]
+        },
+        {
+          "title": "How and why information is used",
+          "paragraphs": [
+            "We use information for account and subscription administration, delivering and updating Wallet cards, recording loyalty activity, operating enabled features, customer and business support, preventing misuse, platform security, resolving disputes and meeting legal obligations. Businesses use programme information for their disclosed customer relationship and lawful communications.",
+            "The lawful basis depends on the activity. Account administration may be necessary for a contract; records may be required by law; security and appropriate analytics may rely on a documented legitimate interest where permitted. Consent is obtained where needed, especially for relevant sensitive information or optional marketing. A general acknowledgement of this policy does not itself authorise every marketing or sensitive-data use."
+          ]
+        },
+        {
+          "title": "Participating businesses and customer data",
+          "paragraphs": [
+            "A participating business is responsible for collecting and using its customer information lawfully, providing required notices, obtaining consent when required, limiting collection to what is appropriate, keeping customer-facing program rules accurate, restricting staff access, and ensuring that any instruction given to LoyaltyTree is lawful. LoyaltyTree will process business-controlled customer information only as needed to provide the service, comply with lawful instructions and applicable law, maintain security, and protect legal rights.",
+            "The Business Agreement prohibits selling or renting customer lists, cross-business targeting, personal or unrelated use, unauthorised extraction, and uncontrolled copies. Businesses remain accountable for their staff, providers and exports. A customer retains their statutory privacy rights; business access to a record does not transfer those rights to the business."
+          ]
+        },
+        {
+          "title": "Promotional messages and your choices",
+          "paragraphs": [
+            "Joining a participating business programme or acknowledging this Privacy Policy is not blanket consent to optional promotions. The business must establish the applicable lawful basis and required notice for the specific audience and channel, and obtain separate consent when required. Necessary card, reward, security or transaction updates are distinct from optional marketing.",
+            "You may object to direct marketing or withdraw consent where consent is relied on. Contact the relevant business or theloyaltytree@gmail.com, identifying the programme and channel. The relevant controller must stop the affected promotional processing and may retain a limited suppression record to respect your choice. Where the platform does not offer a suitable preference control, the business must use a compliant alternative before sending."
+          ]
+        },
+        {
+          "title": "Who receives information and international processing",
+          "paragraphs": [
+            "Information may be accessible to the participating business and its authorised staff, LoyaltyTree personnel who need it for their work, and relevant service providers. Depending on the enabled feature, integrations in the code include Supabase, Apple Wallet, Google Wallet, Cloudinary, Resend, PayMongo and the ipapi.co geolocation fallback. These providers have different functions and may act as processors or independent controllers for particular activities.",
+            "Providers may process information outside the Philippines. Applicable safeguards, provider contracts and transfer requirements depend on the processing and destination. Ask our privacy contact for the provider and processing-location information relevant to your account. We do not sell personal data as a standalone business product. We may disclose information when lawfully required or needed to protect rights, investigate misuse or resolve a claim.",
+            "LoyaltyTree does not sell or rent personal data. It does not use Business-controlled customer data for unrelated advertising, another business's targeting, or unrelated AI-model training. A new purpose requires a separately established lawful scope, appropriate notice and legal basis before processing; it is not authorised by a general service-improvement clause. Truly anonymised aggregate information may be used only where individuals cannot reasonably be identified and applicable law permits it."
+          ]
+        },
+        {
+          "title": "Security and personal-data incidents",
+          "paragraphs": [
+            "LoyaltyTree uses reasonable organizational, physical and technical safeguards designed to protect personal data, including access controls, authentication measures, audit records and security monitoring appropriate to the service. No online system can guarantee absolute security. Security incidents and personal-data breaches are assessed and documented, and qualifying breaches will be reported to the National Privacy Commission and affected data subjects within the period required by applicable law. Participating businesses must promptly notify LoyaltyTree of suspected unauthorized access or privacy incidents involving the platform."
+          ]
+        },
+        {
+          "title": "Retention and deletion",
+          "paragraphs": [
+            "Information is kept while needed for the service or a documented legal, accounting, security or dispute purpose. The applicable retention criteria include whether a programme/account is active, whether a payment or claim remains unresolved, statutory record obligations, and the deletion lifecycle of backups. Data is not retained indefinitely merely because it might be useful later.",
+            "Request account or programme-data deletion through the participating business or our privacy contact, depending on who controls that information. We may verify the request, remove or anonymise information where applicable, or explain a lawful reason for retaining specific records. Deleting a Wallet pass does not itself close a membership. Retained backups and required agreement/payment records may have a different deletion timetable from operational data. The detailed retention schedule must be confirmed for the account; no fixed deletion period is promised without a documented applicable schedule."
+          ]
+        },
+        {
+          "title": "Your privacy rights",
+          "paragraphs": [
+            "You may request information about processing, access, correction, objection, withdrawal of consent where applicable, erasure or blocking where warranted, and portability where available under applicable law. Rights can depend on the information and legal basis. Contact the relevant participating business for the programme data it controls; LoyaltyTree will provide appropriate assistance.",
+            "Send a request to theloyaltytree@gmail.com and identify the business, card or account involved. We will request only the information reasonably needed to verify and respond. You may also complain to the Philippine National Privacy Commission at privacy.gov.ph. Mandatory rights under other applicable laws are preserved."
+          ]
+        },
+        {
+          "title": "Minors and vulnerable data subjects",
+          "paragraphs": [
+            "LoyaltyTree is designed primarily for businesses and their customer loyalty programs. A participating business that offers a program to minors or other vulnerable data subjects is responsible for determining the lawful basis, providing age-appropriate notices and obtaining parental, guardian or other consent where required. Businesses should avoid collecting sensitive information that is not necessary to operate the loyalty program."
+          ]
+        },
+        {
+          "title": "Changes to this policy",
+          "paragraphs": [
+            "We may update this Privacy Policy when LoyaltyTree’s features, service providers or legal obligations change. Material changes will be reflected by an updated effective date and, where required, additional notice or a renewed consent or opportunity to object will be provided."
+          ]
+        },
+        {
+          "title": "Privacy contact",
+          "paragraphs": [
+            "LoyaltyTree Information Technology Solutions · Isabela, Philippines. Privacy requests and complaints: theloyaltytree@gmail.com. Phone: +63 939 799 2144. Identify the business or programme involved and the assistance you need; avoid including unnecessary sensitive information. This is the confirmed privacy contact channel, not a statement that a named Data Protection Officer has been appointed."
+          ]
+        },
+        {
+          "title": "Website card previews and business inquiries",
+          "paragraphs": [
+            "Images chosen in the public trial-card designer are processed in the visitor's browser for the preview and are not uploaded by that designer. Business details entered for an email inquiry may be passed to your email application when you choose the email option; an email is sent only when you send it there.",
+            "The Contact Us business-inquiry form submits the details you provide to LoyaltyTree for responding to your inquiry, storing a lead record and/or notifying the team through its email service. Do not include passwords, payment credentials, identification documents or unnecessary customer personal data in an inquiry. This form is separate from the local card-image preview."
+          ]
+        }
+      ],
+      "version": "2026-10-11-v2"
+    },
+    "terms": {
+      "title": "Terms of Service",
+      "intro": "These Terms govern access to and use of LoyaltyTree, including its website, dashboards, digital loyalty cards, Wallet integrations, customer-facing pages, Order Ahead tools, gift-card functionality and related services.",
+      "summary": [
+        "Use customer data only for your lawful business programme",
+        "No sale, cross-business targeting or unauthorised exports",
+        "Document marketing authority and respect opt-outs",
+        "Data misuse can result in immediate restriction or termination"
+      ],
+      "sections": [
+        {
+          "title": "Scope, acceptance and electronic records",
+          "paragraphs": [
+            "These Terms govern access to LoyaltyTree’s website, accounts, dashboards, supported digital cards and enabled features. Business subscription obligations are also set out in the accepted Business Subscription Agreement and its Order Summary. An authorised person must accept the business documents through the documented signup or contracting process.",
+            "Electronic acceptances and signatures are recorded with the relevant document version. Reading or acknowledging the Privacy Policy is not consent to optional marketing. Viewing a public policy page does not sign a Business Agreement or replace an earlier accepted document."
+          ]
+        },
+        {
+          "title": "Service and feature scope",
+          "paragraphs": [
+            "LoyaltyTree provides technology for digital loyalty programs, supported loyalty cards, customer records, staff and branch tools, analytics, announcements, review prompts, subscriptions, tiers, multipasses, gift cards, Order Ahead and integrations such as Google Wallet and Apple Wallet. Features vary by plan and may evolve. Specialized systems, NFC, booking, POS, payment, location, website or other custom integrations may require a separate quotation, statement of work or implementation agreement."
+          ]
+        },
+        {
+          "title": "Participating businesses and customers",
+          "paragraphs": [
+            "Participating businesses independently determine their loyalty offers, prices, rewards, products, services, promotions and customer-facing rules. Unless LoyaltyTree expressly agrees otherwise in writing, the participating business—not LoyaltyTree—is the seller or provider of the business’s underlying goods, food, services, rewards, memberships and consumer offers. LoyaltyTree provides the technology used to administer those programs."
+          ]
+        },
+        {
+          "title": "Accounts, staff access and security",
+          "paragraphs": [
+            "Users must provide accurate information and protect login credentials, PINs, devices and staff access. Business owners are responsible for assigning and removing staff access and for activity performed through credentials and devices under their control, except to the extent caused by LoyaltyTree. Suspected unauthorized access, credential compromise, fraud or security incidents should be reported promptly.",
+            "Use unique assigned owner and staff accounts where the platform supports them; enable available security controls. The Business must maintain an access list, revoke departed staff and protect exported data on its own devices. Do not disclose customer information to support beyond what is necessary for the request."
+          ]
+        },
+        {
+          "title": "Plans, billing and branch counts",
+          "paragraphs": [
+            "The confirmed order identifies the plan, operating branch count, pricing region, currency, billing period, taxes/charges and optional items before payment. Philippine self-service subscriptions have a 3-month minimum, with 3-month, 6-month and annual options. The annual package provides 12 months of access for the price of 10 monthly reference periods. International options and quotes may differ.",
+            "Administrators can correct the recorded operating branch count used for billing. A changed price or scope must be disclosed before a new payment or separately agreed adjustment. Signing an agreement does not itself charge a payment method. Renewal is not automatic unless a separate recurring-payment arrangement is expressly accepted.",
+            "A business may request non-renewal or stop using the service. For voluntary early cancellation of an activated prepaid period, access continues until its paid expiry and there is no prorated refund solely because use stops early. This does not remove refunds or other remedies required by law, or agreed remedies for LoyaltyTree’s failure to deliver. Approved physical-kit and custom-project terms apply to those purchases."
+          ]
+        },
+        {
+          "title": "Rewards, points, stamps, subscriptions and gift cards",
+          "paragraphs": [
+            "Rewards, discounts, points, stamps, tiers, subscriptions, multipasses, coupons and similar benefits are offered and fulfilled by the participating business unless expressly stated otherwise. The business is responsible for its published loyalty rules and lawful redemption decisions. A paid gift card or stored-value instrument must be configured and honored in accordance with applicable Philippine gift-card law, including rules concerning expiry and unused value. Promotional vouchers, coupons and loyalty rewards may be subject to different legal rules and merchant terms."
+          ]
+        },
+        {
+          "title": "Order Ahead and internet transactions",
+          "paragraphs": [
+            "Where a participating business uses LoyaltyTree Order Ahead, the business remains responsible for the accuracy of its menu or catalogue, pricing, availability, taxes, fulfillment, food or product quality, pickup or delivery commitments, statutory receipts or invoices, cancellations, refunds and consumer remedies. LoyaltyTree may provide ordering, status, payment-integration and communication technology but does not become the merchant of the underlying goods or services unless a separate written agreement expressly states otherwise. Users must provide accurate contact and order information and use the ordering service lawfully."
+          ]
+        },
+        {
+          "title": "Promotions and permits",
+          "paragraphs": [
+            "A participating business is responsible for determining whether a campaign, contest, limited-period promotion, promise of gain, promotional reward or other activity requires a Department of Trade and Industry sales-promotion permit or other regulatory approval and for obtaining that approval before publication or launch. LoyaltyTree may suspend or remove a promotion that appears unlawful, misleading or unsupported by required approvals."
+          ]
+        },
+        {
+          "title": "Customer communications and direct marketing",
+          "paragraphs": [
+            "Before sending promotional communications, the Business must document the applicable lawful basis for the specific purpose, channel and audience, provide the required notice, and obtain separate, freely given, specific and informed consent where consent is required. A membership enrolment, reward transaction, Privacy Policy acknowledgement or public contact detail is not blanket permission for optional marketing.",
+            "Consent records, where relied on, must identify the person, purpose/channel, notice version, date, method and any withdrawal. Promotional consent must not be obtained through pre-ticked boxes, misleading notices or an unnecessary condition of accessing the core loyalty service.",
+            "Provide an accessible way to object or withdraw, respect restrictions before further promotional sends and maintain a protected suppression record limited to enforcing the preference. Do not re-import an opted-out customer to bypass the restriction. If a configured feature cannot respect the relevant audience preferences, do not use it to send to that audience until a compliant process is in place.",
+            "Necessary transactional or membership messages must remain limited to that purpose. Do not disguise advertisements as security, billing, redemption or operational updates. The Business remains responsible for its message content; LoyaltyTree must fulfil its own applicable processor/controller duties."
+          ]
+        },
+        {
+          "title": "Acceptable use",
+          "paragraphs": [
+            "Users may not use LoyaltyTree for unlawful, fraudulent, deceptive, abusive, infringing or unauthorized activity; dishonestly manipulate loyalty balances or transaction records; access another account without permission; interfere with security; distribute malicious code; overload or improperly scrape the service; bypass plan or integration restrictions; or collect, upload or use personal data without an appropriate lawful basis."
+          ]
+        },
+        {
+          "title": "Privacy and data protection",
+          "paragraphs": [
+            "Use of LoyaltyTree is subject to the Privacy Policy and, where applicable to a participating business, the Business Agreement and any Data Processing Addendum or privacy terms incorporated into the service agreement. Businesses remain responsible for their own customer-facing notices, lawful instructions and compliance obligations."
+          ]
+        },
+        {
+          "title": "Third-party services and Wallet platforms",
+          "paragraphs": [
+            "LoyaltyTree may interoperate with third-party hosting, database, storage, Wallet, communications, analytics, security and payment services. Those providers may have separate terms and policies. Integration availability, functionality and approval may change because of third-party rules, device compatibility, network conditions or technical requirements. LoyaltyTree is not responsible for a third party’s independent acts or outages except to the extent responsibility cannot legally be excluded."
+          ]
+        },
+        {
+          "title": "Intellectual property and business content",
+          "paragraphs": [
+            "LoyaltyTree retains rights in its platform software, designs, branding, documentation and original materials. Businesses retain rights in their names, logos, product content and other materials they submit and grant LoyaltyTree a non-exclusive permission to host, display, reproduce, transform and transmit those materials as reasonably necessary to provide the service. Businesses represent that they have the rights needed for submitted content."
+          ]
+        },
+        {
+          "title": "Availability, maintenance and changes",
+          "paragraphs": [
+            "We aim to provide a reliable service but do not guarantee uninterrupted or error-free operation. Maintenance, third-party outages, internet failures, device incompatibility and security events may affect availability. Features may be improved, modified, replaced or discontinued when reasonably necessary, subject to any specific written commitments in an applicable order or custom-development agreement."
+          ]
+        },
+        {
+          "title": "Suspension, termination and data",
+          "paragraphs": [
+            "Access may be restricted or suspended for material breach, security risk, fraud, unlawful activity, nonpayment, abuse or misuse. A user may stop using the service subject to applicable billing and Business Agreement obligations. Data following account closure will be handled according to the Privacy Policy, applicable retention requirements and any business-specific data-processing terms."
+          ]
+        },
+        {
+          "title": "Responsibility, business results and liability",
+          "paragraphs": [
+            "LoyaltyTree does not promise a particular sales, retention or revenue result. Participating businesses remain responsible for their own offers and fulfilment. LoyaltyTree remains responsible for its own contractual obligations and applicable legal duties.",
+            "For claims by a subscribing business under the standard subscription relationship, the liability allocation in the accepted Business Subscription Agreement applies, including the confirmed 6-month subscription-fee cap and its exceptions. This B2B cap is not applied to a customer’s non-waivable statutory rights. Nothing excludes liability or a consumer, privacy or other right that applicable law does not permit the parties to exclude."
+          ]
+        },
+        {
+          "title": "Complaints, disputes, governing law and contact",
+          "paragraphs": [
+            "These Terms are governed by the laws of the Republic of the Philippines, without prejudice to mandatory rights that apply. Complaints may be sent to theloyaltytree@gmail.com and should include enough information to identify the account or transaction at issue. The parties should first attempt in good faith to resolve disputes directly. For internet transactions covered by applicable law, required internal redress and regulatory remedies remain available."
+          ]
+        },
+        {
+          "title": "Document priority and revisions",
+          "paragraphs": [
+            "The accepted Order Summary and Business Subscription Agreement govern business-specific commercial terms. The Data Processing Addendum controls processing of business-controlled data. A separately signed statement of work controls only the custom scope it expressly addresses. These Terms supplement those documents.",
+            "Material future changes will be communicated as required and, where necessary, accepted for the affected period. Existing signed document snapshots remain the record of what was accepted; publication of a new version does not silently rewrite them.",
+            "Material changes must be communicated through the applicable notice and acceptance process. Existing signed versions and hashes are preserved. Publication of a new version does not silently rewrite an earlier signed agreement; renewed acceptance must be recorded where required before applying new contractual obligations to that business."
+          ]
+        },
+        {
+          "title": "Customer data: permitted use and prohibited misuse",
+          "paragraphs": [
+            "These restrictions apply to the Business and everyone it authorises. They apply within the platform and to exports, screenshots, downloaded files and other copies. The Business must be able to show the purpose, authority and safeguards for its processing.",
+            "These restrictions do not prevent a lawful data-subject access or portability request, a legally required disclosure, or an authorised migration/return of the Business's own programme data. Such transfers must still be limited, secure and documented. Customer statutory rights cannot be made conditional on marketing consent or payment of a disputed subscription fee."
+          ],
+          "bullets": [
+            "Use customer data only for the disclosed and lawful purposes of your own business programme, authorised support, required records and applicable legal obligations. Access to a record is not ownership of the individual or permission for a new use.",
+            "Do not sell, rent, broker, trade or commercially license customer personal data or customer lists obtained through LoyaltyTree. Do not disclose them to another business for its customer targeting.",
+            "Do not access, scrape, copy, combine or exploit another business's customer records, Wallet identifiers, reports or staff data, even if a technical error makes them visible. Do not attempt to identify people from anonymised reports or combine them with external data to do so.",
+            "Do not use customer information for personal purposes, harassment, stalking, doxxing, deceptive profiling, political campaigning or unrelated lead generation. Do not publish customer lists or identifiable visit, purchase or reward history.",
+            "Do not upload customer records to public AI tools, use them to train an unrelated AI model, create third-party advertising audiences or send them to an external profiling/enrichment service unless a separate written processing scope expressly permits the activity and all applicable notices, lawful bases, provider safeguards and customer choices have been established before processing.",
+            "Do not import purchased, scraped, leaked or otherwise unauthorised personal-data lists. Maintain evidence of lawful collection and instructions for imports; a public social-media profile does not itself establish permission for every subsequent use.",
+            "Do not place unnecessary health records, medical diagnoses, government-ID copies, full payment-card details, passwords or other highly sensitive information in general loyalty fields. Birthday or age information requires the applicable sensitive-data basis and safeguards.",
+            "Authorise staff only for duties that require access, protect credentials and devices, prohibit sharing personal owner/staff credentials, and promptly remove access when a person changes duties or leaves. Staff, agencies and contractors must be subject to confidentiality and these restrictions.",
+            "Use approved export functions only for authorised programme administration, lawful migration, rights requests, required records or another documented lawful purpose. Limit fields and recipients, protect files and transfers with appropriate encryption/access controls, record who authorised and received the export, and dispose of unnecessary copies securely.",
+            "Do not put exports or screenshots in public/shared-by-link folders, personal unmanaged drives, unauthorised chats, unprotected removable media or uncontrolled spreadsheets. An export remains subject to the same privacy, retention and confidentiality duties after leaving LoyaltyTree.",
+            "Do not bypass tenant boundaries, authentication, staff roles, export limits, plan restrictions or security controls. Do not probe, automate abusive extraction, or conduct intrusive security tests without prior written authorisation. Report accidental exposure privately and stop accessing the affected information."
+          ]
+        },
+        {
+          "title": "Data-misuse investigation and enforcement",
+          "paragraphs": [
+            "Suspected unauthorised processing, account compromise or disclosure must be reported to theloyaltytree@gmail.com promptly after discovery. Stop the affected processing, secure access, preserve relevant evidence and cooperate with containment and lawful notifications; do not wait for a completed investigation or conceal an incident.",
+            "Where reasonably necessary to protect people, data or the service, LoyaltyTree may immediately restrict access, disable an affected integration or export, pause a communication, or suspend an account while assessing the facts. Immediate action need not wait for a warning or cure period. Where lawful and practicable, LoyaltyTree will explain the reason and required corrective steps; a Business may submit contrary evidence or request review through the official contact channel.",
+            "Restoration may depend on removing unauthorised access or copies, correcting practices, documenting the lawful basis and demonstrating adequate controls. Material, repeated or intentional misuse may lead to termination and lawful regulatory reporting or legal remedies. These rights do not mean that every action is automatically monitored or technically blocked.",
+            "A compliance request must be proportionate: relevant consent/notice records, access authorisations, provider arrangements, export records or incident facts may be requested with unnecessary personal data redacted. Neither party may demand unrelated records or expose another business's data. Customer rights and necessary breach notifications continue during suspension."
+          ]
+        }
+      ],
+      "version": "2026-10-11-v2"
+    },
+    "business-agreement": {
+      "title": "Business Subscription Agreement",
+      "intro": "Standard business subscription terms, including Annex A — Data Processing Addendum and Annex B — Plan Features. The accepted Order Summary completes the commercial details.",
+      "summary": [
+        "Same data-use restrictions as the Terms and signed signup contract",
+        "6-month ordinary B2B liability cap with stated exceptions",
+        "Paid access continues until expiry on voluntary early cancellation",
+        "DPA, data-misuse enforcement and accepted versions are included"
+      ],
+      "sections": [
+        {
+          "title": "Parties, order and authorised acceptance",
+          "paragraphs": [
+            "This Business Subscription Agreement is between LoyaltyTree Information Technology Solutions, Isabela, Philippines (LoyaltyTree), and the business identified in the accepted Order Summary (Business). The Order Summary, this Agreement and Annex A form the subscription contract.",
+            "The authorised signer confirms their authority to bind the Business. The accepted version, completed order details, signer name/title, electronic signature, confirmations, timestamp and document hash are retained as the acceptance record. Signing records the agreement; payment is a separate step. Viewing the public agreement does not create an account or charge a fee."
+          ]
+        },
+        {
+          "title": "Service, selected plan and support",
+          "paragraphs": [
+            "LoyaltyTree provides digital loyalty software, supported Apple Wallet and Google Wallet cards, staff/customer tools, analytics and communications included in the selected plan. Annex B records the current standard plan features; the specific accepted Order Summary controls the purchased package. “All card types” means supported card types in the standard platform, not every conceivable custom card.",
+            "Starter includes points and stamps, 2 announcements per paid cycle, unlimited members and standard stamp/point activity, and automated chat support. Growth includes supported card types, 5 announcements, gift-card functionality where available, unlimited members and real-person chat support. Pro includes Growth, 7 announcements, POS integration subject to compatibility and agreed implementation scope, and chat and call customer service. Special features require a separate confirmed quote and scope.",
+            "Support hours, response targets, custom integration scope and third-party costs must be stated in the order where applicable. Inclusion of a support channel does not promise 24-hour availability or an unagreed response-time guarantee. Custom systems, hardware, deployment or non-standard work may require a separate statement of work."
+          ]
+        },
+        {
+          "title": "Fees, operating branches, renewal and cancellation",
+          "paragraphs": [
+            "The Business pays the price shown in the accepted Order Summary, with its plan, operating branch count, region, currency and prepaid term. Philippine self-service terms are 3 months, 6 months or annually; the annual price is 10 monthly reference periods for 12 months of access. Other markets follow the options stated in their confirmed order.",
+            "A successful payment activates or extends the applicable access period. No automatic renewal or recurring debit is assumed unless separately disclosed and accepted. The Business should renew before expiry to maintain access. Nonpayment can leave a new account pending or cause an expired account to be limited or suspended.",
+            "LoyaltyTree administrators may correct recorded operating branch counts. Applicable branch pricing and any separately charged adjustment must be disclosed before payment; an administrative correction does not authorise an undisclosed retrospective fee. Extra taxes, setup, integration, hardware, delivery or provider charges must be disclosed or agreed.",
+            "A Physical QR / PR Kit, if selected and available in the market, is charged once at the amount shown in the Order Summary. For the current Philippine standard kit, the reference charge is PHP150 per selected branch. Fulfilment begins after payment confirmation. Custom work and physical items follow their confirmed order/fulfilment terms.",
+            "For voluntary early cancellation of an activated prepaid subscription, the Business retains access until the paid expiry and receives no prorated refund merely because it stops using the service. Non-renewal does not itself delete account data. Refunds required by law, agreed remedies for failure to deliver, erroneous charges and any expressly agreed refund terms remain available. Security- or breach-related suspension may occur under the separate suspension clause."
+          ]
+        },
+        {
+          "title": "Business loyalty-program responsibility",
+          "paragraphs": [
+            "The Business controls the customer-facing loyalty offer, including points, stamps, tiers, subscriptions, memberships, multipasses, coupons, rewards, redemption rules, benefits, promotions, and program-specific expiration rules where legally permitted.",
+            "The Business is responsible for the accuracy, legality, and fulfillment of its goods, services, rewards, discounts, benefits, representations, and customer promises. LoyaltyTree supplies the technology and does not become the seller of the Business's underlying goods or services merely because the transaction or loyalty activity is recorded through the platform."
+          ]
+        },
+        {
+          "title": "Customer data and privacy roles",
+          "paragraphs": [
+            "For customer information processed to operate the Business's loyalty program, the Business generally determines the purposes and means of that customer relationship and is responsible for its applicable obligations as a personal information controller. LoyaltyTree generally processes that information to provide the contracted platform and may act as a personal information processor for that processing.",
+            "LoyaltyTree may separately act as a personal information controller for data it determines and processes for its own account administration, billing, security, legal compliance, support, fraud prevention, and first-party platform analytics.",
+            "Each party will comply with its applicable obligations under Philippine data-protection law. The Business must provide required privacy notices, establish an appropriate lawful basis, obtain consent when required, collect only appropriate information, and not instruct LoyaltyTree to process data unlawfully."
+          ]
+        },
+        {
+          "title": "Customer communications and direct marketing",
+          "paragraphs": [
+            "Before sending promotional communications, the Business must document the applicable lawful basis for the specific purpose, channel and audience, provide the required notice, and obtain separate, freely given, specific and informed consent where consent is required. A membership enrolment, reward transaction, Privacy Policy acknowledgement or public contact detail is not blanket permission for optional marketing.",
+            "Consent records, where relied on, must identify the person, purpose/channel, notice version, date, method and any withdrawal. Promotional consent must not be obtained through pre-ticked boxes, misleading notices or an unnecessary condition of accessing the core loyalty service.",
+            "Provide an accessible way to object or withdraw, respect restrictions before further promotional sends and maintain a protected suppression record limited to enforcing the preference. Do not re-import an opted-out customer to bypass the restriction. If a configured feature cannot respect the relevant audience preferences, do not use it to send to that audience until a compliant process is in place.",
+            "Necessary transactional or membership messages must remain limited to that purpose. Do not disguise advertisements as security, billing, redemption or operational updates. The Business remains responsible for its message content; LoyaltyTree must fulfil its own applicable processor/controller duties."
+          ]
+        },
+        {
+          "title": "Staff access, account security, and transaction records",
+          "paragraphs": [
+            "The Business decides which owners, managers, cashiers, staff, or agents receive access and must keep credentials, devices, PINs, and sessions secure and remove access when no longer authorized.",
+            "The Business is responsible for internal controls over points, stamps, visits, redemptions, memberships, coupons, and other activities performed by authorized personnel. LoyaltyTree may retain audit and transaction records for security, support, fraud prevention, accounting, and dispute investigation.",
+            "The Business must maintain an access list, ensure staff confidentiality, use assigned accounts and promptly revoke access when employment or duties change. Do not share owner credentials or allow a former employee to retain customer exports. The Business must train authorised personnel on permitted data use and incident reporting."
+          ]
+        },
+        {
+          "title": "Third-party services and integrations",
+          "paragraphs": [
+            "LoyaltyTree may depend on third-party services such as Apple Wallet, Google Wallet, hosting, database, cloud storage, image hosting, analytics, email, communications, and payment providers. Those providers may have their own terms, technical requirements, availability, approvals, and policies.",
+            "LoyaltyTree will use reasonable efforts to maintain supported integrations but does not guarantee that a third-party provider will never change, suspend, reject, or discontinue an integration or API."
+          ]
+        },
+        {
+          "title": "Order Ahead, payments, and merchant responsibility",
+          "paragraphs": [
+            "When Order Ahead, online ordering, booking, or payment features are enabled for the Business, the Business remains the merchant or service provider for its underlying products and services unless a separate written agreement expressly states otherwise.",
+            "The Business is responsible for product descriptions, prices, availability, preparation, fulfillment, statutory receipts or invoices, cancellations, refunds, consumer complaints, product or food quality, and other merchant obligations applicable to its transaction. LoyaltyTree remains responsible for obligations imposed on LoyaltyTree by law based on its own role and cannot exclude rights or liabilities that cannot lawfully be excluded.",
+            "This allocation does not remove any direct statutory duties or liability of LoyaltyTree based on its actual role in an online transaction. Required complaints and redress channels remain available."
+          ]
+        },
+        {
+          "title": "Gift cards, promotions, and regulated offers",
+          "paragraphs": [
+            "The Business is responsible for ensuring that gift cards, promotional vouchers, sales promotions, discounts, contests, and other offers configured through LoyaltyTree comply with applicable Philippine law and any required permits or disclosures.",
+            "Paid stored-value gift cards must be distinguished from free promotional rewards or vouchers. LoyaltyTree may impose product safeguards or configuration limits intended to support legal compliance, but the Business remains responsible for its offer and regulatory obligations."
+          ]
+        },
+        {
+          "title": "Intellectual property and business branding",
+          "paragraphs": [
+            "LoyaltyTree retains its rights in the platform software, code, system architecture, designs, branding, documentation, and original materials. The Business retains its rights in its own name, logo, photos, marks, and content.",
+            "The Business grants LoyaltyTree permission to host, reproduce, resize, process, and display submitted business materials only as reasonably necessary to provide the service, generate digital cards and QR materials, support the account, and create promotional material specifically agreed with the Business."
+          ]
+        },
+        {
+          "title": "Availability, maintenance, and platform changes",
+          "paragraphs": [
+            "LoyaltyTree will use reasonable efforts to provide a reliable service but does not guarantee uninterrupted or error-free operation. Maintenance, security work, internet failures, third-party outages, device compatibility, and events outside reasonable control may affect availability.",
+            "Features may be improved, modified, replaced, or discontinued when reasonably necessary, subject to applicable contractual commitments and law."
+          ]
+        },
+        {
+          "title": "Acceptable use",
+          "paragraphs": [
+            "The Business must not use LoyaltyTree for unlawful, fraudulent, deceptive, abusive, infringing, or unauthorized activity; manipulate loyalty balances dishonestly; access another account without authorization; bypass plan or security restrictions; distribute malicious code; overload or improperly scrape the service; or process customer information without an appropriate legal basis."
+          ]
+        },
+        {
+          "title": "Suspension, termination, and account data",
+          "paragraphs": [
+            "LoyaltyTree may restrict, suspend, or terminate access for material breach, nonpayment, fraud, unlawful processing, abuse, misuse, security threats, or conduct that creates material risk to the platform or other users. Where appropriate, LoyaltyTree will use reasonable efforts to provide notice and an opportunity to resolve the issue.",
+            "After termination, information will be retained, returned, deleted, or restricted according to applicable law, legitimate security and dispute needs, contractual requirements, the Privacy Policy, and the Data Processing Addendum below."
+          ]
+        },
+        {
+          "title": "Confidentiality",
+          "paragraphs": [
+            "Each party will protect the other party’s non-public business, technical, security and customer information with reasonable care, limit use to the relationship or another lawful purpose, and restrict disclosure to authorised personnel/providers under appropriate obligations.",
+            "Exceptions are information lawfully public, independently developed, rightfully received without confidentiality restrictions or required to be disclosed by law. Where lawful and practicable, the disclosing party will give notice of a compelled disclosure. These duties continue for information that remains confidential after the subscription ends."
+          ]
+        },
+        {
+          "title": "Business results and liability",
+          "paragraphs": [
+            "LoyaltyTree does not guarantee any particular increase in sales, revenue, repeat visits, customer response or growth. Each party remains responsible for its own acts, omissions, personnel and legal obligations.",
+            "To the extent permitted by law, LoyaltyTree’s aggregate liability arising from the standard Business subscription relationship is capped at the subscription fees paid for access provided during the 6 months immediately before the event giving rise to the claim. Prepaid fees are allocated evenly over the access period they cover, rather than counted only on the payment date. Custom-project liability may be separately agreed.",
+            "The cap does not apply to fraud, wilful misconduct, gross negligence, confidentiality or data-protection breaches, intellectual-property infringement, or liability that cannot lawfully be limited. Neither party excludes a mandatory statutory remedy. Indirect or consequential business losses are excluded only to the extent permitted by law and subject to these exceptions."
+          ]
+        },
+        {
+          "title": "Custom work and separate Scope of Work",
+          "paragraphs": [
+            "Specialized systems, custom integrations, websites, POS integrations, NFC/contactless deployments, booking systems, Order Ahead customizations, hardware, migrations, or other project work may be governed by a separate quotation, proposal, statement of work, implementation schedule, or signed project agreement.",
+            "For a specific custom project, the specialized written agreement controls to the extent it expressly conflicts with this standard subscription agreement."
+          ]
+        },
+        {
+          "title": "Governing documents, notices and disputes",
+          "paragraphs": [
+            "Philippine law governs this standard agreement, without excluding mandatory rights under other applicable laws. The parties should first seek a good-faith resolution through the official contact channel; legally available court, regulatory and other remedies remain available.",
+            "The accepted Order Summary governs specific quantities, price and term. This Agreement governs the subscription; Annex A controls data processing. A signed custom statement of work controls only the custom scope and express departures it identifies. The Terms of Service supplement these documents. The Privacy Policy describes privacy practices and does not reduce the processing obligations in Annex A.",
+            "Notices should identify the Business and account/order involved. Contact LoyaltyTree at theloyaltytree@gmail.com or +63 939 799 2144. Accepted document snapshots and hashes must be preserved; future revisions do not overwrite an earlier signed agreement.",
+            "Material revisions require the applicable notice and acceptance process. A published update does not replace an existing signed snapshot. New signup acceptances must identify the then-current Agreement, DPA, Terms and Privacy versions and preserve their exact content."
+          ]
+        },
+        {
+          "title": "Customer data: permitted use and prohibited misuse",
+          "paragraphs": [
+            "These restrictions apply to the Business and everyone it authorises. They apply within the platform and to exports, screenshots, downloaded files and other copies. The Business must be able to show the purpose, authority and safeguards for its processing.",
+            "These restrictions do not prevent a lawful data-subject access or portability request, a legally required disclosure, or an authorised migration/return of the Business's own programme data. Such transfers must still be limited, secure and documented. Customer statutory rights cannot be made conditional on marketing consent or payment of a disputed subscription fee."
+          ],
+          "bullets": [
+            "Use customer data only for the disclosed and lawful purposes of your own business programme, authorised support, required records and applicable legal obligations. Access to a record is not ownership of the individual or permission for a new use.",
+            "Do not sell, rent, broker, trade or commercially license customer personal data or customer lists obtained through LoyaltyTree. Do not disclose them to another business for its customer targeting.",
+            "Do not access, scrape, copy, combine or exploit another business's customer records, Wallet identifiers, reports or staff data, even if a technical error makes them visible. Do not attempt to identify people from anonymised reports or combine them with external data to do so.",
+            "Do not use customer information for personal purposes, harassment, stalking, doxxing, deceptive profiling, political campaigning or unrelated lead generation. Do not publish customer lists or identifiable visit, purchase or reward history.",
+            "Do not upload customer records to public AI tools, use them to train an unrelated AI model, create third-party advertising audiences or send them to an external profiling/enrichment service unless a separate written processing scope expressly permits the activity and all applicable notices, lawful bases, provider safeguards and customer choices have been established before processing.",
+            "Do not import purchased, scraped, leaked or otherwise unauthorised personal-data lists. Maintain evidence of lawful collection and instructions for imports; a public social-media profile does not itself establish permission for every subsequent use.",
+            "Do not place unnecessary health records, medical diagnoses, government-ID copies, full payment-card details, passwords or other highly sensitive information in general loyalty fields. Birthday or age information requires the applicable sensitive-data basis and safeguards.",
+            "Authorise staff only for duties that require access, protect credentials and devices, prohibit sharing personal owner/staff credentials, and promptly remove access when a person changes duties or leaves. Staff, agencies and contractors must be subject to confidentiality and these restrictions.",
+            "Use approved export functions only for authorised programme administration, lawful migration, rights requests, required records or another documented lawful purpose. Limit fields and recipients, protect files and transfers with appropriate encryption/access controls, record who authorised and received the export, and dispose of unnecessary copies securely.",
+            "Do not put exports or screenshots in public/shared-by-link folders, personal unmanaged drives, unauthorised chats, unprotected removable media or uncontrolled spreadsheets. An export remains subject to the same privacy, retention and confidentiality duties after leaving LoyaltyTree.",
+            "Do not bypass tenant boundaries, authentication, staff roles, export limits, plan restrictions or security controls. Do not probe, automate abusive extraction, or conduct intrusive security tests without prior written authorisation. Report accidental exposure privately and stop accessing the affected information."
+          ]
+        },
+        {
+          "title": "Data-misuse investigation and enforcement",
+          "paragraphs": [
+            "Suspected unauthorised processing, account compromise or disclosure must be reported to theloyaltytree@gmail.com promptly after discovery. Stop the affected processing, secure access, preserve relevant evidence and cooperate with containment and lawful notifications; do not wait for a completed investigation or conceal an incident.",
+            "Where reasonably necessary to protect people, data or the service, LoyaltyTree may immediately restrict access, disable an affected integration or export, pause a communication, or suspend an account while assessing the facts. Immediate action need not wait for a warning or cure period. Where lawful and practicable, LoyaltyTree will explain the reason and required corrective steps; a Business may submit contrary evidence or request review through the official contact channel.",
+            "Restoration may depend on removing unauthorised access or copies, correcting practices, documenting the lawful basis and demonstrating adequate controls. Material, repeated or intentional misuse may lead to termination and lawful regulatory reporting or legal remedies. These rights do not mean that every action is automatically monitored or technically blocked.",
+            "A compliance request must be proportionate: relevant consent/notice records, access authorisations, provider arrangements, export records or incident facts may be requested with unnecessary personal data redacted. Neither party may demand unrelated records or expose another business's data. Customer rights and necessary breach notifications continue during suspension."
+          ]
+        },
+        {
+          "title": "Business responsibility for data misuse and third-party claims",
+          "paragraphs": [
+            "To the extent permitted by law, the Business is responsible for proven loss and reasonable response or defence costs resulting from its unlawful data processing, breach of these data-use restrictions, unauthorised staff/provider access attributable to it, or unlawful instructions it gives. It must indemnify LoyaltyTree against third-party claims to the extent caused by those acts; amounts must be supported, reasonable and legally recoverable.",
+            "This obligation does not shift responsibility for LoyaltyTree's own unlawful acts, negligence or breach, waive a customer's rights, or transfer a statutory fine or duty that cannot legally be transferred. A party seeking indemnity must give prompt notice, permit reasonable participation in the defence and mitigate loss; no settlement imposing an admission, payment or continuing duty on the other party may be made without that party's written consent.",
+            "The six-month subscription-fee cap limits LoyaltyTree's ordinary B2B contractual liability only as stated in the liability clause. It does not cap the Business's responsibility for data misuse or either party's non-excludable duties. No automatic contractual fine or forfeiture is imposed by this clause."
+          ]
+        }
+      ],
+      "dpa": [
+        {
+          "title": "Processing instructions and roles",
+          "paragraphs": [
+            "The Business is ordinarily the personal information controller for its own customer loyalty programme; LoyaltyTree processes that information on the Business's documented instructions to provide the contracted service. LoyaltyTree separately controls its own account administration, billing, security and legal-compliance processing. Roles depend on the actual activity.",
+            "LoyaltyTree will not sell or rent Business-controlled customer personal data, use it for another business's targeting, unrelated advertising or unrelated AI-model training, or expand processing under a general service-improvement permission. Documented instructions and a separately established lawful scope are required for a new purpose. Where law requires processing outside those instructions, LoyaltyTree will inform the Business unless legally prohibited.",
+            "If an instruction appears unlawful, LoyaltyTree will promptly inform the Business and may refuse or suspend the affected instruction until resolved. Neither the Business's approval nor this Addendum makes an unlawful processing activity permissible."
+          ]
+        },
+        {
+          "title": "Categories of data and processing",
+          "paragraphs": [
+            "Depending on the Business configuration, processing may include customer names and contact details; digital-card identifiers; points, stamps, visits, tiers, rewards, coupons, membership or multipass activity; birthday or age information when configured; communication preferences; branch and staff transaction records; wallet/device identifiers; support records; and related loyalty activity.",
+            "Processing may include collection, recording, organization, storage, retrieval, consultation, transmission to approved service providers, updating, analytics, security monitoring, restriction, deletion, and other operations reasonably necessary to provide the service."
+          ]
+        },
+        {
+          "title": "Subject matter, purpose and duration",
+          "paragraphs": [
+            "The subject matter is operation and support of the Business’s configured digital loyalty and enabled customer-engagement features. Processing lasts for the subscription and any limited, documented return/deletion or lawful preservation period. Data subjects include programme customers/members and relevant authorised staff/contact people.",
+            "Processing can include collection, recording, storage, updates, retrieval, Wallet delivery, communications, reports, support, security, return and deletion, as needed for the agreed service. Data categories are listed in A2 and limited to the enabled configuration."
+          ]
+        },
+        {
+          "title": "Confidentiality and security",
+          "paragraphs": [
+            "LoyaltyTree will use reasonable organizational and technical safeguards appropriate to the nature of the processing and will limit access to personnel and service providers who need access for authorized purposes and are subject to appropriate confidentiality or contractual obligations.",
+            "Access must be limited to authorised personnel and providers with a need to know and appropriate confidentiality obligations. Each party must protect credentials and copies, review access, train relevant personnel and implement security appropriate to the data and risk. These obligations survive termination while confidential or personal data remain held."
+          ]
+        },
+        {
+          "title": "Service providers and international processing",
+          "paragraphs": [
+            "The Business authorises providers needed for hosting, database/storage, Wallet delivery, communications, payments, security and enabled integrations, subject to their actual role. LoyaltyTree will maintain information on relevant processors, services and processing locations and impose appropriate processor terms where it appoints a subprocessor.",
+            "For a material new or replacement subprocessor, LoyaltyTree will provide notice in time for the Business to raise a reasonable data-protection concern before the relevant processing, except where an urgent security change requires immediate action and prompt follow-up notice. The parties will seek a compliant solution; an unresolved concern must be addressed in writing before affected processing continues.",
+            "International processing must use applicable safeguards and meet relevant transfer requirements. Some Wallet/payment providers act under their own independent terms. Describing a provider as an integration does not make it a subprocessor for every activity or transfer responsibility away from either party."
+          ]
+        },
+        {
+          "title": "Data-subject requests",
+          "paragraphs": [
+            "Where the Business is the controller, the Business is primarily responsible for responding to requests from its customers. LoyaltyTree will provide reasonable assistance appropriate to its role and the functionality of the service for access, correction, objection, erasure/blocking, portability, or other applicable rights."
+          ]
+        },
+        {
+          "title": "Personal-data breaches",
+          "paragraphs": [
+            "Each party must promptly notify the other of a suspected platform compromise or personal-data breach affecting the contracted processing upon awareness or reasonable belief. LoyaltyTree will notify the Business without undue delay and provide an initial report with available facts; it will not wait for a completed investigation or final confirmation.",
+            "The parties must contain the incident, preserve relevant evidence, identify affected data and people, cooperate on remedies and provide follow-up information as it becomes available. Neither party may conceal the incident or impede required notifications.",
+            "Each party remains responsible for its own notification duties based on its actual role. Where Philippine law requires notification of the NPC and affected data subjects, the applicable 72-hour deadline runs from knowledge or reasonable belief of a notifiable breach; the parties may not restart it by delaying confirmation. All incidents must be assessed against the applicable notification conditions and documented."
+          ]
+        },
+        {
+          "title": "Return, deletion and limited preservation",
+          "paragraphs": [
+            "On termination or a valid documented instruction, the parties will arrange a lawful return, export, deletion or restriction of Business-controlled data, subject to the documented account retention and backup schedule. LoyaltyTree will identify any retained categories and lawful reason. The detailed deletion/export periods must be confirmed for the account rather than assumed from cancellation alone.",
+            "Independent controller records such as payment, security, disputes or signed agreements may need separate lawful retention. Retained Business-controlled data remains protected and restricted to the reason for retention. Operational deletion and expiration from backups may occur on different documented cycles.",
+            "At the Business's lawful choice, Business-controlled personal data must be returned or deleted at the end of processing, including copies except where lawful preservation applies. Any preservation must have a documented category, purpose and retention schedule; access remains restricted and data must not be repurposed for marketing. An unpaid fee does not remove an individual's statutory rights."
+          ]
+        },
+        {
+          "title": "Assistance, information and review",
+          "paragraphs": [
+            "LoyaltyTree will provide reasonable assistance relevant to its processing for data-subject requests, incident assessment, security/privacy reviews and applicable controller obligations. It will make information needed to demonstrate its processor commitments available and allow proportionate audits or reviews under agreed security, confidentiality and scheduling arrangements.",
+            "Review arrangements must protect other businesses’ information and the platform’s security. A paid additional service, if proposed, must be disclosed and agreed; it does not reduce a legally required duty. Personnel handling Business-controlled information must be authorised and subject to confidentiality obligations."
+          ]
+        },
+        {
+          "title": "Business instructions and warranties",
+          "paragraphs": [
+            "The Business represents that it has the authority and appropriate lawful basis to provide personal data to LoyaltyTree and to instruct the processing described in this Addendum. The Business must not use LoyaltyTree as an electronic medical record system or place unnecessary medical diagnoses, treatment histories, or other highly sensitive information into general loyalty notes unless a separate approved implementation expressly supports that processing.",
+            "The permitted-use and data-misuse restrictions in the Agreement apply to all processing and copies. The Business must make relevant lawful-basis, notice, authorisation and provider records available for a proportionate review, and must not instruct another party to carry out activity prohibited by this Agreement."
+          ]
+        }
+      ],
+      "plans": [
+        [
+          "Starter",
+          "Points and stamps",
+          "2",
+          "Unlimited",
+          "Automated chat"
+        ],
+        [
+          "Growth",
+          "Supported standard card types; gift cards where available",
+          "5",
+          "Unlimited",
+          "Real-person chat"
+        ],
+        [
+          "Pro",
+          "Growth + compatible POS integration",
+          "7",
+          "Unlimited",
+          "Chat and call customer service"
+        ],
+        [
+          "Special",
+          "Written scope, including agreed geo-based features",
+          "As quoted",
+          "As quoted",
+          "As quoted"
+        ]
+      ],
+      "version": "2026-10-11-v4"
+    }
+  },
+  "versions": {
+    "business_agreement": "2026-10-11-v4",
+    "terms": "2026-10-11-v2",
+    "privacy": "2026-10-11-v2",
+    "dpa": "2026-10-11-v2",
+    "presentation": "2026-10-11-v1",
+    "membership_notice": "2026-10-11-v3"
+  }
+}

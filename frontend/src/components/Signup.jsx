@@ -3,6 +3,7 @@ import { useNavigate, Link } from 'react-router-dom'
 import SubscriptionPayment from './SubscriptionPayment'
 import logo128 from './logo-128.png'
 import { COUNTRY_OPTIONS, formatMoney } from './currency'
+import legalPolicy from '../legal-content.json'
 
 // Mirrors the backend's branch_price_bracket(). Two branches stay on
 // per-branch pricing; the 3-branch package starts only at exactly 3 branches.
@@ -344,6 +345,7 @@ function Signup({ API_BASE }) {
       const res=await fetch(`${API_BASE}/api/v1/legal/signup-agreement/preview`,{
         method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({
+          legal_presentation_version:legalPolicy.versions.presentation,
           name:form.name,email:form.email,phone:form.phone,address:form.address,
           contact_person:form.contact_person,plan:form.plan,branch_count:branchCount,
           billing_cycle:billingCycle,
@@ -353,6 +355,10 @@ function Signup({ API_BASE }) {
       })
       const data=await res.json()
       if(!res.ok)throw new Error(apiErrorMessage(data,'Could not load the agreement'))
+      const expected=legalPolicy.versions
+      if(data.legal_presentation_version !== expected.presentation || data.agreement_version !== expected.business_agreement || data.terms_version !== expected.terms || data.privacy_version !== expected.privacy || data.dpa_version !== expected.dpa) {
+        throw new Error('The legal documents are being updated. Please refresh and try again once the update is complete.')
+      }
       setAgreementDoc(data)
     }catch(err){setError(err.message||'Could not load the agreement')}
     finally{setAgreementLoading(false)}
@@ -395,6 +401,7 @@ function Signup({ API_BASE }) {
         agreement:{
           ...agreement,
           signature_data_url:capturedSignature,
+          legal_presentation_version:agreementDoc.legal_presentation_version,
           agreement_version:agreementDoc.agreement_version,
           terms_version:agreementDoc.terms_version,
           privacy_version:agreementDoc.privacy_version,
@@ -411,7 +418,7 @@ function Signup({ API_BASE }) {
     }catch(err){
       const msg=err.message||'Network error'
       setError(msg)
-      if(msg.toLowerCase().includes('agreement details changed')) loadAgreement()
+      if(msg.toLowerCase().includes('agreement details changed') || msg.toLowerCase().includes('legal documents have been updated')) loadAgreement()
       return false
     }finally{setLoading(false)}
   }
@@ -442,7 +449,7 @@ function Signup({ API_BASE }) {
       {wizardStep===3&&<section><p style={styles.eyebrow}>3 · BRAND</p><h1 style={styles.title}>Upload your logo</h1><p style={styles.subtitle}>{pricingContext.setup_kit_available ? 'Your logo will appear throughout your LoyaltyTree experience and helps us prepare your PR Kit.' : 'Your logo will appear on your digital loyalty card, Wallet pass, and join page.'}</p>
         <label style={styles.uploadBox}><input type="file" accept="image/png,image/jpeg,image/webp" onChange={e=>handleLogoUpload(e.target.files?.[0])} style={{display:'none'}}/>{form.logo_url?<><img src={form.logo_url} alt="Business logo" style={styles.logoPreview}/><strong>Logo uploaded</strong><span>Click to replace</span></>:<><div style={{fontSize:42}}>🖼️</div><strong>Choose your business logo</strong><span>PNG, JPG or WebP · maximum 8MB</span></>}</label>{logoUpload.uploading&&<p style={styles.tip}>Uploading…</p>}{logoUpload.error&&<div style={styles.error}>{logoUpload.error}</div>}
       </section>}
-      {wizardStep===4&&<section><p style={styles.eyebrow}>4 · PLAN + PR KIT</p><h1 style={styles.title}>Choose how you’ll launch</h1><p style={styles.subtitle}>{pricingContext.country_code === 'AU' ? 'Australian prices include GST. Choose monthly or a prepaid term of 3 months, 6 months, or 1 year. The 1-year option gives 12 months of access for the price of 10. Gift Cards and the physical kit are not available here; you will pay by card.' : 'Choose monthly (30 days) or a prepaid term of 3 months, 6 months, or 1 year. The 1-year option gives 12 months of access for the price of 10. Your exact plan, branch count, billing term, subscription price, and optional PR Kit total will appear in the agreement you sign next.'}</p>
+      {wizardStep===4&&<section><p style={styles.eyebrow}>4 · PLAN + PR KIT</p><h1 style={styles.title}>Choose how you’ll launch</h1><p style={styles.subtitle}>{pricingContext.country_code === 'AU' ? 'Australian prices include GST. Choose monthly or a prepaid term of 3 months, 6 months, or 1 year. The 1-year option gives 12 months of access for the price of 10. Gift Cards and the physical kit are not available here; you will pay by card.' : `${pricingContext.country_code === 'PH' ? 'Choose a prepaid term of 3 months, 6 months, or 1 year. Philippine self-service subscriptions have a 3-month minimum.' : 'Choose monthly (30 days) or a prepaid term of 3 months, 6 months, or 1 year.'} The 1-year option gives 12 months of access for the price of 10. Your exact plan, branch count, billing term, subscription price, and optional PR Kit total will appear in the agreement you sign next.`}</p>
         <div style={styles.billingToggle}>
           {Object.entries(BILLING_TERMS).filter(([key])=>allowedBillingCycles(form.country_code).includes(key)).map(([key,term])=><button key={key} type="button" onClick={()=>setForm({...form,billing_cycle:key})} style={{...styles.billingToggleBtn,...(form.billing_cycle===key?styles.billingToggleBtnActive:{})}}>{term.label}{term.savings?` · ${term.savings}`:''}</button>)}
         </div>
@@ -461,9 +468,10 @@ function Signup({ API_BASE }) {
           <div style={styles.paperHeader}><strong>{agreementDoc.title}</strong><span>{agreementDoc.operator?.name}</span><small>{agreementDoc.operator?.location} · {agreementDoc.operator?.phone} · {agreementDoc.operator?.email}</small></div>
           <div style={styles.paper} onScroll={e=>{const el=e.currentTarget;if(el.scrollTop+el.clientHeight>=el.scrollHeight-32)setAgreementRead(true)}}>
             <div style={styles.contractIntro}>{agreementDoc.intro}</div>
-            {agreementDoc.sections?.map((section,i)=><article key={section.title} style={styles.contractSection}><h3>{i+1}. {section.title}</h3>{section.paragraphs?.map((p,j)=><p key={j}>{p}</p>)}</article>)}
+            {agreementDoc.sections?.map((section,i)=><article key={section.title} style={styles.contractSection}><h3>{i+1}. {section.title}</h3>{section.paragraphs?.map((p,j)=><p key={j}>{p}</p>)}{section.bullets?.length>0&&<ul>{section.bullets.map((text,j)=><li key={j} style={{marginBottom:10,lineHeight:1.6}}>{text}</li>)}</ul>}</article>)}
             <div style={styles.annexTitle}>ANNEX A — DATA PROCESSING ADDENDUM</div>
-            {agreementDoc.dpa_sections?.map((section,i)=><article key={section.title} style={styles.contractSection}><h3>A{i+1}. {section.title}</h3>{section.paragraphs?.map((p,j)=><p key={j}>{p}</p>)}</article>)}
+            {agreementDoc.dpa_sections?.map((section,i)=><article key={section.title} style={styles.contractSection}><h3>A{i+1}. {section.title}</h3>{section.paragraphs?.map((p,j)=><p key={j}>{p}</p>)}{section.bullets?.length>0&&<ul>{section.bullets.map((text,j)=><li key={j} style={{marginBottom:10,lineHeight:1.6}}>{text}</li>)}</ul>}</article>)}
+            {agreementDoc.policy_documents?.map(policy=><details key={policy.title} style={styles.contractSection}><summary style={{fontWeight:800,cursor:'pointer'}}>Incorporated policy: {policy.title} · {policy.version}</summary>{policy.sections.map((section,i)=><article key={section.title}><h3>{i+1}. {section.title}</h3>{section.paragraphs.map((text,j)=><p key={j}>{text}</p>)}{section.bullets?.length>0&&<ul>{section.bullets.map((text,j)=><li key={j}>{text}</li>)}</ul>}</article>)}</details>)}
             <div style={styles.contractEnd}>END OF AGREEMENT · Document hash: {agreementDoc.agreement_sha256}</div>
           </div>
           <div style={{...styles.readStatus,...(agreementRead?styles.readStatusDone:{})}}>{agreementRead?'✓ Agreement reviewed to the end':'Scroll through the agreement to the end before signing.'}</div>

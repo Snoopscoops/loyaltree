@@ -307,7 +307,7 @@ function CustomerJoin({ API_BASE }) {
           employee_position: isEmployeeExperience ? (form.employee_position || null) : null,
           employee_start_date: isEmployeeExperience ? (form.employee_start_date || null) : null,
           privacy_consent: true,
-          privacy_consent_version: '2026-09-27-v2',
+          privacy_consent_version: '2026-10-11-v3',
           customer_agreement_accepted: customerAgreement ? agreementAccepted : false,
           customer_agreement_version_id: customerAgreement?.version_id || null,
           customer_agreement_signature_data: customerAgreement && agreementRequiresSignature ? (agreementSignature || null) : null,
@@ -783,7 +783,7 @@ function CustomerJoin({ API_BASE }) {
               <span>
                 <strong style={styles.consentTitle}>Privacy & membership consent</strong>
                 <span style={styles.consentText}>
-                  By joining, you agree that the information you provide may be collected and used by this business and LoyaltyTree to create and manage your digital loyalty membership, provide rewards and membership services, send relevant membership or promotional updates, and produce privacy-protected aggregate customer analytics.
+                  By joining, you agree that the information you provide may be collected and used by this business and LoyaltyTree to create and manage your digital loyalty membership, provide rewards and membership services, send necessary membership updates, and produce privacy-protected aggregate customer analytics. This membership acknowledgement is not consent to optional promotional messages. The business must establish the required separate notice, lawful basis and consent where required before sending promotions.
                 </span>
                 <span style={{...styles.consentText, marginTop:5}}>
                   Your information will be handled in accordance with applicable privacy requirements. You may request access, correction, or deletion of your personal information, subject to applicable legal and operational requirements.
