@@ -167,7 +167,7 @@ priceButtons.forEach(button=>button.disabled=true);
   const response=await fetch(`${apiBase}/api/v1/public/pricing-context`,{signal:controller.signal,credentials:'omit'});
   if(!response.ok)throw new Error('Pricing unavailable');
   const data=await response.json();
-  if(!data||!/^[A-Z]{2}$/.test(data.country_code)||!/^[A-Z]{3}$/.test(data.currency))throw new Error('Invalid pricing');
+  if(!data||!/^(?:[A-Z]{2}|INT)$/.test(data.country_code)||!/^[A-Z]{3}$/.test(data.currency))throw new Error('Invalid pricing');
   const next={};
   for(const plan of ['starter','growth','pro']){
    const tier=data.plans?.[plan]?.price_tiers;
@@ -182,12 +182,12 @@ priceButtons.forEach(button=>button.disabled=true);
   const giftFeature=document.querySelector('[data-feature="gift_cards"]');
   giftFeature.hidden=data.plans.growth.gift_cards!==true;
   giftFeature.style.display=giftFeature.hidden?'none':'';
-  $('pricingRegionLabel').textContent=`${data.country_name} pricing · ${data.currency}`;
+  $('pricingRegionLabel').textContent=data.country_code==='PH'?'Philippines pricing · PHP':'International pricing · USD';
   document.querySelector('[data-cycle="1"]').hidden=data.country_code==='PH';
-  $('pricingStatus').textContent=data.country_code==='PH'?'Minimum 3 months. Prices are confirmed during signup.':'Prices for your market. Prices are confirmed during signup.';
+  $('pricingStatus').textContent=data.country_code==='PH'?'Minimum 3 months. Prices are confirmed during signup.':'Standard USD pricing outside the Philippines. Prices are confirmed during signup.';
   // Physical kit is currently offered in the Philippines only.
   const note=document.querySelector('#pricing .price-note');
-  if(note&&data.country_code!=='PH')note.textContent='Physical setup kits are currently available in the Philippines. Contact us for your location.';
+  if(note&&data.country_code!=='PH')note.textContent='Standard plans outside the Philippines are billed in USD. Annual billing gives 12 months for the price of 10. Gift cards and physical setup kits are Philippines-only.';
   renderPricing();priceButtons.forEach(button=>button.disabled=false);
  }catch{
   if(!active)return;

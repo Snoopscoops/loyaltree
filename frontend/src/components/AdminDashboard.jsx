@@ -1,3 +1,4 @@
+import { formatMoney } from './currency'
 import React, { useState, useEffect } from 'react'
 import PlatformAnnouncementsAdmin from './PlatformAnnouncementsAdmin'
 import GiftCardPrintRequestsAdmin from './GiftCardPrintRequestsAdmin'
@@ -2070,7 +2071,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                     </select>
                     {b.price_current != null && (
                       <div style={styles.rowPriceHint}>
-                        ₱{b.price_current.toLocaleString()}/{({monthly:'30 days','3_months':'3 months','6_months':'6 months',annual:'year'}[b.billing_cycle || 'monthly'] || '30 days')} · {b.branch_count} branch{b.branch_count !== 1 ? 'es' : ''}
+                        {formatMoney(b.price_current, b.currency || 'PHP')}/{({monthly:'30 days','3_months':'3 months','6_months':'6 months',annual:'year'}[b.billing_cycle || 'monthly'] || '30 days')} · {b.branch_count} branch{b.branch_count !== 1 ? 'es' : ''}
                       </div>
                     )}
                   </td>

@@ -22,7 +22,10 @@ from fastapi import FastAPI, HTTPException, Request, Depends, Header, Background
 from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from supabase import create_client, Client
+from supabase import Client
+from shared_http import shared_http, pooled_client, create_pooled_supabase
+from monitoring import legacy_diagnostic as print
+from monitoring import log_event, monitor, install_monitoring, log_push, log_wallet_sync, resilient_read, _record_apple_delivery, begin_apple_delivery
 import qrcode
 from qrcode.image.svg import SvgImage
 from io import BytesIO
@@ -324,18 +327,19 @@ SUBSCRIPTION_PLANS = {
 # Localized market-test pricing. Country/region is stored on each business so
 # logged-in pricing never changes merely because the owner travels or uses a VPN.
 # Multi-branch package ratios follow the existing PH package discounts.
+# Standard subscription pricing is PHP in PH and USD everywhere else.
+# Keep country identity for fulfilment rules and existing market features.
+INTERNATIONAL_PLAN_PRICES = {'starter': 15, 'growth': 39, 'pro': 69}
+MARKET_CURRENCIES = {'PH':'PHP','SG':'SGD','GB':'GBP','HK':'HKD','US':'USD',
+                     'NZ':'NZD','MY':'MYR','AE':'AED','AU':'AUD','INT':'USD'}
 PRICING_REGIONS = {
     'PH': {'country_name':'Philippines','currency':'PHP','symbol':'₱','locale':'en-PH','plans':{'starter':350,'growth':550,'pro':750}},
-    'SG': {'country_name':'Singapore','currency':'SGD','symbol':'S$','locale':'en-SG','plans':{'starter':19,'growth':39,'pro':69}},
-    'GB': {'country_name':'United Kingdom','currency':'GBP','symbol':'£','locale':'en-GB','plans':{'starter':15,'growth':35,'pro':59}},
-    'HK': {'country_name':'Hong Kong','currency':'HKD','symbol':'HK$','locale':'en-HK','plans':{'starter':99,'growth':199,'pro':349}},
-    'US': {'country_name':'United States','currency':'USD','symbol':'$','locale':'en-US','plans':{'starter':15,'growth':39,'pro':69}},
-    'NZ': {'country_name':'New Zealand','currency':'NZD','symbol':'NZ$','locale':'en-NZ','plans':{'starter':19,'growth':39,'pro':69}},
-    'MY': {'country_name':'Malaysia','currency':'MYR','symbol':'RM','locale':'en-MY','plans':{'starter':49,'growth':79,'pro':119}},
-    'AE': {'country_name':'United Arab Emirates','currency':'AED','symbol':'AED ','locale':'en-AE','plans':{'starter':120,'growth':135,'pro':150}},
-    # Australia: GST-inclusive monthly rates. 3-month checkout is monthly x 3
-    # (A$78 / A$150 / A$249). Gift cards and the physical QR kit stay PH-only.
-    'AU': {'country_name':'Australia','currency':'AUD','symbol':'A$','locale':'en-AU','plans':{'starter':26,'growth':50,'pro':83}},
+    **{code: {'country_name': name, 'currency': 'USD', 'symbol': '$', 'locale': 'en-US',
+              'plans': dict(INTERNATIONAL_PLAN_PRICES)} for code, name in {
+        'SG':'Singapore', 'GB':'United Kingdom', 'HK':'Hong Kong', 'US':'United States',
+        'NZ':'New Zealand', 'MY':'Malaysia', 'AE':'United Arab Emirates', 'AU':'Australia',
+        'INT':'International',
+    }.items()},
 }
 SUPPORTED_PRICING_COUNTRIES = set(PRICING_REGIONS)
 COUNTRY_ALIASES = {'UK':'GB','GBR':'GB','USA':'US','SGP':'SG','HKG':'HK','NZL':'NZ','MYS':'MY','PHL':'PH','UAE':'AE','ARE':'AE','AUS':'AU'}
@@ -360,7 +364,11 @@ def _fx_to_php_map() -> dict:
 def normalize_country_code(value: Optional[str]) -> str:
     raw = str(value or '').strip().upper()
     raw = COUNTRY_ALIASES.get(raw, raw)
-    return raw if raw in SUPPORTED_PRICING_COUNTRIES else 'PH'
+    if raw in SUPPORTED_PRICING_COUNTRIES:
+        return raw
+    # Other identified two-letter countries use international pricing. Missing
+    # or malformed country hints retain the existing PH reference fallback.
+    return 'INT' if re.fullmatch(r'[A-Z]{2}', raw) and raw not in ('XX', 'ZZ', 'T1') else 'PH'
 
 def pricing_region_config(country_code: Optional[str]) -> dict:
     code = normalize_country_code(country_code)
@@ -374,7 +382,24 @@ def business_currency(business: Optional[dict]) -> str:
     row = business or {}
     explicit = str(row.get('display_currency') or '').upper().strip()
     if explicit in DEFAULT_FX_TO_PHP: return explicit
+    return MARKET_CURRENCIES.get(business_pricing_region(row), 'USD')
+
+def business_currency_symbol(business: Optional[dict]) -> str:
+    currency = business_currency(business)
+    return {'PHP':'₱','SGD':'S$','GBP':'£','HKD':'HK$','USD':'$','NZD':'NZ$',
+            'MYR':'RM','AED':'AED ','AUD':'A$'}.get(currency, currency + ' ')
+
+
+def subscription_currency(business: Optional[dict]) -> str:
+    """Default billing is PHP/ USD; preserve explicitly negotiated legacy quotes.
+
+    Storefront/POS currency and historical payment snapshots are independent.
+    """
+    row = business or {}
+    if business_custom_monthly_price(row) or str(row.get('billing_mode') or '').lower() == 'special':
+        return business_currency(row)
     return pricing_region_config(business_pricing_region(row))['currency']
+
 
 def price_tiers_for_region(plan: str, region: Optional[str]) -> dict:
     code = normalize_country_code(region)
@@ -879,7 +904,7 @@ def create_qrph_checkout(amount_php: float, description: str, billing_name: str,
     headers = {"Authorization": paymongo_auth_header(), "Content-Type": "application/json"}
 
     try:
-        with httpx.Client(timeout=20) as client:
+        with pooled_client(timeout=20) as client:
             intent_res = client.post(
                 f"{PAYMONGO_API_BASE}/payment_intents",
                 headers=headers,
@@ -959,7 +984,7 @@ def create_card_payment_intent(amount_php: float, description: str, metadata: di
 
     headers = {"Authorization": paymongo_auth_header(), "Content-Type": "application/json"}
     try:
-        with httpx.Client(timeout=20) as client:
+        with pooled_client(timeout=20) as client:
             res = client.post(
                 f"{PAYMONGO_API_BASE}/payment_intents",
                 headers=headers,
@@ -1090,7 +1115,7 @@ def retrieve_order_ahead_paymongo_intent(intent_id: str) -> dict:
     headers = {"Authorization": f"Basic {token}", "Content-Type": "application/json"}
 
     try:
-        with httpx.Client(timeout=20) as client:
+        with pooled_client(timeout=20) as client:
             res = client.get(
                 f"{PAYMONGO_API_BASE}/payment_intents/{intent_id}",
                 headers=headers,
@@ -1143,7 +1168,7 @@ def create_order_ahead_qrph_checkout(
     headers = {"Authorization": f"Basic {token}", "Content-Type": "application/json"}
 
     try:
-        with httpx.Client(timeout=20) as client:
+        with pooled_client(timeout=20) as client:
             intent_res = client.post(
                 f"{PAYMONGO_API_BASE}/payment_intents",
                 headers=headers,
@@ -1235,7 +1260,7 @@ def send_email(to_email: str, subject: str, html_body: str, from_email: Optional
     if not RESEND_API_KEY or not to_email or not sender:
         return False
     try:
-        with httpx.Client(timeout=15) as client:
+        with pooled_client(timeout=15) as client:
             res = client.post(
                 "https://api.resend.com/emails",
                 headers={
@@ -1349,7 +1374,7 @@ def build_subscription_reminder_email(business: dict, days_left: Optional[int], 
     differently depending on whether access has already lapsed."""
     name = html_lib.escape(business.get('name', 'there'))
     login_html = f'<p><a href="{html_lib.escape(FRONTEND_URL)}/login" style="color:#0d9488;font-weight:600;">Log in to pay now</a></p>' if FRONTEND_URL else ''
-    currency = business_currency(business)
+    currency = subscription_currency(business)
     price_text = money_text(price, currency)
     payment_copy = 'via QR Ph' if business_pricing_region(business) == 'PH' else 'from your dashboard Billing tab once international card billing is enabled for your account'
 
@@ -1581,7 +1606,7 @@ else:
         supabase = None
     else:
         try:
-            supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+            supabase: Client = create_pooled_supabase(SUPABASE_URL, SUPABASE_KEY)
         except Exception as e:
             ENV_ERROR = str(e)
             supabase = None
@@ -3940,7 +3965,7 @@ def _storehub_request_with_credentials(
     }
 
     try:
-        with httpx.Client(timeout=20) as client:
+        with pooled_client(timeout=20) as client:
             res = client.get(url, headers=headers, params=params or {})
     except Exception as exc:
         raise HTTPException(
@@ -4254,7 +4279,7 @@ def _loyverse_request_with_token(
         headers['Content-Type'] = 'application/json'
 
     try:
-        with httpx.Client(timeout=20) as client:
+        with pooled_client(timeout=20) as client:
             res = client.request(
                 str(method or 'GET').upper(),
                 url,
@@ -6118,7 +6143,7 @@ def business_summary(biz: dict) -> dict:
         "billing_cycle": normalize_billing_cycle(biz.get("billing_cycle")),
         "country_code": business_pricing_region(biz),
         "pricing_region": business_pricing_region(biz),
-        "currency": business_currency(biz),
+        "currency": subscription_currency(biz),
         "price_month": get_price_for_business(biz, 'monthly', branch_count),
         "price_3_months": get_price_for_business(biz, '3_months', branch_count),
         "price_6_months": get_price_for_business(biz, '6_months', branch_count),
@@ -6455,7 +6480,8 @@ def _load_remote_wallet_image(url: Optional[str]) -> Optional["Image.Image"]:
             _STAMP_REMOTE_IMAGE_CACHE.pop(url, None)
     try:
         import httpx
-        response = httpx.get(url, timeout=3.5, follow_redirects=True)
+        with pooled_client(timeout=3.5, follow_redirects=True) as client:
+            response = client.get(url)
         response.raise_for_status()
         if len(response.content) > 5 * 1024 * 1024:
             return None
@@ -7229,7 +7255,7 @@ def get_google_access_token() -> str:
         jwt_assertion = pyjwt.encode(auth_payload, private_key, algorithm='RS256')
         if isinstance(jwt_assertion, bytes):
             jwt_assertion = jwt_assertion.decode('utf-8')
-        with httpx.Client() as client:
+        with pooled_client() as client:
             resp = client.post(
                 'https://oauth2.googleapis.com/token',
                 data={
@@ -7323,7 +7349,7 @@ def ensure_google_wallet_tier_class(customer: dict, business: dict, program: dic
 
     try:
         import httpx
-        with httpx.Client(timeout=20) as client:
+        with pooled_client(timeout=20) as client:
             check = client.get(
                 f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}',
                 headers={"Authorization": f"Bearer {access_token}"}
@@ -7568,7 +7594,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         if earned <= 0 or pesos <= 0:
             return 'Ask in-store how to earn points'
         point_word = 'point' if earned == 1 else 'points'
-        return f'{pricing_region_config(business_pricing_region(business)).get("symbol") or business_currency(business)}{_fmt_number(pesos)} = {_fmt_number(earned)} {point_word}'
+        return f'{business_currency_symbol(business)}{_fmt_number(pesos)} = {_fmt_number(earned)} {point_word}'
 
     def _tier_earning_rule():
         if tier_stamps_enabled(program):
@@ -7581,7 +7607,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
         if earned <= 0 or pesos <= 0:
             return 'Ask in-store how to earn Tier points'
         point_word = 'point' if earned == 1 else 'points'
-        return f'{pricing_region_config(business_pricing_region(business)).get("symbol") or business_currency(business)}{_fmt_number(pesos)} = {_fmt_number(earned)} Tier {point_word}'
+        return f'{business_currency_symbol(business)}{_fmt_number(pesos)} = {_fmt_number(earned)} Tier {point_word}'
 
     def _points_next_reward_value():
         if next_points_prize:
@@ -8040,7 +8066,7 @@ async def republish_wallet_class_and_refresh(business: dict, program: dict):
                         default_tier_name,
                     )]
 
-                with httpx.Client() as client:
+                with pooled_client() as client:
                     for target_id, target_color, tier_name in class_specs:
                         loyalty_class = build_loyalty_class(
                             business,
@@ -8168,7 +8194,7 @@ def sync_wallet_object(customer: dict, business: dict, program: dict,
         object_id = f'{GOOGLE_WALLET_ISSUER_ID}.{cust_public_id}'
         headers = {"Authorization": f"Bearer {access_token}"}
 
-        with httpx.Client(timeout=20) as client:
+        with pooled_client(timeout=20) as client:
             current_resp = client.get(
                 f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyObject/{object_id}',
                 headers=headers
@@ -8340,27 +8366,28 @@ _APPLE_PASS_DIRTY_AT = {}
 _APPLE_PASS_DIRTY_TTL_SECONDS = 6 * 60 * 60
 
 def _mark_apple_pass_dirty(serial_numbers):
-    now = datetime.utcnow()
     if isinstance(serial_numbers, str):
         serial_numbers = [serial_numbers]
-    for serial in serial_numbers or []:
-        if serial:
-            _APPLE_PASS_DIRTY_AT[str(serial)] = now
-
-    # Opportunistic pruning keeps this bounded on a long-running process.
+    serials = list(dict.fromkeys(str(x) for x in serial_numbers or [] if x))
+    now = datetime.utcnow()
+    for start in range(0, len(serials), 100):
+        chunk = serials[start:start + 100]
+        supabase.table('apple_wallet_registrations').update(
+            {'pass_updated_at': now.isoformat()}).in_('serial_number', chunk).execute()
+        for serial in chunk:
+            _APPLE_PASS_DIRTY_AT[serial] = now
     cutoff = now - timedelta(seconds=_APPLE_PASS_DIRTY_TTL_SECONDS)
-    stale = [key for key, value in _APPLE_PASS_DIRTY_AT.items() if value < cutoff]
-    for key in stale:
-        _APPLE_PASS_DIRTY_AT.pop(key, None)
+    for serial, value in list(_APPLE_PASS_DIRTY_AT.items()):
+        if value < cutoff:
+            _APPLE_PASS_DIRTY_AT.pop(serial, None)
+
 
 def _apple_pass_dirty_at(serial_number: str):
-    value = _APPLE_PASS_DIRTY_AT.get(str(serial_number or ''))
-    if not value:
-        return None
-    if (datetime.utcnow() - value).total_seconds() > _APPLE_PASS_DIRTY_TTL_SECONDS:
-        _APPLE_PASS_DIRTY_AT.pop(str(serial_number or ''), None)
-        return None
-    return value
+    rows = (supabase.table('apple_wallet_registrations').select('pass_updated_at')
+            .eq('serial_number', serial_number).execute().data or [])
+    times = [_parse_ts(row.get('pass_updated_at')) for row in rows]
+    times = [value for value in times if value]
+    return max(times) if times else None
 
 
 def _apple_program_content_signature(program: Optional[dict]) -> str:
@@ -8624,7 +8651,7 @@ def _fetch_image_bytes(url: Optional[str], timeout: float = 1.5) -> Optional[byt
         import httpx
         limits = httpx.Limits(max_keepalive_connections=5, max_connections=10)
         timeout_cfg = httpx.Timeout(timeout, connect=min(timeout, 1.0))
-        with httpx.Client(timeout=timeout_cfg, follow_redirects=True, limits=limits) as client:
+        with pooled_client(timeout=timeout_cfg, follow_redirects=True, limits=limits) as client:
             resp = client.get(url)
             content = resp.content if resp.status_code == 200 and resp.content else None
             _APPLE_IMAGE_CACHE[url] = (now, content)
@@ -11002,6 +11029,7 @@ def build_apple_order_ahead_event_pkpass_bytes(customer: dict, business: dict, p
     artwork_2x = _resize_png_bytes(artwork_3x, 716, 896)
     artwork_1x = _resize_png_bytes(artwork_3x, 358, 448)
 
+    pass_json.setdefault("userInfo", {})["loyaltytreeRevision"] = str(_apple_pass_dirty_at(pass_json.get("serialNumber")) or "")
     files = {
         'pass.json': json.dumps(pass_json, separators=(',', ':')).encode('utf-8'),
 
@@ -11185,6 +11213,7 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
     logo_320 = _resize_png_bytes(logo_480, 320, 100)
     logo_160 = _resize_png_bytes(logo_480, 160, 50)
 
+    pass_json.setdefault("userInfo", {})["loyaltytreeRevision"] = str(_apple_pass_dirty_at(pass_json.get("serialNumber")) or "")
     files = {
         'pass.json': json.dumps(pass_json).encode('utf-8'),
         'icon.png': icon_29,
@@ -11292,6 +11321,7 @@ def _apple_pkpass_fingerprint(customer: dict, business: dict, program: dict, ann
             "id": (announcement or {}).get("id"),
             "updated_at": (announcement or {}).get("updated_at") or (announcement or {}).get("created_at"),
         },
+        "wallet_revision": str(_apple_pass_dirty_at(customer.get("public_id")) or ""),
         "passkit_registration": {
             "release": APPLE_PASS_REGISTRATION_RELEASE,
             "web_service_url": APPLE_PASS_WEB_SERVICE_URL,
@@ -11529,13 +11559,25 @@ def _send_apple_wallet_pushes(push_tokens: list) -> int:
     tokens = list(dict.fromkeys(t for t in push_tokens if t))
     if not tokens:
         return 0
+    try:
+        for start in range(0, len(tokens), 100):
+            rows = (supabase.table('apple_wallet_registrations').select('serial_number')
+                    .in_('push_token', tokens[start:start + 100]).execute().data or [])
+            if not rows:
+                raise RuntimeError('No registered serials for APNs audience')
+            _mark_apple_pass_dirty([r['serial_number'] for r in rows])
+    except Exception as exc:
+        log_event('apple_push_failed', 'warning', error_type=type(exc).__name__, error=str(exc), stage='pass_revision')
+        _record_apple_delivery(len(tokens), 0)
+        return 0
     cert_path, key_path = get_apple_push_cert_files()
     if not cert_path:
+        _record_apple_delivery(len(tokens), 0)
         return 0
     sent = 0
     try:
         import httpx
-        with httpx.Client(http2=True, cert=(cert_path, key_path), timeout=10) as client:
+        with pooled_client(http2=True, cert=(cert_path, key_path), timeout=10) as client:
             for token in tokens:
                 try:
                     resp = client.post(
@@ -11545,13 +11587,14 @@ def _send_apple_wallet_pushes(push_tokens: list) -> int:
                     )
                     if resp.status_code == 200:
                         sent += 1
-                        print(f"APPLE WALLET PUSH: sent to {token[:12]}...")
+                        pass  # Aggregate delivery counts are logged without device tokens.
                     else:
-                        print(f"APPLE WALLET PUSH failed {resp.status_code}: {resp.text}")
+                        log_event("apple_push_failed", "warning", status=resp.status_code, reason=(resp.json().get("reason") if resp.content else None))
                 except Exception as e:
-                    print(f"APPLE WALLET PUSH error: {e}")
+                    log_event("apple_push_failed", "warning", error_type=type(e).__name__, error=str(e))
     except Exception as e:
-        print(f"APPLE WALLET PUSH client error: {e}")
+        log_event("apple_push_failed", "warning", error_type=type(e).__name__, error=str(e))
+    _record_apple_delivery(len(tokens), sent)
     return sent
 
 def push_apple_wallet_update(serial_number: str):
@@ -11883,7 +11926,7 @@ def send_wallet_class_message(class_id: str, header: str, body: str, message_id:
                 'messageType': 'TEXT_AND_NOTIFY',
             }
         }
-        with httpx.Client() as client:
+        with pooled_client() as client:
             resp = client.post(
                 f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}/addMessage',
                 headers={"Authorization": f"Bearer {access_token}"},
@@ -11930,7 +11973,7 @@ def send_wallet_object_message(
                 'messageType': 'TEXT_AND_NOTIFY',
             }
         }
-        with httpx.Client() as client:
+        with pooled_client() as client:
             resp = client.post(
                 f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyObject/{object_id}/addMessage',
                 headers={"Authorization": f"Bearer {access_token}"},
@@ -12117,7 +12160,7 @@ def sync_cl_wallet_object(customer: dict, business: dict, contract: Optional[dic
         import httpx
         cl_object = build_cl_wallet_object(customer, business, contract)
         object_id = cl_object['id']
-        with httpx.Client() as client:
+        with pooled_client() as client:
             resp = client.patch(
                 f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyObject/{object_id}',
                 headers={"Authorization": f"Bearer {access_token}"},
@@ -12228,6 +12271,7 @@ def build_cl_pkpass_bytes(customer: dict, business: dict, contract: Optional[dic
     biz_name = business.get('name', 'Financing')
     pass_json = build_cl_apple_pass_json(customer, business, contract, announcement, reminder_text)
 
+    pass_json.setdefault("userInfo", {})["loyaltytreeRevision"] = str(_apple_pass_dirty_at(pass_json.get("serialNumber")) or "")
     files = {
         'pass.json': json.dumps(pass_json).encode('utf-8'),
         'icon.png': generate_apple_icon_bytes('#0f172a', biz_name, 29),
@@ -13397,14 +13441,30 @@ async def _keep_alive_loop():
     while True:
         await asyncio.sleep(10 * 60)
         try:
-            with httpx.Client(timeout=10) as client:
-                client.get(f"{self_url}/health")
+            response = await shared_http.request("GET", f"{self_url}/health", timeout=60)
+            response.raise_for_status()
         except Exception as e:
-            print(f"KEEP-ALIVE ping error: {e}")
+            log_event("keepalive_failed", "warning", error_type=type(e).__name__, error=str(e))
 
 @app.on_event("startup")
 async def start_keep_alive():
-    asyncio.create_task(_keep_alive_loop())
+    await shared_http.start(get_apple_push_cert_files())
+    await monitor.start()
+    app.state.keepalive_task = asyncio.create_task(_keep_alive_loop())
+
+@app.on_event("shutdown")
+async def stop_monitoring():
+    task = getattr(app.state, 'keepalive_task', None)
+    if task:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    for name in ('wallet_worker', 'apple_release_task'):
+        worker = getattr(app.state, name, None)
+        if worker:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+    await monitor.stop()
+    await shared_http.stop()
 
 @app.middleware("http")
 async def api_abuse_guard(request: Request, call_next):
@@ -13881,7 +13941,7 @@ async def register(biz: BusinessCreate, request: Request):
         'billing_cycle': normalize_billing_cycle(biz.billing_cycle),
         'country_code': pricing_region,
         'pricing_region': pricing_region,
-        'display_currency': region_cfg['currency'],
+        'display_currency': MARKET_CURRENCIES.get(pricing_region, 'USD'),
         # Self-serve businesses remain pending until PayMongo confirms the
         # first subscription payment. The payment webhook promotes PENDING
         # accounts to ACTIVE and sets the normal subscription expiry date.
@@ -14234,11 +14294,11 @@ async def submit_business_inquiry(req: BusinessInquiry, request: Request):
 
 @app.get("/api/v1/public/pricing-context")
 async def public_pricing_context(request: Request, country: Optional[str] = Query(default=None)):
-    """Resolve a supported pricing region for public visitors.
+    """Resolve the visitor's detected pricing region.
 
-    An explicit country selector wins. Otherwise prefer trusted hosting/CDN geo
-    headers and finally the existing best-effort IP geo lookup. Unsupported or
-    unknown locations fall back to PH. The selected region is only a display /
+    Prefer trusted hosting/CDN geo headers and then the existing best-effort
+    IP geo lookup. Public country query parameters do not override detection. Identified countries outside the named list use international USD pricing;
+    unknown locations fall back to the PH reference. The selected region is only a display /
     signup hint; the resulting business row locks its pricing_region at signup.
     """
     selected = None
@@ -14251,8 +14311,8 @@ async def public_pricing_context(request: Request, country: Optional[str] = Quer
         header_geo = _analytics_header_geo(dict(request.headers))
         header_country = str(header_geo.get('country_code') or '').strip().upper()
         header_country = COUNTRY_ALIASES.get(header_country, header_country)
-        if header_country in SUPPORTED_PRICING_COUNTRIES:
-            selected = header_country
+        if re.fullmatch(r'[A-Z]{2}', header_country) and header_country not in ('XX', 'ZZ', 'T1'):
+            selected = normalize_country_code(header_country)
             source = 'edge_geo'
         else:
             ip = _security_client_ip(request)
@@ -14261,8 +14321,8 @@ async def public_pricing_context(request: Request, country: Optional[str] = Quer
                     geo = await asyncio.to_thread(_analytics_geo_for_ip, ip, header_geo)
                     geo_country = str((geo or {}).get('country_code') or '').strip().upper()
                     geo_country = COUNTRY_ALIASES.get(geo_country, geo_country)
-                    if geo_country in SUPPORTED_PRICING_COUNTRIES:
-                        selected = geo_country
+                    if re.fullmatch(r'[A-Z]{2}', geo_country) and geo_country not in ('XX', 'ZZ', 'T1'):
+                        selected = normalize_country_code(geo_country)
                         source = 'ip_geo'
                 except Exception as exc:
                     print(f'PRICING GEO warning: {exc}')
@@ -14559,7 +14619,7 @@ def _analytics_geo_for_ip(ip: str, header_geo: Optional[dict] = None) -> dict:
         import httpx
         # ipapi.co is only a fallback when hosting-edge geo headers are absent.
         # A short timeout ensures analytics can never slow the public request.
-        with httpx.Client(timeout=2.5, follow_redirects=True) as client:
+        with pooled_client(timeout=2.5, follow_redirects=True) as client:
             res = client.get(f"https://ipapi.co/{quote(ip, safe='')}/json/")
         if res.status_code < 400:
             data = res.json() if res.content else {}
@@ -14979,7 +15039,7 @@ async def admin_overview(_: bool = Depends(require_admin)):
                 continue
             count = branch_counts.get(b.get('id')) or 1
             region = business_pricing_region(b)
-            currency = business_currency(b)
+            currency = subscription_currency(b)
             cycle = normalize_billing_cycle(b.get('billing_cycle'))
             billed_amount = get_price_for_business(b, cycle, count)
             access_months = max(1, int(BILLING_CYCLE_CONFIG[cycle]['access_months']))
@@ -15069,7 +15129,7 @@ async def admin_create_business(biz: AdminBusinessCreate, _: bool = Depends(requ
         'plan': plan,
         'country_code': pricing_region,
         'pricing_region': pricing_region,
-        'display_currency': region_cfg['currency'],
+        'display_currency': MARKET_CURRENCIES.get(pricing_region, 'USD'),
         'status': 'ACTIVE',
         'subscription_expires_at': (datetime.utcnow() + timedelta(days=SUBSCRIPTION_PERIOD_DAYS)).date().isoformat(),
         'created_at': datetime.utcnow().isoformat(),
@@ -19735,7 +19795,7 @@ async def create_subscription_checkout(public_id: str, req: Optional[Subscriptio
         req.billing_cycle if req is not None else business.get('billing_cycle'),
         pricing_region,
     )
-    display_currency = business_currency(business)
+    display_currency = subscription_currency(business)
     subscription_price = get_price_for_business(business, billing_cycle, branch_count)
 
     # Physical PR/QR kits remain Philippines-only. Existing PH businesses can
@@ -19972,7 +20032,7 @@ async def get_subscription_status(public_id: str):
     branch_count = billing_branch_count(business, configured_branch_count)
     plan = business.get('plan', 'starter')
     pricing_region = business_pricing_region(business)
-    currency = business_currency(business)
+    currency = subscription_currency(business)
     billing_cycle = normalize_billing_cycle(
         business.get('billing_cycle') or (latest_payment or {}).get('billing_cycle')
     )
@@ -20310,7 +20370,7 @@ async def paymongo_webhook(request: Request):
                 amount_centavos = resource_attrs.get("amount")
                 amount_php = f"{amount_centavos / 100:.2f}" if amount_centavos else "unknown"
                 display_amount = (payment_row or {}).get('display_amount')
-                display_currency = (payment_row or {}).get('display_currency') or business_currency(business)
+                display_currency = (payment_row or {}).get('display_currency') or subscription_currency(business)
                 display_line = (
                     f"<li><b>Customer-facing price:</b> {html_lib.escape(money_text(display_amount, display_currency))}</li>"
                     if display_amount is not None else ''
@@ -21675,6 +21735,7 @@ async def delete_staff(public_id: str, staff_public_id: str, authorization: str 
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/v1/business/{public_id}/stats")
+@resilient_read("stats")
 async def get_stats(public_id: str, program_id: Optional[str] = Query(default=None)):
     business = safe_get_business(public_id)
     if not business:
@@ -26053,7 +26114,13 @@ async def create_announcement(
 
     # Posting is immediate: every newly created announcement is active and the
     # Wallet notification is attempted right away. Editing later remains silent.
-    result = _send_announcement_notification(business, created, resend=False)
+    begin_apple_delivery()
+    try:
+        result = await asyncio.to_thread(_send_announcement_notification, business, created, False)
+    except Exception:
+        log_push("create", business, created, actor_role, {})
+        raise
+    log_push("create", business, created, actor_role, result)
     created['_push_sent'] = bool(result.get('sent'))
     created['_push_scope'] = result.get('scope')
     created['_push_target_count'] = result.get('target_count')
@@ -26210,7 +26277,13 @@ async def notify_announcement(
         f"announcement={announcement_id} business={public_id} actor={actor_role} "
         f"scope={ann.get('target_scope') or 'business'} program={ann.get('program_public_id') or 'all'}"
     )
-    result = _send_announcement_notification(business, ann, resend=True)
+    begin_apple_delivery()
+    try:
+        result = await asyncio.to_thread(_send_announcement_notification, business, ann, True)
+    except Exception:
+        log_push("resend", business, ann, actor_role, {})
+        raise
+    log_push("resend", business, ann, actor_role, result)
     if not result.get('sent'):
         raise HTTPException(
             status_code=400 if result.get('target_count') == 0 else 500,
@@ -26923,6 +26996,7 @@ def owner_transaction_audit(public_id: str, limit: int = 200, status: Optional[s
 
 
 @app.get('/api/v1/business/{public_id}/fraud-alerts')
+@resilient_read("fraud-alerts")
 def owner_fraud_alerts(public_id: str, hours: int = 24, authorization: str = Header(default='')):
     require_owner_session(public_id, authorization)
     """Explainable owner alerts derived from the all-card transaction audit ledger."""
@@ -27092,6 +27166,7 @@ def sync_loyalty_wallets_background(
                 'detail': str(google_exc),
             }
 
+        log_wallet_sync(customer_snapshot, business_snapshot, reason, google_result, apple_result)
         apple_status = apple_result.get('status') if isinstance(apple_result, dict) else None
         google_status = google_result.get('status') if isinstance(google_result, dict) else None
         print(
@@ -31983,7 +32058,7 @@ async def get_wallet_class(public_id: str, program_id: Optional[str] = Query(def
     if access_token:
         try:
             import httpx
-            with httpx.Client() as client:
+            with pooled_client() as client:
                 # Tier-enabled programs intentionally use child classes instead
                 # of the stable root class. Check the first tier class so the
                 # published status remains accurate in the owner UI.
@@ -32099,7 +32174,7 @@ async def create_or_update_wallet_class(public_id: str, program_id: Optional[str
         published_ids = []
         google_results = {}
 
-        with httpx.Client() as client:
+        with pooled_client() as client:
             for spec in class_specs:
                 loyalty_class = build_loyalty_class(
                     business,
@@ -32198,7 +32273,7 @@ async def get_cl_wallet_class(public_id: str):
     if access_token:
         try:
             import httpx
-            with httpx.Client() as client:
+            with pooled_client() as client:
                 resp = client.get(
                     f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}',
                     headers={"Authorization": f"Bearer {access_token}"}
@@ -32253,7 +32328,7 @@ async def create_or_update_cl_wallet_class(public_id: str):
 
     try:
         import httpx
-        with httpx.Client() as client:
+        with pooled_client() as client:
             resp = client.put(
                 f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}',
                 headers={"Authorization": f"Bearer {access_token}"},
@@ -36079,11 +36154,11 @@ async def download_agent_vehicle_images(business_public_id: str, vehicle_public_
     ).strip("-") or "vehicle"
 
     downloaded = 0
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+    with pooled_client(timeout=30, follow_redirects=True) as client:
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as archive:
             for index, url in enumerate(image_urls, start=1):
                 try:
-                    response = await client.get(url)
+                    response = await shared_http.request("GET", url, timeout=30, follow_redirects=True)
                     response.raise_for_status()
                     content_type = (response.headers.get("content-type") or "").split(";", 1)[0].lower()
                     extension = {
@@ -36924,7 +36999,7 @@ async def order_ahead_branch_selected(customer_public_id: str, branch_public_id:
         },
         'customer': {'name': customer.get('name') or 'Member'},
         'currency': business_currency(business),
-        'currency_symbol': pricing_region_config(business_pricing_region(business)).get('symbol') or business_currency(business),
+        'currency_symbol': business_currency_symbol(business),
     }
     data_json = json.dumps(payload).replace('</', '<\\/')
     ui_json = json.dumps(ui).replace('</', '<\\/')
@@ -38491,7 +38566,7 @@ async def apple_list_updated_serials(device_library_identifier: str, pass_type_i
             # No update tag from Wallet means initial sync: return all passes.
             # Otherwise return only genuinely newer passes. HTTP dates only have
             # second precision, so compare at second precision too.
-            if since_ts is None or (pass_ts and pass_ts.replace(microsecond=0) > since_ts.replace(microsecond=0)):
+            if since_ts is None or (pass_ts and pass_ts > since_ts):
                 changed_serials.append(serial)
             if pass_ts and (newest_ts is None or pass_ts > newest_ts):
                 newest_ts = pass_ts
@@ -38537,7 +38612,7 @@ async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, 
         last_modified = last_modified_ts.replace(tzinfo=None).isoformat()
         since_ts = _parse_ts(if_modified_since)
         if (last_modified_ts and since_ts and
-                last_modified_ts.replace(microsecond=0) <= since_ts.replace(microsecond=0)):
+                last_modified_ts <= since_ts):
             _APPLE_PASS_DIRTY_AT.pop(str(serial_number), None)
             return Response(status_code=304)
 
@@ -38577,7 +38652,7 @@ async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, 
         last_modified_ts = max(candidates) if candidates else datetime.utcnow()
         since_ts = _parse_ts(if_modified_since)
         if (last_modified_ts and since_ts and
-                last_modified_ts.replace(microsecond=0) <= since_ts.replace(microsecond=0)):
+                last_modified_ts <= since_ts):
             _APPLE_PASS_DIRTY_AT.pop(str(serial_number), None)
             return Response(status_code=304)
 
@@ -38642,7 +38717,7 @@ async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, 
 
         since_ts = _parse_ts(if_modified_since)
         if (last_modified_ts and since_ts and
-                last_modified_ts.replace(microsecond=0) <= since_ts.replace(microsecond=0)):
+                last_modified_ts <= since_ts):
             return Response(status_code=304)
 
         pkpass_bytes = build_cl_pkpass_bytes(customer, business, contract, announcement, reminder_text)
@@ -38689,7 +38764,7 @@ async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, 
     # newest customer/business/program/announcement/dirty timestamp.
     since_ts = _parse_ts(if_modified_since)
     if (last_modified_ts and since_ts and
-            last_modified_ts.replace(microsecond=0) <= since_ts.replace(microsecond=0)):
+            last_modified_ts <= since_ts):
         print(
             f"APPLE PASS UPDATE 304: business={business.get('public_id')} "
             f"customer={customer.get('public_id')} stamp_count={customer.get('stamp_count')} "
@@ -39826,6 +39901,7 @@ def process_wallet_sync_queue_once(limit: int = 10):
             # Apple first here too so retry jobs prioritize waking the phone.
             a=sync_apple_wallet_pass(customer)
             g=sync_wallet_object(customer,business,program)
+            log_wallet_sync(customer, business, job.get("reason") or "queue_retry", g, a)
             failed=_wallet_provider_sync_failed(g, 'google') or _wallet_provider_sync_failed(a, 'apple')
             print(
                 f"WALLET QUEUE SYNC: job={jid} business={business.get('public_id')} "
@@ -39855,11 +39931,11 @@ async def wallet_queue_worker():
 
 @app.on_event('startup')
 async def start_wallet_queue_worker():
-    asyncio.create_task(wallet_queue_worker())
+    app.state.wallet_worker = asyncio.create_task(wallet_queue_worker())
     # A pass-layout release is rolled out to already-installed Apple Wallet
     # cards automatically. Supabase keeps a release marker, so this happens
     # once per layout version, not on every Render restart.
-    asyncio.create_task(_apple_layout_release_startup())
+    app.state.apple_release_task = asyncio.create_task(_apple_layout_release_startup())
 
 
 def _crm_dataset(business_id: int):
@@ -41065,6 +41141,7 @@ async def operations_analytics(public_id:str, authorization:str=Header(default='
 
 
 @app.get('/api/v1/business/{public_id}/retention-analytics')
+@resilient_read("retention-analytics")
 async def retention_analytics(public_id:str, authorization:str=Header(default=''), days:int=Query(default=90,ge=30,le=365)):
     require_owner_session(public_id,authorization)
     business=safe_get_business(public_id)
@@ -41455,7 +41532,7 @@ def ensure_google_gift_card_class(business: dict) -> bool:
         try:
             import httpx
             timeout_cfg = httpx.Timeout(8.0, connect=3.0)
-            with httpx.Client(timeout=timeout_cfg) as client:
+            with pooled_client(timeout=timeout_cfg) as client:
                 get_res = client.get(
                     f'https://walletobjects.googleapis.com/walletobjects/v1/giftCardClass/{class_id}',
                     headers={'Authorization': f'Bearer {access_token}'},
@@ -41571,7 +41648,7 @@ def sync_google_gift_card(gift: dict, business: dict) -> bool:
         obj = build_google_gift_card_object(gift, business)
         object_id = obj.pop('id')
         obj.pop('classId', None)
-        with httpx.Client(timeout=20) as client:
+        with pooled_client(timeout=20) as client:
             res = client.patch(
                 f'https://walletobjects.googleapis.com/walletobjects/v1/giftCardObject/{object_id}',
                 headers={'Authorization': f'Bearer {access_token}'}, json=obj,
@@ -41721,8 +41798,10 @@ def build_gift_card_pkpass_bytes(gift: dict, business: dict) -> Optional[bytes]:
     if get_apple_pass_credentials() is None:
         return None
 
+    pass_json = build_gift_card_apple_pass_json(gift, business)
+    pass_json.setdefault('userInfo', {})['loyaltytreeRevision'] = str(_apple_pass_dirty_at(pass_json.get('serialNumber')) or '')
     files = {
-        'pass.json': json.dumps(build_gift_card_apple_pass_json(gift, business)).encode('utf-8'),
+        'pass.json': json.dumps(pass_json).encode('utf-8'),
         **_gift_apple_brand_assets(business),
     }
     manifest = {name: hashlib.sha1(content).hexdigest() for name, content in files.items()}
@@ -47746,7 +47825,7 @@ async def lending_upload_document(
     storage_path = f"{public_id}/{loan_public_id}/{uuid.uuid4().hex}{extension}"
     try:
         import httpx
-        with httpx.Client(timeout=30) as client:
+        with pooled_client(timeout=30) as client:
             uploaded = client.post(
                 _lending_storage_url(storage_path),
                 headers=_lending_storage_headers(content_type),
@@ -47780,7 +47859,7 @@ async def lending_upload_document(
         # Do not leave an orphaned private object if metadata insert fails.
         try:
             import httpx
-            with httpx.Client(timeout=15) as client:
+            with pooled_client(timeout=15) as client:
                 client.delete(_lending_storage_url(storage_path), headers=_lending_storage_headers())
         except Exception:
             pass
@@ -47806,7 +47885,7 @@ def lending_download_document(public_id: str, document_public_id: str, authoriza
         raise HTTPException(status_code=409, detail='This legacy document is not stored in private Lending storage')
     try:
         import httpx
-        with httpx.Client(timeout=30) as client:
+        with pooled_client(timeout=30) as client:
             stored = client.get(_lending_storage_download_url(storage_path), headers=_lending_storage_headers())
         if stored.status_code == 404:
             raise HTTPException(status_code=404, detail='Stored document file was not found')
@@ -47884,7 +47963,7 @@ def lending_delete_document(public_id: str, document_public_id: str, authorizati
         if storage_path:
             try:
                 import httpx
-                with httpx.Client(timeout=15) as client:
+                with pooled_client(timeout=15) as client:
                     deleted = client.delete(_lending_storage_url(storage_path), headers=_lending_storage_headers())
                 if deleted.status_code >= 300 and deleted.status_code != 404:
                     raise HTTPException(status_code=502, detail=f'Private document deletion failed ({deleted.status_code})')
@@ -48075,7 +48154,7 @@ def resolve_geofence_link(public_id: str, payload: dict, authorization: str = He
     if direct is None and raw.startswith('http'):
         try:
             import httpx
-            with httpx.Client(follow_redirects=True, timeout=12) as client:
+            with pooled_client(follow_redirects=True, timeout=12) as client:
                 response = client.get(raw, headers={'User-Agent': 'LoyaltyTree'})
                 final_url = str(response.url)
         except Exception as exc:
@@ -48095,7 +48174,7 @@ def resolve_geofence_link(public_id: str, payload: dict, authorization: str = He
             raise HTTPException(status_code=400, detail='That link has no coordinates. Paste the numbers, for example 25.785531,55.937361.')
         try:
             import httpx
-            with httpx.Client(timeout=12) as client:
+            with pooled_client(timeout=12) as client:
                 geo = client.get('https://nominatim.openstreetmap.org/search', params={'q': place, 'format': 'json', 'limit': 1}, headers={'User-Agent': 'LoyaltyTree'})
                 rows = geo.json()
         except Exception as exc:
@@ -48194,7 +48273,7 @@ async def admin_set_custom_price(public_id: str, payload: AdminCustomPriceUpdate
     return {
         'public_id': public_id,
         'pricing_region': business_pricing_region(updated),
-        'currency': business_currency(updated),
+        'currency': subscription_currency(updated),
         'custom_monthly_price': business_custom_monthly_price(updated),
         'pricing_locked': True,
         'monthly': get_price_for_business(updated, 'monthly'),
@@ -48202,3 +48281,6 @@ async def admin_set_custom_price(public_id: str, payload: AdminCustomPriceUpdate
         'processor_currency': 'PHP',
         'supported_currencies': sorted(_fx_to_php_map()),
     }
+
+# Install last so monitoring surrounds all existing HTTP middleware.
+install_monitoring(app)

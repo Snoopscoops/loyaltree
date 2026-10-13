@@ -25,7 +25,7 @@ from typing import Optional, Literal
 import jwt as pyjwt
 from fastapi import APIRouter, Header, HTTPException, Request, Query
 from pydantic import BaseModel, Field
-from supabase import create_client
+from shared_http import pooled_client, create_pooled_supabase
 
 help_router = APIRouter()
 
@@ -38,7 +38,7 @@ SUPABASE_KEY = (
 STAFF_SESSION_SECRET = os.getenv("STAFF_SESSION_SECRET", "").strip()
 SUPER_ADMIN_PASSWORD = os.getenv("SUPER_ADMIN_PASSWORD", "")
 
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
+supabase = create_pooled_supabase(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
 
 
 def _utcnow_iso() -> str:

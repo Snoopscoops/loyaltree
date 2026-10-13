@@ -12,14 +12,15 @@ export const CURRENCY_META = {
 
 export const COUNTRY_OPTIONS = [
   { code:'PH', label:'Philippines', currency:'PHP', flag:'🇵🇭' },
-  { code:'SG', label:'Singapore', currency:'SGD', flag:'🇸🇬' },
-  { code:'GB', label:'United Kingdom', currency:'GBP', flag:'🇬🇧' },
-  { code:'HK', label:'Hong Kong', currency:'HKD', flag:'🇭🇰' },
+  { code:'SG', label:'Singapore', currency:'USD', flag:'🇸🇬' },
+  { code:'GB', label:'United Kingdom', currency:'USD', flag:'🇬🇧' },
+  { code:'HK', label:'Hong Kong', currency:'USD', flag:'🇭🇰' },
   { code:'US', label:'United States', currency:'USD', flag:'🇺🇸' },
-  { code:'NZ', label:'New Zealand', currency:'NZD', flag:'🇳🇿' },
-  { code:'MY', label:'Malaysia', currency:'MYR', flag:'🇲🇾' },
-  { code:'AE', label:'United Arab Emirates', currency:'AED', flag:'🇦🇪' },
-  { code:'AU', label:'Australia', currency:'AUD', flag:'🇦🇺' },
+  { code:'NZ', label:'New Zealand', currency:'USD', flag:'🇳🇿' },
+  { code:'MY', label:'Malaysia', currency:'USD', flag:'🇲🇾' },
+  { code:'AE', label:'United Arab Emirates', currency:'USD', flag:'🇦🇪' },
+  { code:'AU', label:'Australia', currency:'USD', flag:'🇦🇺' },
+  { code:'INT', label:'Other countries', currency:'USD', flag:'🌍' },
 ]
 
 export function currencyMeta(currency='PHP') {

@@ -1,3 +1,4 @@
+from monitoring import legacy_diagnostic as print
 import os
 import uuid
 import hashlib
@@ -15,7 +16,8 @@ from typing import Optional, Literal, List
 from fastapi import APIRouter, HTTPException, Header, Depends, Request, BackgroundTasks
 from fastapi.responses import Response, RedirectResponse, HTMLResponse
 from pydantic import BaseModel, Field
-from supabase import create_client, Client
+from supabase import Client
+from shared_http import pooled_client, create_pooled_supabase
 
 motolite_router = APIRouter(prefix="/api/v1/motolite", tags=["Motolite"])
 
@@ -54,10 +56,13 @@ WARRANTY_EXPIRED = "expired"
 WARRANTY_REPLACED = "replaced"
 
 
+from functools import lru_cache
+
+@lru_cache(maxsize=1)
 def _supabase() -> Client:
     if not SUPABASE_URL or not SUPABASE_KEY:
         raise HTTPException(status_code=503, detail="Supabase is not configured on this server.")
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
+    return create_pooled_supabase(SUPABASE_URL, SUPABASE_KEY)
 
 
 def _now_iso() -> str:
@@ -2205,7 +2210,7 @@ def _ensure_google_class():
             },
         }
 
-        with httpx.Client(timeout=20) as c:
+        with pooled_client(timeout=20) as c:
             current = c.get(
                 f"https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{cid}",
                 headers=headers,
@@ -2486,6 +2491,7 @@ def _apple_pkpass(wid: str):
             },
         }
 
+        pj.setdefault("userInfo", {})["loyaltytreeRevision"] = str(pm._apple_pass_dirty_at(pj.get("serialNumber")) or "")
         files = {
             "pass.json": json.dumps(pj).encode(),
             "icon.png": pm.generate_apple_icon_bytes(MOTOLITE_WALLET_BACKGROUND_COLOR, "M", 29),
@@ -2501,7 +2507,8 @@ def _apple_pkpass(wid: str):
             try:
                 import httpx
                 from PIL import Image
-                logo_bytes = httpx.get(card_logo_url, timeout=15).content
+                with pooled_client(timeout=15) as client:
+                    logo_bytes = client.get(card_logo_url).content
                 img = Image.open(BytesIO(logo_bytes)).convert("RGBA")
                 for name, size in [("logo.png",(160,50)),("logo@2x.png",(320,100)),("logo@3x.png",(480,150))]:
                     copy = img.copy()
@@ -2661,7 +2668,7 @@ async def refresh_google_wallet_object(
         obj = _google_object(warranty_public_id)
         object_id = obj["id"]
 
-        with httpx.Client(timeout=20) as client:
+        with pooled_client(timeout=20) as client:
             response = client.patch(
                 f"https://walletobjects.googleapis.com/walletobjects/v1/loyaltyObject/{object_id}",
                 headers={

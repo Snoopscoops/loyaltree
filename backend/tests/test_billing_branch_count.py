@@ -29,7 +29,7 @@ def namespace():
                Depends=lambda value: None, require_admin=lambda: True,
                SUBSCRIPTION_PLANS={'starter': {}},
                price_tiers_for_region=lambda *args: {'1': 100, '2': 200, '3': 250, '5': 400},
-               business_pricing_region=lambda b: 'PH', business_currency=lambda b: 'PHP',
+               business_pricing_region=lambda b: 'PH', business_currency=lambda b: 'PHP', subscription_currency=lambda b: 'PHP',
                business_has_plan_feature=lambda *args: False,
                PAYMONGO_SECRET_KEY='', paymongo_card_configured=lambda: False)
     nodes = []
