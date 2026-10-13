@@ -1195,11 +1195,21 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
       const deviceData = await deviceRes.json().catch(() => [])
       const orderAheadData = await orderAheadRes.json().catch(() => null)
 
-      setBusiness(bizData)
-      setCustomers(custData)
-      setStaff(staffData)
-      setStats(statsData)
-      setProgram(progData)
+      // Error JSON is an object, not an empty collection. Keep the previous
+      // valid state on failed reads so `.some`/`.map` never crash the page and
+      // a temporary outage never makes existing configuration look absent.
+      if (bizRes.ok && bizData && !bizData.detail) setBusiness(bizData)
+      if (custRes.ok && Array.isArray(custData)) setCustomers(custData)
+      if (staffRes.ok && Array.isArray(staffData)) setStaff(staffData)
+      if (statsRes.ok && statsData && !statsData.detail) setStats(statsData)
+      if (progRes.ok && progData && !progData.detail) setProgram(progData)
+      const failedReads = [
+        ['business', bizRes], ['customers', custRes], ['staff', staffRes],
+        ['stats', statsRes], ['loyalty settings', progRes],
+      ].filter(([, response]) => !response.ok)
+      if (failedReads.length) {
+        setMessage(`Some dashboard data could not load (${failedReads.map(([name]) => name).join(', ')}). Please retry shortly.`)
+      }
       if (['membership','hybrid'].includes(progData?.card_type)) {
         setMembershipSettings({
           membership_duration_days: progData.membership_duration_days || 30,
@@ -1210,9 +1220,9 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
           membership_quick_checkin: !!progData.membership_quick_checkin,
         })
       }
-      setBranches(Array.isArray(branchData) ? branchData : [])
-      setSubscription(subData)
-      setCashierDevices(Array.isArray(deviceData) ? deviceData : [])
+      if (branchRes.ok && Array.isArray(branchData)) setBranches(branchData)
+      if (subRes.ok && subData && !subData.detail) setSubscription(subData)
+      if (deviceRes.ok && Array.isArray(deviceData)) setCashierDevices(deviceData)
       if (orderAheadRes.ok && orderAheadData) {
         setOrderAheadSetup(orderAheadData)
         setOrderAheadPaymentConfig(orderAheadData.payment || null)

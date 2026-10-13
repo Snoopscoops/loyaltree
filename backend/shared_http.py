@@ -48,7 +48,12 @@ class SharedHTTP:
             try:
                 response = await self.client.send(request)
                 await response.aread()
-                return httpx.Response(response.status_code, headers=response.headers,
+                # AsyncClient has already decoded gzip/deflate/br by aread().
+                # Do not forward wire-encoding headers with decoded bytes: the
+                # sync SDK would try to decompress the JSON a second time.
+                headers = [(name, value) for name, value in response.headers.raw
+                           if name.lower() not in (b'content-encoding', b'content-length', b'transfer-encoding')]
+                return httpx.Response(response.status_code, headers=headers,
                                       content=response.content, request=request,
                                       extensions=response.extensions)
             except READ_FAILURES:

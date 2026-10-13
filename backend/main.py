@@ -13621,6 +13621,8 @@ async def login(req: LoginRequest, request: Request):
     if not supabase:
         raise HTTPException(status_code=503, detail="Database not connected")
 
+    login_lookup_error = None
+
     # Region/province/city partner accounts are platform-scoped and intentionally
     # separate from businesses and homepage-logo partners.
     try:
@@ -13699,6 +13701,7 @@ async def login(req: LoginRequest, request: Request):
     except HTTPException:
         raise
     except Exception as e:
+        login_lookup_error = e
         print(f"Business login error: {e}")
 
     try:
@@ -13772,6 +13775,7 @@ async def login(req: LoginRequest, request: Request):
     except HTTPException:
         raise
     except Exception as e:
+        login_lookup_error = e
         print(f"Staff login error: {e}")
 
     # Approved Car Lending agents authenticate from cl_agents. Their row is
@@ -13820,6 +13824,10 @@ async def login(req: LoginRequest, request: Request):
     except Exception as e:
         print(f"Agent login error: {e}")
 
+    if login_lookup_error is not None:
+        # A database outage is not evidence of a wrong password; do not count
+        # it as a brute-force failure or tell the owner to change credentials.
+        raise HTTPException(status_code=503, detail="Login is temporarily unavailable. Please try again shortly.") from login_lookup_error
     _record_auth_failure('owner', request, req.email)
     raise HTTPException(status_code=401, detail="Invalid email or password")
 
