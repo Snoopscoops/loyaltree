@@ -247,7 +247,8 @@ const HELP_ARTICLES = [
       'Choose the program, branch, or period available on the page.',
       'Review customer/member activity and loyalty usage.',
       'Use branch filters when you want to compare locations.',
-      'Use the recent activity views when you need to check operational activity.'
+      'Use the recent activity views when you need to check operational activity.',
+      'Early customer trends are under observation. Monthly retention needs two complete months of activity; returning-member share is a different measure.'
     ],
     note: 'Analytics reflect Loyalty Tree activity recorded by the system.'
   },
@@ -306,6 +307,160 @@ const HELP_ARTICLES = [
       'Generate a new code if the previous one expires or has already been used.'
     ],
     note: 'The activation code is tied to the assigned branch/POS mapping and is intended for one device.'
+  },
+  {
+    "id": "wallet-notifications",
+    "roles": [
+      "owner",
+      "manager"
+    ],
+    "category": "Troubleshooting",
+    "title": "Why is a Wallet notification not showing?",
+    "shortLabel": "Wallet notification not showing",
+    "answerStyle": "bullets",
+    "keywords": [
+      "notification not showing",
+      "notifications not showing",
+      "no notification",
+      "lock screen",
+      "lockscreen",
+      "spurious push",
+      "wallet notification failed",
+      "apple notification",
+      "google notification",
+      "walang notification",
+      "hindi lumalabas notification",
+      "naka open wallet",
+      "resend notification"
+    ],
+    "answer": [
+      "The customer must have saved the correct card and enabled Wallet notifications on their phone.",
+      "Apple Wallet needs to download the updated card. The announcement text must change for a new change notification; resending identical text may not show another alert.",
+      "Google Wallet allows up to 3 notification-triggering messages per pass in 24 hours. Repeated sends can reach that limit.",
+      "An open Wallet app may show an updated card without a separate banner. Check the message on the card as well as the phone notifications.",
+      "For a lock-screen check, use your test card with notifications enabled, new announcement text, and the phone locked.",
+      "If the card does not update or you see an error, contact the team with the business, announcement reference, time, and exact error."
+    ],
+    "note": "Push accepted means the provider accepted the request. It does not confirm that a notification was displayed or read. Phone settings and the Wallet platform control the banner."
+  },
+  {
+    "id": "announcement-limits-owner",
+    "roles": [
+      "owner"
+    ],
+    "category": "Marketing",
+    "title": "How many announcements are included in my plan?",
+    "shortLabel": "Announcement limits by plan",
+    "answerStyle": "bullets",
+    "keywords": [
+      "announcement limits",
+      "how many announcements",
+      "announcements included",
+      "2 announcements",
+      "5 announcements",
+      "7 announcements",
+      "announcement quota",
+      "announcement allowance",
+      "announcement limit reached",
+      "ilang announcements"
+    ],
+    "answer": [
+      "Starter includes 2 announcements per paid subscription cycle.",
+      "Growth includes 5 announcements per paid subscription cycle.",
+      "Pro includes 7 announcements per paid subscription cycle.",
+      "Special agreements and admin adjustments can have different limits. Check the allowance shown for your account.",
+      "A subscription allowance is different from a phone notification limit. Google Wallet can still limit notification-triggering messages to 3 per pass in 24 hours."
+    ],
+    "note": "Check your dashboard allowance and billing cycle before creating another announcement. Do not repeatedly resend just to force a notification."
+  },
+  {
+    "id": "branch-billing-owner",
+    "roles": [
+      "owner"
+    ],
+    "category": "Billing & Account",
+    "title": "How do I correct the number of branches used for billing?",
+    "shortLabel": "Correct my billing branch count",
+    "answerStyle": "bullets",
+    "keywords": [
+      "billing branches",
+      "billing branch count",
+      "operating branches",
+      "number of branches",
+      "branch count wrong",
+      "adjust branches for billing",
+      "wrong branch bill",
+      "branch pricing",
+      "bilang branches",
+      "maling bilang branch"
+    ],
+    "answer": [
+      "Open More, then Billing, and check the branch count and price shown for your account.",
+      "If the operating branch count is wrong, contact LoyaltyTree with the correct number of branches.",
+      "A LoyaltyTree admin can adjust the branch count used by automatic billing.",
+      "A billing adjustment does not create or delete branch records. Keep your branch setup and staff assignments accurate.",
+      "Refresh Billing after the adjustment to check the count and price. Ask the team about any invoice already issued."
+    ],
+    "note": "Special agreements can use custom pricing. The final amount is the amount shown for your account."
+  },
+  {
+    "id": "plans-owner",
+    "roles": [
+      "owner"
+    ],
+    "category": "Billing & Account",
+    "title": "What is included in Starter, Growth, Pro, and Special?",
+    "shortLabel": "Compare LoyaltyTree plans",
+    "answerStyle": "bullets",
+    "keywords": [
+      "compare plans",
+      "starter growth pro",
+      "plan features",
+      "what is included",
+      "subscription plans",
+      "which plan",
+      "starter plan",
+      "growth plan",
+      "pro plan",
+      "special plan"
+    ],
+    "answer": [
+      "Starter: points and stamp cards, 2 announcements per subscription cycle, unlimited members and stamps/points, and automated chat support.",
+      "Growth: all card types, 5 announcements per subscription cycle, unlimited members, and real-person chat support. Gift cards are currently available in the Philippines.",
+      "Pro: Growth features, 7 announcements per subscription cycle, compatible POS integration, and chat and call customer service.",
+      "Geo-based notifications are included in UAE Pro. Other markets need an agreed Special setup for this feature.",
+      "Special: a tailored setup for specific business needs and agreed location-based features.",
+      "Prices depend on the market, billing period, and operating branch count. Check Billing for your account price."
+    ],
+    "note": "Availability and custom account agreements can differ. Contact the team to confirm a plan change."
+  },
+  {
+    "id": "account-activation-owner",
+    "roles": [
+      "owner"
+    ],
+    "category": "Billing & Account",
+    "title": "When is my business account activated?",
+    "shortLabel": "Business account activation",
+    "answerStyle": "bullets",
+    "keywords": [
+      "business account activation",
+      "activate business",
+      "account pending",
+      "waiting for activation",
+      "subscription activation",
+      "activation date",
+      "account inactive",
+      "pending review",
+      "kailan active"
+    ],
+    "answer": [
+      "Check the account and subscription status shown in your dashboard.",
+      "Activation follows business review and the applicable payment or onboarding requirements.",
+      "If the account is still pending, contact the team with the business name and application reference.",
+      "Getting more customers does not automatically activate or renew your subscription."
+    ],
+    "note": "Customer analytics milestones are separate from subscription activation and expiry."
   },
   {
     id: 'wallet-not-added',
@@ -650,8 +805,8 @@ const HELP_ARTICLES = [
     answer: [
       'Open More from the Owner Dashboard.',
       'Choose Support.',
-      'Use the available LoyaltyTree support contact flow for concerns that cannot be solved by the Help Center.',
-      'When reporting a problem, include the business, affected feature, exact error message, and the customer or transaction reference when relevant.'
+      'Use Message the team, Email support, or Contact Us below to open the channel you prefer.',
+      'Include the business name, affected feature, time, and exact error. Use a transaction reference when needed; do not send passwords or full customer lists.'
     ],
     note: 'Check the Help Center first for common operating questions so support can focus on account-specific or technical issues.'
   },
@@ -774,6 +929,8 @@ const HELP_ARTICLES = [
 ]
 
 const OWNER_FAQ_IDS = [
+  'wallet-notifications',
+  'branch-billing-owner',
   'scan-to-join',
   'share-join-qr',
   'scan-to-stamp',
@@ -788,6 +945,7 @@ const OWNER_FAQ_IDS = [
 ]
 
 const MANAGER_FAQ_IDS = [
+  'wallet-notifications',
   'scan-to-stamp',
   'manager-search-member',
   'manager-points',
@@ -839,7 +997,7 @@ const HELP_CATEGORIES = [
     icon: '📣',
     description: 'Announcements, campaigns, feedback, and analytics.',
     roles: ['owner','manager'],
-    articleIds: ['announcements-owner','announcements-manager','campaigns-owner','satisfaction-owner','analytics'],
+    articleIds: ['announcements-owner','announcements-manager','announcement-limits-owner','wallet-notifications','campaigns-owner','satisfaction-owner','analytics'],
   },
   {
     id: 'operate',
@@ -855,7 +1013,7 @@ const HELP_CATEGORIES = [
     icon: '💳',
     description: 'Subscription, renewal, setup help, and support.',
     roles: ['owner'],
-    articleIds: ['billing-owner','support-owner'],
+    articleIds: ['billing-owner','branch-billing-owner','plans-owner','account-activation-owner','support-owner'],
   },
   {
     id: 'business-benefits',
@@ -871,7 +1029,7 @@ const HELP_CATEGORIES = [
     icon: '🛟',
     description: 'Common errors and quick fixes.',
     roles: ['owner','manager'],
-    articleIds: ['save-error','wallet-not-added'],
+    articleIds: ['wallet-notifications','save-error','wallet-not-added'],
   },
   {
     id: 'manager-daily',
@@ -1037,30 +1195,27 @@ function scoreArticle(query, article) {
   if (!q) return 0
 
   const qTokens = new Set(tokens(q))
-  let score = 0
   const title = normalize(article.title)
-
-  if (q.includes(title) || title.includes(q)) score += 10
-
+  let score = q.includes(title) || title.includes(q) ? 10 : 0
+  let phraseScore = 0
+  const keywordTokens = new Set()
   const multilingualKeywords = ARTICLE_LANGUAGE_KEYWORDS[article.id] || []
   for (const keywordRaw of [...(article.keywords || []), ...multilingualKeywords]) {
     const keyword = normalize(keywordRaw)
     if (!keyword) continue
-
-    if (q === keyword) score += 16
-    else if (q.includes(keyword)) score += 10
-    else if (keyword.includes(q) && q.length >= 4) score += 6
-
-    for (const token of tokens(keyword)) {
-      if (qTokens.has(token)) score += token.length >= 6 ? 3 : 2
-    }
+    if (q === keyword) phraseScore = Math.max(phraseScore, 16)
+    else if (q.includes(keyword)) phraseScore = Math.max(phraseScore, 10)
+    else if (keyword.includes(q) && q.length >= 4) phraseScore = Math.max(phraseScore, 6)
+    for (const token of tokens(keyword)) keywordTokens.add(token)
   }
-
-  for (const token of tokens(article.title + ' ' + article.category)) {
+  // Repeating a keyword in many phrases must not outweigh a more specific FAQ.
+  for (const token of keywordTokens) {
+    if (qTokens.has(token)) score += token.length >= 6 ? 3 : 2
+  }
+  for (const token of new Set(tokens(article.title + ' ' + article.category))) {
     if (qTokens.has(token)) score += 2
   }
-
-  return score
+  return score + phraseScore
 }
 
 function findBestArticle(query, role) {
@@ -1079,6 +1234,7 @@ function findBestArticle(query, role) {
 
 function AnswerCard({ article, onBack }) {
   if (!article) return null
+  const AnswerList = article.answerStyle === 'bullets' ? 'ul' : 'ol'
 
   return (
     <div style={styles.answerCard}>
@@ -1094,13 +1250,13 @@ function AnswerCard({ article, onBack }) {
         )}
       </div>
 
-      <ol style={styles.answerList}>
+      <AnswerList style={styles.answerList}>
         {article.answer.map((step, index) => (
           <li key={`${article.id}-${index}`} style={styles.answerStep}>
             {step}
           </li>
         ))}
-      </ol>
+      </AnswerList>
 
       {article.note && (
         <div style={styles.note}>
@@ -1129,6 +1285,12 @@ export default function HelpChat({
   const [messages, setMessages] = useState([])
   const inputRef = useRef(null)
   const scrollRef = useRef(null)
+  const messageSequence = useRef(0)
+
+  const quickArticles = useMemo(() => (normalizedRole === 'manager' ? MANAGER_FAQ_IDS : OWNER_FAQ_IDS)
+    .slice(0, 4)
+    .map(id => HELP_ARTICLES.find(article => article.id === id))
+    .filter(article => article && article.roles.includes(normalizedRole)), [normalizedRole])
 
   const helpCategories = useMemo(() => {
     return HELP_CATEGORIES
@@ -1233,9 +1395,10 @@ export default function HelpChat({
   }
 
   async function submitQuestion(rawQuestion) {
-    const text = String(rawQuestion || '').trim()
+    const text = String(rawQuestion || '').trim().slice(0, 500)
     if (!text) return
 
+    const messageId = `${Date.now()}-${++messageSequence.current}`
     const article = findBestArticle(text, normalizedRole)
     setSelectedArticle(null)
     setQuery('')
@@ -1243,8 +1406,8 @@ export default function HelpChat({
     if (article) {
       setMessages(current => [
         ...current,
-        { id: `${Date.now()}-user`, role: 'user', text },
-        { id: `${Date.now()}-bot`, role: 'bot', article },
+        { id: `${messageId}-user`, role: 'user', text },
+        { id: `${messageId}-bot`, role: 'bot', article },
       ])
       void recordQuestionEvent({
         source: 'typed',
@@ -1255,24 +1418,17 @@ export default function HelpChat({
       return
     }
 
-    const recorded = await recordQuestionEvent({
-      source: 'typed',
-      questionText: text,
-      article: null,
-      answered: false,
-    })
-
     setMessages(current => [
       ...current,
-      { id: `${Date.now()}-user`, role: 'user', text },
+      { id: `${messageId}-user`, role: 'user', text },
       {
-        id: `${Date.now()}-fallback`,
+        id: `${messageId}-fallback`,
         role: 'bot',
-        text: recorded
-          ? 'I could not find an exact answer. I recorded this question for Loyalty Tree to review and add to the Help Center.'
-          : 'I could not find an exact answer. Please choose one of the FAQs below or try using the feature name in your question.'
+text: 'I could not find a matching FAQ. Try the feature name, choose a help category, or contact the team using the links below.'
       }
     ])
+    // Logging must never delay the local FAQ response.
+    void recordQuestionEvent({ source: 'typed', questionText: text, article: null, answered: false })
   }
 
   const assistantLabel = normalizedRole === 'manager'
@@ -1366,6 +1522,15 @@ export default function HelpChat({
                     </div>
                   </div>
 
+                  <div style={styles.quickLabel}>POPULAR QUESTIONS</div>
+                  <div style={styles.faqGrid}>
+                    {quickArticles.map(article => <button key={article.id} type="button" style={styles.faqBtn} onClick={() => openArticle(article)}>
+                      <span style={styles.faqNumber}>?</span>
+                      <span style={styles.faqText}>{article.shortLabel || article.title}</span>
+                      <span style={styles.faqArrow}>›</span>
+                    </button>)}
+                  </div>
+
                   <div style={styles.quickLabel}>HELP CATEGORIES</div>
                   <div style={styles.categoryGrid}>
                     {helpCategories.map(category => (
@@ -1430,6 +1595,7 @@ export default function HelpChat({
               placeholder="Or type your question..."
               style={styles.input}
               autoComplete="off"
+              maxLength={500}
             />
             <button
               type="submit"
@@ -1445,8 +1611,13 @@ export default function HelpChat({
             </button>
           </form>
 
+          <div style={{display:'flex',gap:12,flexWrap:'wrap',padding:'8px 14px',borderTop:'1px solid #e2e8f0',fontSize:11}} aria-label="Contact LoyaltyTree support">
+            <a href="https://m.me/theloyaltytree" target="_blank" rel="noopener noreferrer" style={{color:'#0f766e',fontWeight:750}}>Message the team ↗</a>
+            <a href="mailto:theloyaltytree@gmail.com" style={{color:'#0f766e',fontWeight:750}}>Email support</a>
+            <a href="/contact" target="_blank" rel="noopener noreferrer" style={{color:'#0f766e',fontWeight:750}}>Contact Us ↗</a>
+          </div>
           <div style={styles.footer}>
-            English · Filipino · Ilocano · Bisaya/Cebuano · No AI or token usage
+            FAQ help · No AI or token usage · Questions supported in English, Filipino, Ilocano, and Bisaya/Cebuano
           </div>
         </div>
       )}
