@@ -1,3 +1,7 @@
+try:
+    from .trial_coupons import register_trial_routes, coupon_available, billing_hold, subscription_access_expiry
+except ImportError:
+    from trial_coupons import register_trial_routes, coupon_available, billing_hold, subscription_access_expiry
 import os
 import builtins
 import re
@@ -832,7 +836,7 @@ def grant_business_referral_month(business: dict, payment_intent_id: str):
     if len(prior) > 1:
         return
     try:
-        referrer_rows = supabase.table("businesses").select("id,subscription_expires_at,status").eq("id", business.get("referred_by_business_id")).limit(1).execute().data or []
+        referrer_rows = supabase.table("businesses").select("id,subscription_expires_at,trial_ends_at,last_paid_at,status").eq("id", business.get("referred_by_business_id")).limit(1).execute().data or []
     except Exception as exc:
         print(f"REFERRAL referrer lookup error: {exc}")
         return
@@ -840,7 +844,7 @@ def grant_business_referral_month(business: dict, payment_intent_id: str):
         return
     referrer = referrer_rows[0]
     now = datetime.utcnow()
-    current_expiry = _parse_ts(referrer.get("subscription_expires_at"))
+    current_expiry = _parse_ts(subscription_access_expiry(referrer))
     base = current_expiry if current_expiry and current_expiry > now else now
     new_expiry = (base + timedelta(days=MONTHLY_SUBSCRIPTION_PERIOD_DAYS)).date().isoformat()
     try:
@@ -1675,7 +1679,7 @@ def _signup_dpa_sections() -> list:
     return _copy_legal_sections(_LEGAL_CONTENT['documents']['business-agreement']['dpa'])
 
 
-def build_signup_agreement_document(*, name: str, email: str, phone: Optional[str], address: Optional[str], contact_person: Optional[str], plan: str, branch_count: int, billing_cycle: str, setup_kit_requested: bool, pricing_region: str = 'PH') -> dict:
+def build_signup_agreement_document(*, name: str, email: str, phone: Optional[str], address: Optional[str], contact_person: Optional[str], plan: str, branch_count: int, billing_cycle: str, setup_kit_requested: bool, pricing_region: str = 'PH', trial_coupon: Optional[dict] = None) -> dict:
     plan_data = SUBSCRIPTION_PLANS.get(plan)
     if not plan_data:
         raise HTTPException(status_code=400, detail='Unknown subscription plan')
@@ -1703,6 +1707,12 @@ def build_signup_agreement_document(*, name: str, email: str, phone: Optional[st
                            'Feature availability depends on the enabled market and agreed configuration. '
                            'Gift cards and physical kits are currently Philippines-only. POS integration '
                            'requires compatible systems and an agreed scope; no 24/7 support SLA is implied.'],
+            'bullets': [],
+        })
+    if trial_coupon:
+        sections.append({
+            'title': 'Promotional business trial',
+            'paragraphs': [f"Coupon {trial_coupon['code']} provides {trial_coupon['trial_days']} days of free business access starting at successful signup. No subscription payment is required to start this trial. After the trial ends, a paid subscription is required to continue business access. The selected subscription price and billing term apply to renewal. The physical QR / PR Kit is not included. One promotional trial per business; offers cannot be stacked."],
             'bullets': [],
         })
     dpa_sections = _signup_dpa_sections()
@@ -1848,6 +1858,7 @@ class SignupAgreementPreviewRequest(BaseModel):
     country_code: str = Field(default='PH', min_length=2, max_length=3)
     pricing_region: Optional[str] = Field(default=None, min_length=2, max_length=3)
     setup_kit_requested: bool = False
+    trial_coupon: Optional[str] = Field(default=None, max_length=64)
 
 
 class BusinessCreate(BaseModel):
@@ -1871,6 +1882,7 @@ class BusinessCreate(BaseModel):
     kit_delivery_instructions: Optional[str] = None
     partner_code: Optional[str] = Field(default=None, max_length=64)
     referral_code: Optional[str] = Field(default=None, max_length=64)
+    trial_coupon: Optional[str] = Field(default=None, max_length=64)
     agreement: Optional[BusinessAgreementAcceptance] = None
 
 class SubscriptionCheckoutRequest(BaseModel):
@@ -13412,6 +13424,47 @@ def _api_limit_for_path(path: str, method: str):
 # FastAPI App
 app = FastAPI(title='LoyaltyTree API')
 
+def business_for_access_check(public_id: str) -> dict:
+    """Unlike optional page reads, a failed billing lookup cannot grant access."""
+    if not supabase:
+        raise HTTPException(status_code=503, detail='Business access check is unavailable. Please retry.')
+    business_public_id, _ = split_program_join_slug(public_id)
+    try:
+        rows = (supabase.table('businesses')
+                .select('id,public_id,status,subscription_expires_at,trial_ends_at,last_paid_at')
+                .eq('public_id', business_public_id).limit(1).execute().data or [])
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail='Could not verify business subscription. Please retry.') from exc
+    if not rows:
+        raise HTTPException(status_code=404, detail='Business not found')
+    return rows[0]
+
+@app.middleware("http")
+async def overdue_business_guard(request: Request, call_next):
+    path = request.url.path
+    match = re.match(r'^/(?:api/v1/business|agent)/([^/]+)(/.*)?$', path)
+    if request.method != 'OPTIONS' and match:
+        slug, suffix = match.group(1), match.group(2) or ''
+        billing_route = suffix == '/subscription' or suffix.startswith('/subscription/')
+        public_read = path.startswith('/api/v1/business/') and request.method == 'GET' and (
+            suffix in ('', '/join-config', '/hero-image.png', '/wallet-logo.png')
+            or bool(re.fullmatch(r'/customers/[^/]+/apple-wallet-registration', suffix))
+        )
+        admin_token = get_admin_token()
+        is_admin = bool(admin_token and request.headers.get('authorization') == f'Bearer {admin_token}')
+        if not billing_route and not public_read and not is_admin and suffix not in ('/help', '/help/question-event'):
+            try:
+                business = business_for_access_check(slug)
+            except HTTPException as exc:
+                return JSONResponse(status_code=exc.status_code, content={'detail': exc.detail})
+            if billing_hold(business):
+                return JSONResponse(status_code=402, content={
+                    'detail': 'Business access is on hold. Please settle your subscription to restore access.',
+                    'billing_hold': True,
+                })
+    return await call_next(request)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=['*'],
@@ -13517,6 +13570,8 @@ async def check_env(request: Request, call_next):
         </div>
         """)
     return await call_next(request)
+
+lookup_trial_coupon = register_trial_routes(app, supabase, require_admin)
 
 # AUTH ROUTES
 
@@ -13681,6 +13736,7 @@ async def login(req: LoginRequest, request: Request):
                 return {
                     "success": True,
                     "token": owner_session_token,
+                    "billing_hold": billing_hold(business),
                     "business_slug": business.get("public_id", ""),
                     "business_name": business.get("name", ""),
                     "name": business.get("name", ""),
@@ -13705,7 +13761,7 @@ async def login(req: LoginRequest, request: Request):
         print(f"Business login error: {e}")
 
     try:
-        res = supabase.table("staff").select("*,businesses(public_id,name,logo_url,status)").eq("email", req.email).maybe_single().execute()
+        res = supabase.table("staff").select("*,businesses(public_id,name,logo_url,status,subscription_expires_at,trial_ends_at,last_paid_at)").eq("email", req.email).maybe_single().execute()
         staff = res.data
         if staff:
             stored_pin = staff.get('pin', '')
@@ -13722,6 +13778,8 @@ async def login(req: LoginRequest, request: Request):
                         status_code=403,
                         detail="This business's account is not active. Please contact support for details."
                     )
+                if billing_hold(biz):
+                    raise HTTPException(status_code=402, detail='Business access is on hold. Ask the owner to settle the subscription.')
                 staff_role = str(staff.get("role") or "cashier").lower()
                 branch = None
                 if staff.get('branch_id'):
@@ -13782,7 +13840,7 @@ async def login(req: LoginRequest, request: Request):
     # provisioned only after the dealership owner approves the original
     # application, so existence here means the agent is approved.
     try:
-        res = supabase.table("cl_agents").select("*,businesses(public_id,name,logo_url,status,business_type)") \
+        res = supabase.table("cl_agents").select("*,businesses(public_id,name,logo_url,status,business_type,subscription_expires_at,trial_ends_at,last_paid_at)") \
             .eq("email", req.email.strip().lower()).maybe_single().execute()
         agent = res.data
         if agent:
@@ -13796,6 +13854,8 @@ async def login(req: LoginRequest, request: Request):
                         status_code=403,
                         detail="This dealership is not active. Please contact the dealership owner."
                     )
+                if billing_hold(biz):
+                    raise HTTPException(status_code=402, detail='Business access is on hold. Ask the owner to settle the subscription.')
                 business_public_id = biz.get('public_id', '')
                 return {
                     "success": True,
@@ -13846,7 +13906,11 @@ async def signup_agreement_preview(req: SignupAgreementPreviewRequest):
     max_branches = SUBSCRIPTION_PLANS[req.plan].get('max_branches')
     if max_branches is not None and req.branch_count > max_branches:
         raise HTTPException(status_code=400, detail='Selected plan does not support this number of branches')
+    trial_coupon = None
+    if (req.trial_coupon or '').strip():
+        trial_coupon = coupon_available(lookup_trial_coupon(req.trial_coupon), normalize_country_code(req.pricing_region or req.country_code), req.email)
     doc = build_signup_agreement_document(
+        trial_coupon=trial_coupon,
         name=req.name,
         email=req.email,
         phone=req.phone,
@@ -13905,6 +13969,9 @@ async def register(biz: BusinessCreate, request: Request):
     else:
         plan = determine_plan_from_branch_count(biz.branch_count)
     pricing_region = normalize_country_code(biz.pricing_region or biz.country_code)
+    trial_coupon = None
+    if (biz.trial_coupon or '').strip():
+        trial_coupon = coupon_available(lookup_trial_coupon(biz.trial_coupon), pricing_region, biz.email)
     biz.billing_cycle = self_serve_billing_cycle(biz.billing_cycle, pricing_region)
     region_cfg = pricing_region_config(pricing_region)
     if biz.setup_kit_requested and pricing_region != 'PH':
@@ -13912,6 +13979,7 @@ async def register(biz: BusinessCreate, request: Request):
     price_month = get_price_for_plan(plan, biz.branch_count, 'monthly', pricing_region)
     billing_price = get_price_for_plan(plan, biz.branch_count, biz.billing_cycle, pricing_region)
     agreement_doc = build_signup_agreement_document(
+        trial_coupon=trial_coupon,
         name=biz.name, email=biz.email, phone=biz.phone, address=biz.address,
         contact_person=biz.contact_person, plan=plan, branch_count=biz.branch_count,
         billing_cycle=biz.billing_cycle,
@@ -14037,6 +14105,31 @@ async def register(biz: BusinessCreate, request: Request):
             ),
         )
 
+    trial_result = None
+    if trial_coupon:
+        try:
+            trial_result = supabase.rpc('redeem_business_trial', {
+                'p_code': trial_coupon['code'], 'p_business_id': business_id, 'p_trial_days': trial_coupon['trial_days'],
+            }).execute().data
+            if not trial_result:
+                raise RuntimeError('Trial redemption was not confirmed')
+        except Exception as exc:
+            # A lost RPC response does not prove the transaction failed. Recover
+            # a committed claim, or cancel only an unactivated signup atomically.
+            try:
+                recovered = supabase.rpc('cancel_pending_trial_signup', {
+                    'p_code': trial_coupon['code'], 'p_business_id': business_id,
+                }).execute().data
+            except Exception as rollback_error:
+                print(f'TRIAL signup recovery warning: {type(rollback_error).__name__}')
+                raise HTTPException(status_code=503, detail='We could not confirm your signup. Try signing in or contact support before registering again.') from exc
+            if isinstance(recovered, dict) and recovered.get('trial_ends_at'):
+                trial_result = recovered
+            elif isinstance(recovered, dict) and recovered.get('cancelled'):
+                raise HTTPException(status_code=400, detail='Coupon could not be redeemed. It may have expired or reached its limit; please retry without it or contact support.') from exc
+            else:
+                raise HTTPException(status_code=503, detail='We could not confirm your signup. Try signing in or contact support before registering again.') from exc
+
     if business_id and biz.setup_kit_requested:
         try:
             frontend_base = PUBLIC_JOIN_BASE_URL
@@ -14072,7 +14165,7 @@ async def register(biz: BusinessCreate, request: Request):
                 f"<li><b>Plan:</b> {SUBSCRIPTION_PLANS.get(plan, {}).get('label', plan)}</li>"
                 f"<li><b>Billing:</b> {billing_cycle_label(biz.billing_cycle)} · {html_lib.escape(money_text(billing_price or 0, region_cfg['currency']))}</li>"
                 f"<li><b>Branches:</b> {biz.branch_count}</li>"
-                f"<li><b>Status:</b> PENDING PAYMENT</li>"
+                f"<li><b>Status:</b> {'ACTIVE TRIAL' if trial_result else 'PENDING PAYMENT'}</li>"
                 f"</ul>"
             ),
         )
@@ -14113,6 +14206,7 @@ async def register(biz: BusinessCreate, request: Request):
         "billing_cycle": normalize_billing_cycle(biz.billing_cycle),
         "price_month": price_month,
         "billing_price": billing_price,
+        "trial": trial_result,
         "agreement_signed": True,
         "agreement_version": BUSINESS_AGREEMENT_VERSION,
         "agreement_sha256": agreement_doc['agreement_sha256'],
@@ -20003,7 +20097,7 @@ async def get_subscription_status(public_id: str):
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
 
-    subscription_expires_at = business.get('subscription_expires_at')
+    subscription_expires_at = subscription_access_expiry(business)
     subscription_status = 'none'
     days_left = None
     if subscription_expires_at:
@@ -20076,6 +20170,8 @@ async def get_subscription_status(public_id: str):
         "last_paid_at": business.get('last_paid_at'),
         "subscription_expires_at": subscription_expires_at,
         "subscription_status": subscription_status,
+        "billing_hold": billing_hold(business),
+        "trial_ends_at": business.get("trial_ends_at"),
         "days_left": days_left,
         "latest_payment": latest_payment,
         "features": {
@@ -20299,7 +20395,7 @@ async def paymongo_webhook(request: Request):
 
             # Renew from the later of "now" or the current paid-through date.
             # This prevents an early renewal from throwing away already-paid days.
-            current_expiry = _parse_ts(business.get('subscription_expires_at'))
+            current_expiry = _parse_ts(subscription_access_expiry(business))
             expiry_base = current_expiry if current_expiry and current_expiry > now else now
             new_expiry = subscription_expiry_from(expiry_base, billing_cycle).date().isoformat()
             business_update = {
@@ -43186,6 +43282,14 @@ def _require_pos_device(x_lt_device_token: str) -> dict:
         if not device:
             raise HTTPException(status_code=401, detail='POS device token is invalid or revoked.')
         _pos_device_cache_put(token_hash, device)
+
+    # Device cache is authentication only; fresh business access must be checked
+    # for every operation so trial expiry and confirmed renewal take effect now.
+    business = _pos_business_by_id(device.get('business_id'))
+    if not business:
+        raise HTTPException(status_code=503, detail='Could not verify business subscription. Please retry.')
+    if billing_hold(business):
+        raise HTTPException(status_code=402, detail='Business access is on hold. Ask the owner to settle the subscription.')
 
     # A busy cashier can make several API calls within a few seconds. Updating
     # last_seen_at on every call doubles the database traffic for no operational

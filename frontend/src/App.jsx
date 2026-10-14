@@ -1,3 +1,5 @@
+import TrialPromotionPopup from './components/TrialPromotionPopup'
+import BusinessAccessGate from './components/BusinessAccessGate'
 import React, { useState, useEffect, lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useParams, useLocation } from 'react-router-dom'
 const Login = lazy(() => import('./components/Login'))
@@ -118,6 +120,7 @@ function App() {
   return (
     <BrowserRouter>
       <PublicRouteAnalytics API_BASE={API_BASE} />
+      {!user&&<TrialPromotionPopup API_BASE={API_BASE} />}
       <style>{`
         @keyframes sway {
           0%, 100% { transform: rotate(-2deg); }
@@ -142,7 +145,12 @@ function App() {
         }
       `}</style>
       <Suspense fallback={<p role="status" style={{ padding: 32 }}>Loading…</p>}>
-      <Routes>
+      {user && ['owner','manager','cashier'].includes(user.role) ? <BusinessAccessGate API_BASE={API_BASE} user={user} onLogout={handleLogout}><AppRoutes /></BusinessAccessGate> : <AppRoutes />}
+      </Suspense>
+    </BrowserRouter>
+  )
+
+  function AppRoutes() { return <Routes>
         <Route path="/motolite/*" element={<MotoliteApp API_BASE={API_BASE} />} />
         <Route path="/" element={
           user ? (
@@ -214,10 +222,7 @@ function App() {
         <Route path="/partner" element={
           user?.role === 'partner' ? <PartnerDashboard API_BASE={API_BASE} user={user} onLogout={handleLogout} /> : <Navigate to="/login" />
         } />
-      </Routes>
-      </Suspense>
-    </BrowserRouter>
-  )
+      </Routes> }
 }
 
 export default App

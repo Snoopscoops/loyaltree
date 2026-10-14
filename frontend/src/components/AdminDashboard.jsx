@@ -1,3 +1,4 @@
+import TrialCouponsAdmin from './TrialCouponsAdmin'
 import { formatMoney } from './currency'
 import React, { useState, useEffect } from 'react'
 import PlatformAnnouncementsAdmin from './PlatformAnnouncementsAdmin'
@@ -967,6 +968,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
 
   const adminTabs = [
     { key:'overview', label:'Overview', icon:'⌂', description:'Platform health, applications and the few numbers that need attention.' },
+    { key:'coupons', label:'Trial Coupons', icon:'🎟', description:'Create business trial offers and track redemptions.' },
     { key:'businesses', label:'Businesses', icon:'▦', description:'Search, manage and open individual client accounts.' },
     { key:'special', label:'Special Businesses', icon:'₱', description:'Custom contracts, branch-based pricing and automated invoice delivery.' },
     { key:'performance', label:'Client Performance', icon:'↗', description:'CRM and retention movement across LoyaltyTree clients.' },
@@ -1052,6 +1054,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
           {activeAdminTab === 'help' && <div style={{...styles.adminTabContext,color:helpInsights?.open_unanswered_groups?'#92400e':'#166534',background:helpInsights?.open_unanswered_groups?'#fffbeb':'#ecfdf5',borderColor:helpInsights?.open_unanswered_groups?'#fde68a':'#bbf7d0'}}>{helpInsights?.open_unanswered_groups ?? 0} unanswered group{helpInsights?.open_unanswered_groups===1?'':'s'}</div>}
         </div>
 
+        {activeAdminTab === 'coupons' && <TrialCouponsAdmin API_BASE={API_BASE} token={token} />}
         {activeAdminTab === 'platform' && (
         <section style={styles.analyticsSection}>
           <div style={styles.analyticsHeader}>

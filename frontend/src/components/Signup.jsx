@@ -233,6 +233,7 @@ function Signup({ API_BASE }) {
   const [agreementLoading, setAgreementLoading] = useState(false)
   const [agreementRead, setAgreementRead] = useState(false)
   const signatureCanvasRef = useRef(null)
+  const agreementRequestId=useRef(0)
   const [signatureHasInk, setSignatureHasInk] = useState(false)
   const [plans,setPlans]=useState(null)
   const [pricingContext,setPricingContext]=useState({country_code:'PH',currency:'PHP',currency_symbol:'₱',country_name:'Philippines',setup_kit_available:true})
@@ -242,6 +243,23 @@ function Signup({ API_BASE }) {
   const [loading,setLoading]=useState(false)
   const [businessSlug,setBusinessSlug]=useState('')
   const [registered,setRegistered]=useState(false)
+  const [coupon,setCoupon]=useState(()=>new URLSearchParams(window.location.search).get('coupon')||'')
+  const [couponPreview,setCouponPreview]=useState(null)
+  const [couponError,setCouponError]=useState('')
+  const [couponBusy,setCouponBusy]=useState(false)
+  const [activeTrial,setActiveTrial]=useState(null)
+  const couponContext=useRef('')
+  couponContext.current=JSON.stringify([coupon,form.email,form.country_code])
+  useEffect(()=>{setCouponPreview(null);setCouponError('')},[coupon,form.email,form.country_code])
+  const applyCoupon=async()=>{
+    const context=couponContext.current
+    setCouponBusy(true);setCouponError('');setCouponPreview(null)
+    try{
+      const r=await fetch(`${API_BASE}/api/v1/public/trial-coupons/preview`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:coupon,country_code:form.country_code,email:form.email})})
+      const d=await r.json();if(context!==couponContext.current)return;if(!r.ok)throw Error(typeof d.detail==='string'?d.detail:'Invalid coupon');setCouponPreview(d)
+    }catch(e){if(context===couponContext.current)setCouponError(e.message)}finally{setCouponBusy(false)}
+  }
+
 
   const loadPricingContext=async(country)=>{
     try{
@@ -287,7 +305,7 @@ function Signup({ API_BASE }) {
     if(params.get('paymongo_return')==='1'){
       try{restored=JSON.parse(localStorage.getItem('loyaltree_pending_onboarding')||'null')}catch(_){restored=null}
       if(restored?.business_slug){
-        setBusinessSlug(restored.business_slug);setRegistered(true);setWizardStep(6)
+        setActiveTrial(restored.trial||null);setBusinessSlug(restored.business_slug);setRegistered(true);setWizardStep(6)
         setForm(f=>({
           ...f,
           billing_cycle:normalizeSelfServeBillingCycle(restored.billing_cycle||f.billing_cycle, restored?.pricing_region||f.country_code),
@@ -334,6 +352,7 @@ function Signup({ API_BASE }) {
   }
 
   const loadAgreement=async()=>{
+    const requestId=++agreementRequestId.current
     setAgreementLoading(true); setAgreementDoc(null); setAgreementRead(false); setSignatureHasInk(false); setError('')
     // A changed/reloaded document must be signed again; never carry a signature
     // or confirmations forward onto a newly generated agreement hash.
@@ -346,6 +365,7 @@ function Signup({ API_BASE }) {
       const res=await fetch(`${API_BASE}/api/v1/legal/signup-agreement/preview`,{
         method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({
+          trial_coupon:couponPreview?.code||null,
           legal_presentation_version:legalPolicy.versions.presentation,
           name:form.name,email:form.email,phone:form.phone,address:form.address,
           contact_person:form.contact_person,plan:form.plan,branch_count:branchCount,
@@ -360,12 +380,12 @@ function Signup({ API_BASE }) {
       if(data.legal_presentation_version !== expected.presentation || data.agreement_version !== expected.business_agreement || data.terms_version !== expected.terms || data.privacy_version !== expected.privacy || data.dpa_version !== expected.dpa) {
         throw new Error('The legal documents are being updated. Please refresh and try again once the update is complete.')
       }
-      setAgreementDoc(data)
-    }catch(err){setError(err.message||'Could not load the agreement')}
-    finally{setAgreementLoading(false)}
+      if(requestId===agreementRequestId.current)setAgreementDoc(data)
+    }catch(err){if(requestId===agreementRequestId.current)setError(err.message||'Could not load the agreement')}
+    finally{if(requestId===agreementRequestId.current)setAgreementLoading(false)}
   }
 
-  useEffect(()=>{ if(wizardStep===5) loadAgreement() },[wizardStep])
+  useEffect(()=>{ if(wizardStep===5) loadAgreement() },[wizardStep,couponPreview?.code,couponPreview?.trial_days])
 
   const next=()=>{
     if(!validateStep())return
@@ -374,6 +394,8 @@ function Signup({ API_BASE }) {
   const back=()=>{setError('');setWizardStep(s=>Math.max(1,s-1))}
 
   const agreementMissing = [
+    coupon.trim() && !couponPreview && 'Apply or remove your coupon',
+    couponBusy && 'Coupon is being checked',
     !agreementDoc && 'Agreement document is still loading',
     !agreementRead && 'Review the agreement to the end',
     !agreement.signer_name.trim() && 'Enter the signer’s full legal name',
@@ -398,7 +420,7 @@ function Signup({ API_BASE }) {
     try{
       const billingCycle=normalizeSelfServeBillingCycle(form.billing_cycle, form.country_code)
       const res=await fetch(`${API_BASE}/api/v1/register`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
-        ...form,billing_cycle:billingCycle,branch_count:branchCount,setup_kit_requested:Boolean(form.setup_kit_requested && pricingContext.setup_kit_available),
+        ...form,trial_coupon:couponPreview?.code||null,billing_cycle:billingCycle,branch_count:branchCount,setup_kit_requested:Boolean(form.setup_kit_requested && pricingContext.setup_kit_available),
         agreement:{
           ...agreement,
           signature_data_url:capturedSignature,
@@ -412,8 +434,9 @@ function Signup({ API_BASE }) {
       })})
       const data=await res.json()
       if(!res.ok)throw new Error(apiErrorMessage(data,'Signup failed'))
+      setActiveTrial(data.trial||null)
       setBusinessSlug(data.business_slug); setRegistered(true)
-      localStorage.setItem('loyaltree_pending_onboarding',JSON.stringify({business_slug:data.business_slug,contact_person:form.contact_person,billing_cycle:billingCycle,pricing_region:form.pricing_region||form.country_code,started_at:new Date().toISOString()}))
+      localStorage.setItem('loyaltree_pending_onboarding',JSON.stringify({business_slug:data.business_slug,trial:data.trial||null,contact_person:form.contact_person,billing_cycle:billingCycle,pricing_region:form.pricing_region||form.country_code,started_at:new Date().toISOString()}))
       setWizardStep(6)
       return true
     }catch(err){
@@ -424,7 +447,7 @@ function Signup({ API_BASE }) {
     }finally{setLoading(false)}
   }
 
-  const steps=['Apply','Business Profile','Logo', pricingContext.setup_kit_available ? 'Plan + PR Kit' : 'Plan','Review + Sign','Pay']
+  const steps=['Apply','Business Profile','Logo', pricingContext.setup_kit_available ? 'Plan + PR Kit' : 'Plan','Review + Sign',couponPreview||activeTrial?'Start trial':'Pay']
   return <div style={styles.page}><style>{`@media(max-width:720px){.lt-signup-shell{grid-template-columns:1fr!important}.lt-signup-side{display:none!important}.lt-signup-main{padding:28px 20px!important}.lt-signup-two{grid-template-columns:1fr!important}.lt-signup-plans{grid-template-columns:1fr!important}.lt-agreement-summary{grid-template-columns:1fr!important}}`}</style><div className="lt-signup-shell" style={styles.shell}>
     <aside className="lt-signup-side" style={styles.sidebar}>
       <img src={logo128} alt="LoyaltyTree" style={styles.logo}/><div style={styles.brand}>LoyaltyTree</div>
@@ -460,7 +483,8 @@ function Signup({ API_BASE }) {
         <div style={styles.priceDisclosure}><strong>Agreement preview</strong><span>Billing: {BILLING_TERMS[form.billing_cycle]?.label || 'Monthly'}{form.billing_cycle==='annual'?' · 2 months free':''}</span><span>Subscription: {formatMoney(selectedPrice||0,pricingContext.currency)}{BILLING_TERMS[form.billing_cycle]?.unit || '/30 days'}</span>{kitTotal>0&&<span>PR Kit: ₱{kitTotal.toLocaleString()} one-time</span>}</div>
       </section>}
       {wizardStep===5&&<section><p style={styles.eyebrow}>5 · REVIEW + SIGN</p><h1 style={styles.title}>Review your LoyaltyTree agreement</h1><p style={styles.subtitle}>Review the Business Subscription & Data Processing Agreement below. The account will not be created until an authorized representative signs it.</p>
-        <div style={styles.paymentNextNotice}><strong>Signing does not charge you.</strong><span>Payment is the next step. After the agreement is signed and recorded, you’ll continue to Pay & Activate.</span></div>
+        <div style={styles.kitCard}><div style={{width:'100%'}}><Field label="Free trial coupon (optional)"><input style={styles.input} value={coupon} maxLength={64} onChange={e=>setCoupon(e.target.value.toUpperCase())} placeholder="Enter coupon code"/></Field><button type="button" style={styles.secondary} disabled={couponBusy||!coupon.trim()} onClick={applyCoupon}>{couponBusy?'Checking…':'Apply coupon'}</button>{coupon&&<button type="button" style={styles.secondary} onClick={()=>setCoupon('')}>Remove</button>}{couponError&&<p role="alert" style={{color:'#b91c1c'}}>{couponError}</p>}{couponPreview&&<p role="status"><strong>{couponPreview.trial_days}-day free trial applied.</strong> Estimated end: {new Date(couponPreview.trial_ends_at).toLocaleString('en-PH',{timeZone:'Asia/Manila'})} (PH). Starts at successful signup. No payment required to start; renew after the trial to continue. The PR Kit is charged separately and is not included.</p>}</div></div>
+        <div style={styles.paymentNextNotice}><strong>Signing does not charge you.</strong><span>{couponPreview?'Your coupon will start a free trial after the agreement is signed and recorded.':'Payment is the next step. After the agreement is signed and recorded, you’ll continue to Pay & Activate.'}</span></div>
         {agreementLoading&&<div style={styles.loadingBox}>Preparing your agreement…</div>}
         {!agreementLoading&&agreementDoc&&<>
           <div className="lt-agreement-summary" style={styles.agreementSummary}>
@@ -491,13 +515,14 @@ function Signup({ API_BASE }) {
               <Check checked={agreement.policies_acknowledged} onChange={v=>setAgreement(a=>({...a,policies_acknowledged:v}))}>I acknowledge the <a href="/terms" target="_blank" rel="noreferrer">Terms of Service</a> and <a href="/privacy" target="_blank" rel="noreferrer">Privacy Policy</a>.</Check>
             </div>
             <div style={{...styles.signingStatus,...(agreementReady?styles.signingStatusReady:{})}}>
-              {agreementReady ? <><strong>✓ Ready to sign</strong><span>Your agreement is complete. Clicking below records the agreement and continues to payment. You will not be charged yet.</span></> : <><strong>Complete before signing</strong><span>{agreementMissing.join(' · ')}</span></>}
+              {agreementReady ? <><strong>✓ Ready to sign</strong><span>Your agreement is complete. {couponPreview?'Clicking below records the agreement and starts your free trial.':'Clicking below records the agreement and continues to payment. You will not be charged yet.'}</span></> : <><strong>Complete before signing</strong><span>{agreementMissing.join(' · ')}</span></>}
             </div>
-            <button type="button" onClick={createAccount} disabled={!agreementReady||loading} style={{...styles.primary,...((!agreementReady||loading)?styles.disabled:{})}}>{loading?'Recording signed agreement…':'Sign Agreement & Continue to Payment →'}</button>
+            <button type="button" onClick={createAccount} disabled={!agreementReady||loading} style={{...styles.primary,...((!agreementReady||loading)?styles.disabled:{})}}>{loading?'Recording signed agreement…':couponPreview?'Sign Agreement & Start Free Trial →':'Sign Agreement & Continue to Payment →'}</button>
           </div>
         </>}
       </section>}
-      {wizardStep===6&&<section><p style={styles.eyebrow}>6 · PAYMENT</p><h1 style={styles.title}>Activate your business</h1><p style={styles.subtitle}>Your signed agreement has been recorded. Complete your payment to activate the business, then sign in and continue the LoyaltyTree onboarding guide.</p>
+      {wizardStep===6&&activeTrial&&<section><h1>Your {activeTrial.trial_days}-day free trial is active!</h1><p>Trial ends {new Date(activeTrial.trial_ends_at).toLocaleString('en-PH',{timeZone:'Asia/Manila'})} (PH). Sign in to set up your loyalty program.</p><button style={styles.primary} onClick={()=>{localStorage.setItem('loyaltree_continue_onboarding','1');navigate('/login?onboarding=1')}}>Sign in & set up your business →</button></section>}
+      {wizardStep===6&&!activeTrial&&<section><p style={styles.eyebrow}>6 · PAYMENT</p><h1 style={styles.title}>Activate your business</h1><p style={styles.subtitle}>Your signed agreement has been recorded. Complete your payment to activate the business, then sign in and continue the LoyaltyTree onboarding guide.</p>
         {loading?<div style={styles.loadingBox}>Creating your business account…</div>:businessSlug?<SubscriptionPayment API_BASE={API_BASE} businessSlug={businessSlug} initialBillingCycle={form.billing_cycle} title="Pay & Activate" subtitle={(form.setup_kit_requested&&pricingContext.setup_kit_available)?`Your total includes your ${BILLING_TERMS[form.billing_cycle]?.label || 'Monthly'} subscription plus ₱${kitTotal.toLocaleString()} for the PR Kit (${branchCount} × ₱150).`:`Pay your selected ${BILLING_TERMS[form.billing_cycle]?.label || 'Monthly'} plan in ${pricingContext.currency} to activate your business.`} successMessage="🎉 Payment received — your business is active!" onPaid={()=>{localStorage.setItem('loyaltree_continue_onboarding','1');navigate('/login?onboarding=1')}}/>:<div style={styles.error}>The account was not created. Go back to Review + Sign and try again.</div>}
       </section>}
       {error&&<div style={styles.error}>{error}</div>}

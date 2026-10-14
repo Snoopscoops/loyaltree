@@ -97,3 +97,50 @@ access are not rewritten. Standard renewal quotes use the new rates. New signup
 agreement previews use USD for international plans. Existing PayMongo settlement
 and FX disclosures remain in place; a USD subscription quote does not imply native
 USD settlement support.
+
+
+## Business trial coupons and overdue access
+
+Apply `trial_coupons.sql` in the Supabase SQL Editor **first**. Then deploy the
+backend, followed by the frontend. It adds private coupon/redemption tables, the business
+trial-end column, and a service-role-only transaction that locks the coupon
+while checking its usage limit. A second service-only transaction recovers lost
+activation responses or cancels an unactivated signup atomically. No additional
+environment variables are needed.
+The migration seeds `HALLOWEEN7`: seven days free, redeemable October 15 through
+November 15, 2026 inclusive in Asia/Manila, for Philippines businesses. Re-running
+the migration preserves admin edits to the seeded coupon.
+
+Super Admin → Trial Coupons creates/edits codes, enables/disables redemption,
+sets 1–90 trial days, dates, maximum uses, country, optional business email, and
+public/popup visibility. Private codes are not advertised. The redemption list
+shows business names/emails, exact start/end times, and paid conversion using
+`last_paid_at`. Editing or disabling a coupon does not change existing trials.
+Public popup eligibility is checked by the server; dismissed offers stay hidden
+for that browser session. Promo links prefill the optional final-signup coupon
+field; the business must apply it and sign the updated agreement.
+
+Signup revalidates the code and records the trial terms in the signed agreement.
+The signed agreement is stored before redemption; the database also requires it
+before activating the new business and starting the exact trial clock; unique business, normalized email, and normalized phone constraints stop
+repeated redemption. Trials cannot stack. Signup without a coupon continues to
+payment. Physical QR / PR Kits are not included in the free trial. Later referral/admin
+access extensions are preserved, including before the first subscription payment.
+A transport error after activation recovers the durable redemption; cancellation
+cannot delete an active account or remove its signed agreement.
+
+Unpaid trials lose business access at the exact trial end (no extra free grace).
+Paid accounts lose access strictly more than 14 days after subscription expiry.
+Business APIs and activated Companion POS devices enforce the hold for existing
+sessions and staff PIN login, while subscription/payment endpoints, public Wallet
+assets, help and owner billing remain available. Transient billing refresh errors
+preserve active dashboard forms. Admin tokens
+can still manage held businesses. Payment confirmation restores access through
+the existing PayMongo webhook; no scheduled job is required for the hold. The
+hold uses the current subscription expiry, including manually managed accounts.
+
+Local verification: frontend `npm run build`, backend `python -m unittest discover
+-s backend/tests -v`. Before production rollout, smoke-test the migration on a
+staging database: two concurrent signups for a one-use coupon, duplicate business
+email/phone claims, agreement-storage rollback, trial expiry, and a confirmed
+payment restoring access. Local tests do not execute Supabase SQL or charge cards.

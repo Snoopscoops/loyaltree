@@ -25,7 +25,7 @@ NAMES = {'branch_price_bracket', 'normalize_billing_cycle', 'get_price_for_plan'
 
 def namespace():
     env = dict(Optional=Optional, Literal=Literal, BaseModel=BaseModel, Field=Field,
-               datetime=datetime, HTTPException=HTTPException, SubscriptionCheckoutRequest=SimpleNamespace,
+               subscription_access_expiry=lambda b:b.get('subscription_expires_at'),billing_hold=lambda b:False,datetime=datetime, HTTPException=HTTPException, SubscriptionCheckoutRequest=SimpleNamespace,
                Depends=lambda value: None, require_admin=lambda: True,
                SUBSCRIPTION_PLANS={'starter': {}},
                price_tiers_for_region=lambda *args: {'1': 100, '2': 200, '3': 250, '5': 400},

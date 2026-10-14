@@ -31,7 +31,7 @@ class LoginOutageTests(unittest.TestCase):
                  _check_auth_bruteforce=lambda *a:None,get_admin_token=lambda:None,
                  SUPER_ADMIN_EMAIL='',SUPER_ADMIN_PASSWORD='',hash_password=lambda x:'hash:'+x,
                  _clear_auth_failures=lambda *a:None,_record_auth_failure=fail,
-                 create_owner_session_token=lambda b:'test-session',print=lambda *a:None)
+                 billing_hold=lambda b:False,create_owner_session_token=lambda b:'test-session',print=lambda *a:None)
         exec(compile(ast.Module(body=[node],type_ignores=[]),str(source),'exec'),env)
         return env['login'],fail,SimpleNamespace(email='test@example.invalid',password=password)
 
