@@ -1,4 +1,9 @@
 try:
+    from .storehub_voids import StoreHubVoidSync, periodic_void_sync
+except ImportError:
+    from storehub_voids import StoreHubVoidSync, periodic_void_sync
+
+try:
     from .wallet_class_publish import upsert_loyalty_class
 except ImportError:
     from wallet_class_publish import upsert_loyalty_class
@@ -172,6 +177,9 @@ POS_COMPANION_SESSION_TTL_SECONDS = max(30, min(300, int(os.getenv('POS_COMPANIO
 # matching; it never prints API tokens, device tokens, customer names, or full raw
 # StoreHub payloads. Set POS_COMPANION_DEBUG=false in Render after pilot validation.
 POS_COMPANION_DEBUG = _env_bool('POS_COMPANION_DEBUG', True)
+STOREHUB_VOID_SYNC_ENABLED = _env_bool('STOREHUB_VOID_SYNC_ENABLED', True)
+STOREHUB_VOID_SYNC_SECONDS = max(60, int(os.getenv('STOREHUB_VOID_SYNC_SECONDS', '60') or '60'))
+STOREHUB_VOID_LOOKBACK_DAYS = max(1, min(30, int(os.getenv('STOREHUB_VOID_LOOKBACK_DAYS', '1') or '1')))
 
 # StoreHub transaction-feed compatibility.
 # StoreHub transaction-feed compatibility.
@@ -13542,7 +13550,7 @@ async def stop_monitoring():
     if task:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-    for name in ('wallet_worker', 'apple_release_task'):
+    for name in ('wallet_worker', 'apple_release_task', 'storehub_void_worker'):
         worker = getattr(app.state, name, None)
         if worker:
             worker.cancel()
@@ -40058,6 +40066,10 @@ async def wallet_queue_worker():
 @app.on_event('startup')
 async def start_wallet_queue_worker():
     app.state.wallet_worker = asyncio.create_task(wallet_queue_worker())
+    if STOREHUB_VOID_SYNC_ENABLED:
+        app.state.storehub_void_worker = asyncio.create_task(periodic_void_sync(
+            _sync_storehub_voids_once, STOREHUB_VOID_SYNC_SECONDS, _log_storehub_void_sync,
+        ))
     # A pass-layout release is rolled out to already-installed Apple Wallet
     # cards automatically. Supabase keeps a release marker, so this happens
     # once per layout version, not on every Render restart.
@@ -45204,6 +45216,8 @@ def _storehub_fetch_recent_transaction_rows(
     end: datetime,
     external_branch_id: Optional[str] = None,
     deep_probe: bool = False,
+    row_observer=None,
+    use_paging_hint: bool = True,
 ) -> tuple[object, list, dict]:
     """Read the freshest StoreHub transaction page available.
 
@@ -45237,7 +45251,10 @@ def _storehub_fetch_recent_transaction_rows(
         elif strategy == 'page':
             params.update({'limit': page_size, 'page': max(1, int(cursor or 1))})
         payload = _storehub_get(integration, '/transactions', params=params)
-        return payload, _storehub_list(payload)
+        rows = _storehub_list(payload)
+        if row_observer is not None:
+            row_observer(rows)
+        return payload, rows
 
     def sleep_for_probe():
         if STOREHUB_TX_PROBE_SLEEP_SECONDS:
@@ -45245,7 +45262,7 @@ def _storehub_fetch_recent_transaction_rows(
 
     # If a previous read-only probe already found the provider tail, use it
     # immediately. If that page later fills, advance exactly one page.
-    hint = _storehub_paging_hint(integration)
+    hint = _storehub_paging_hint(integration) if use_paging_hint else {}
     hint_strategy = str(hint.get('strategy') or '').lower()
     hint_store = str(hint.get('external_branch_id') or '')
     hint_cursor = hint.get('cursor')
@@ -45522,84 +45539,64 @@ def _storehub_fetch_recent_transaction_rows(
 
 
 
-def _companion_reverse_voided_sales(device: dict, integration: dict, provider_rows: list) -> int:
-    """Claw back points when a previously awarded StoreHub sale is later voided."""
-    reversed_count = 0
+def _log_storehub_void_sync(event: str, **fields) -> None:
+    if fields.get('error') or event.endswith('_failed') or event.endswith('_capped'):
+        log_event(event, 'warning', **fields)
+    else:
+        _companion_debug(event, **fields)
+
+
+def _fetch_storehub_void_rows(integration: dict, outlet_id: str) -> list:
+    """Retain cancellation rows from every fetched page before checkout slicing."""
+    if _storehub_is_placeholder_location_id(outlet_id):
+        raise RuntimeError('StoreHub void sync requires a real outlet mapping')
+    config = integration.get('config') if isinstance(integration.get('config'), dict) else {}
+    known = {str(row.get('id')) for row in (config.get('storehub_outlets') or [])
+             if isinstance(row, dict) and row.get('id') is not None}
+    if known and outlet_id not in known:
+        raise RuntimeError('StoreHub void sync outlet is not in the connected account')
     cancelled = []
-    for raw in provider_rows or []:
-        if not isinstance(raw, dict) or not raw.get('isCancelled'):
-            continue
-        external_id = str(raw.get('refId') or raw.get('id') or raw.get('invoiceNumber') or '').strip()
-        receipt = str(raw.get('invoiceNumber') or '').strip()
-        if external_id or receipt:
-            cancelled.append((external_id, receipt))
-        if len(cancelled) >= 40:
-            break
-    for external_id, receipt in cancelled:
-        try:
-            query = supabase.table('pos_transactions').select('*').eq('integration_id', integration.get('id')).eq('status', 'loyalty_applied')
-            rows = []
-            if external_id:
-                rows = query.eq('external_transaction_id', external_id).limit(1).execute().data or []
-            if not rows and receipt:
-                rows = (
-                    supabase.table('pos_transactions').select('*')
-                    .eq('integration_id', integration.get('id'))
-                    .eq('status', 'loyalty_applied')
-                    .eq('external_receipt_number', receipt)
-                    .limit(1).execute().data or []
-                )
-        except Exception:
-            continue
-        tx = rows[0] if rows else None
-        if not tx or not tx.get('customer_id'):
-            continue
-        points = int(tx.get('points_earned') or 0)
-        try:
-            customer_rows = supabase.table('customers').select('*').eq('id', tx.get('customer_id')).limit(1).execute().data or []
-            customer = customer_rows[0] if customer_rows else None
-            if customer and points > 0:
-                old_balance = int(customer.get('points_balance') or 0)
-                new_balance = max(0, old_balance - points)
-                supabase.table('customers').update({
-                    'points_balance': new_balance,
-                    'updated_at': datetime.utcnow().isoformat(),
-                }).eq('id', customer.get('id')).execute()
-                log_points_event(
-                    customer.get('business_id'),
-                    customer.get('id'),
-                    -float(tx.get('gross_amount') or 0),
-                    -points,
-                    branch_id=tx.get('branch_id'),
-                )
-            processing = tx.get('processing_metadata') if isinstance(tx.get('processing_metadata'), dict) else {}
-            loyalty_result = processing.get('loyalty_result') if isinstance(processing.get('loyalty_result'), dict) else {}
-            reservation_id = loyalty_result.get('redemption_reservation_id') or tx.get('redemption_reservation_id')
-            redemption_reversed = False
-            if reservation_id:
-                try:
-                    _pos_rpc_first('pos_reverse_points_redemption', {
-                        'p_reservation_id': str(reservation_id),
-                        'p_reason': 'storehub_void_or_refund',
-                    })
-                    redemption_reversed = True
-                except Exception as exc:
-                    _companion_debug('void_redemption_reverse_failed', reservation_id=str(reservation_id), error=str(exc))
-            supabase.table('pos_transactions').update({
-                'status': 'voided',
-                'processing_metadata': {
-                    **processing,
-                    'void_reversed_at': datetime.now(timezone.utc).isoformat(),
-                    'points_reversed': points,
-                    'redemption_reversed': redemption_reversed,
-                },
-                'updated_at': datetime.now(timezone.utc).isoformat(),
-            }).eq('id', tx.get('id')).eq('status', 'loyalty_applied').execute()
-            reversed_count += 1
-            _companion_debug('void_points_reversed', external_transaction_id=external_id or receipt, points_reversed=points, device_id=str(device.get('id') or ''))
-        except Exception as exc:
-            _companion_debug('void_points_reverse_failed', external_transaction_id=external_id or receipt, error=str(exc))
-    return reversed_count
+    def observe(rows):
+        if len(rows) >= STOREHUB_TX_PAGE_SIZE:
+            _log_storehub_void_sync('storehub_void_page_capped',
+                             integration_id=str(integration.get('id')),
+                             outlet_id=outlet_id, row_count=len(rows))
+        cancelled.extend(row for row in rows if isinstance(row, dict) and row.get('isCancelled') is True)
+    now = datetime.now(timezone.utc)
+    # Reuse the provider's existing request spacing between mapped outlets.
+    if STOREHUB_TX_PROBE_SLEEP_SECONDS:
+        time.sleep(STOREHUB_TX_PROBE_SLEEP_SECONDS)
+    _storehub_fetch_recent_transaction_rows(
+        integration, start=now - timedelta(days=STOREHUB_VOID_LOOKBACK_DAYS),
+        end=now, external_branch_id=outlet_id, deep_probe=False,
+        row_observer=observe, use_paging_hint=False,
+    )
+    return cancelled
+
+
+def _storehub_void_sync_service() -> StoreHubVoidSync:
+    return StoreHubVoidSync(
+        db=supabase, rpc=_pos_rpc_first, fetch_rows=_fetch_storehub_void_rows,
+        get_integration=_get_pos_integration, get_mapping=_companion_mock_mapping,
+        get_business=_pos_business_by_id,
+        access_allowed=lambda business: (
+            business.get('status') == 'active'
+            and not billing_hold(business)
+            and business_has_plan_feature(business, 'pos_integration')
+        ),
+        enqueue_wallet=enqueue_wallet_sync, log=_log_storehub_void_sync,
+        interval_seconds=STOREHUB_VOID_SYNC_SECONDS,
+    )
+
+
+def _sync_storehub_voids_once() -> int:
+    """Check live active Companion outlets even when no customer is scanning."""
+    return _storehub_void_sync_service().sync_once()
+
+
+def _companion_reverse_voided_sales(device: dict, integration: dict, provider_rows: list) -> int:
+    """Reverse one detected sale atomically and persist its Wallet refresh."""
+    return _storehub_void_sync_service().reverse_cancelled_rows(device, integration, provider_rows)
 
 
 def _companion_provider_rows(device: dict, integration: dict, limit: int, deep_probe: bool = False) -> list:
@@ -45666,7 +45663,6 @@ def _companion_provider_rows(device: dict, integration: dict, limit: int, deep_p
         # The transaction schema is already known. Keep full row tracing opt-in.
         if config.get('trace_transactions'):
             _storehub_trace_transactions(payload, provider_rows)
-        _companion_reverse_voided_sales(device, integration, provider_rows)
 
         device_metadata = device.get('metadata') if isinstance(device.get('metadata'), dict) else {}
         mapping_settings = mapping.get('settings') if isinstance(mapping, dict) and isinstance(mapping.get('settings'), dict) else {}
