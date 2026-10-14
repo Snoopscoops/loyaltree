@@ -163,3 +163,26 @@ failure is logged and never rolls back signup. Background tasks are not a durabl
 mail queue; process interruption or provider failure can prevent delivery.
 Local tests mock the provider and never send real emails. Confirm one received
 email after deployment using a new test business and the configured sender.
+
+
+## Google Wallet publishing recovery
+
+Card publishing uses the same deterministic LoyaltyClass ID for every update,
+create fallback and recovery. If a Google write times out or returns a server
+error, the publisher checks that exact ID and performs one bounded retry with
+the current design. A create conflict is reconciled with an update; an existing
+class alone is not treated as proof that the latest design was applied.
+
+Google token/publish requests and metadata writes run in worker threads. This
+keeps the ASGI loop available for requests such as Google fetching card image
+URLs hosted by the backend. Metadata is saved and member refresh begins only
+after all required classes have succeeded. Shared HTTP still never retries
+arbitrary writes.
+
+Unresolved provider timeouts return 504 with a readable message; transport
+failures return 503. Retry-After is exposed through CORS, and the editor stops
+immediate automatic retries when the backend asks it to wait. Deploy backend
+(including `wallet_class_publish.py`) and frontend together. No SQL changes or
+new environment variables are needed. Local fake-transport tests cover lost
+create responses, same-ID conflicts, stale-design recovery and failure mapping;
+live Google latency still requires a post-deploy publishing check.

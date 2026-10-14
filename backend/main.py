@@ -1,4 +1,9 @@
 try:
+    from .wallet_class_publish import upsert_loyalty_class
+except ImportError:
+    from wallet_class_publish import upsert_loyalty_class
+
+try:
     from .business_welcome_email import build_business_getting_started_email
 except ImportError:
     from business_welcome_email import build_business_getting_started_email
@@ -13496,6 +13501,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=['*'],
     allow_headers=['*'],
+    expose_headers=['Retry-After'],
 )
 
 @app.get("/health")
@@ -32245,44 +32251,9 @@ async def create_or_update_wallet_class(public_id: str, program_id: Optional[str
     base_class_id = _google_wallet_base_class_id(business, program)
     review_status = 'UNDER_REVIEW'
 
-    access_token = get_google_access_token()
+    access_token = await asyncio.to_thread(get_google_access_token)
     if not access_token:
         raise HTTPException(status_code=500, detail="Could not get Google access token. Check GOOGLE_WALLET_CREDENTIALS.")
-
-    def parse_response(resp):
-        try:
-            return resp.json()
-        except Exception:
-            return {"raw_response": resp.text[:2000]}
-
-    def upsert_class(client, loyalty_class):
-        target_id = loyalty_class['id']
-        resp = client.put(
-            f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{target_id}',
-            headers={"Authorization": f"Bearer {access_token}"},
-            json=loyalty_class
-        )
-        result = parse_response(resp)
-
-        if resp.status_code == 404:
-            resp = client.post(
-                'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass',
-                headers={"Authorization": f"Bearer {access_token}"},
-                json=loyalty_class
-            )
-            result = parse_response(resp)
-
-            # Handle create/update race without making the owner tap Publish twice.
-            if resp.status_code == 409:
-                resp = client.put(
-                    f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{target_id}',
-                    headers={"Authorization": f"Bearer {access_token}"},
-                    json=loyalty_class
-                )
-                result = parse_response(resp)
-
-        print(f"Google Wallet class upsert {target_id}: {resp.status_code} - {result}")
-        return resp, result
 
     try:
         import httpx
@@ -32307,29 +32278,48 @@ async def create_or_update_wallet_class(public_id: str, program_id: Optional[str
                 'tier_name': None,
             })
 
-        published_ids = []
-        google_results = {}
-
-        with pooled_client() as client:
-            for spec in class_specs:
-                loyalty_class = build_loyalty_class(
-                    business,
-                    program,
-                    review_status=review_status,
-                    class_id_override=spec['class_id'],
-                    background_color_override=spec['color'],
-                    vip_tier_name=spec['tier_name'],
-                )
-                resp, result = upsert_class(client, loyalty_class)
-                google_results[spec['class_id']] = result
-
-                if resp.status_code not in (200, 201):
-                    error_detail = result.get('error', result) if isinstance(result, dict) else result
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"Google API error for {spec['class_id']} ({resp.status_code}): {error_detail}"
+        def publish_classes():
+            published_ids = []
+            google_results = {}
+            with pooled_client() as client:
+                for spec in class_specs:
+                    loyalty_class = build_loyalty_class(
+                        business,
+                        program,
+                        review_status=review_status,
+                        class_id_override=spec['class_id'],
+                        background_color_override=spec['color'],
+                        vip_tier_name=spec['tier_name'],
                     )
-                published_ids.append(spec['class_id'])
+                    resp, result = upsert_loyalty_class(client, loyalty_class, access_token)
+                    google_results[spec['class_id']] = result
+                    print(f"Google Wallet class publish {spec['class_id']}: {resp.status_code}")
+                    if resp.status_code not in (200, 201):
+                        error_detail = result.get('error', result) if isinstance(result, dict) else result
+                        raise HTTPException(
+                            status_code=502,
+                            detail=f"Google Wallet could not publish the card ({resp.status_code}): {error_detail}",
+                            headers={'Retry-After': '10'} if resp.status_code >= 500 else None,
+                        )
+                    published_ids.append(spec['class_id'])
+            return published_ids, google_results
+
+        # Recovery involves blocking sync provider calls. Keep them off the
+        # ASGI event loop so another owner's login or scan remains responsive.
+        try:
+            published_ids, google_results = await asyncio.to_thread(publish_classes)
+        except httpx.TimeoutException as exc:
+            raise HTTPException(
+                status_code=504,
+                detail='Google Wallet took too long to confirm publishing. Wait a few seconds, then try Publish again.',
+                headers={'Retry-After': '10'},
+            ) from exc
+        except httpx.TransportError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail='Google Wallet is temporarily unreachable. Wait a few seconds, then try Publish again.',
+                headers={'Retry-After': '10'},
+            ) from exc
 
         # Keep the stable root in DB. VIP/Hybrid tier class IDs are deterministic
         # children of this ID, so no schema migration is needed.
@@ -32340,7 +32330,7 @@ async def create_or_update_wallet_class(public_id: str, program_id: Optional[str
             'google_wallet_class_id': base_class_id,
         }
         if program and program.get('id'):
-            supabase.table('loyalty_programs').update(db_data).eq('id', program.get('id')).execute()
+            await asyncio.to_thread(lambda: supabase.table('loyalty_programs').update(db_data).eq('id', program.get('id')).execute())
         else:
             db_data.update({
                 'business_id': business.get('id'),
@@ -32355,7 +32345,7 @@ async def create_or_update_wallet_class(public_id: str, program_id: Optional[str
                 'reward_expiry_days': 30,
                 'created_at': datetime.utcnow().isoformat(),
             })
-            supabase.table("loyalty_programs").insert(db_data).execute()
+            await asyncio.to_thread(lambda: supabase.table("loyalty_programs").insert(db_data).execute())
 
         # Refresh existing objects only after every required class exists.
         current_program = safe_get_loyalty_program(business.get('id'), program_public_id=(program or {}).get('public_id')) or program
@@ -32387,7 +32377,7 @@ async def create_or_update_wallet_class(public_id: str, program_id: Optional[str
         print(f"Wallet class creation error: {e}")
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e) or 'Card publishing failed. Please try again or contact support.')
 
 
 # CAR LENDING / SHOWROOM - GOOGLE WALLET CLASS MANAGEMENT

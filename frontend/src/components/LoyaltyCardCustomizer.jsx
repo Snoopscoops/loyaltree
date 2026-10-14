@@ -1329,6 +1329,9 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
 
           // Validation/configuration failures will not improve by retrying.
           if (![409, 429, 500, 502, 503, 504].includes(res.status)) break
+          // The backend already attempted provider recovery. Respect a wait
+          // request rather than starting several long publish attempts.
+          if (res.headers.get('Retry-After')) break
         } catch (err) {
           lastError = err
         }
