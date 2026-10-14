@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import AsyncMock, Mock
 
 
-LOCAL_SOURCE = Path(__file__).resolve().parents[1] / 'main.py'
+LOCAL_SOURCE = (Path(__file__).with_name('main.py') if Path(__file__).with_name('main.py').is_file() else Path(__file__).resolve().parents[1] / 'main.py')
 SOURCE = (LOCAL_SOURCE if LOCAL_SOURCE.is_file()
           else Path('/Users/user24/Desktop/loyaltree/backend/main.py'))
 NODES = {node.name: node for node in ast.parse(SOURCE.read_text()).body
@@ -216,6 +216,10 @@ class ReadOnlyPeekTests(unittest.TestCase):
             '_require_pos_device': lambda token: deepcopy(device),
             '_get_pos_integration': lambda business_id, provider: deepcopy(harness.integration),
             '_companion_mock_mapping': lambda device: deepcopy(mapping),
+            '_pos_current_register_device': lambda device, require_unambiguous=True: deepcopy(device),
+            '_pos_record_storehub_registers': Mock(),
+            '_pos_device_register_id': lambda device: '',
+            '_pos_device_seen_register_ids': lambda device: [],
             '_companion_normalize_provider_transaction': normalize,
             '_companion_upsert_bridge_transaction': upsert,
             '_companion_reverse_voided_sales': blocked_reversal,
@@ -223,7 +227,7 @@ class ReadOnlyPeekTests(unittest.TestCase):
             'enqueue_wallet_sync': blocked_wallet,
             '_ph_time_text': lambda value: value,
         })
-        load(['_companion_provider_rows', 'companion_pos_peek'], harness.env)
+        load(['_pos_transaction_register_id', '_companion_provider_rows', 'companion_pos_peek'], harness.env)
         result = harness.env['companion_pos_peek'](limit=10, x_lt_device_token='fake')
         self.assertTrue(result['read_only'])
         self.assertEqual([row['external_transaction_id'] for row in result['transactions']], ['active-sale'])

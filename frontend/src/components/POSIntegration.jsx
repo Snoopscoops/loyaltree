@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
+import { DeviceRegisterEditor, RegisterIdField, isActivePosDevice, registerConflict, seenRegisterIds } from './POSRegisterControls'
 
 const PROVIDERS = [
   {
@@ -132,6 +133,10 @@ function POSIntegration({
   const [companionDevices, setCompanionDevices] = useState([])
   const [activationCodeInfo, setActivationCodeInfo] = useState(null)
   const [newDeviceName, setNewDeviceName] = useState('')
+  const [newDeviceRegisterId, setNewDeviceRegisterId] = useState('')
+  const [registerDiscovery, setRegisterDiscovery] = useState(null)
+  const [detectingRegisters, setDetectingRegisters] = useState(false)
+  const [registerSavingDevice, setRegisterSavingDevice] = useState('')
   const [quickBranchId, setQuickBranchId] = useState('')
   const [quickOutletId, setQuickOutletId] = useState('')
   const [copyState, setCopyState] = useState('')
@@ -149,6 +154,7 @@ function POSIntegration({
   const isConnected = ['connected', 'testing', 'live'].includes(integrationStatus) && (integrationStatus === 'live' || hasSavedCredentials || simulatorReady)
   const isLive = integrationStatus === 'live'
   const providerLabel = provider === 'loyverse' ? 'Loyverse' : 'StoreHub'
+  const registerRequired = provider === 'storehub' && (!simulatorReady || hasSavedStoreHubCredentials)
   const providerLocations = provider === 'loyverse' ? loyverseStores : storeHubOutlets
   const locationLabel = provider === 'loyverse' ? 'store' : 'outlet'
 
@@ -181,6 +187,13 @@ function POSIntegration({
       if (!mapping.saved_mapping || !mapping.external_branch_id) {
         throw new Error('Link this branch to its POS outlet before generating a device.')
       }
+      if (mapping.is_active === false) throw new Error('Turn this branch mapping on before pairing a POS.')
+      const registerId = newDeviceRegisterId.trim()
+      if (registerRequired && !registerId) throw new Error('Enter the StoreHub Register ID for this POS machine.')
+      const conflict = registerConflict(companionDevices.filter(device =>
+        String(device.branch_public_id || '') === String(branch.public_id)
+        && String(device.provider || provider) === provider), registerId)
+      if (conflict) throw new Error(`This Register ID is already assigned to ${conflict.display_name || conflict.device_name || 'another active POS'} in this branch.`)
       const deviceName = newDeviceName.trim() || `${branch.name || 'Branch'} POS`
       const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/device-activation-code`, {
         method: 'POST',
@@ -193,6 +206,7 @@ function POSIntegration({
           external_branch_id: mapping.external_branch_id,
           external_branch_name: mapping.external_branch_name || null,
           device_name: deviceName,
+          external_terminal_id: provider === 'storehub' ? registerId || null : null,
         }),
       })
       const data = await res.json().catch(() => ({}))
@@ -204,6 +218,38 @@ function POSIntegration({
     } finally {
       setSaving(false)
     }
+  }
+
+  const detectStoreHubRegisters = async () => {
+    const branch = branches.find(item => item.public_id === quickBranchId) || branches[0]
+    if (!slug || !branch || provider !== 'storehub') return
+    setDetectingRegisters(true); setError(''); setMessage('')
+    try {
+      const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/storehub/registers?branch_public_id=${encodeURIComponent(branch.public_id)}`, {cache:'no-store'})
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not detect StoreHub registers.')
+      setRegisterDiscovery({...data, branch_public_id:branch.public_id})
+      setMessage((data.seen_register_ids || []).length
+        ? 'Register IDs detected. Choose the ID shown in Check POS on this machine.'
+        : 'No recent Register IDs found. Enter the ID shown in Check POS on this machine.')
+      await loadCompanionDevices()
+    } catch (err) { setError(err.message || 'Could not detect StoreHub registers.') }
+    finally { setDetectingRegisters(false) }
+  }
+
+  const saveDeviceRegister = async (device, registerId) => {
+    setRegisterSavingDevice(String(device.id || device.public_id)); setError('')
+    try {
+      const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/devices/${encodeURIComponent(device.id || device.public_id)}/register`, {
+        method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({external_terminal_id:registerId}),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not save Register ID.')
+      setCompanionDevices(current => current.map(row => String(row.id || row.public_id) === String(device.id || device.public_id)
+        ? {...row, ...(data.device || {}), external_terminal_id:registerId, metadata:{...(row.metadata || {}), ...(data.device?.metadata || {}), external_terminal_id:registerId}} : row))
+      setMessage('Register ID saved. This Companion now matches sales from its assigned POS register.')
+      await loadCompanionDevices()
+    } finally { setRegisterSavingDevice('') }
   }
 
   const copyText = async (value, label = 'Copied') => {
@@ -384,6 +430,10 @@ function POSIntegration({
   useEffect(() => {
     if (!quickBranchId && branches[0]?.public_id) setQuickBranchId(branches[0].public_id)
   }, [branches, quickBranchId])
+
+  useEffect(() => { setActivationCodeInfo(null); setMessage(''); setError('') }, [quickBranchId, provider, newDeviceRegisterId, newDeviceName])
+
+  useEffect(() => { setNewDeviceRegisterId(''); setRegisterDiscovery(null) }, [quickBranchId, provider])
 
   useEffect(() => {
     setQuickOutletId('')
@@ -976,12 +1026,17 @@ function POSIntegration({
     )
   }
 
-  const activeCompanionDevices = companionDevices.filter(device => !device?.revoked_at)
-  const hasSavedMapping = Object.values(branchMappings).some(row => row?.saved_mapping)
+  const activeCompanionDevices = companionDevices.filter(device => isActivePosDevice(device) && String(device.provider || provider) === provider)
   const quickBranch = branches.find(item => item.public_id === quickBranchId) || branches[0] || null
+  const hasSavedMapping = !!branchMappings[quickBranch?.public_id]?.saved_mapping && branchMappings[quickBranch?.public_id]?.is_active !== false
   const activeDevicesForQuickBranch = activeCompanionDevices.filter(device =>
     !quickBranch?.public_id || String(device?.branch_public_id || '') === String(quickBranch.public_id)
   )
+  const discoveredRegisters = registerDiscovery && quickBranch?.public_id && registerDiscovery.branch_public_id === quickBranch.public_id
+    && String(registerDiscovery?.external_branch_id || '') === String(branchMappings[quickBranch?.public_id]?.external_branch_id || '')
+    ? registerDiscovery?.seen_register_ids || [] : []
+  const registerSuggestions = seenRegisterIds(activeDevicesForQuickBranch, discoveredRegisters)
+  const newRegisterConflict = registerConflict(activeDevicesForQuickBranch, newDeviceRegisterId)
   const quickStep = !isConnected
     ? 1
     : !hasSavedMapping
@@ -1041,6 +1096,15 @@ function POSIntegration({
             activationCodeInfo={activationCodeInfo}
             newDeviceName={newDeviceName}
             setNewDeviceName={setNewDeviceName}
+            newDeviceRegisterId={newDeviceRegisterId}
+            setNewDeviceRegisterId={setNewDeviceRegisterId}
+            registerRequired={registerRequired}
+            registerSuggestions={registerSuggestions}
+            newRegisterConflict={newRegisterConflict}
+            detectingRegisters={detectingRegisters}
+            detectStoreHubRegisters={detectStoreHubRegisters}
+            saveDeviceRegister={saveDeviceRegister}
+            registerSavingDevice={registerSavingDevice}
             generateCompanionActivationCode={generateCompanionActivationCode}
             loadCompanionDevices={loadCompanionDevices}
             activeCompanionDevices={activeDevicesForQuickBranch}
@@ -1891,6 +1955,15 @@ function QuickCompanionSetup({
   activationCodeInfo,
   newDeviceName,
   setNewDeviceName,
+  newDeviceRegisterId,
+  setNewDeviceRegisterId,
+  registerRequired,
+  registerSuggestions,
+  newRegisterConflict,
+  detectingRegisters,
+  detectStoreHubRegisters,
+  saveDeviceRegister,
+  registerSavingDevice,
   generateCompanionActivationCode,
   loadCompanionDevices,
   activeCompanionDevices,
@@ -1924,6 +1997,14 @@ function QuickCompanionSetup({
           )
         })}
       </div>
+
+      {current >= 3 && branches.length > 1 && (
+        <label style={{...s.fieldLabel,marginTop:14}}>Loyalty Tree branch
+          <select style={s.input} value={quickBranchId || quickBranch?.public_id || ''} disabled={saving || detectingRegisters || !!registerSavingDevice} onChange={event => setQuickBranchId(event.target.value)}>
+            {branches.map(branch => <option key={branch.public_id} value={branch.public_id}>{branch.name}</option>)}
+          </select>
+        </label>
+      )}
 
       {current === 1 && (
         <div style={s.quickBody}>
@@ -1973,7 +2054,7 @@ function QuickCompanionSetup({
           ) : (
             <>
               <label style={s.fieldLabel}>Loyalty Tree branch
-                <select style={s.input} value={quickBranchId || quickBranch?.public_id || ''} onChange={e => setQuickBranchId(e.target.value)}>
+                <select style={s.input} value={quickBranchId || quickBranch?.public_id || ''} disabled={saving || detectingRegisters} onChange={e => setQuickBranchId(e.target.value)}>
                   {branches.map(branch => <option key={branch.public_id} value={branch.public_id}>{branch.name}</option>)}
                 </select>
               </label>
@@ -2015,12 +2096,16 @@ function QuickCompanionSetup({
             <h4 style={s.quickTitle}>Pair Loyalty Tree with the existing POS</h4>
             <p style={s.muted}>This does not create another StoreHub POS. It pairs Loyalty Tree Companion with the physical POS already using the selected StoreHub outlet.</p>
             <label style={s.fieldLabel}>Device name
-              <input style={s.input} value={newDeviceName} onChange={e => setNewDeviceName(e.target.value)} placeholder={`${quickBranch?.name || 'Branch'} POS 1`} />
+              <input style={s.input} value={newDeviceName} disabled={saving || detectingRegisters || !!registerSavingDevice} onChange={e => setNewDeviceName(e.target.value)} maxLength={120} placeholder={`${quickBranch?.name || 'Branch'} POS 1`} />
             </label>
           </div>
 
+          {provider === 'storehub' && <RegisterIdField value={newDeviceRegisterId} onChange={setNewDeviceRegisterId}
+            required={registerRequired} devices={activeCompanionDevices} suggestions={registerSuggestions}
+            disabled={saving || !!registerSavingDevice} detecting={detectingRegisters} onDetect={detectStoreHubRegisters} />}
+
           {!activationCodeInfo?.activation_code ? (
-            <button type="button" style={s.primaryButton} disabled={saving || !apiAvailable} onClick={generateCompanionActivationCode}>
+            <button type="button" style={s.primaryButton} disabled={saving || detectingRegisters || !!registerSavingDevice || !apiAvailable || !!newRegisterConflict || (registerRequired && !newDeviceRegisterId.trim())} onClick={generateCompanionActivationCode}>
               {saving ? 'Generating…' : 'Pair Existing POS'}
             </button>
           ) : (
@@ -2032,6 +2117,8 @@ function QuickCompanionSetup({
                   ? `Valid until ${new Date(activationCodeInfo.expires_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}`
                   : 'Valid for about 15 minutes'} · one device
               </div>
+              {activationCodeInfo.external_terminal_id && <div style={{...s.smallMuted,marginTop:7,overflowWrap:'anywhere'}}>Register ID: <strong>{activationCodeInfo.external_terminal_id}</strong></div>}
+              <div style={s.smallMuted}>{activationCodeInfo.branch_name || quickBranch?.name} · {activationCodeInfo.external_branch_name || 'mapped POS outlet'}</div>
               <button type="button" style={s.secondaryButton} onClick={() => copyText(activationCodeInfo.activation_code,'Activation code copied')}>
                 Copy code
               </button>
@@ -2055,7 +2142,7 @@ function QuickCompanionSetup({
           <div style={s.actionRow}>
             <button type="button" style={s.secondaryButton} disabled={saving} onClick={loadCompanionDevices}>Refresh device status</button>
             {activationCodeInfo?.activation_code && (
-              <button type="button" style={s.secondaryButton} disabled={saving} onClick={generateCompanionActivationCode}>Generate new code</button>
+              <button type="button" style={s.secondaryButton} disabled={saving || detectingRegisters || !!registerSavingDevice || !!newRegisterConflict || (registerRequired && !newDeviceRegisterId.trim())} onClick={generateCompanionActivationCode}>Generate new code</button>
             )}
           </div>
 
@@ -2083,14 +2170,19 @@ function QuickCompanionSetup({
               <div key={device.id || device.public_id || index} style={{marginTop:8,paddingTop:8,borderTop:'1px solid #e2e8f0'}}>
                 <strong>{device.display_name || `POS Device ${index + 1}`}</strong>
                 <div style={s.smallMuted}>{device.branch_name || 'Branch'} · {device.external_branch_name || device.external_branch_id || providerLabel} · {device.status || 'active'}</div>
+                {provider === 'storehub' && <DeviceRegisterEditor device={device} devices={activeCompanionDevices} suggestions={registerSuggestions}
+                  disabled={saving || !!registerSavingDevice} detecting={detectingRegisters} onDetect={detectStoreHubRegisters} onSave={saveDeviceRegister} />}
               </div>
             )) : <div style={s.smallMuted}>No activated devices yet.</div>}
           </div>
 
           <label style={s.fieldLabel}>Existing POS name
-            <input style={s.input} value={newDeviceName} onChange={e => setNewDeviceName(e.target.value)} placeholder={`${quickBranch?.name || 'Branch'} POS 2`} />
+            <input style={s.input} value={newDeviceName} disabled={saving || detectingRegisters || !!registerSavingDevice} maxLength={120} onChange={e => setNewDeviceName(e.target.value)} placeholder={`${quickBranch?.name || 'Branch'} POS 2`} />
           </label>
-          <button type="button" style={s.primaryButton} disabled={saving || !apiAvailable} onClick={generateCompanionActivationCode}>
+          {provider === 'storehub' && <RegisterIdField value={newDeviceRegisterId} onChange={setNewDeviceRegisterId}
+            required={registerRequired} devices={activeCompanionDevices} suggestions={registerSuggestions}
+            disabled={saving || !!registerSavingDevice} detecting={detectingRegisters} onDetect={detectStoreHubRegisters} />}
+          <button type="button" style={s.primaryButton} disabled={saving || detectingRegisters || !!registerSavingDevice || !apiAvailable || !!newRegisterConflict || (registerRequired && !newDeviceRegisterId.trim())} onClick={generateCompanionActivationCode}>
             {saving ? 'Generating…' : '+ Pair Another Existing POS'}
           </button>
           {activationCodeInfo?.activation_code && (
@@ -2098,6 +2190,7 @@ function QuickCompanionSetup({
               <div style={s.stepLabel}>EXISTING POS PAIRING CODE</div>
               <div style={s.activationCode}>{activationCodeInfo.activation_code}</div>
               <div style={s.smallMuted}>{activationCodeInfo.branch_name || quickBranch?.name} · {activationCodeInfo.external_branch_name || 'mapped POS outlet'} · one device</div>
+              {activationCodeInfo.external_terminal_id && <div style={{...s.smallMuted,marginTop:6,overflowWrap:'anywhere'}}>Register ID: <strong>{activationCodeInfo.external_terminal_id}</strong></div>}
               <button type="button" style={s.secondaryButton} onClick={() => copyText(activationCodeInfo.activation_code,'Pairing code copied')}>Copy code</button>
             </div>
           )}

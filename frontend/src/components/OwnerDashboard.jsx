@@ -6,6 +6,7 @@ import LoyaltyCardCustomizer from './LoyaltyCardCustomizer'
 import GiftCards from './GiftCards'
 import SubscriptionPayment from './SubscriptionPayment'
 import POSIntegration from './POSIntegration'
+import { DeviceRegisterEditor, RegisterIdField, isActivePosDevice, registerConflict, seenRegisterIds } from './POSRegisterControls'
 import Campaigns from './Campaigns'
 import HelpChat from './HelpChat'
 import logo192 from './logo-192.png'
@@ -199,6 +200,11 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
   const [companionMapProvider, setCompanionMapProvider] = useState('')
   const [companionMapLocation, setCompanionMapLocation] = useState('')
   const [companionMappingSaving, setCompanionMappingSaving] = useState(false)
+  const [companionDeviceName, setCompanionDeviceName] = useState('')
+  const [companionRegisterId, setCompanionRegisterId] = useState('')
+  const [companionRegisterDiscovery, setCompanionRegisterDiscovery] = useState(null)
+  const [companionDetectingRegisters, setCompanionDetectingRegisters] = useState(false)
+  const [companionRegisterSavingDevice, setCompanionRegisterSavingDevice] = useState('')
 
   const authFetch = async (url, options = {}) => {
     const headers = { ...(options.headers || {}) }
@@ -309,11 +315,48 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
     }
   }
 
+  const detectCompanionRegisters = async () => {
+    const branchId = companionSetup?.branch?.public_id
+    if (!branchId || !companionSetup?.allowed) return
+    setCompanionDetectingRegisters(true); setCompanionError('')
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/pos/storehub/registers?branch_public_id=${encodeURIComponent(branchId)}`, {cache:'no-store'})
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body.detail || 'Could not detect StoreHub registers.')
+      setCompanionRegisterDiscovery({...body, branch_public_id:branchId})
+      await loadCompanionSetup()
+    } catch (err) { setCompanionError(err.message || 'Could not detect StoreHub registers.') }
+    finally { setCompanionDetectingRegisters(false) }
+  }
+
+  const saveCompanionRegister = async (device, registerId) => {
+    setCompanionRegisterSavingDevice(String(device.id || device.public_id))
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/pos/devices/${encodeURIComponent(device.id || device.public_id)}/register`, {
+        method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({external_terminal_id:registerId}),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body.detail || 'Could not save Register ID.')
+      setCompanionSetup(current => ({...current, devices:(current?.devices || []).map(row => String(row.id || row.public_id) === String(device.id || device.public_id)
+        ? {...row, ...(body.device || {}), external_terminal_id:registerId, metadata:{...(row.metadata || {}), ...(body.device?.metadata || {}), external_terminal_id:registerId}} : row)}))
+      await loadCompanionSetup()
+    } finally { setCompanionRegisterSavingDevice('') }
+  }
+
   const generateCompanionCode = async () => {
+    if (companionRegisterRequired && !companionRegisterId.trim()) {
+      setCompanionError('Enter the StoreHub Register ID for this POS machine.'); return
+    }
+    if (companionNewRegisterConflict) {
+      setCompanionError('This Register ID is already assigned to another active POS in your branch.'); return
+    }
     setCompanionGenerating(true)
     setCompanionError('')
     try {
-      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/manager/companion-activation-code`, { method:'POST' })
+      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/manager/companion-activation-code`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({device_name:companionDeviceName.trim() || null, external_terminal_id:companionSetup?.provider === 'storehub' ? companionRegisterId.trim() || null : null}),
+      })
       const body = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(body.detail || 'Could not generate activation code')
       setCompanionCode(body)
@@ -324,6 +367,10 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
       setCompanionGenerating(false)
     }
   }
+
+  useEffect(() => { setCompanionCode(null); setCompanionError('') }, [companionDeviceName, companionRegisterId, companionMapProvider, companionMapLocation, user?.business_slug])
+
+  useEffect(() => { setCompanionRegisterId(''); setCompanionRegisterDiscovery(null); setCompanionCode(null); setCompanionError('') }, [companionSetup?.branch?.public_id, companionSetup?.provider, companionSetup?.external_branch_id])
 
   useEffect(() => {
     loadManagerDashboard('all')
@@ -359,6 +406,14 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
   const companionIntegrations = companionSetup?.integrations || []
   const companionSelectedIntegration = companionIntegrations.find(row => row.provider === companionMapProvider) || companionIntegrations[0] || null
   const companionLocations = companionSelectedIntegration?.locations || []
+  const companionRegisterDevices = (companionSetup?.devices || []).filter(device => isActivePosDevice(device) && String(device.provider || companionSetup?.provider) === 'storehub')
+  const companionRegisterRequired = companionSetup?.provider === 'storehub' && (companionSetup?.register_required ?? companionSetup?.is_simulator !== true)
+  const companionDiscoveredRegisters = companionRegisterDiscovery && companionSetup?.branch?.public_id && companionRegisterDiscovery.branch_public_id === companionSetup.branch.public_id
+    && String(companionRegisterDiscovery?.external_branch_id || '') === String(companionSetup?.external_branch_id || '')
+    ? companionRegisterDiscovery.seen_register_ids || [] : []
+  const companionRegisterSuggestions = seenRegisterIds(companionRegisterDevices, companionDiscoveredRegisters)
+  const companionNewRegisterConflict = companionSetup?.provider === 'storehub' ? registerConflict(companionRegisterDevices, companionRegisterId) : null
+  const companionBusy = companionGenerating || companionDetectingRegisters || !!companionRegisterSavingDevice
   const metricCard = {background:'#fff',border:'1px solid #e2e8f0',borderRadius:14,padding:16,boxShadow:'0 2px 10px rgba(15,23,42,.04)'}
 
   const viewingAllPrograms = selectedProgramId === 'all' || data?.viewing_all_programs === true
@@ -535,17 +590,17 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
               <div style={{fontSize:11.5,color:'#64748b',marginTop:4}}>Choose which connected POS location belongs to <strong>{branch.name}</strong>. You cannot map or change any other Loyalty Tree branch.</div>
               <div style={{display:'grid',gridTemplateColumns:'minmax(150px,.6fr) minmax(220px,1.4fr) auto',gap:8,marginTop:10,alignItems:'end'}} className="lt-companion-map-grid">
                 <label style={{fontSize:10,fontWeight:850,color:'#475569'}}>POS PROVIDER
-                  <select value={companionMapProvider} onChange={e=>{const provider=e.target.value;setCompanionMapProvider(provider);const row=companionIntegrations.find(x=>x.provider===provider);setCompanionMapLocation(row?.locations?.[0]?.id||'')}} style={{display:'block',width:'100%',marginTop:5,padding:'9px 10px',border:'1px solid #cbd5e1',borderRadius:9,background:'#fff'}}>
+                  <select value={companionMapProvider} disabled={companionBusy || companionMappingSaving} onChange={e=>{const provider=e.target.value;setCompanionMapProvider(provider);const row=companionIntegrations.find(x=>x.provider===provider);setCompanionMapLocation(row?.locations?.[0]?.id||'')}} style={{display:'block',width:'100%',marginTop:5,padding:'9px 10px',border:'1px solid #cbd5e1',borderRadius:9,background:'#fff'}}>
                     {companionIntegrations.map(row=><option key={row.provider} value={row.provider}>{row.label || row.provider}</option>)}
                   </select>
                 </label>
                 <label style={{fontSize:10,fontWeight:850,color:'#475569'}}>POS LOCATION
-                  <select value={companionMapLocation} onChange={e=>setCompanionMapLocation(e.target.value)} style={{display:'block',width:'100%',marginTop:5,padding:'9px 10px',border:'1px solid #cbd5e1',borderRadius:9,background:'#fff'}} disabled={!companionLocations.length}>
+                  <select value={companionMapLocation} onChange={e=>setCompanionMapLocation(e.target.value)} style={{display:'block',width:'100%',marginTop:5,padding:'9px 10px',border:'1px solid #cbd5e1',borderRadius:9,background:'#fff'}} disabled={!companionLocations.length || companionBusy || companionMappingSaving}>
                     {!companionLocations.length && <option value="">No available locations</option>}
                     {companionLocations.map(row=><option key={row.id} value={row.id}>{row.name || row.id}</option>)}
                   </select>
                 </label>
-                <button onClick={saveCompanionMapping} disabled={companionMappingSaving || !companionMapLocation} style={{border:'none',background:'#0f766e',color:'#fff',borderRadius:9,padding:'10px 12px',fontWeight:850,cursor:'pointer',minHeight:38}}>{companionMappingSaving?'Saving…':companionSetup?.mapping_ready?'Save mapping':'Map branch'}</button>
+                <button onClick={saveCompanionMapping} disabled={companionMappingSaving || companionBusy || !companionMapLocation} style={{border:'none',background:'#0f766e',color:'#fff',borderRadius:9,padding:'10px 12px',fontWeight:850,cursor:'pointer',minHeight:38}}>{companionMappingSaving?'Saving…':companionSetup?.mapping_ready?'Save mapping':'Map branch'}</button>
               </div>
               {companionSetup?.mapping_ready && <div style={{fontSize:10.5,color:'#047857',marginTop:8}}>✓ Current mapping: {String(companionSetup.provider || '').toUpperCase()} · {companionSetup.external_branch_name || companionSetup.external_branch_id}</div>}
             </div>
@@ -559,9 +614,18 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
                 <div style={{padding:'11px 12px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:11}}><div style={{fontSize:9.5,fontWeight:900,color:'#64748b'}}>REGISTERED DEVICES</div><div style={{fontWeight:850,marginTop:3}}>{(companionSetup.devices || []).length}</div></div>
               </div>
 
+              <div style={{display:'grid',gap:10,marginTop:14}}>
+                <label style={{fontSize:12,fontWeight:800,color:'#334155'}}>POS device name
+                  <input value={companionDeviceName} onChange={event => setCompanionDeviceName(event.target.value)} disabled={companionBusy || companionMappingSaving}
+                    maxLength={120} placeholder={`${branch.name} POS 1`} style={{display:'block',width:'100%',boxSizing:'border-box',marginTop:5,padding:'10px 11px',border:'1px solid #cbd5e1',borderRadius:9}} />
+                </label>
+                {companionSetup.provider === 'storehub' && <RegisterIdField value={companionRegisterId} onChange={setCompanionRegisterId}
+                  required={companionRegisterRequired} devices={companionRegisterDevices} suggestions={companionRegisterSuggestions}
+                  disabled={companionGenerating || companionMappingSaving || !!companionRegisterSavingDevice} detecting={companionDetectingRegisters} onDetect={detectCompanionRegisters} />}
+              </div>
               <div style={{display:'flex',gap:9,flexWrap:'wrap',marginTop:13}}>
                 <a href={companionSetup.download_url} style={{textDecoration:'none',border:'1px solid #99f6e4',background:'#f0fdfa',color:'#0f766e',borderRadius:10,padding:'10px 13px',fontWeight:850,fontSize:12}}>↓ Download Companion APK</a>
-                <button onClick={generateCompanionCode} disabled={companionGenerating} style={{border:'none',background:'#0f766e',color:'#fff',borderRadius:10,padding:'10px 13px',fontWeight:850,fontSize:12,cursor:'pointer'}}>{companionGenerating?'Generating…':'Generate one-time activation code'}</button>
+                <button onClick={generateCompanionCode} disabled={companionBusy || companionMappingSaving || !!companionNewRegisterConflict || (companionRegisterRequired && !companionRegisterId.trim())} style={{border:'none',background:'#0f766e',color:'#fff',borderRadius:10,padding:'10px 13px',fontWeight:850,fontSize:12,cursor:'pointer'}}>{companionGenerating?'Generating…':'Generate one-time activation code'}</button>
               </div>
 
               {companionCode?.activation_code && (
@@ -569,7 +633,8 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
                   <div style={{fontSize:10,fontWeight:900,color:'#047857'}}>ONE-TIME CODE · {branch.name}</div>
                   <div style={{fontSize:30,fontWeight:950,letterSpacing:6,color:'#064e3b',marginTop:5}}>{companionCode.activation_code}</div>
                   <div style={{fontSize:11,color:'#047857',marginTop:4}}>Valid until {companionCode.expires_at ? new Date(companionCode.expires_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '15 minutes from now'} · one device only.</div>
-                  <div style={{fontSize:10.5,color:'#64748b',marginTop:5}}>This code is server-locked to your assigned Loyalty Tree branch and the POS location you mapped above.</div>
+                  {companionCode.external_terminal_id && <div style={{fontSize:11,color:'#047857',marginTop:5,overflowWrap:'anywhere'}}>Register ID: <strong>{companionCode.external_terminal_id}</strong></div>}
+                  <div style={{fontSize:10.5,color:'#64748b',marginTop:5}}>This code is server-locked to your assigned Loyalty Tree branch, mapped POS location{companionCode.external_terminal_id ? ', and chosen Register ID' : ''}.</div>
                 </div>
               )}
 
@@ -577,9 +642,14 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
                 <div style={{marginTop:14,borderTop:'1px solid #e2e8f0',paddingTop:11}}>
                   <div style={{fontSize:10,fontWeight:900,color:'#64748b',marginBottom:5}}>THIS BRANCH'S COMPANION DEVICES</div>
                   {(companionSetup.devices || []).map(device => (
-                    <div key={device.public_id || device.id} style={{display:'flex',justifyContent:'space-between',gap:10,padding:'8px 0',borderBottom:'1px solid #f1f5f9',fontSize:11.5}}>
-                      <span style={{fontWeight:750}}>{device.device_name || device.hardware_model || 'Companion device'}</span>
-                      <span style={{color:String(device.status || 'active').toLowerCase()==='active'?'#047857':'#b91c1c'}}>{String(device.status || 'active').toLowerCase()==='active'?'Active':String(device.status || 'Inactive')}</span>
+                    <div key={device.public_id || device.id} style={{padding:'10px 0',borderBottom:'1px solid #f1f5f9',fontSize:11.5}}>
+                      <div style={{display:'flex',justifyContent:'space-between',gap:10,flexWrap:'wrap'}}>
+                        <span style={{fontWeight:750}}>{device.display_name || device.device_name || device.hardware_model || 'Companion device'}</span>
+                        <span style={{color:isActivePosDevice(device)?'#047857':'#b91c1c'}}>{isActivePosDevice(device)?'Active':String(device.status || 'Inactive')}</span>
+                      </div>
+                      {String(device.provider || companionSetup.provider) === 'storehub' && isActivePosDevice(device) && <DeviceRegisterEditor device={device}
+                        devices={companionRegisterDevices} suggestions={companionRegisterSuggestions} disabled={companionGenerating || companionMappingSaving || !!companionRegisterSavingDevice}
+                        detecting={companionDetectingRegisters} onDetect={detectCompanionRegisters} onSave={saveCompanionRegister} />}
                     </div>
                   ))}
                 </div>

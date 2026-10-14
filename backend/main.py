@@ -4199,6 +4199,7 @@ def _storehub_transaction_summary(row: dict) -> dict:
         'ref_id': row.get('refId') or row.get('id'),
         'invoice_number': row.get('invoiceNumber'),
         'store_id': row.get('storeId'),
+        'register_id': _storehub_register_id(row) or None,
         'customer_ref_id': row.get('customerRefId'),
         'transaction_type': row.get('transactionType'),
         'transaction_time': row.get('transactionTime'),
@@ -28847,6 +28848,14 @@ async def storehub_transactions_preview(
     # merchant account, so preview the newest timestamps rather than rows[0:n].
     recent_rows = _storehub_recent_rows(rows, int(req.limit))
     summaries = [_storehub_transaction_summary(row) for row in recent_rows]
+    seen_register_ids_by_outlet = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        outlet_id = str(row.get('storeId') or row.get('store_id') or '').strip()
+        register_id = _storehub_register_id(row)
+        if outlet_id and register_id:
+            seen_register_ids_by_outlet.setdefault(outlet_id, set()).add(register_id)
 
     try:
         supabase.table('pos_integrations').update({
@@ -28864,6 +28873,7 @@ async def storehub_transactions_preview(
         'returned': len(summaries),
         'fetch': fetch_meta,
         'transactions': summaries,
+        'seen_register_ids_by_outlet': {key: sorted(values)[:100] for key, values in seen_register_ids_by_outlet.items()},
         'message': 'Read-only StoreHub transaction preview. No LoyaltyTree balances were changed.',
     }
 
@@ -43015,6 +43025,16 @@ class POSDeviceActivationCodeCreate(BaseModel):
     provider: Literal['storehub', 'loyverse'] = 'storehub'
     expires_in_minutes: int = Field(default=15, ge=5, le=1440)
     max_uses: int = Field(default=1, ge=1, le=25)
+    branch_public_id: Optional[str] = Field(default=None, max_length=200)
+    external_branch_id: Optional[str] = Field(default=None, max_length=200)
+    external_branch_name: Optional[str] = Field(default=None, max_length=200)
+    external_terminal_id: Optional[str] = Field(default=None, max_length=120)
+    device_name: Optional[str] = Field(default=None, max_length=200)
+
+
+class ManagerCompanionActivationCodeCreate(BaseModel):
+    external_terminal_id: Optional[str] = Field(default=None, max_length=120)
+    device_name: Optional[str] = Field(default=None, max_length=200)
 
 
 class POSCompanionActivationPreviewRequest(BaseModel):
@@ -43026,6 +43046,7 @@ class POSCompanionActivateRequest(BaseModel):
     branch_public_id: str = Field(min_length=2, max_length=200)
     external_branch_id: str = Field(min_length=1, max_length=200)
     external_branch_name: Optional[str] = Field(default=None, max_length=200)
+    external_terminal_id: Optional[str] = Field(default=None, max_length=120)
     hardware_model: str = Field(default='other', min_length=2, max_length=100)
     scanner_method: Literal['camera', 'hardware', 'external_scanner'] = 'hardware'
     checkout_mode: Literal['direct', 'floating', 'web', 'auto'] = 'floating'
@@ -43103,6 +43124,161 @@ class CompanionMockTransactionRequest(BaseModel):
     external_transaction_id: Optional[str] = Field(default=None, max_length=240)
     currency: str = Field(default='PHP', min_length=3, max_length=3)
     terminal_id: Optional[str] = Field(default=None, max_length=160)
+
+
+def _pos_register_id(value, required: bool = False) -> str:
+    register_id = str(value or '').strip()
+    if required and not register_id:
+        raise HTTPException(status_code=400, detail='StoreHub Register ID is required for this POS machine.')
+    if len(register_id) > 120:
+        raise HTTPException(status_code=400, detail='StoreHub Register ID must be at most 120 characters.')
+    return register_id
+
+
+def _pos_device_register_id(device: dict) -> str:
+    metadata = device.get('metadata') if isinstance(device.get('metadata'), dict) else {}
+    return str(metadata.get('external_terminal_id') or '').strip()
+
+
+def _pos_storehub_register_required(integration: dict) -> bool:
+    if str(integration.get('provider') or '').lower() != 'storehub':
+        return False
+    config = integration.get('config') if isinstance(integration.get('config'), dict) else {}
+    pure_simulator = (integration.get('mode') == 'test' and config.get('simulator') is True
+                      and not config.get('real_api_tested') and not integration.get('credentials_ciphertext'))
+    return not pure_simulator
+
+
+def _pos_device_seen_register_ids(device: dict, mapping: Optional[dict] = None) -> list:
+    metadata = device.get('metadata') if isinstance(device.get('metadata'), dict) else {}
+    if mapping is not None and str(metadata.get('seen_register_outlet_id') or '') != str(mapping.get('external_branch_id') or ''):
+        return []
+    seen = metadata.get('seen_register_ids')
+    if not isinstance(seen, list):
+        return []
+    return sorted({str(value).strip() for value in seen if isinstance(value, str) and 0 < len(value.strip()) <= 120})[:100]
+
+
+def _pos_public_device(device: dict, mapping: Optional[dict] = None) -> dict:
+    return {
+        **{key: value for key, value in device.items() if key != 'device_token_hash'},
+        'external_terminal_id': _pos_device_register_id(device) or None,
+        'seen_register_ids': _pos_device_seen_register_ids(device, mapping),
+    }
+
+
+def _pos_transaction_register_id(transaction: dict) -> str:
+    raw = transaction.get('raw_payload') if isinstance(transaction.get('raw_payload'), dict) else {}
+    processing = transaction.get('processing_metadata') if isinstance(transaction.get('processing_metadata'), dict) else {}
+    return _storehub_register_id(raw) or str(processing.get('bridge_external_terminal_id') or '').strip()
+
+
+def _pos_assert_transaction_register(device: dict, transaction: dict):
+    if str(device.get('provider') or '').lower() != 'storehub':
+        return
+    device.update(_pos_current_register_device(device))
+    if transaction.get('branch_id') is None or str(transaction.get('branch_id')) != str(device.get('branch_id')):
+        raise HTTPException(status_code=409, detail='This transaction is not mapped to this POS machine\'s Loyalty Tree branch.')
+    mapping = _companion_mock_mapping(device)
+    settings = mapping.get('settings') if isinstance(mapping.get('settings'), dict) else {}
+    expected = str(_pos_device_register_id(device) or mapping.get('external_terminal_id') or settings.get('external_terminal_id') or '').strip()
+    if _companion_is_mock_transaction(transaction) and not expected:
+        expected = f'MOCK-{str(device.get("id") or "DEVICE")[:8].upper()}'
+    if expected and _pos_transaction_register_id(transaction) != expected:
+        raise HTTPException(status_code=409, detail='This transaction has a different or missing StoreHub Register ID. It cannot be matched to this POS machine.')
+
+
+def _pos_device_cache_invalidate(device_id):
+    with _POS_DEVICE_CACHE_LOCK:
+        for token_hash, (_, cached_device) in list(_POS_DEVICE_AUTH_CACHE.items()):
+            if str(cached_device.get('id')) == str(device_id):
+                _POS_DEVICE_AUTH_CACHE.pop(token_hash, None)
+
+
+def _pos_register_database_error(exc) -> HTTPException:
+    raw = str(exc or '').lower()
+    if 'pos_devices_storehub_register_active_uidx' in raw:
+        return HTTPException(status_code=409, detail='This StoreHub Register ID is already assigned to another active POS machine in this branch. Use its own Register ID or retire the old device first.')
+    return _pos_schema_error(exc)
+
+
+def _pos_require_register_guard():
+    try:
+        ready = supabase.rpc('pos_storehub_register_guard_ready', {}).execute().data
+    except Exception:
+        ready = False
+    if ready is not True:
+        raise HTTPException(status_code=503, detail='StoreHub Register ID protection is not installed. Run the POS register binding migration in Supabase before pairing or assigning a Register ID.')
+
+
+def _pos_assert_register_available(business_id, integration_id, branch_id, register_id: str, exclude_device_id=None):
+    if not register_id:
+        return
+    try:
+        rows = (supabase.table('pos_devices').select('id,display_name,metadata')
+                .eq('business_id', business_id).eq('integration_id', integration_id)
+                .eq('branch_id', branch_id).eq('provider', 'storehub').eq('status', 'active')
+                .execute().data or [])
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    for row in rows:
+        if str(row.get('id')) != str(exclude_device_id) and _pos_device_register_id(row) == register_id:
+            raise HTTPException(status_code=409, detail='This StoreHub Register ID is already assigned to another active POS machine in this branch. Use its own Register ID or retire the old device first.')
+
+
+def _pos_register_management_scope(public_id: str, authorization: str) -> tuple:
+    """Owner-wide or currently permitted manager's assigned branch only."""
+    role, business, manager, branch = require_announcement_session(public_id, authorization)
+    if not business_has_plan_feature(business, 'pos_integration'):
+        raise HTTPException(status_code=403, detail='POS Integration is included with the Pro plan.')
+    if role == 'manager' and not _manager_can_manage_companion(manager):
+        raise HTTPException(status_code=403, detail='The owner has not granted Companion device access to this manager.')
+    return business, branch
+
+
+def _pos_current_register_device(device: dict, require_unambiguous: bool = True) -> dict:
+    """Auth cache is not authoritative for a mutable terminal binding."""
+    if str(device.get('provider') or '').lower() != 'storehub':
+        return device
+    try:
+        rows = (supabase.table('pos_devices').select('*').eq('id', device.get('id'))
+                .eq('business_id', device.get('business_id')).eq('status', 'active')
+                .limit(1).execute().data or [])
+        if not rows:
+            raise HTTPException(status_code=401, detail='POS device is invalid or revoked.')
+        current = rows[0]
+        integration = _get_pos_integration(current.get('business_id'), 'storehub') if not _pos_device_register_id(current) else None
+        if require_unambiguous and not _pos_device_register_id(current) and not integration:
+            raise HTTPException(status_code=409, detail='POS integration not found for this Companion device.')
+        if require_unambiguous and not _pos_device_register_id(current) and integration and _pos_storehub_register_required(integration):
+            active = (supabase.table('pos_devices').select('id').eq('business_id', current.get('business_id'))
+                      .eq('integration_id', current.get('integration_id')).eq('branch_id', current.get('branch_id'))
+                      .eq('provider', 'storehub').eq('status', 'active').limit(2).execute().data or [])
+            if len(active) > 1:
+                raise HTTPException(status_code=409, detail='Save this POS machine\'s StoreHub Register ID before matching sales. This branch has multiple active POS devices.')
+        return current
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+
+
+def _pos_record_storehub_registers(device: dict, outlet_id: str, register_ids: list):
+    """Discovery merges metadata atomically; it never chooses a device binding."""
+    seen = sorted({str(value).strip() for value in register_ids if isinstance(value, str) and 0 < len(value.strip()) <= 120})[:100]
+    if not seen:
+        return
+    mapping = {'external_branch_id': outlet_id}
+    if set(seen).issubset(_pos_device_seen_register_ids(device, mapping)):
+        return
+    try:
+        result = supabase.rpc('pos_record_storehub_registers', {
+            'p_device_id': str(device.get('id')), 'p_external_branch_id': str(outlet_id), 'p_register_ids': seen,
+        }).execute()
+        if isinstance(result.data, dict):
+            device['metadata'] = result.data
+    except Exception as exc:
+        _companion_debug('storehub_register_discovery_save_failed', device_id=str(device.get('id') or ''), error=str(exc)[:200])
 
 
 def _pos_secret_hash(value: str) -> str:
@@ -43247,6 +43423,9 @@ def _pos_companion_preview_payload(activation: dict) -> dict:
         'outlets': outlets,
         'device_profiles': POS_DEVICE_PROFILES,
         'default_checkout_mode': 'floating',
+        'external_terminal_id': _pos_register_id(metadata.get('allowed_external_terminal_id')) or None,
+        'device_name': str(metadata.get('device_name') or '').strip() or None,
+        'register_required': _pos_storehub_register_required(integration),
     }
 
 
@@ -43573,6 +43752,8 @@ def _manager_companion_devices(business: dict, branch: dict) -> list:
             'scanner_method': row.get('scanner_method'),
             'checkout_mode': row.get('checkout_mode'),
             'status': row.get('status'),
+            'revoked_at': row.get('revoked_at'),
+            'device_name': row.get('display_name'),
             'app_version': row.get('app_version'),
             'activated_at': row.get('activated_at') or row.get('created_at'),
             'last_seen_at': row.get('last_seen_at'),
@@ -43580,6 +43761,8 @@ def _manager_companion_devices(business: dict, branch: dict) -> list:
             'branch_name': branch.get('name'),
             'external_branch_id': mapping.get('external_branch_id'),
             'external_branch_name': mapping.get('external_branch_name'),
+            'external_terminal_id': _pos_device_register_id(row) or None,
+            'seen_register_ids': _pos_device_seen_register_ids(row, mapping),
         })
     return result
 
@@ -43606,6 +43789,7 @@ def get_manager_companion_setup(public_id: str, authorization: str = Header(defa
         'provider': None,
         'integration_status': None,
         'integration_mode': None,
+        'register_required': False,
         'external_branch_id': None,
         'external_branch_name': None,
         'devices': [],
@@ -43622,6 +43806,7 @@ def get_manager_companion_setup(public_id: str, authorization: str = Header(defa
         'provider': integration.get('provider'),
         'integration_status': integration.get('status'),
         'integration_mode': integration.get('mode'),
+        'register_required': _pos_storehub_register_required(integration),
         'external_branch_id': mapping.get('external_branch_id'),
         'external_branch_name': mapping.get('external_branch_name'),
         'devices': _manager_companion_devices(business, branch),
@@ -43768,7 +43953,7 @@ def save_manager_pos_branch_mapping(
 
 
 @app.post('/api/v1/business/{public_id}/manager/companion-activation-code')
-def create_manager_companion_activation_code(public_id: str, authorization: str = Header(default='')):
+def create_manager_companion_activation_code(public_id: str, req: Optional[ManagerCompanionActivationCodeCreate] = None, authorization: str = Header(default='')):
     _, business, manager, branch = require_branch_manager_session(public_id, authorization)
     if not _manager_can_manage_companion(manager):
         raise HTTPException(status_code=403, detail='The owner has not granted Companion device access to this manager.')
@@ -43784,12 +43969,18 @@ def create_manager_companion_activation_code(public_id: str, authorization: str 
     external_branch_id = str(mapping.get('external_branch_id') or '').strip()
     if not external_branch_id:
         raise HTTPException(status_code=409, detail='This branch mapping is missing its POS location ID. Save the branch mapping again before generating a code.')
+    provider = str(integration.get('provider') or 'storehub').lower()
+    register_id = _pos_register_id(req.external_terminal_id if req else None, required=_pos_storehub_register_required(integration))
+    if provider == 'storehub' and register_id:
+        _pos_require_register_guard()
+        _pos_assert_register_available(business.get('id'), integration.get('id'), branch.get('id'), register_id)
+    device_name = str((req.device_name if req else '') or '').strip() or None
 
     code = str(secrets.randbelow(900000) + 100000)
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
     payload = {
         'business_id': business.get('id'),
-        'provider': str(integration.get('provider') or 'storehub').lower(),
+        'provider': provider,
         'code_hash': _pos_secret_hash(code),
         'expires_at': expires_at.isoformat(),
         'max_uses': 1,
@@ -43802,6 +43993,8 @@ def create_manager_companion_activation_code(public_id: str, authorization: str 
             'allowed_branch_public_id': branch.get('public_id'),
             'allowed_external_branch_id': external_branch_id,
             'allowed_external_branch_name': mapping.get('external_branch_name'),
+            'allowed_external_terminal_id': register_id or None,
+            'device_name': device_name,
         },
     }
     try:
@@ -43819,6 +44012,9 @@ def create_manager_companion_activation_code(public_id: str, authorization: str 
         'provider': payload['provider'],
         'external_branch_id': external_branch_id,
         'external_branch_name': mapping.get('external_branch_name'),
+        'external_terminal_id': register_id or None,
+        'device_name': device_name,
+        'register_required': _pos_storehub_register_required(integration),
         'message': 'Enter this one-time code in the Loyalty Tree Companion app. It can activate only this assigned branch and mapped POS location.',
     }
 
@@ -43834,6 +44030,33 @@ def create_pos_device_activation_code(
     if not integration:
         raise HTTPException(status_code=409, detail=f'Connect {req.provider.title()} before creating a Companion activation code.')
 
+    metadata = {'purpose': 'pos_companion_device_activation'}
+    register_id = _pos_register_id(req.external_terminal_id, required=_pos_storehub_register_required(integration))
+    if req.provider == 'storehub':
+        branch = safe_get_branch(str(req.branch_public_id or '').strip())
+        if not branch or str(branch.get('business_id')) != str(business.get('id')) or branch.get('is_active') is False:
+            raise HTTPException(status_code=404, detail='Select an active Loyalty Tree branch for this POS machine.')
+        external_branch_id = str(req.external_branch_id or '').strip()
+        try:
+            mappings = (supabase.table('pos_branch_mappings').select('*')
+                        .eq('business_id', business.get('id')).eq('integration_id', integration.get('id'))
+                        .eq('branch_id', branch.get('id')).eq('is_active', True).execute().data or [])
+        except Exception as exc:
+            raise _pos_schema_error(exc)
+        mapping = next((row for row in mappings if str(row.get('external_branch_id') or '') == external_branch_id), None)
+        if not external_branch_id or not mapping:
+            raise HTTPException(status_code=409, detail='Map this branch to the selected StoreHub outlet before pairing a POS machine.')
+        if register_id:
+            _pos_require_register_guard()
+            _pos_assert_register_available(business.get('id'), integration.get('id'), branch.get('id'), register_id)
+        metadata.update({
+            'allowed_branch_id': branch.get('id'), 'allowed_branch_public_id': branch.get('public_id'),
+            'allowed_external_branch_id': external_branch_id,
+            'allowed_external_branch_name': mapping.get('external_branch_name') or req.external_branch_name,
+            'allowed_external_terminal_id': register_id,
+            'device_name': str(req.device_name or '').strip() or None,
+        })
+
     code = str(secrets.randbelow(900000) + 100000)
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=int(req.expires_in_minutes))
     payload = {
@@ -43843,7 +44066,7 @@ def create_pos_device_activation_code(
         'expires_at': expires_at.isoformat(),
         'max_uses': int(req.max_uses),
         'used_count': 0,
-        'metadata': {'purpose': 'pos_companion_device_activation'},
+        'metadata': metadata,
     }
     try:
         row = (supabase.table('pos_device_activation_codes').insert(payload).execute().data or [None])[0]
@@ -43855,6 +44078,12 @@ def create_pos_device_activation_code(
         'expires_at': expires_at.isoformat(),
         'max_uses': int(req.max_uses),
         'activation_id': str((row or {}).get('id') or ''),
+        'branch_public_id': metadata.get('allowed_branch_public_id'),
+        'external_branch_id': metadata.get('allowed_external_branch_id'),
+        'external_branch_name': metadata.get('allowed_external_branch_name'),
+        'external_terminal_id': register_id or None,
+        'device_name': metadata.get('device_name'),
+        'register_required': _pos_storehub_register_required(integration),
         'message': 'Enter this one-time code in the Loyalty Tree Companion app.',
     }
 
@@ -43882,13 +44111,80 @@ def list_pos_companion_devices(public_id: str, authorization: str = Header(defau
         branch = branch_map.get(str(row.get('branch_id'))) or {}
         mapping = mapping_map.get(str(row.get('mapping_id'))) or {}
         public_devices.append({
-            **{k: v for k, v in row.items() if k != 'device_token_hash'},
+            **_pos_public_device(row, mapping),
             'branch_public_id': branch.get('public_id'),
             'branch_name': branch.get('name'),
             'external_branch_id': mapping.get('external_branch_id'),
             'external_branch_name': mapping.get('external_branch_name'),
         })
     return {'devices': public_devices}
+
+
+@app.get('/api/v1/business/{public_id}/pos/storehub/registers')
+def discover_pos_storehub_registers(public_id: str, branch_public_id: str, authorization: str = Header(default='')):
+    """Read register IDs in one mapped outlet without processing loyalty."""
+    business, manager_branch = _pos_register_management_scope(public_id, authorization)
+    if manager_branch and str(manager_branch.get('public_id')) != str(branch_public_id):
+        raise HTTPException(status_code=403, detail='Managers can check only their assigned branch.')
+    branch = manager_branch or safe_get_branch(branch_public_id)
+    if not branch or str(branch.get('business_id')) != str(business.get('id')) or branch.get('is_active') is False:
+        raise HTTPException(status_code=404, detail='Active branch not found for this business.')
+    integration = _get_pos_integration(business.get('id'), 'storehub')
+    if not integration:
+        raise HTTPException(status_code=409, detail='Connect StoreHub before checking Register IDs.')
+    try:
+        mappings = (supabase.table('pos_branch_mappings').select('*')
+                    .eq('business_id', business.get('id')).eq('integration_id', integration.get('id'))
+                    .eq('branch_id', branch.get('id')).eq('is_active', True).execute().data or [])
+        devices = (supabase.table('pos_devices').select('*').eq('business_id', business.get('id'))
+                   .eq('integration_id', integration.get('id')).eq('branch_id', branch.get('id'))
+                   .eq('provider', 'storehub').eq('status', 'active').execute().data or [])
+        transactions = (supabase.table('pos_transactions').select('raw_payload,processing_metadata')
+                        .eq('business_id', business.get('id')).eq('integration_id', integration.get('id'))
+                        .eq('branch_id', branch.get('id')).eq('provider', 'storehub')
+                        .order('transacted_at', desc=True).limit(200).execute().data or [])
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    if not mappings:
+        raise HTTPException(status_code=409, detail='Map this Loyalty Tree branch to a StoreHub outlet first.')
+    mapping = mappings[0]
+    outlet_id = str(mapping.get('external_branch_id') or '').strip()
+    if not outlet_id:
+        raise HTTPException(status_code=409, detail='This branch mapping is missing its StoreHub outlet ID.')
+    seen = set()
+    for device in devices:
+        if str(device.get('mapping_id')) == str(mapping.get('id')):
+            seen.update(_pos_device_seen_register_ids(device, mapping))
+    for transaction in transactions:
+        raw = transaction.get('raw_payload') if isinstance(transaction.get('raw_payload'), dict) else {}
+        metadata = transaction.get('processing_metadata') if isinstance(transaction.get('processing_metadata'), dict) else {}
+        raw_outlet = str(raw.get('storeId') or raw.get('store_id') or metadata.get('bridge_external_branch_id') or '').strip()
+        if raw_outlet == outlet_id:
+            register_id = _storehub_register_id(raw) or str(metadata.get('bridge_external_terminal_id') or '').strip()
+            if register_id:
+                seen.add(register_id)
+    config = integration.get('config') if isinstance(integration.get('config'), dict) else {}
+    if config.get('real_api_tested') and not _storehub_is_placeholder_location_id(outlet_id):
+        now = datetime.now(timezone.utc)
+        _, provider_rows, _ = _storehub_fetch_recent_transaction_rows(
+            integration, start=now - timedelta(days=1), end=now, external_branch_id=outlet_id,
+        )
+        observed = sorted({_storehub_register_id(row) for row in provider_rows if isinstance(row, dict)
+                           and str(row.get('storeId') or row.get('store_id') or '').strip() == outlet_id
+                           and _storehub_register_id(row)})[:100]
+        seen.update(observed)
+        for device in devices:
+            if str(device.get('mapping_id')) == str(mapping.get('id')):
+                _pos_record_storehub_registers(device, outlet_id, observed)
+    safe_seen = sorted({value for value in seen if 0 < len(value) <= 120})[:100]
+    assigned = {_pos_device_register_id(device): device for device in devices if _pos_device_register_id(device)}
+    return {
+        'ok': True, 'branch_public_id': branch.get('public_id'),
+        'external_branch_id': outlet_id, 'seen_register_ids': safe_seen,
+        'registers': [{'external_terminal_id': value, 'assigned': value in assigned,
+                       'assigned_device_id': assigned.get(value, {}).get('id'),
+                       'assigned_device_name': assigned.get(value, {}).get('display_name')} for value in safe_seen],
+    }
 
 
 @app.post('/api/v1/companion/activation-preview')
@@ -43920,17 +44216,27 @@ def activate_pos_companion_device(req: POSCompanionActivateRequest):
     allowed_branch_id = metadata.get('allowed_branch_id')
     allowed_branch_public_id = str(metadata.get('allowed_branch_public_id') or '').strip()
     allowed_external_branch_id = str(metadata.get('allowed_external_branch_id') or '').strip()
+    allowed_register_id = _pos_register_id(metadata.get('allowed_external_terminal_id'))
+    requested_register_id = _pos_register_id(req.external_terminal_id)
+    if allowed_register_id and requested_register_id and requested_register_id != allowed_register_id:
+        raise HTTPException(status_code=403, detail='This activation code is locked to a different StoreHub Register ID.')
+    register_id = allowed_register_id or requested_register_id
     if allowed_branch_id is not None and str(branch.get('id')) != str(allowed_branch_id):
-        raise HTTPException(status_code=403, detail="This activation code is locked to the manager's assigned branch.")
+        raise HTTPException(status_code=403, detail='This activation code is locked to its assigned branch.')
     if allowed_branch_public_id and str(branch.get('public_id')) != allowed_branch_public_id:
-        raise HTTPException(status_code=403, detail="This activation code is locked to the manager's assigned branch.")
+        raise HTTPException(status_code=403, detail='This activation code is locked to its assigned branch.')
     if allowed_external_branch_id and str(req.external_branch_id) != allowed_external_branch_id:
         raise HTTPException(status_code=403, detail='This activation code is locked to the POS location mapped for this assigned branch.')
+    if provider == 'storehub' and _pos_storehub_register_required(integration) and not register_id:
+        raise HTTPException(status_code=400, detail="A StoreHub Register ID is required before activating this POS machine. Generate a new pairing code with this machine's Register ID in POS setup, then activate again.")
 
     known_outlets = preview.get('outlets') or []
     known_ids = {str(row.get('id')) for row in known_outlets if isinstance(row, dict) and row.get('id') is not None}
     if known_ids and req.external_branch_id not in known_ids:
         raise HTTPException(status_code=400, detail=f'Selected {provider.title()} location is not part of the connected account.')
+    if provider == 'storehub' and register_id:
+        _pos_require_register_guard()
+        _pos_assert_register_available(business.get('id'), integration.get('id'), branch.get('id'), register_id)
 
     try:
         # A branch can have stale/older mapping rows from previous setup attempts.
@@ -44000,7 +44306,7 @@ def activate_pos_companion_device(req: POSCompanionActivateRequest):
                     supabase.table('pos_branch_mappings').update({'is_active': False}).eq('id', stale_mapping.get('id')).execute()
 
         device_token = secrets.token_urlsafe(36)
-        display_name = f"{business.get('name') or 'Business'} {branch.get('name') or req.branch_public_id} Companion"
+        display_name = str(metadata.get('device_name') or '').strip() or f"{business.get('name') or 'Business'} {branch.get('name') or req.branch_public_id} Companion"
         device_payload = {
             'business_id': business.get('id'),
             'branch_id': branch.get('id'),
@@ -44016,7 +44322,7 @@ def activate_pos_companion_device(req: POSCompanionActivateRequest):
             'status': 'active',
             'app_version': req.app_version,
             'last_seen_at': datetime.now(timezone.utc).isoformat(),
-            'metadata': {'activation_code_id': str(activation.get('id'))},
+            'metadata': {'activation_code_id': str(activation.get('id')), **({'external_terminal_id': register_id} if provider == 'storehub' and register_id else {})},
         }
         device = (supabase.table('pos_devices').insert(device_payload).execute().data or [None])[0]
         supabase.table('pos_device_activation_codes').update({
@@ -44025,12 +44331,12 @@ def activate_pos_companion_device(req: POSCompanionActivateRequest):
     except HTTPException:
         raise
     except Exception as exc:
-        raise _pos_schema_error(exc)
+        raise _pos_register_database_error(exc)
 
     return {
         'ok': True,
         'device_token': device_token,
-        'device': {k: v for k, v in (device or {}).items() if k != 'device_token_hash'},
+        'device': _pos_public_device(device or {}, mapping),
         'business': preview.get('business'),
         'branch': {'public_id': branch.get('public_id'), 'name': branch.get('name')},
         'outlet': {'id': mapping.get('external_branch_id'), 'name': mapping.get('external_branch_name')},
@@ -44044,6 +44350,7 @@ def activate_pos_companion_device(req: POSCompanionActivateRequest):
 @app.get('/api/v1/pos-companion/config')
 def pos_companion_device_config(x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token')):
     device = _require_pos_device(x_lt_device_token)
+    device = _pos_current_register_device(device, require_unambiguous=False)
     business = _pos_business_by_id(device.get('business_id'))
     integration = _get_pos_integration(device.get('business_id'), device.get('provider') or 'storehub')
     try:
@@ -44069,7 +44376,7 @@ def pos_companion_device_config(x_lt_device_token: str = Header(default='', alia
 
     return {
         'ok': True,
-        'device': {k: v for k, v in device.items() if k != 'device_token_hash'},
+        'device': _pos_public_device(device, mapping),
         'business': {'public_id': business.get('public_id'), 'name': business.get('name')},
         'branch': {'public_id': branch.get('public_id'), 'name': branch.get('name')},
         'outlet': {'id': mapping.get('external_branch_id'), 'name': mapping.get('external_branch_name')},
@@ -44086,14 +44393,14 @@ def pos_companion_device_config(x_lt_device_token: str = Header(default='', alia
 
 
 class POSDeviceRegisterUpdate(BaseModel):
-    external_terminal_id: str = Field(min_length=4, max_length=120)
+    external_terminal_id: str = Field(min_length=1, max_length=120)
 
 
 @app.post('/api/v1/business/{public_id}/pos/devices/{device_id}/register')
 async def set_pos_device_register(public_id: str, device_id: str, req: POSDeviceRegisterUpdate, authorization: str = Header(default='')):
     """Save the StoreHub registerId on one Companion device. Check POS then filters to that register."""
-    business = _require_pos_pro_business(public_id, authorization)
-    register_id = str(req.external_terminal_id or '').strip()
+    business, manager_branch = _pos_register_management_scope(public_id, authorization)
+    register_id = _pos_register_id(req.external_terminal_id, required=True)
     try:
         rows = (
             supabase.table('pos_devices')
@@ -44108,19 +44415,31 @@ async def set_pos_device_register(public_id: str, device_id: str, req: POSDevice
         raise _pos_schema_error(exc)
     if not rows:
         raise HTTPException(status_code=404, detail='Companion device not found.')
-    metadata = rows[0].get('metadata') if isinstance(rows[0].get('metadata'), dict) else {}
-    metadata = {**metadata, 'external_terminal_id': register_id}
+    device = rows[0]
+    if manager_branch and str(device.get('branch_id')) != str(manager_branch.get('id')):
+        raise HTTPException(status_code=403, detail='Managers can update only POS devices in their assigned branch.')
+    if str(device.get('provider') or '').lower() != 'storehub':
+        raise HTTPException(status_code=400, detail='Register ID binding is available for StoreHub POS devices.')
+    if device.get('status') != 'active':
+        raise HTTPException(status_code=409, detail='This POS device is no longer active.')
+    _pos_require_register_guard()
+    mapping = _companion_mock_mapping(device)
+    if (not mapping or mapping.get('is_active') is False
+            or str(mapping.get('business_id')) != str(business.get('id'))
+            or str(mapping.get('integration_id')) != str(device.get('integration_id'))
+            or str(mapping.get('branch_id')) != str(device.get('branch_id'))):
+        raise HTTPException(status_code=409, detail='This POS device has no active branch/outlet mapping. Restore its mapping before assigning a Register ID.')
+    _pos_assert_register_available(business.get('id'), device.get('integration_id'), device.get('branch_id'), register_id, device_id)
     try:
-        updated = (
-            supabase.table('pos_devices')
-            .update({'metadata': metadata})
-            .eq('id', device_id)
-            .execute()
-            .data or []
-        )
+        updated = supabase.rpc('pos_assign_storehub_register', {
+            'p_device_id': str(device_id), 'p_business_id': str(business.get('id')), 'p_register_id': register_id,
+        }).execute().data
     except Exception as exc:
-        raise _pos_schema_error(exc)
-    return {'ok': True, 'device_id': device_id, 'external_terminal_id': register_id, 'device': updated[0] if updated else {'id': device_id, 'metadata': metadata}}
+        raise _pos_register_database_error(exc)
+    if not updated:
+        raise HTTPException(status_code=409, detail='POS device changed while saving its Register ID. Refresh and retry.')
+    _pos_device_cache_invalidate(device_id)
+    return {'ok': True, 'device_id': device_id, 'external_terminal_id': register_id, 'device': _pos_public_device(updated, mapping)}
 
 
 @app.patch('/api/v1/companion/device/preferences')
@@ -44270,6 +44589,8 @@ def _pos_companion_exact_transaction(device: dict, external_transaction_id: str)
     tx = rows[0] if rows else None
     if tx and tx.get('branch_id') and device.get('branch_id') and str(tx.get('branch_id')) != str(device.get('branch_id')):
         raise HTTPException(status_code=409, detail='StoreHub transaction belongs to a different Loyalty Tree branch.')
+    if tx:
+        _pos_assert_transaction_register(device, tx)
     return tx
 
 
@@ -44824,7 +45145,7 @@ def _companion_normalize_provider_transaction(provider: str, raw: dict) -> Optio
         tx_type = 'void' if cancelled else ('refund' if any(x in raw_type for x in ('refund', 'return')) else 'sale')
         amount = _companion_money_value(raw.get('total'))
         occurred = raw.get('transactionTime') or raw.get('createdAt') or raw.get('created_at')
-        terminal = raw.get('terminal') or raw.get('terminalId') or raw.get('terminal_id') or raw.get('registerId') or raw.get('register_id')
+        terminal = raw.get('registerId') or raw.get('terminal') or raw.get('terminalId') or raw.get('terminal_id') or raw.get('register_id')
     elif provider == 'loyverse':
         external_id = raw.get('id') or raw.get('receipt_number')
         branch_id = raw.get('store_id')
@@ -45044,7 +45365,7 @@ def _companion_debug(event: str, **fields) -> None:
 def _storehub_register_id(raw: dict) -> str:
     if not isinstance(raw, dict):
         return ''
-    return str(raw.get('terminal') or raw.get('registerId') or raw.get('terminalId') or raw.get('terminal_id') or raw.get('register_id') or '').strip()
+    return str(raw.get('registerId') or raw.get('terminal') or raw.get('terminalId') or raw.get('terminal_id') or raw.get('register_id') or '').strip()
 
 
 def _storehub_recent_rows(rows: list, limit: int, external_branch_id: Optional[str] = None, register_id: Optional[str] = None) -> list:
@@ -45603,6 +45924,9 @@ def _companion_provider_rows(device: dict, integration: dict, limit: int, deep_p
     provider = str(device.get('provider') or '').lower()
     now = datetime.now(timezone.utc)
     if provider == 'storehub':
+        # Refresh the mutable binding even if authentication came from another
+        # worker's short-lived cache. Peek can discover IDs for an unbound device.
+        device.update(_pos_current_register_device(device, require_unambiguous=not deep_probe))
         config = integration.get('config') if isinstance(integration.get('config'), dict) else {}
         if not config.get('real_api_tested'):
             raise HTTPException(status_code=409, detail='Test the StoreHub API connection from the owner dashboard before polling sales.')
@@ -45673,7 +45997,10 @@ def _companion_provider_rows(device: dict, integration: dict, limit: int, deep_p
             or ''
         ).strip()
         rows = _storehub_recent_rows(provider_rows, limit, mapped_store_id, mapped_register_id or None)
-        seen_registers = sorted({_storehub_register_id(row) for row in provider_rows if _storehub_register_id(row)})[:8]
+        outlet_rows = [row for row in provider_rows if isinstance(row, dict) and str(row.get('storeId') or row.get('store_id') or '').strip() == mapped_store_id]
+        seen_registers = sorted({_storehub_register_id(row) for row in outlet_rows if _storehub_register_id(row)})[:100]
+        _pos_record_storehub_registers(device, mapped_store_id, seen_registers)
+        device['_observed_storehub_register_ids'] = seen_registers
         _companion_debug(
             'storehub_poll_rows',
             device_id=str(device.get('id') or ''),
@@ -45863,11 +46190,13 @@ def _companion_mock_upsert_transaction(
 
 
 def _companion_session_candidates(device: dict, session: dict, transactions: list) -> list:
+    device.update(_pos_current_register_device(device))
     scanned_at = _pos_parse_timestamp(session.get('scanned_at')) or datetime.now(timezone.utc)
     expires_at = _pos_parse_timestamp(session.get('expires_at')) or (scanned_at + timedelta(seconds=POS_COMPANION_SESSION_TTL_SECONDS))
     metadata = device.get('metadata') if isinstance(device.get('metadata'), dict) else {}
     mapping = _companion_mock_mapping(device)
-    device_terminal = metadata.get('external_terminal_id') or mapping.get('external_terminal_id')
+    mapping_settings = mapping.get('settings') if isinstance(mapping.get('settings'), dict) else {}
+    device_terminal = str(metadata.get('external_terminal_id') or mapping.get('external_terminal_id') or mapping_settings.get('external_terminal_id') or '').strip()
     candidates = []
     skipped = {
         'integration': 0, 'non_sale': 0, 'status': 0, 'branch': 0,
@@ -45893,12 +46222,11 @@ def _companion_session_candidates(device: dict, session: dict, transactions: lis
         if not happened or happened < (scanned_at - timedelta(seconds=5)) or happened > (expires_at + timedelta(seconds=15)):
             skipped['time_window'] += 1
             continue
-        processing = tx.get('processing_metadata') if isinstance(tx.get('processing_metadata'), dict) else {}
-        tx_terminal = processing.get('bridge_external_terminal_id')
+        tx_terminal = _pos_transaction_register_id(tx)
         expected_terminal = device_terminal
         if _companion_is_mock_transaction(tx) and not expected_terminal:
             expected_terminal = f'MOCK-{str(device.get("id") or "DEVICE")[:8].upper()}'
-        if expected_terminal and tx_terminal and str(expected_terminal) != str(tx_terminal):
+        if expected_terminal and (str(device.get('provider') or '').lower() == 'storehub' or tx_terminal) and str(expected_terminal).strip() != str(tx_terminal or '').strip():
             skipped['terminal'] += 1
             continue
         candidates.append({
@@ -45941,6 +46269,9 @@ async def _companion_process_transaction(
 ) -> dict:
     if not tx:
         raise HTTPException(status_code=404, detail='POS transaction not found.')
+    # Re-check immediately before any loyalty mutation or duplicate acknowledgement:
+    # a register can be reassigned after polling selected a receipt.
+    _pos_assert_transaction_register(device, tx)
     if tx.get('status') == 'loyalty_applied':
         if tx.get('customer_id') and str(tx.get('customer_id')) != str(session.get('customer_id')):
             raise HTTPException(status_code=409, detail='This POS transaction was already applied to a different member.')
@@ -46504,12 +46835,15 @@ def companion_pos_peek(
             'currency': str(tx.get('currency') or 'PHP'),
             'transacted_at': _ph_time_text(tx.get('transacted_at') or tx.get('created_at')),
             'status': str(tx.get('status') or ''),
+            'terminal_id': _pos_transaction_register_id(tx),
         })
     rows.sort(key=lambda row: row.get('transacted_at') or '', reverse=True)
     return {
         'ok': True,
         'provider': provider,
         'read_only': True,
+        'external_terminal_id': _pos_device_register_id(device) or None,
+        'seen_register_ids': device.get('_observed_storehub_register_ids') or _pos_device_seen_register_ids(device),
         'transactions': rows[:safe_limit],
         'message': 'Read-only POS check. No customer or loyalty action was processed.',
     }
@@ -46639,6 +46973,7 @@ def companion_mock_transaction(
     that a real provider adapter will eventually populate.
     """
     device = _require_pos_device(x_lt_device_token)
+    device.update(_pos_current_register_device(device))
     session = _companion_active_session(device)
     if not session:
         raise HTTPException(status_code=409, detail='Scan a Loyalty Tree member before completing a mock POS sale.')
@@ -46667,7 +47002,7 @@ def companion_mock_transaction(
             branch_id = None
             external_branch_id = 'mock-other-outlet'
 
-    terminal_id = (req.terminal_id or '').strip() or f'MOCK-{str(device.get("id") or "DEVICE")[:8].upper()}'
+    terminal_id = (req.terminal_id or '').strip() or _pos_device_register_id(device) or f'MOCK-{str(device.get("id") or "DEVICE")[:8].upper()}'
     if req.scenario == 'wrong_terminal':
         terminal_id = f'OTHER-{terminal_id}'
 
@@ -46741,6 +47076,7 @@ async def companion_session_test_sale(
 ):
     """Explicit Step-3 simulator: proves scan -> session -> sale -> loyalty -> Wallet without pretending StoreHub live writes are verified."""
     device = _require_pos_device(x_lt_device_token)
+    device.update(_pos_current_register_device(device))
     session = _companion_active_session(device)
     if not session:
         raise HTTPException(status_code=404, detail='No active Companion checkout. Scan a customer first.')
@@ -46763,7 +47099,7 @@ async def companion_session_test_sale(
                 'transaction_type': 'sale', 'source': 'simulator', 'currency': req.currency.upper(),
                 'gross_amount': amount, 'net_amount': amount, 'eligible_amount': amount, 'status': 'received',
                 'raw_payload': {'companion_test_sale': True},
-                'processing_metadata': {'companion_device_id': str(device.get('id')), 'companion_session_id': str(session.get('id'))},
+                'processing_metadata': {'companion_device_id': str(device.get('id')), 'companion_session_id': str(session.get('id')), 'bridge_external_terminal_id': _pos_device_register_id(device) or None},
                 'transacted_at': now,
             }).execute().data or []
             tx = rows[0] if rows else None
@@ -46838,6 +47174,7 @@ def _pos_offline_event_public(row: dict) -> dict:
 
 
 def _pos_offline_resolve_and_match(device: dict, event: POSCompanionOfflineEvent, existing: Optional[dict] = None) -> dict:
+    device.update(_pos_current_register_device(device))
     business_id = device.get('business_id')
     integration_id = device.get('integration_id')
     branch_id = device.get('branch_id')
@@ -46945,6 +47282,8 @@ def _pos_offline_resolve_and_match(device: dict, event: POSCompanionOfflineEvent
                 except Exception as exc:
                     raise _pos_schema_error(exc)
                 matched_tx = rows[0] if rows else None
+                if matched_tx:
+                    _pos_assert_transaction_register(device, matched_tx)
                 if not matched_tx:
                     status = 'received'
                     error_message = 'Exact StoreHub transaction has not synced yet. Retry after provider sync.'
