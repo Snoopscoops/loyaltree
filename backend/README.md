@@ -144,3 +144,22 @@ Local verification: frontend `npm run build`, backend `python -m unittest discov
 staging database: two concurrent signups for a one-use coupon, duplicate business
 email/phone claims, agreement-storage rollback, trial expiry, and a confirmed
 payment restoring access. Local tests do not execute Supabase SQL or charge cards.
+
+
+## Business getting-started email
+
+Successful self-service signup queues one short owner setup email after the
+registration response. Active trials include their actual trial duration/end
+in Philippine time and a sign-in link. Unpaid accounts are instructed to finish
+Pay & Activate in the signup tab before signing in. Both versions explain the
+Setup Guide, cashier/team setup, choosing a card and sharing its join QR, and a
+test customer visit. No password, session token, or signed agreement is emailed.
+
+Uses the existing Resend configuration (`RESEND_API_KEY`,
+`TRANSACTIONAL_EMAIL_FROM`, `TRANSACTIONAL_REPLY_TO`) and the existing frontend
+URL fallback. No SQL migration or new secret is required. Deploy the backend
+including `business_welcome_email.py`. Sending is best effort: a mail/template
+failure is logged and never rolls back signup. Background tasks are not a durable
+mail queue; process interruption or provider failure can prevent delivery.
+Local tests mock the provider and never send real emails. Confirm one received
+email after deployment using a new test business and the configured sender.

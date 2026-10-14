@@ -1,4 +1,9 @@
 try:
+    from .business_welcome_email import build_business_getting_started_email
+except ImportError:
+    from business_welcome_email import build_business_getting_started_email
+
+try:
     from .trial_coupons import register_trial_routes, coupon_available, billing_hold, subscription_access_expiry
 except ImportError:
     from trial_coupons import register_trial_routes, coupon_available, billing_hold, subscription_access_expiry
@@ -1283,6 +1288,26 @@ def send_email(to_email: str, subject: str, html_body: str, from_email: Optional
     except Exception as e:
         print(f"EMAIL send error: {e}")
         return False
+
+def send_business_getting_started_email(business: dict, trial: Optional[dict] = None) -> bool:
+    """Best effort owner guide; provider failures cannot undo a valid signup."""
+    sent = False
+    try:
+        subject, body = build_business_getting_started_email(
+            business_name=str(business.get('name') or 'your business'),
+            contact_person=str(business.get('contact_person') or ''),
+            email=str(business.get('email') or '').strip(),
+            site_url=FRONTEND_URL or PUBLIC_JOIN_BASE_URL,
+            support_email=TRANSACTIONAL_REPLY_TO or LOYALTYTREE_LEGAL_EMAIL,
+            trial=trial,
+        )
+        sent = send_email(str(business.get('email') or '').strip(), subject, body,
+                          reply_to=TRANSACTIONAL_REPLY_TO or LOYALTYTREE_LEGAL_EMAIL)
+    except Exception as exc:
+        print(f'BUSINESS setup email warning: {type(exc).__name__}')
+    log_event('business_getting_started_email', 'info' if sent else 'warning',
+              business_slug=business.get('public_id'), sent=bool(sent))
+    return bool(sent)
 
 def loyaltytree_business_cta_url(source: str, business_public_id: str = '') -> str:
     """Tracked link to the "Bring LoyaltyTree to your business" page.
@@ -13927,7 +13952,7 @@ async def signup_agreement_preview(req: SignupAgreementPreviewRequest):
 
 @app.post("/api/v1/register")
 @app.post("/api/v1/auth/register")
-async def register(biz: BusinessCreate, request: Request):
+async def register(biz: BusinessCreate, request: Request, background_tasks: BackgroundTasks):
     if not supabase:
         raise HTTPException(status_code=503, detail="Database not connected")
 
@@ -14193,6 +14218,13 @@ async def register(biz: BusinessCreate, request: Request):
             supabase.table("branches").insert(branch_rows).execute()
         except Exception as e:
             print(f"BRANCH SEED error: {e}")  # best-effort - owner can add branches manually if this fails
+
+    # Run after the successful response; no password or signed agreement is
+    # passed to the mail task. Failed/rolled-back registrations never queue it.
+    background_tasks.add_task(send_business_getting_started_email, {
+        'public_id': public_id, 'name': biz.name,
+        'contact_person': biz.contact_person, 'email': biz.email,
+    }, trial_result)
 
     return {
         "success": True,

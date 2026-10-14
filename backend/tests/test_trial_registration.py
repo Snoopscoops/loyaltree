@@ -10,9 +10,10 @@ import hashlib
 import hmac
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 import unittest
 
-from fastapi import HTTPException
+from fastapi import HTTPException, BackgroundTasks
 
 
 SOURCE = Path(__file__).resolve().parents[1] / 'main.py'
@@ -150,7 +151,7 @@ def registration_namespace(db):
     document = {'title': 'Test agreement', 'snapshot': 'Signed trial terms',
                 'agreement_sha256': 'a' * 64, 'setup_kit_amount': 0}
     env = dict(
-        BusinessCreate=object, Request=object, HTTPException=HTTPException,
+        BusinessCreate=object, Request=object, BackgroundTasks=BackgroundTasks, HTTPException=HTTPException,
         supabase=db, datetime=datetime, timezone=timezone,
         hashlib=hashlib, hmac=hmac,
         normalize_business_type=lambda value: value,
@@ -172,6 +173,7 @@ def registration_namespace(db):
         friendly_db_error=lambda error: str(error),
         SUBSCRIPTION_PLANS={'starter': {'label': 'Starter', 'max_branches': 1}},
         MARKET_CURRENCIES={'PH': 'PHP'}, SUPER_ADMIN_EMAIL='',
+        send_business_getting_started_email=MagicMock(),
         print=lambda *args: None,
     )
     for name in ('LEGAL_PRESENTATION_VERSION', 'BUSINESS_AGREEMENT_VERSION',
@@ -205,7 +207,34 @@ class TrialRegistrationTests(unittest.TestCase):
     def register(self, db, coupon='HALLOWEEN7'):
         env = registration_namespace(db)
         request = SimpleNamespace(headers={'user-agent': 'Registration test'})
-        return asyncio.run(env['register'](signup_payload(coupon), request))
+        self.background_tasks=BackgroundTasks()
+        self.email_sender=env['send_business_getting_started_email']
+        return asyncio.run(env['register'](signup_payload(coupon), request, self.background_tasks))
+
+    def test_getting_started_email_is_queued_once_after_success_without_secrets(self):
+        db=FakeDB()
+        self.register(db)
+        self.assertEqual(len(self.background_tasks.tasks),1)
+        task=self.background_tasks.tasks[0]
+        self.assertIs(task.func,self.email_sender)
+        self.assertEqual(task.args[0]['email'],'owner@example.invalid')
+        self.assertEqual(task.args[1],TRIAL)
+        self.assertNotIn('password',task.args[0])
+        self.assertNotIn('agreement',task.args[0])
+        self.email_sender.assert_not_called()
+        asyncio.run(self.background_tasks())
+        self.email_sender.assert_called_once()
+        self.assertEqual(db.businesses[1]['status'],'ACTIVE')
+
+    def test_failed_agreement_does_not_queue_any_owner_email(self):
+        with self.assertRaises(HTTPException):self.register(FakeDB(fail_agreement=True))
+        self.assertEqual(self.background_tasks.tasks,[])
+        self.email_sender.assert_not_called()
+
+    def test_coupon_failure_does_not_queue_any_owner_email(self):
+        with self.assertRaises(HTTPException):self.register(FakeDB(fail_rpc=True))
+        self.assertEqual(self.background_tasks.tasks,[])
+        self.email_sender.assert_not_called()
 
     def test_signed_agreement_is_persisted_before_trial_activation(self):
         db = FakeDB()
