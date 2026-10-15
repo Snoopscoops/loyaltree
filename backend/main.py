@@ -48155,7 +48155,32 @@ def _manual_options(device, session):
     memberships = _pos_companion_program_rows(source, device['business_id'])
     programs = [_pos_companion_program_payload(ctx['business'], member, source) for member in memberships]
     config = _pos_redemption_config(ctx['integration'])
-    return ctx, memberships, programs, redemption_code_options(programs, config), config
+    
+    # Build options from card editing points_prizes (preferred source)
+    options = []
+    for program in programs:
+        prizes = program.get('points_prizes') or []
+        points_balance = int(program.get('points_balance') or 0)
+        for prize in prizes:
+            cost = int(prize.get('points_cost') or 0)
+            if cost > 0 and points_balance >= cost:
+                options.append({
+                    'id': prize.get('id') or f"prize_{cost}",
+                    'kind': 'points',
+                    'name': prize.get('name') or f"{cost} Points Reward",
+                    'program_name': program.get('program_name') or 'Loyalty',
+                    'value_mode': 'fixed',
+                    'value': str(cost),
+                    'requires_item_amount': False,
+                    'customer_public_id': program.get('customer_public_id'),
+                })
+    
+    # Fallback to POS redemption_options if no points_prizes available
+    if not options:
+        options = redemption_code_options(programs, config)
+    
+    return ctx, memberships, programs, options, config
+
 
 
 def _manual_fetch(code, ctx):
