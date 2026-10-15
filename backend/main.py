@@ -1,4 +1,9 @@
 try:
+    from .storehub_redemption_codes import RedemptionCodeService, RedemptionCodeError, build_options as redemption_code_options, quote as redemption_code_quote, public_code, periodic_redemption_codes
+except ImportError:
+    from storehub_redemption_codes import RedemptionCodeService, RedemptionCodeError, build_options as redemption_code_options, quote as redemption_code_quote, public_code, periodic_redemption_codes
+
+try:
     from .storehub_offline_sales import OfflineSalesService, OfflineSaleError, public_event as offline_sale_public, periodic_offline_sales, matching_sales as offline_sale_matches
 except ImportError:
     from storehub_offline_sales import OfflineSalesService, OfflineSaleError, public_event as offline_sale_public, periodic_offline_sales, matching_sales as offline_sale_matches
@@ -13103,7 +13108,7 @@ def get_membership_benefit_statuses(business: dict, customer: dict, program: dic
         try:
             q = (
                 supabase.table('membership_benefit_redemptions')
-                .select('quantity')
+                .select('quantity,pos_voided_at')
                 .eq('business_id', business.get('id'))
                 .eq('customer_id', customer.get('id'))
                 .eq('benefit_id', benefit.get('id'))
@@ -13113,7 +13118,7 @@ def get_membership_benefit_statuses(business: dict, customer: dict, program: dic
             if end_utc:
                 q = q.lt('redeemed_at', end_utc.isoformat())
             rows = q.execute().data or []
-            used = sum(max(1, int(r.get('quantity') or 1)) for r in rows)
+            used = sum(max(1, int(r.get('quantity') or 1)) for r in rows if not r.get('pos_voided_at'))
         except Exception as e:
             print(f'MEMBERSHIP BENEFIT STATUS error: {e}')
         limit = benefit.get('usage_limit')
@@ -13558,7 +13563,7 @@ async def stop_monitoring():
     if task:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-    for name in ('wallet_worker', 'apple_release_task', 'storehub_void_worker', 'storehub_offline_worker'):
+    for name in ('wallet_worker', 'apple_release_task', 'storehub_void_worker', 'storehub_offline_worker', 'redemption_code_worker'):
         worker = getattr(app.state, name, None)
         if worker:
             worker.cancel()
@@ -26741,13 +26746,13 @@ def get_employee_benefit_statuses(business: dict, customer: dict, program: dict)
         used = 0
         start_utc, end_utc, next_available_at = _benefit_window(benefit, business.get('id'), customer.get('id'), customer)
         try:
-            q = (supabase.table('membership_benefit_redemptions').select('quantity')
+            q = (supabase.table('membership_benefit_redemptions').select('quantity,pos_voided_at')
                  .eq('business_id', business.get('id')).eq('customer_id', customer.get('id'))
                  .eq('benefit_id', benefit.get('id')))
             if start_utc: q = q.gte('redeemed_at', start_utc.isoformat())
             if end_utc: q = q.lt('redeemed_at', end_utc.isoformat())
             rows = q.execute().data or []
-            used = sum(max(1, int(r.get('quantity') or 1)) for r in rows)
+            used = sum(max(1, int(r.get('quantity') or 1)) for r in rows if not r.get('pos_voided_at'))
         except Exception as exc:
             print(f'EMPLOYEE BENEFIT STATUS error: {exc}')
         limit = benefit.get('usage_limit')
@@ -30008,11 +30013,19 @@ async def redeem_points_prize(public_id: str, req: PointsRedeemRequest, backgrou
     if audit_row and audit_row.get('_duplicate_response'): return audit_row['_duplicate_response']
 
     try:
-        new_balance = current_balance - prize_cost
-        supabase.table("customers").update({
-            'points_balance': new_balance,
-            'updated_at': datetime.utcnow().isoformat(),
-        }).eq("id", customer.get("id")).execute()
+        operation_id = (str(uuid.uuid5(uuid.NAMESPACE_URL, f'loyaltree:points-prize:{business["id"]}:{customer["id"]}:{x_idempotency_key}'))
+                        if x_idempotency_key else str((audit_row or {}).get('transaction_id') or uuid.uuid4()))
+        try:
+            new_balance = supabase.rpc('pos_spend_available_prize_points', {
+                'p_business_id':business['id'], 'p_customer_id':customer['id'],
+                'p_points':int(prize_cost), 'p_operation_id':operation_id,
+            }).execute().data
+        except Exception as exc:
+            if 'not enough available points' in str(exc).lower():
+                raise HTTPException(status_code=409, detail='Points reserved for a POS reward cannot be spent again. Finish or cancel that checkout first.')
+            raise
+        if not isinstance(new_balance, int):
+            raise RuntimeError('Points redemption did not return a balance. Refresh before retrying.')
         customer['points_balance'] = new_balance
         background_tasks.add_task(
             sync_loyalty_wallets_background,
@@ -30026,6 +30039,8 @@ async def redeem_points_prize(public_id: str, req: PointsRedeemRequest, backgrou
             business.get('id'), customer.get('id'), redeeming_staff_id, redeeming_branch_id,
             prize_name=prize.get('name'), points_spent=prize_cost,
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -40093,6 +40108,9 @@ async def wallet_queue_worker():
 @app.on_event('startup')
 async def start_wallet_queue_worker():
     app.state.wallet_worker = asyncio.create_task(wallet_queue_worker())
+    if _env_bool('STOREHUB_REDEMPTION_CODES_ENABLED', True):
+        app.state.redemption_code_worker = asyncio.create_task(periodic_redemption_codes(
+            _manual_redemption_service, 30, _log_storehub_void_sync))
     if STOREHUB_OFFLINE_SALES_ENABLED:
         app.state.storehub_offline_worker = asyncio.create_task(periodic_offline_sales(
             _storehub_offline_sales_service, STOREHUB_OFFLINE_SALES_SECONDS, _log_storehub_void_sync,
@@ -44572,6 +44590,7 @@ def _pos_companion_program_payload(business: dict, membership: dict, source_cust
                 'min_purchase_amount': float(c.get('min_purchase_amount') or 0),
                 'stacking_allowed': c.get('stacking_allowed') is not False,
                 'source': c.get('source'),
+                'birthday_verification_required': bool(c.get('birthday_verification_required')),
             }
             for c in safe_get_active_coupons(membership.get('id'))
         ],
@@ -44829,6 +44848,7 @@ def pos_companion_coupon_release(
     row = _pos_coupon_reservation_row(reservation_id)
     if not row or row.get('business_id') != device.get('business_id') or str(row.get('integration_id')) != str(device.get('integration_id')):
         raise HTTPException(status_code=404, detail='Reward reservation not found for this device connection.')
+    _manual_assert_legacy_reservation(row['id'])
     try:
         rows = supabase.rpc('pos_release_coupon', {'p_reservation_id': row.get('id'), 'p_reason': req.reason or 'checkout_cancelled'}).execute().data or []
     except Exception as exc:
@@ -44847,6 +44867,7 @@ def pos_companion_coupon_commit(
     row = _pos_coupon_reservation_row(reservation_id)
     if not row or row.get('business_id') != device.get('business_id') or str(row.get('integration_id')) != str(device.get('integration_id')):
         raise HTTPException(status_code=404, detail='Reward reservation not found for this device connection.')
+    _manual_assert_legacy_reservation(row['id'])
     if row.get('status') == 'committed':
         return {'ok': True, 'duplicate': True, 'reservation': row, 'message': 'Reward was already committed.'}
     if row.get('status') != 'reserved':
@@ -44950,6 +44971,7 @@ def pos_companion_benefit_release(
     row = _pos_benefit_reservation_row(reservation_id)
     if not row or row.get('business_id') != device.get('business_id') or str(row.get('integration_id')) != str(device.get('integration_id')):
         raise HTTPException(status_code=404, detail='Employee benefit reservation not found for this device connection.')
+    _manual_assert_legacy_reservation(row['id'])
     try:
         result = supabase.rpc('pos_release_benefit', {'p_reservation_id': row.get('id'), 'p_reason': req.reason or 'checkout_cancelled'}).execute().data or []
     except Exception as exc:
@@ -44969,6 +44991,7 @@ async def pos_companion_benefit_commit(
     row = _pos_benefit_reservation_row(reservation_id)
     if not row or row.get('business_id') != device.get('business_id') or str(row.get('integration_id')) != str(device.get('integration_id')):
         raise HTTPException(status_code=404, detail='Employee benefit reservation not found for this device connection.')
+    _manual_assert_legacy_reservation(row['id'])
     if row.get('status') == 'committed':
         return {'ok': True, 'duplicate': True, 'reservation': row, 'message': 'Employee benefit was already committed.'}
     if row.get('status') != 'reserved':
@@ -45038,6 +45061,11 @@ def _companion_session_public(row: Optional[dict]) -> Optional[dict]:
         return None
 
     result = row.get('result') if isinstance(row.get('result'), dict) else {}
+    manual_code = None
+    if result.get('manual_redemption_code_id'):
+        manual_code = _manual_code_row(str(result['manual_redemption_code_id']))
+        result = {**result, 'manual_redemption': public_code(manual_code)}
+    manual_active = bool(manual_code and manual_code.get('status') in ('reserved', 'confirmed', 'needs_review'))
     pending_redemption = None
     completed_redemption = None
 
@@ -45093,7 +45121,7 @@ def _companion_session_public(row: Optional[dict]) -> Optional[dict]:
         'result': result,
         'pending_redemption': pending_redemption,
         'completed_redemption': completed_redemption,
-        'offline_save_blocked': bool(pending_redemption or result.get('pending_benefit_reservation_id') or result.get('pending_coupon_reservation_id')),
+        'offline_save_blocked': bool(manual_active or pending_redemption or result.get('pending_benefit_reservation_id') or result.get('pending_coupon_reservation_id')),
         'offline_save_blocked_reason': 'Resolve the pending redemption or reward online first.' if (pending_redemption or result.get('pending_benefit_reservation_id') or result.get('pending_coupon_reservation_id')) else None,
         'error_message': row.get('error_message'),
         'completed_at': row.get('completed_at'),
@@ -45113,6 +45141,8 @@ def _companion_active_session(device: dict, expire_stale: bool = True) -> Option
     except Exception as exc:
         raise _pos_schema_error(exc)
     row = rows[0] if rows else None
+    if row and (row.get('result') or {}).get('manual_redemption_code_id'):
+        return row
     if row and expire_stale:
         expires = _pos_parse_timestamp(row.get('expires_at'))
         if expires and expires <= datetime.now(timezone.utc):
@@ -46264,6 +46294,10 @@ def _companion_pending_offline_receipt_ids(device: dict, session: dict, transact
 
 
 def _companion_session_candidates(device: dict, session: dict, transactions: list) -> list:
+    if (session.get('result') or {}).get('manual_redemption_code_id'):
+        code = _manual_code_row(str(session['result']['manual_redemption_code_id']))
+        if code and code.get('status') in ('reserved', 'confirmed', 'needs_review'):
+            return []
     device.update(_pos_current_register_device(device))
     scanned_at = _pos_parse_timestamp(session.get('scanned_at')) or datetime.now(timezone.utc)
     expires_at = _pos_parse_timestamp(session.get('expires_at')) or (scanned_at + timedelta(seconds=POS_COMPANION_SESSION_TTL_SECONDS))
@@ -46389,9 +46423,15 @@ async def _companion_process_transaction(
     background_tasks: BackgroundTasks,
     allow_test_mode: bool = False,
     persist_session: bool = True,
+    manual_redemption_code_id: Optional[str] = None,
 ) -> dict:
     if not tx:
         raise HTTPException(status_code=404, detail='POS transaction not found.')
+    code_id = (session.get('result') or {}).get('manual_redemption_code_id')
+    if code_id and str(code_id) != str(manual_redemption_code_id or ''):
+        code = _manual_code_row(str(code_id))
+        if code and code.get('status') in ('reserved', 'confirmed', 'needs_review'):
+            raise HTTPException(status_code=409, detail='This checkout has a reserved reward code. Please wait for receipt verification.')
     # Re-check immediately before any loyalty mutation or duplicate acknowledgement:
     # a register can be reassigned after polling selected a receipt.
     _pos_assert_transaction_register(device, tx)
@@ -46871,6 +46911,12 @@ def companion_session_start(
     x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token'),
 ):
     device = _require_pos_device(x_lt_device_token)
+    prior = _companion_active_session(device, expire_stale=False)
+    prior_code_id = ((prior or {}).get('result') or {}).get('manual_redemption_code_id')
+    if prior_code_id:
+        prior_code = _manual_code_row(str(prior_code_id))
+        if prior_code and prior_code.get('status') in ('reserved','confirmed','needs_review'):
+            raise HTTPException(status_code=409, detail='Finish or cancel the current reward code before scanning the next customer.')
     lookup = pos_companion_customer_lookup(POSCompanionCustomerLookupRequest(scan_value=req.scan_value), x_lt_device_token)
     source_customer = safe_get_customer(lookup.get('source_membership_customer_public_id'))
     if not source_customer:
@@ -46918,7 +46964,7 @@ def companion_session_start(
 @app.get('/api/v1/pos-companion/session/current')
 def companion_session_current(x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token')):
     device = _require_pos_device(x_lt_device_token)
-    session = _companion_active_session(device)
+    session = _companion_active_session(device) or _manual_last_session(device)
     return {'ok': True, 'session': _companion_session_public(session), 'device_id': str(device.get('id'))}
 
 
@@ -46987,7 +47033,14 @@ async def companion_session_poll(
     device = _require_pos_device(x_lt_device_token)
     session = _companion_active_session(device)
     if not session:
+        last = _manual_last_session(device)
+        if last:
+            return {'ok': True, 'session': _companion_session_public(last), 'state': last.get('status'), 'candidates': []}
         raise HTTPException(status_code=404, detail='No active Companion checkout. Scan a customer first.')
+    if (session.get('result') or {}).get('manual_redemption_code_id'):
+        code = _manual_code_row(str(session['result']['manual_redemption_code_id']))
+        if code and code.get('status') in ('reserved','confirmed','needs_review','redeemed','reversed'):
+            return {'ok': True, 'session': _companion_session_public(session), 'state': session.get('status'), 'candidates': []}
     provider = str(device.get('provider') or '').lower()
     integration = _get_pos_integration(device.get('business_id'), provider)
     if not integration:
@@ -47245,6 +47298,13 @@ def companion_session_cancel(x_lt_device_token: str = Header(default='', alias='
     session = _companion_active_session(device, expire_stale=False)
     if not session:
         return {'ok': True, 'session': None, 'message': 'No active checkout.'}
+    code_id = (session.get('result') or {}).get('manual_redemption_code_id')
+    if code_id:
+        code = _manual_code_row(str(code_id))
+        if code and code.get('status') in ('reserved','confirmed','needs_review'):
+            if code.get('confirmed_at'):
+                raise HTTPException(status_code=409, detail='The discount was confirmed. Wait for verification or void the StoreHub sale.')
+            _manual_code_rpc('pos_cancel_redemption_code', {'p_device_id':str(device['id']), 'p_id':str(code_id)})
     patch = {'status': 'cancelled', 'error_message': 'Checkout cancelled by cashier.', 'updated_at': datetime.now(timezone.utc).isoformat()}
     try:
         rows = supabase.table('pos_companion_sessions').update(patch).eq('id', session.get('id')).execute().data or []
@@ -47795,6 +47855,11 @@ def _offline_sale_context(device: dict, event: dict) -> dict:
         if session_rows:
             session = session_rows[0]
             result = session.get('result') if isinstance(session.get('result'), dict) else {}
+            code_id = result.get('manual_redemption_code_id')
+            if code_id:
+                code = _manual_code_row(str(code_id))
+                if code and code.get('status') in ('reserved','confirmed','needs_review','redeemed'):
+                    raise OfflineSaleError('This checkout has a reward code. Resolve it online before saving offline earning.', review=True)
             reservation_id = result.get('redemption_reservation_id')
             if reservation_id:
                 reservation = _pos_redemption_row(str(reservation_id))
@@ -47858,7 +47923,7 @@ async def _offline_sale_process(event: dict, context: dict, customer: dict, tx: 
     result = await _companion_process_transaction(context['device'], session, tx, tasks, persist_session=False)
     fresh = safe_get_customer(customer['public_id']) or customer
     queued = enqueue_wallet_sync(fresh, context['business'], 'offline_storehub_sale_verified')
-    if queued.get('status') == 'queue_error':
+    if queued.get('status') != 'queued' or not queued.get('job_id'):
         raise RuntimeError('Rewards were processed; the Wallet refresh will retry with this saved sale.')
     # Durable Wallet work is already saved. Avoid external calls holding the
     # receipt lease. These earning tasks only refresh Wallet providers; the
@@ -47928,6 +47993,244 @@ def pos_companion_offline_sales_receipt(event_id: str, req: POSOfflineSaleReceip
     except Exception as exc:
         raise HTTPException(status_code=409, detail=friendly_db_error(exc))
     return {'ok': True, 'event': offline_sale_public(row)}
+
+
+# Manual reward codes use the existing points/coupon/benefit ledgers.
+class POSManualRewardReserve(BaseModel):
+    birthday_verified: bool = False
+    option_id: str = Field(min_length=1, max_length=1000)
+    request_id: str = Field(min_length=36, max_length=36)
+    gross_amount: Decimal = Field(gt=0, le=1000000000)
+    item_amount: Optional[Decimal] = Field(default=None, ge=0, le=1000000000)
+
+
+class POSManualRewardConfirm(BaseModel):
+    receipt_reference: str = Field(default='', max_length=200)
+
+
+def _manual_code_rpc(name, params):
+    data = supabase.rpc(name, params).execute().data
+    if name == 'pos_claim_redemption_codes':
+        return data or []
+    return (data[0] if data else {}) if isinstance(data, list) else (data or {})
+
+
+def _manual_code_row(identifier):
+    rows = supabase.table('pos_redemption_codes').select('*').eq('id', identifier).limit(1).execute().data or []
+    return rows[0] if rows else None
+
+
+def _manual_assert_legacy_reservation(reservation_id):
+    rows = (supabase.table('pos_redemption_codes').select('id,status').eq('reservation_id', reservation_id)
+            .in_('status',['reserved','confirmed','needs_review','redeemed']).limit(1).execute().data or [])
+    if rows:
+        raise HTTPException(status_code=409, detail='Use the reward-code screen to finish or cancel this checkout. Its receipt must be verified first.')
+
+
+def _manual_last_session(device):
+    rows = supabase.table('pos_companion_sessions').select('*').eq('device_id', device['id']).order('created_at', desc=True).limit(1).execute().data or []
+    row = rows[0] if rows else None
+    return row if row and (row.get('result') or {}).get('manual_redemption_code_id') else None
+
+
+def _manual_code_context(code):
+    rows = supabase.table('pos_devices').select('*').eq('id', code['device_id']).eq('status', 'active').limit(1).execute().data or []
+    if not rows:
+        raise RedemptionCodeError('This POS device is inactive. Ask the owner to review the reward.', review=True)
+    device = _pos_current_register_device(rows[0])
+    business = _pos_business_by_id(device['business_id'])
+    if not business or business.get('status') != 'active' or billing_hold(business) or not business_has_plan_feature(business, 'pos_integration'):
+        raise RedemptionCodeError('Business POS access needs owner review.', review=True)
+    integration = _get_pos_integration(device['business_id'], 'storehub')
+    mapping = _companion_mock_mapping(device)
+    if (device.get('provider') != 'storehub' or not integration
+            or integration.get('mode') != 'live' or integration.get('status') != 'live'
+            or str(integration['id']) != str(device['integration_id'])
+            or not mapping or mapping.get('is_active') is False or not _pos_device_register_id(device)):
+        raise RedemptionCodeError('Reward codes require a live StoreHub connection and assigned Register ID.', review=True)
+    for key, current in (('business_id', device['business_id']), ('branch_id', device['branch_id']),
+            ('integration_id', integration['id']), ('external_branch_id', mapping.get('external_branch_id')),
+            ('external_terminal_id', _pos_device_register_id(device))):
+        if code.get(key) is not None and str(code[key]) != str(current):
+            raise RedemptionCodeError('This reward belongs to an earlier branch or register assignment.', review=True)
+    session_rows = supabase.table('pos_companion_sessions').select('*').eq('id', code['session_id']).eq('device_id', device['id']).limit(1).execute().data or []
+    if not session_rows:
+        raise RedemptionCodeError('The original checkout needs owner review.', review=True)
+    return {'device': device, 'business': business, 'integration': integration, 'mapping': mapping, 'session': session_rows[0], 'code':code}
+
+
+def _manual_options(device, session):
+    ctx = _manual_code_context({'device_id': device['id'], 'session_id': session['id']})
+    source = safe_get_customer(session.get('source_customer_public_id') or session.get('customer_public_id'))
+    if not source or str(source.get('business_id')) != str(device['business_id']):
+        raise HTTPException(status_code=404, detail='The scanned member is unavailable.')
+    memberships = _pos_companion_program_rows(source, device['business_id'])
+    programs = [_pos_companion_program_payload(ctx['business'], member, source) for member in memberships]
+    config = _pos_redemption_config(ctx['integration'])
+    return ctx, memberships, programs, redemption_code_options(programs, config), config
+
+
+def _manual_fetch(code, ctx):
+    start = _pos_parse_timestamp(code['scanned_at']) - timedelta(seconds=10)
+    if datetime.now(timezone.utc)-start > timedelta(days=30):
+        raise RedemptionCodeError('This receipt is outside the 30-day automatic lookup window.', review=True)
+    if STOREHUB_TX_PROBE_SLEEP_SECONDS:
+        time.sleep(STOREHUB_TX_PROBE_SLEEP_SECONDS)
+    _, rows, meta = _storehub_fetch_recent_transaction_rows(ctx['integration'], start=start,
+        end=datetime.now(timezone.utc), external_branch_id=code['external_branch_id'],
+        deep_probe=False, use_paging_hint=False)
+    normalized = []
+    for raw in rows:
+        item = _companion_normalize_provider_transaction('storehub', raw)
+        if item and raw.get('refId') and str(raw.get('transactionType') or '').lower() == 'sale':
+            item['currency'] = str(raw.get('currency') or code['currency']).upper()
+            normalized.append(item)
+    return normalized, len(rows)<STOREHUB_TX_PAGE_SIZE and not (meta or {}).get('stale_capped_page')
+
+
+def _manual_materialize(row, ctx):
+    code = ctx['code']
+    if row.get('transaction_type') == 'void' and code.get('matched_transaction_id'):
+        return _manual_code_rpc('pos_record_code_void', {'p_id':str(code['id']),
+            'p_lease':str(code['lease_token']), 'p_external_id':str(row['external_transaction_id']),
+            'p_raw':row['raw_payload']})
+    return _companion_upsert_bridge_transaction(ctx['device'],row,ctx['mapping'])
+
+
+def _manual_release(code, ctx):
+    function = {'points':'pos_release_points_redemption', 'coupon':'pos_release_coupon', 'benefit':'pos_release_benefit'}[code['kind']]
+    _pos_rpc_first(function, {'p_reservation_id': code['reservation_id'], 'p_reason':'unused_code_expired'})
+
+
+def _manual_abort(code, ctx, tx):
+    return _manual_code_rpc('pos_abort_voided_redemption_code', {'p_id':str(code['id']),
+        'p_lease':str(code['lease_token']), 'p_transaction_id':str(tx['id'])})
+
+
+def _manual_reverse(code, ctx):
+    return _manual_code_rpc('pos_reverse_redemption_code', {'p_id':str(code['id']), 'p_lease':str(code['lease_token'])})
+
+
+async def _manual_process(code, ctx, tx):
+    tasks = BackgroundTasks()
+    customer_rows = supabase.table('customers').select('*').eq('id', code['earning_customer_id']).limit(1).execute().data or []
+    if not customer_rows:
+        raise RedemptionCodeError('The earning membership is unavailable.', review=True)
+    earning = customer_rows[0]
+    result = dict(ctx['session'].get('result') or {})
+    committed = _manual_code_rpc('pos_commit_code_reward', {'p_id':str(code['id']), 'p_lease':str(code['lease_token'])})
+    if committed.get('status') != 'committed':
+        raise RedemptionCodeError('The reward could not be committed.', review=True)
+    if code['kind']=='points':
+        result['redemption_reservation_id'] = code['reservation_id']
+    session = {**ctx['session'], 'customer_id':earning['id'], 'customer_public_id':earning['public_id'], 'result':result}
+    processed = await _companion_process_transaction(ctx['device'], session, tx, tasks,
+        persist_session=False, manual_redemption_code_id=str(code['id']))
+    customers = {earning['public_id']:earning}
+    if code['payload']['customer_public_id'] not in customers:
+        selected = safe_get_customer(code['payload']['customer_public_id'])
+        if selected:
+            customers[selected['public_id']] = selected
+    for customer in customers.values():
+        fresh = safe_get_customer(customer['public_id']) or customer
+        queued = enqueue_wallet_sync(fresh, ctx['business'], 'manual_storehub_reward_verified')
+        if queued.get('status') != 'queued' or not queued.get('job_id'):
+            raise RuntimeError('Reward was processed. Its Wallet update will retry.')
+    return {**(processed.get('loyalty_result') or {}), 'manual_reward_kind':code['kind'],
+        'manual_reward_name':code['name'], 'manual_redemption_code':code['code']}
+
+
+def _manual_redemption_service():
+    return RedemptionCodeService(rpc=_manual_code_rpc, context=_manual_code_context, fetch=_manual_fetch,
+        materialize=_manual_materialize,
+        process=_manual_process, release=_manual_release, abort=_manual_abort, reverse=_manual_reverse, log=_log_storehub_void_sync)
+
+
+@app.get('/api/v1/companion/redemptions/options')
+@app.get('/api/v1/pos-companion/redemptions/options')
+def companion_redemption_options(x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token')):
+    device = _require_pos_device(x_lt_device_token)
+    session = _companion_active_session(device)
+    if not session:
+        raise HTTPException(status_code=409, detail='Scan a member before choosing a reward.')
+    ctx, _, _, options, _ = _manual_options(device, session)
+    return {'options': options, 'currency': business_currency(ctx['business'])}
+
+
+@app.post('/api/v1/companion/redemptions/reserve')
+@app.post('/api/v1/pos-companion/redemptions/reserve')
+def companion_redemption_reserve(req: POSManualRewardReserve, x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token')):
+    device = _require_pos_device(x_lt_device_token)
+    session = _companion_active_session(device)
+    if not session:
+        raise HTTPException(status_code=409, detail='Scan the member before completing the StoreHub sale.')
+    ctx, memberships, programs, options, config = _manual_options(device, session)
+    option = next((item for item in options if item['id']==req.option_id), None)
+    if not option:
+        raise HTTPException(status_code=409, detail='This reward is unavailable. Refresh the choices.')
+    try:
+        request_id = str(uuid.UUID(req.request_id))
+        amounts = redemption_code_quote(option, req.gross_amount, req.item_amount, currency=business_currency(ctx['business']))
+    except (ValueError, RedemptionCodeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    customer = next(member for member in memberships if member['public_id']==option['customer_public_id'])
+    program = safe_get_customer_program(customer, device['business_id']) or {}
+    request_hash = hashlib.sha256(json.dumps({'session':str(session['id']), 'option':req.option_id,
+        'gross':amounts['gross_amount'],
+        'item':str(req.item_amount) if req.item_amount is not None else None}, sort_keys=True).encode()).hexdigest()
+    payload = {**option, **amounts, 'request_hash':request_hash,
+        'customer_id':customer['id'], 'program_id':program.get('id'),
+        'earning_customer_id':customer['id'] if option['kind']=='points' else session['customer_id'],
+        'external_branch_id':ctx['mapping']['external_branch_id'], 'external_terminal_id':_pos_device_register_id(device),
+        'currency':business_currency(ctx['business']), 'hold_minutes':config['hold_minutes'],
+        'value_per_point':config['value_per_point']}
+    if option['kind']=='coupon':
+        coupon = next(c for c in safe_get_active_coupons(customer['id']) if c['public_id']==option['reward_id'])
+        if str(coupon.get('source') or '').lower() == 'campaign':
+            raise HTTPException(status_code=409, detail='Use the campaign coupon redemption screen for this promotion and its branch rules.')
+        if coupon.get('birthday_verification_required') and not req.birthday_verified:
+            raise HTTPException(status_code=400, detail='Verify the customer birthday/ID before generating this reward code.')
+        payload.update(coupon_id=coupon['id'], birthday_verified=bool(req.birthday_verified),
+            loyalty_date=_loyalty_today().isoformat())
+    elif option['kind']=='benefit':
+        legacy = str(program.get('card_type') or '').lower()=='employee'
+        benefits = get_employee_benefit_statuses(ctx['business'],customer,program) if legacy else get_membership_benefit_statuses(ctx['business'],customer,program)
+        benefit = next(b for b in benefits if b['id']==option['reward_id'] and b.get('available'))
+        start,end,_ = _benefit_window(benefit, device['business_id'], customer['id'], customer)
+        payload.update(benefit_type=benefit['benefit_type'], benefit_value=benefit.get('value'),
+            usage_limit=benefit.get('usage_limit'), window_start=start.isoformat() if start else None,
+            window_end=end.isoformat() if end else None)
+    try:
+        code = _manual_code_rpc('pos_issue_redemption_code', {'p_device_id':str(device['id']),
+            'p_session_id':str(session['id']), 'p_request_id':request_id, 'p_payload':payload})
+    except Exception as exc:
+        raise _pos_schema_error(exc) if 'pgrst202' in str(exc).lower() else HTTPException(status_code=409, detail=friendly_db_error(exc))
+    fresh = _manual_last_session(device)
+    return {'code':public_code(code), 'session':_companion_session_public(fresh)}
+
+
+@app.post('/api/v1/companion/redemptions/{code_id}/confirm')
+@app.post('/api/v1/pos-companion/redemptions/{code_id}/confirm')
+def companion_redemption_confirm(code_id: str, req: POSManualRewardConfirm, x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token')):
+    device = _require_pos_device(x_lt_device_token)
+    try:
+        code = _manual_code_rpc('pos_confirm_redemption_code', {'p_device_id':str(device['id']),
+            'p_id':code_id, 'p_receipt_reference':req.receipt_reference.strip()})
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=friendly_db_error(exc))
+    return {'code':public_code(code), 'session':_companion_session_public(_manual_last_session(device))}
+
+
+@app.post('/api/v1/companion/redemptions/{code_id}/cancel')
+@app.post('/api/v1/pos-companion/redemptions/{code_id}/cancel')
+def companion_redemption_cancel(code_id: str, x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token')):
+    device = _require_pos_device(x_lt_device_token)
+    try:
+        code = _manual_code_rpc('pos_cancel_redemption_code', {'p_device_id':str(device['id']), 'p_id':code_id})
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=friendly_db_error(exc))
+    return {'code':public_code(code), 'session':_companion_session_public(_companion_active_session(device) or _manual_last_session(device))}
+
 
 
 # =============================================================================
