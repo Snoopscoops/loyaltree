@@ -196,6 +196,11 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
   const [companionLoading, setCompanionLoading] = useState(false)
   const [companionGenerating, setCompanionGenerating] = useState(false)
   const [companionCode, setCompanionCode] = useState(null)
+  const [companionPairingMode, setCompanionPairingMode] = useState('new')
+  const [companionReactivateDeviceId, setCompanionReactivateDeviceId] = useState('')
+  const [companionReactivateConfirmed, setCompanionReactivateConfirmed] = useState(false)
+  const [companionCopyStatus, setCompanionCopyStatus] = useState('')
+  const companionActivationRef = useRef(null)
   const [companionError, setCompanionError] = useState('')
   const [companionMapProvider, setCompanionMapProvider] = useState('')
   const [companionMapLocation, setCompanionMapLocation] = useState('')
@@ -343,24 +348,55 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
     } finally { setCompanionRegisterSavingDevice('') }
   }
 
+  const openCompanionActivation = (device = null) => {
+    setCompanionPairingMode(device ? 'reactivate' : 'new')
+    setCompanionReactivateDeviceId(device ? String(device.id || device.public_id) : '')
+    setCompanionReactivateConfirmed(false)
+    setCompanionError('')
+    companionActivationRef.current?.scrollIntoView({behavior:'smooth',block:'start'})
+  }
+
+  const copyCompanionCode = async () => {
+    try {
+      await navigator.clipboard.writeText(companionCode.activation_code)
+      setCompanionCopyStatus('Activation code copied.')
+    } catch (_) { setCompanionCopyStatus('Select the code above and copy it manually.') }
+  }
+
   const generateCompanionCode = async () => {
-    if (companionRegisterRequired && !companionRegisterId.trim()) {
-      setCompanionError('Enter the StoreHub Register ID for this POS machine.'); return
+    if (!companionSetup?.allowed || !companionSetup?.plan_ok || !companionSetup?.mapping_ready) {
+      setCompanionError('Map your assigned branch before generating an activation code.'); return
+    }
+    if (companionMappingDirty) {
+      setCompanionError('Save your POS location mapping first, or select the current saved location.'); return
+    }
+    if (companionPairingMode === 'reactivate' && (!companionReactivateDevice || !companionReactivateConfirmed)) {
+      setCompanionError('Select the existing POS and confirm replacing its Companion login.'); return
+    }
+    if (companionRegisterRequired && !companionActivationRegisterId) {
+      setCompanionError('Save the StoreHub Register ID for this POS machine first.'); return
     }
     if (companionNewRegisterConflict) {
-      setCompanionError('This Register ID is already assigned to another active POS in your branch.'); return
+      setCompanionError('This Register ID belongs to another active POS. Select Reactivate existing POS for that machine.'); return
     }
     setCompanionGenerating(true)
     setCompanionError('')
+    setCompanionCopyStatus('')
     try {
       const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/manager/companion-activation-code`, {
         method:'POST', headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({device_name:companionDeviceName.trim() || null, external_terminal_id:companionSetup?.provider === 'storehub' ? companionRegisterId.trim() || null : null}),
+        body:JSON.stringify({
+          device_name:companionPairingMode === 'reactivate' ? companionReactivateDevice.display_name || null : companionDeviceName.trim() || null,
+          external_terminal_id:companionSetup.provider === 'storehub' ? companionActivationRegisterId || null : null,
+          ...(companionPairingMode === 'reactivate' ? {reactivate_device_id:companionReactivateDeviceId} : {}),
+        }),
       })
       const body = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(body.detail || 'Could not generate activation code')
+      if (!res.ok) throw new Error(typeof body.detail === 'string' ? body.detail : 'Could not generate activation code')
+      if (!body.activation_code) throw new Error('The server did not return an activation code. Refresh setup and try again.')
       setCompanionCode(body)
-      await loadCompanionSetup()
+      // Code generation does not change the device list. Keep the returned code
+      // visible; a setup refresh must not reset an unrelated mapping draft.
     } catch (err) {
       setCompanionError(err.message || 'Could not generate activation code')
     } finally {
@@ -368,9 +404,9 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
     }
   }
 
-  useEffect(() => { setCompanionCode(null); setCompanionError('') }, [companionDeviceName, companionRegisterId, companionMapProvider, companionMapLocation, user?.business_slug])
+  useEffect(() => { setCompanionCode(null); setCompanionCopyStatus(''); setCompanionError('') }, [companionDeviceName, companionRegisterId, companionPairingMode, companionReactivateDeviceId, user?.business_slug])
 
-  useEffect(() => { setCompanionRegisterId(''); setCompanionRegisterDiscovery(null); setCompanionCode(null); setCompanionError('') }, [companionSetup?.branch?.public_id, companionSetup?.provider, companionSetup?.external_branch_id])
+  useEffect(() => { setCompanionRegisterId(''); setCompanionRegisterDiscovery(null); setCompanionCode(null); setCompanionReactivateDeviceId(''); setCompanionReactivateConfirmed(false); setCompanionPairingMode('new'); setCompanionError('') }, [companionSetup?.branch?.public_id, companionSetup?.provider, companionSetup?.external_branch_id, companionSetup?.integration_id, companionSetup?.mapping_id])
 
   useEffect(() => {
     loadManagerDashboard('all')
@@ -412,7 +448,18 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
     && String(companionRegisterDiscovery?.external_branch_id || '') === String(companionSetup?.external_branch_id || '')
     ? companionRegisterDiscovery.seen_register_ids || [] : []
   const companionRegisterSuggestions = seenRegisterIds(companionRegisterDevices, companionDiscoveredRegisters)
-  const companionNewRegisterConflict = companionSetup?.provider === 'storehub' ? registerConflict(companionRegisterDevices, companionRegisterId) : null
+  const companionReactivationDevices = companionRegisterDevices.filter(device =>
+    String(device.external_branch_id || '') === String(companionSetup?.external_branch_id || '')
+    && (!companionSetup?.integration_id || String(device.integration_id || '') === String(companionSetup.integration_id))
+    && (!companionSetup?.mapping_id || String(device.mapping_id || '') === String(companionSetup.mapping_id)))
+  const companionReactivateDevice = companionReactivationDevices.find(device => String(device.id || device.public_id) === companionReactivateDeviceId)
+  const companionActivationRegisterId = companionPairingMode === 'reactivate'
+    ? String(companionReactivateDevice?.external_terminal_id || companionReactivateDevice?.metadata?.external_terminal_id || '').trim()
+    : companionRegisterId.trim()
+  const companionMappingDirty = !!companionSetup?.mapping_ready && (companionMapProvider !== companionSetup.provider
+    || String(companionMapLocation || '') !== String(companionSetup.external_branch_id || ''))
+  const companionNewRegisterConflict = companionSetup?.provider === 'storehub'
+    ? registerConflict(companionRegisterDevices, companionActivationRegisterId, companionPairingMode === 'reactivate' ? companionReactivateDeviceId : '') : null
   const companionBusy = companionGenerating || companionDetectingRegisters || !!companionRegisterSavingDevice
   const metricCard = {background:'#fff',border:'1px solid #e2e8f0',borderRadius:14,padding:16,boxShadow:'0 2px 10px rgba(15,23,42,.04)'}
 
@@ -562,10 +609,13 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
           <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-start',flexWrap:'wrap'}}>
             <div>
               <div style={{fontSize:11,fontWeight:900,color:'#0f766e'}}>LOYALTY TREE COMPANION</div>
-              <h3 style={{margin:'3px 0 5px'}}>Set up this branch's POS device</h3>
+              <h3 style={{margin:'3px 0 5px'}}>Add POS / Activate APK</h3>
               <div style={{fontSize:11.5,color:'#64748b',maxWidth:700,lineHeight:1.5}}>The owner connects the business POS account once. With Companion access enabled, you can map <strong>{branch.name}</strong> to its POS location, download the APK, and activate this branch's device.</div>
             </div>
-            <button onClick={loadCompanionSetup} disabled={companionLoading} style={{border:'1px solid #cbd5e1',background:'#fff',borderRadius:9,padding:'7px 10px',fontWeight:800,cursor:'pointer'}}>{companionLoading?'Checking…':'↻ Refresh'}</button>
+            <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+              {companionSetup?.allowed && companionSetup?.plan_ok && companionSetup?.mapping_ready && <button type="button" onClick={()=>openCompanionActivation()} disabled={companionBusy || companionMappingSaving} style={{border:'none',background:'#0f766e',color:'#fff',borderRadius:9,padding:'9px 12px',fontWeight:850,cursor:'pointer'}}>+ Add POS</button>}
+              <button type="button" onClick={loadCompanionSetup} disabled={companionLoading || companionBusy || companionMappingSaving} style={{border:'1px solid #cbd5e1',background:'#fff',borderRadius:9,padding:'7px 10px',fontWeight:800,cursor:'pointer'}}>{companionLoading?'Checking…':'↻ Refresh'}</button>
+            </div>
           </div>
 
           {companionError && <div style={{marginTop:12,padding:'10px 12px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:10,color:'#b91c1c',fontSize:12}}>{companionError}</div>}
@@ -614,29 +664,59 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
                 <div style={{padding:'11px 12px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:11}}><div style={{fontSize:9.5,fontWeight:900,color:'#64748b'}}>REGISTERED DEVICES</div><div style={{fontWeight:850,marginTop:3}}>{(companionSetup.devices || []).length}</div></div>
               </div>
 
-              <div style={{display:'grid',gap:10,marginTop:14}}>
-                <label style={{fontSize:12,fontWeight:800,color:'#334155'}}>POS device name
-                  <input value={companionDeviceName} onChange={event => setCompanionDeviceName(event.target.value)} disabled={companionBusy || companionMappingSaving}
-                    maxLength={120} placeholder={`${branch.name} POS 1`} style={{display:'block',width:'100%',boxSizing:'border-box',marginTop:5,padding:'10px 11px',border:'1px solid #cbd5e1',borderRadius:9}} />
-                </label>
-                {companionSetup.provider === 'storehub' && <RegisterIdField value={companionRegisterId} onChange={setCompanionRegisterId}
-                  required={companionRegisterRequired} devices={companionRegisterDevices} suggestions={companionRegisterSuggestions}
-                  disabled={companionGenerating || companionMappingSaving || !!companionRegisterSavingDevice} detecting={companionDetectingRegisters} onDetect={detectCompanionRegisters} />}
-              </div>
-              <div style={{display:'flex',gap:9,flexWrap:'wrap',marginTop:13}}>
-                <a href={companionSetup.download_url} style={{textDecoration:'none',border:'1px solid #99f6e4',background:'#f0fdfa',color:'#0f766e',borderRadius:10,padding:'10px 13px',fontWeight:850,fontSize:12}}>↓ Download Companion APK</a>
-                <button onClick={generateCompanionCode} disabled={companionBusy || companionMappingSaving || !!companionNewRegisterConflict || (companionRegisterRequired && !companionRegisterId.trim())} style={{border:'none',background:'#0f766e',color:'#fff',borderRadius:10,padding:'10px 13px',fontWeight:850,fontSize:12,cursor:'pointer'}}>{companionGenerating?'Generating…':'Generate one-time activation code'}</button>
-              </div>
-
-              {companionCode?.activation_code && (
-                <div style={{marginTop:13,padding:'14px 15px',background:'#ecfdf5',border:'1px solid #a7f3d0',borderRadius:12}}>
-                  <div style={{fontSize:10,fontWeight:900,color:'#047857'}}>ONE-TIME CODE · {branch.name}</div>
-                  <div style={{fontSize:30,fontWeight:950,letterSpacing:6,color:'#064e3b',marginTop:5}}>{companionCode.activation_code}</div>
-                  <div style={{fontSize:11,color:'#047857',marginTop:4}}>Valid until {companionCode.expires_at ? new Date(companionCode.expires_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '15 minutes from now'} · one device only.</div>
-                  {companionCode.external_terminal_id && <div style={{fontSize:11,color:'#047857',marginTop:5,overflowWrap:'anywhere'}}>Register ID: <strong>{companionCode.external_terminal_id}</strong></div>}
-                  <div style={{fontSize:10.5,color:'#64748b',marginTop:5}}>This code is server-locked to your assigned Loyalty Tree branch, mapped POS location{companionCode.external_terminal_id ? ', and chosen Register ID' : ''}.</div>
+              <div ref={companionActivationRef} style={{marginTop:14,padding:14,border:'1px solid #99f6e4',borderRadius:12,scrollMarginTop:20}}>
+                <div style={{fontSize:11,fontWeight:900,color:'#0f766e'}}>2 · ACTIVATE LOYALTY TREE COMPANION</div>
+                <div style={{fontSize:12,color:'#475569',lineHeight:1.5,marginTop:6}}>If this POS already has Companion and asks for a code again, choose <strong>Reactivate existing POS</strong>. A normal APK update keeps its activation.</div>
+                <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:12}}>
+                  {[['new','Add a new POS'], ...(companionSetup.provider === 'storehub' ? [['reactivate','Reactivate existing POS']] : [])].map(([mode,label])=><button key={mode} type="button" disabled={companionBusy || companionMappingSaving} onClick={()=>{setCompanionPairingMode(mode);setCompanionReactivateConfirmed(false)}} aria-pressed={companionPairingMode===mode}
+                    style={{border:'1px solid #0f766e',background:companionPairingMode===mode?'#0f766e':'#fff',color:companionPairingMode===mode?'#fff':'#0f766e',borderRadius:9,padding:'9px 11px',fontWeight:800,cursor:'pointer'}}>{label}</button>)}
                 </div>
-              )}
+                {companionMappingDirty && <div role="alert" style={{marginTop:10,color:'#9a3412',background:'#fff7ed',padding:10,borderRadius:8,fontSize:12}}>The POS location above has unsaved changes. Save the mapping or select the current saved location before generating a code.</div>}
+                <div style={{display:'grid',gap:10,marginTop:14}}>
+                  {companionPairingMode === 'reactivate' ? <>
+                    <label style={{fontSize:12,fontWeight:800,color:'#334155'}}>Existing POS to reactivate
+                      <select value={companionReactivateDeviceId} disabled={companionBusy || companionMappingSaving} onChange={event=>{setCompanionReactivateDeviceId(event.target.value);setCompanionReactivateConfirmed(false)}} style={{display:'block',width:'100%',marginTop:5,padding:'10px 11px',border:'1px solid #cbd5e1',borderRadius:9,background:'#fff'}}>
+                        <option value="">Choose this branch's existing POS</option>
+                        {companionReactivationDevices.map(device=><option key={device.id || device.public_id} value={String(device.id || device.public_id)}>{device.display_name || device.device_name || 'POS'} · {device.external_terminal_id || 'Register ID not assigned'}</option>)}
+                      </select>
+                    </label>
+                    {!companionReactivationDevices.length && <div style={{fontSize:12,color:'#9a3412'}}>No active StoreHub POS is registered to this mapped location. Refresh setup or ask the owner to check this branch's device assignment.</div>}
+                    {companionReactivateDevice && <>
+                      <div style={{fontSize:12,color:'#475569',lineHeight:1.5}}>Keep this POS app's data. Any offline sales that have not yet uploaded need review before reactivation.</div>
+                      <div style={{fontSize:12,color:companionActivationRegisterId?'#047857':'#9a3412',overflowWrap:'anywhere'}}>Saved Register ID: <strong>{companionActivationRegisterId || 'Not assigned — save it on this device below first.'}</strong></div>
+                      <label style={{display:'flex',gap:8,alignItems:'flex-start',fontSize:12,color:'#334155',lineHeight:1.5}}>
+                        <input type="checkbox" checked={companionReactivateConfirmed} disabled={companionBusy || companionMappingSaving} onChange={event=>setCompanionReactivateConfirmed(event.target.checked)} />
+                        <span>I am reactivating this POS. Replace its previous Companion login when the new code is used. Keep the same device record, Register ID and transaction history.</span>
+                      </label>
+                    </>}
+                  </> : <>
+                    <label style={{fontSize:12,fontWeight:800,color:'#334155'}}>POS device name
+                      <input value={companionDeviceName} onChange={event => setCompanionDeviceName(event.target.value)} disabled={companionBusy || companionMappingSaving}
+                        maxLength={120} placeholder={`${branch.name} POS 1`} style={{display:'block',width:'100%',boxSizing:'border-box',marginTop:5,padding:'10px 11px',border:'1px solid #cbd5e1',borderRadius:9}} />
+                    </label>
+                    {companionSetup.provider === 'storehub' && <RegisterIdField value={companionRegisterId} onChange={setCompanionRegisterId}
+                      required={companionRegisterRequired} devices={companionRegisterDevices} suggestions={companionRegisterSuggestions}
+                      disabled={companionGenerating || companionMappingSaving || !!companionRegisterSavingDevice} detecting={companionDetectingRegisters} onDetect={detectCompanionRegisters} />}
+                    {companionNewRegisterConflict && <button type="button" onClick={()=>openCompanionActivation(companionNewRegisterConflict)} disabled={companionBusy || companionMappingSaving} style={{border:'1px solid #0f766e',background:'#f0fdfa',color:'#0f766e',padding:9,borderRadius:9,fontWeight:800,cursor:'pointer'}}>Reactivate this existing POS instead</button>}
+                  </>}
+                </div>
+                <div style={{display:'flex',gap:9,flexWrap:'wrap',marginTop:13}}>
+                  {companionSetup.download_url && <a href={companionSetup.download_url} style={{textDecoration:'none',border:'1px solid #99f6e4',background:'#f0fdfa',color:'#0f766e',borderRadius:10,padding:'10px 13px',fontWeight:850,fontSize:12}}>↓ Download Companion APK</a>}
+                  <button type="button" onClick={generateCompanionCode} disabled={companionBusy || companionMappingSaving || companionMappingDirty || !!companionNewRegisterConflict || (companionRegisterRequired && !companionActivationRegisterId) || (companionPairingMode === 'reactivate' && (!companionReactivateDevice || !companionReactivateConfirmed))}
+                    style={{border:'none',background:'#0f766e',color:'#fff',borderRadius:10,padding:'10px 13px',fontWeight:850,fontSize:12,cursor:'pointer'}}>{companionGenerating?'Generating…':companionPairingMode==='reactivate'?'Generate reactivation code':'Generate activation code'}</button>
+                </div>
+                {companionCode?.activation_code && <div role="status" style={{marginTop:13,padding:'14px 15px',background:'#ecfdf5',border:'1px solid #a7f3d0',borderRadius:12}}>
+                  <div style={{fontSize:10,fontWeight:900,color:'#047857'}}>{companionCode.reactivate_device_id?'REACTIVATION CODE':'ACTIVATION CODE'} · {companionCode.branch_name || branch.name}</div>
+                  <div style={{fontSize:32,fontWeight:950,letterSpacing:6,color:'#064e3b',marginTop:5,userSelect:'all'}}>{companionCode.activation_code}</div>
+                  <div style={{fontSize:11,color:'#047857',marginTop:4}}>Valid until {companionCode.expires_at ? new Date(companionCode.expires_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '15 minutes from now'} · one device only.</div>
+                  {companionCode.device_name && <div style={{fontSize:11,color:'#047857',marginTop:5}}>POS: <strong>{companionCode.device_name}</strong></div>}
+                  {companionCode.external_terminal_id && <div style={{fontSize:11,color:'#047857',marginTop:5,overflowWrap:'anywhere'}}>Register ID: <strong>{companionCode.external_terminal_id}</strong></div>}
+                  <div style={{fontSize:12,color:'#334155',marginTop:9}}>Open the Companion APK on this POS → enter this code → check the assigned branch and Register ID → Activate.</div>
+                  <button type="button" onClick={copyCompanionCode} style={{marginTop:10,border:'1px solid #0f766e',background:'#fff',color:'#0f766e',borderRadius:8,padding:'8px 11px',fontWeight:850,cursor:'pointer'}}>Copy activation code</button>
+                  {companionCopyStatus && <div style={{fontSize:11,color:'#047857',marginTop:6}}>{companionCopyStatus}</div>}
+                  <div style={{fontSize:10.5,color:'#64748b',marginTop:8}}>Keep this page open until activation is complete. If the page is reloaded or the code expires, generate a new code.</div>
+                </div>}
+              </div>
 
               {(companionSetup.devices || []).length > 0 && (
                 <div style={{marginTop:14,borderTop:'1px solid #e2e8f0',paddingTop:11}}>
@@ -647,6 +727,7 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
                         <span style={{fontWeight:750}}>{device.display_name || device.device_name || device.hardware_model || 'Companion device'}</span>
                         <span style={{color:isActivePosDevice(device)?'#047857':'#b91c1c'}}>{isActivePosDevice(device)?'Active':String(device.status || 'Inactive')}</span>
                       </div>
+                      {companionReactivationDevices.some(row=>String(row.id || row.public_id)===String(device.id || device.public_id)) && <button type="button" disabled={companionBusy || companionMappingSaving} onClick={()=>openCompanionActivation(device)} style={{marginTop:8,border:'1px solid #0f766e',background:'#f0fdfa',color:'#0f766e',borderRadius:8,padding:'8px 10px',fontWeight:800,cursor:'pointer'}}>Reactivate APK on this POS</button>}
                       {String(device.provider || companionSetup.provider) === 'storehub' && isActivePosDevice(device) && <DeviceRegisterEditor device={device}
                         devices={companionRegisterDevices} suggestions={companionRegisterSuggestions} disabled={companionGenerating || companionMappingSaving || !!companionRegisterSavingDevice}
                         detecting={companionDetectingRegisters} onDetect={detectCompanionRegisters} onSave={saveCompanionRegister} />}

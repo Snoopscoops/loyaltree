@@ -43074,6 +43074,7 @@ class POSDeviceActivationCodeCreate(BaseModel):
 class ManagerCompanionActivationCodeCreate(BaseModel):
     external_terminal_id: Optional[str] = Field(default=None, max_length=120)
     device_name: Optional[str] = Field(default=None, max_length=200)
+    reactivate_device_id: Optional[str] = Field(default=None, min_length=1, max_length=200)
 
 
 class POSCompanionActivationPreviewRequest(BaseModel):
@@ -43357,10 +43358,13 @@ def _pos_activation_row(code: str) -> Optional[dict]:
     expires_at = _pos_parse_timestamp(row.get('expires_at'))
     if not expires_at or expires_at <= datetime.now(timezone.utc):
         return None
-    # TEMPORARY DEBUG MODE: allow activation codes to be reused.
-    # The max_uses / used_count duplicate-use limit is intentionally bypassed
-    # while Companion activation is being validated. Expiry and revocation
-    # checks above remain enforced.
+    metadata = row.get('metadata') if isinstance(row.get('metadata'), dict) else {}
+    if metadata.get('reactivate_device_id') and int(row.get('used_count') or 0) >= int(row.get('max_uses') or 1):
+        return None
+    # Legacy activation debug mode remains compatible with existing pilot APKs.
+    # Existing-device recovery codes are always one-time and consumed atomically.
+    # Other legacy codes retain the pilot duplicate-use behavior; expiry and
+    # revocation checks above remain enforced for every activation code.
     return row
 
 
@@ -43786,6 +43790,9 @@ def _manager_companion_devices(business: dict, branch: dict) -> list:
         mapping = mapping_map.get(str(row.get('mapping_id'))) or {}
         result.append({
             'id': row.get('id'),
+            'provider': row.get('provider'),
+            'integration_id': row.get('integration_id'),
+            'mapping_id': row.get('mapping_id'),
             'display_name': row.get('display_name'),
             'hardware_model': row.get('hardware_model'),
             'scanner_method': row.get('scanner_method'),
@@ -43825,6 +43832,8 @@ def get_manager_companion_setup(public_id: str, authorization: str = Header(defa
         'can_map_branch': bool(allowed and plan_ok and integrations),
         'integrations': integrations,
         'mapping_ready': False,
+        'integration_id': None,
+        'mapping_id': None,
         'provider': None,
         'integration_status': None,
         'integration_mode': None,
@@ -43842,6 +43851,8 @@ def get_manager_companion_setup(public_id: str, authorization: str = Header(defa
 
     response.update({
         'mapping_ready': True,
+        'integration_id': integration.get('id'),
+        'mapping_id': mapping.get('id'),
         'provider': integration.get('provider'),
         'integration_status': integration.get('status'),
         'integration_mode': integration.get('mode'),
@@ -44009,11 +44020,37 @@ def create_manager_companion_activation_code(public_id: str, req: Optional[Manag
     if not external_branch_id:
         raise HTTPException(status_code=409, detail='This branch mapping is missing its POS location ID. Save the branch mapping again before generating a code.')
     provider = str(integration.get('provider') or 'storehub').lower()
-    register_id = _pos_register_id(req.external_terminal_id if req else None, required=_pos_storehub_register_required(integration))
+    reactivation_id = str(getattr(req, 'reactivate_device_id', None) or '').strip()
+    reactivation_device = None
+    if reactivation_id:
+        if provider != 'storehub':
+            raise HTTPException(status_code=400, detail='Existing-device reactivation is available for StoreHub POS devices.')
+        try:
+            device_rows = (supabase.table('pos_devices').select('*')
+                           .eq('id', reactivation_id).eq('business_id', business.get('id'))
+                           .eq('branch_id', branch.get('id')).limit(1).execute().data or [])
+        except Exception as exc:
+            raise _pos_schema_error(exc)
+        reactivation_device = device_rows[0] if device_rows else None
+        if (not reactivation_device or reactivation_device.get('status') != 'active'
+                or reactivation_device.get('revoked_at')
+                or str(reactivation_device.get('provider') or '').lower() != provider
+                or str(reactivation_device.get('integration_id')) != str(integration.get('id'))
+                or str(reactivation_device.get('mapping_id')) != str(mapping.get('id'))):
+            raise HTTPException(status_code=409, detail='Choose an active StoreHub POS device on this branch\'s current POS mapping to reactivate.')
+        if not reactivation_device.get('device_token_hash') or not _pos_device_register_id(reactivation_device):
+            raise HTTPException(status_code=409, detail='This POS device is missing its saved activation or Register ID. Ask the owner to check its pairing first.')
+    requested_register = _pos_register_id(getattr(req, 'external_terminal_id', None))
+    register_id = _pos_register_id(requested_register or _pos_device_register_id(reactivation_device or {}),
+                                   required=_pos_storehub_register_required(integration))
+    if reactivation_device and register_id != _pos_device_register_id(reactivation_device):
+        raise HTTPException(status_code=409, detail='Reactivation must keep this POS machine\'s saved StoreHub Register ID.')
     if provider == 'storehub' and register_id:
         _pos_require_register_guard()
-        _pos_assert_register_available(business.get('id'), integration.get('id'), branch.get('id'), register_id)
-    device_name = str((req.device_name if req else '') or '').strip() or None
+        _pos_assert_register_available(business.get('id'), integration.get('id'), branch.get('id'), register_id,
+                                       exclude_device_id=reactivation_id or None)
+    device_name = (str(reactivation_device.get('display_name') or '').strip() if reactivation_device
+                   else str(getattr(req, 'device_name', None) or '').strip()) or None
 
     code = str(secrets.randbelow(900000) + 100000)
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
@@ -44036,6 +44073,13 @@ def create_manager_companion_activation_code(public_id: str, req: Optional[Manag
             'device_name': device_name,
         },
     }
+    if reactivation_device:
+        payload['metadata'].update({
+            'reactivate_device_id': str(reactivation_device.get('id')),
+            'reactivate_expected_token_hash': reactivation_device.get('device_token_hash'),
+            'reactivate_integration_id': str(integration.get('id')),
+            'reactivate_mapping_id': str(mapping.get('id')),
+        })
     try:
         row = (supabase.table('pos_device_activation_codes').insert(payload).execute().data or [None])[0]
     except Exception as exc:
@@ -44053,6 +44097,7 @@ def create_manager_companion_activation_code(public_id: str, req: Optional[Manag
         'external_branch_name': mapping.get('external_branch_name'),
         'external_terminal_id': register_id or None,
         'device_name': device_name,
+        'reactivate_device_id': reactivation_id or None,
         'register_required': _pos_storehub_register_required(integration),
         'message': 'Enter this one-time code in the Loyalty Tree Companion app. It can activate only this assigned branch and mapped POS location.',
     }
@@ -44273,6 +44318,49 @@ def activate_pos_companion_device(req: POSCompanionActivateRequest):
     known_ids = {str(row.get('id')) for row in known_outlets if isinstance(row, dict) and row.get('id') is not None}
     if known_ids and req.external_branch_id not in known_ids:
         raise HTTPException(status_code=400, detail=f'Selected {provider.title()} location is not part of the connected account.')
+    if metadata.get('reactivate_device_id'):
+        # Rotate the existing device credential only after the new APK consumes
+        # its code. The database serializes competing codes and token changes.
+        device_token = secrets.token_urlsafe(36)
+        try:
+            result = supabase.rpc('pos_reactivate_companion_device', {
+                'p_activation_id': str(activation.get('id')),
+                'p_code_hash': _pos_secret_hash(str(req.activation_code or '').strip()),
+                'p_device_token_hash': _pos_secret_hash(device_token),
+                'p_hardware_model': req.hardware_model,
+                'p_scanner_method': req.scanner_method,
+                'p_checkout_mode': req.checkout_mode,
+                'p_overlay_enabled': bool(req.overlay_enabled),
+                'p_app_version': req.app_version,
+            }).execute()
+            device = result.data if result else None
+            if isinstance(device, list):
+                device = device[0] if device else None
+            if not isinstance(device, dict) or str(device.get('id')) != str(metadata.get('reactivate_device_id')):
+                raise HTTPException(status_code=503, detail='POS reactivation did not return the existing device. Please refresh the manager setup and try again.')
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raw = str(exc).lower()
+            if 'pgrst202' in raw or 'could not find the function' in raw or ('pos_reactivate_companion_device' in raw and 'does not exist' in raw):
+                raise HTTPException(status_code=503, detail='Run the Companion reactivation SQL in Supabase before reactivating this POS.') from exc
+            if 'p0001' in raw or 'reactivation' in raw:
+                raise HTTPException(status_code=409, detail='This reactivation code is no longer valid for the current POS pairing. Refresh manager setup and generate a new code for the same device.') from exc
+            raise HTTPException(status_code=503, detail='POS reactivation is temporarily unavailable. Please try again shortly.') from exc
+        _pos_device_cache_invalidate(device.get('id'))
+        mapping = {'external_branch_id': allowed_external_branch_id,
+                   'external_branch_name': metadata.get('allowed_external_branch_name') or req.external_branch_name}
+        return {
+            'ok': True,
+            'device_token': device_token,
+            'device': _pos_public_device(device, mapping),
+            'business': preview.get('business'),
+            'branch': {'public_id': branch.get('public_id'), 'name': branch.get('name')},
+            'outlet': {'id': mapping.get('external_branch_id'), 'name': mapping.get('external_branch_name')},
+            'loyalty_contract': _pos_loyalty_contract(business),
+            'redemption_config': _pos_redemption_config(integration),
+            'message': 'Loyalty Tree Companion reactivated on the existing POS device. Save the returned device token securely on this device.',
+        }
     if provider == 'storehub' and register_id:
         _pos_require_register_guard()
         _pos_assert_register_available(business.get('id'), integration.get('id'), branch.get('id'), register_id)
