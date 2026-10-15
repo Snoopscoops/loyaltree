@@ -186,3 +186,4 @@ immediate automatic retries when the backend asks it to wait. Deploy backend
 new environment variables are needed. Local fake-transport tests cover lost
 create responses, same-ID conflicts, stale-design recovery and failure mapping;
 live Google latency still requires a post-deploy publishing check.
+# points_prizes update
