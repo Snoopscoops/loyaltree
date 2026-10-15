@@ -34,6 +34,13 @@ class Query:
         self.filters.append((key, value))
         return self
 
+    def is_(self, key, value):
+        self.filters.append((key, None))
+        return self
+
+    def in_(self, key, values):
+        return self
+
     def limit(self, maximum):
         self.maximum = maximum
         return self
@@ -78,6 +85,12 @@ class Database:
     def rpc(self, name, params):
         self.rpc_calls.append((name, deepcopy(params)))
         def execute():
+            if name == 'pos_claim_companion_transaction_customer':
+                tx = next((row for row in self.tables.get('pos_transactions', []) if str(row.get('id')) == params['p_transaction_id']), None)
+                if not tx or (tx.get('customer_id') is not None and str(tx['customer_id']) != params['p_customer_id']):
+                    raise HTTPError(409, 'different member')
+                tx['customer_id'] = int(params['p_customer_id'])
+                return SimpleNamespace(data=deepcopy(tx))
             if name == 'pos_storehub_register_guard_ready':
                 return SimpleNamespace(data=self.ready)
             device = next((row for row in self.tables.get('pos_devices', []) if str(row['id']) == params['p_device_id']), None)
@@ -146,6 +159,7 @@ class Harness:
             '_pos_device_profile': lambda model: {'label': model},
             '_pos_loyalty_contract': lambda business: {}, '_pos_redemption_config': lambda integration: {},
             '_companion_is_mock_transaction': lambda tx: tx.get('source') == 'mock_bridge',
+            '_companion_pending_offline_receipt_ids': lambda *args: set(),
             'POS_COMPANION_SESSION_TTL_SECONDS': 300,
             '_pos_secret_hash': lambda value: f'hash:{value}',
             'secrets': SimpleNamespace(randbelow=lambda value: 123456, token_urlsafe=lambda value: 'new-device-token'),
@@ -154,6 +168,7 @@ class Harness:
             '_validate_manager_activation_scope': Mock(),
             '_pos_companion_preview_payload': lambda activation: {'business': self.business, 'outlets': [{'id': 'outlet-1', 'name': 'Outlet'}]},
         }
+        self.env['_offline_sale_rpc'] = lambda name, params: self.db.rpc(name, params).execute().data
         load(HELPERS, self.env)
 
     def load(self, *names):
@@ -260,6 +275,17 @@ class RegisterBindingTests(unittest.TestCase):
         rows = [transaction('right', 'register-1'), transaction('wrong', 'cached-register'), transaction('missing', None)]
         result = env['_companion_session_candidates'](device(register_id='cached-register'), session, rows)
         self.assertEqual([row['id'] for row in result], ['right'])
+
+    def test_candidates_skip_receipts_reserved_for_an_earlier_offline_sale(self):
+        env = self.h.load('_companion_session_candidates')
+        env['_companion_pending_offline_receipt_ids'] = lambda *args: {'earlier'}
+        now = datetime.now(timezone.utc)
+        session = {'scanned_at': now.isoformat(), 'expires_at': (now + timedelta(minutes=5)).isoformat(), 'customer_id': 99}
+        rows = [{'id': identifier, 'integration_id': 'integration-1', 'branch_id': 11,
+                 'transaction_type': 'sale', 'status': 'received', 'gross_amount': 125,
+                 'transacted_at': now.isoformat(), 'processing_metadata': {'bridge_external_terminal_id': 'register-1'}}
+                for identifier in ('earlier', 'current')]
+        self.assertEqual([row['id'] for row in env['_companion_session_candidates'](device(), session, rows)], ['current'])
 
     def test_owner_code_locks_branch_outlet_register_and_device_name(self):
         env = self.h.load('create_pos_device_activation_code')
@@ -428,7 +454,7 @@ class RegisterBindingTests(unittest.TestCase):
         self.assertEqual(result['register_id'], 'correct')
 
     def test_process_rechecks_changed_register_before_mutation_or_duplicate_ack(self):
-        env = self.h.load('_companion_process_transaction')
+        env = self.h.load('_companion_claim_transaction_customer', '_companion_process_transaction')
         background_tasks = Mock()
         self.h.db.tables['pos_devices'][0]['metadata']['external_terminal_id'] = 'new-register'
         session = {'id': 'session-1', 'customer_id': 99}
@@ -446,6 +472,8 @@ class RegisterBindingTests(unittest.TestCase):
         self.h.env['_companion_session_public'] = lambda row: row
         self.h.db.tables['pos_companion_sessions'] = [deepcopy(session)]
         transaction['processing_metadata']['bridge_external_terminal_id'] = 'new-register'
+        transaction['business_id'] = 7
+        self.h.db.tables['pos_transactions'] = [deepcopy(transaction)]
         result = asyncio.run(env['_companion_process_transaction'](device(), session, transaction, background_tasks))
         self.assertTrue(result['duplicate_prevented'])
         self.assertEqual(result['session']['status'], 'completed')

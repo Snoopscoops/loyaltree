@@ -293,6 +293,7 @@ class WorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
         env = load(['start_wallet_queue_worker', 'stop_monitoring'], {
             'app': app, 'asyncio': asyncio,
             'STOREHUB_VOID_SYNC_ENABLED': enabled, 'STOREHUB_VOID_SYNC_SECONDS': 60,
+            'STOREHUB_OFFLINE_SALES_ENABLED': False,
             'wallet_queue_worker': lambda: worker('wallet'),
             '_apple_layout_release_startup': lambda: worker('apple'),
             'periodic_void_sync': periodic, '_sync_storehub_voids_once': sync_callback,

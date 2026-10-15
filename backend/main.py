@@ -1,4 +1,9 @@
 try:
+    from .storehub_offline_sales import OfflineSalesService, OfflineSaleError, public_event as offline_sale_public, periodic_offline_sales, matching_sales as offline_sale_matches
+except ImportError:
+    from storehub_offline_sales import OfflineSalesService, OfflineSaleError, public_event as offline_sale_public, periodic_offline_sales, matching_sales as offline_sale_matches
+
+try:
     from .storehub_voids import StoreHubVoidSync, periodic_void_sync
 except ImportError:
     from storehub_voids import StoreHubVoidSync, periodic_void_sync
@@ -177,6 +182,8 @@ POS_COMPANION_SESSION_TTL_SECONDS = max(30, min(300, int(os.getenv('POS_COMPANIO
 # matching; it never prints API tokens, device tokens, customer names, or full raw
 # StoreHub payloads. Set POS_COMPANION_DEBUG=false in Render after pilot validation.
 POS_COMPANION_DEBUG = _env_bool('POS_COMPANION_DEBUG', True)
+STOREHUB_OFFLINE_SALES_ENABLED = _env_bool('STOREHUB_OFFLINE_SALES_ENABLED', True)
+STOREHUB_OFFLINE_SALES_SECONDS = max(15, int(os.getenv('STOREHUB_OFFLINE_SALES_SECONDS', '30') or '30'))
 STOREHUB_VOID_SYNC_ENABLED = _env_bool('STOREHUB_VOID_SYNC_ENABLED', True)
 STOREHUB_VOID_SYNC_SECONDS = max(60, int(os.getenv('STOREHUB_VOID_SYNC_SECONDS', '60') or '60'))
 STOREHUB_VOID_LOOKBACK_DAYS = max(1, min(30, int(os.getenv('STOREHUB_VOID_LOOKBACK_DAYS', '1') or '1')))
@@ -13551,7 +13558,7 @@ async def stop_monitoring():
     if task:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-    for name in ('wallet_worker', 'apple_release_task', 'storehub_void_worker'):
+    for name in ('wallet_worker', 'apple_release_task', 'storehub_void_worker', 'storehub_offline_worker'):
         worker = getattr(app.state, name, None)
         if worker:
             worker.cancel()
@@ -13683,6 +13690,19 @@ async def confirm_business_password_reset(req: PasswordResetConfirm):
     _password_reset_audit(business, 'password_changed', 'owner_self_service')
     return {'success': True, 'message': 'Password updated. You can now sign in with your new password.'}
 
+def _login_lookup_one(query):
+    """Use list responses so a missing account cannot become a None.data error."""
+    response = query.limit(2).execute()
+    rows = getattr(response, 'data', None)
+    if not isinstance(rows, list):
+        raise RuntimeError('Login account lookup returned an invalid database response.')
+    if len(rows) > 1:
+        raise RuntimeError('Login account lookup returned multiple matching accounts.')
+    if rows and not isinstance(rows[0], dict):
+        raise RuntimeError('Login account lookup returned an invalid account record.')
+    return rows[0] if rows else None
+
+
 @app.post("/api/v1/login")
 @app.post("/api/v1/auth/login")
 async def login(req: LoginRequest, request: Request):
@@ -13721,7 +13741,7 @@ async def login(req: LoginRequest, request: Request):
     # Region/province/city partner accounts are platform-scoped and intentionally
     # separate from businesses and homepage-logo partners.
     try:
-        partner = supabase.table("network_partners").select("*").ilike("email", req.email.strip()).maybe_single().execute().data
+        partner = _login_lookup_one(supabase.table("network_partners").select("*").ilike("email", req.email.strip()))
     except Exception:
         partner = None
     if partner:
@@ -13753,8 +13773,7 @@ async def login(req: LoginRequest, request: Request):
             raise HTTPException(status_code=403, detail='Partner account is inactive')
 
     try:
-        res = supabase.table("businesses").select("*").eq("email", req.email).maybe_single().execute()
-        business = res.data
+        business = _login_lookup_one(supabase.table("businesses").select("*").eq("email", req.email))
         if business:
             stored_pw = business.get('password_hash', '')
             input_hash = hash_password(req.password)
@@ -13801,8 +13820,7 @@ async def login(req: LoginRequest, request: Request):
         print(f"Business login error: {e}")
 
     try:
-        res = supabase.table("staff").select("*,businesses(public_id,name,logo_url,status,subscription_expires_at,trial_ends_at,last_paid_at)").eq("email", req.email).maybe_single().execute()
-        staff = res.data
+        staff = _login_lookup_one(supabase.table("staff").select("*,businesses(public_id,name,logo_url,status,subscription_expires_at,trial_ends_at,last_paid_at)").eq("email", req.email))
         if staff:
             stored_pin = staff.get('pin', '')
             if stored_pin == req.password or stored_pin == hash_password(req.password):
@@ -13880,9 +13898,8 @@ async def login(req: LoginRequest, request: Request):
     # provisioned only after the dealership owner approves the original
     # application, so existence here means the agent is approved.
     try:
-        res = supabase.table("cl_agents").select("*,businesses(public_id,name,logo_url,status,business_type,subscription_expires_at,trial_ends_at,last_paid_at)") \
-            .eq("email", req.email.strip().lower()).maybe_single().execute()
-        agent = res.data
+        agent = _login_lookup_one(supabase.table("cl_agents").select("*,businesses(public_id,name,logo_url,status,business_type,subscription_expires_at,trial_ends_at,last_paid_at)")
+            .eq("email", req.email.strip().lower()))
         if agent:
             stored_pw = agent.get('password_hash', '')
             input_hash = hash_password(req.password)
@@ -40076,6 +40093,10 @@ async def wallet_queue_worker():
 @app.on_event('startup')
 async def start_wallet_queue_worker():
     app.state.wallet_worker = asyncio.create_task(wallet_queue_worker())
+    if STOREHUB_OFFLINE_SALES_ENABLED:
+        app.state.storehub_offline_worker = asyncio.create_task(periodic_offline_sales(
+            _storehub_offline_sales_service, STOREHUB_OFFLINE_SALES_SECONDS, _log_storehub_void_sync,
+        ))
     if STOREHUB_VOID_SYNC_ENABLED:
         app.state.storehub_void_worker = asyncio.create_task(periodic_void_sync(
             _sync_storehub_voids_once, STOREHUB_VOID_SYNC_SECONDS, _log_storehub_void_sync,
@@ -45072,6 +45093,8 @@ def _companion_session_public(row: Optional[dict]) -> Optional[dict]:
         'result': result,
         'pending_redemption': pending_redemption,
         'completed_redemption': completed_redemption,
+        'offline_save_blocked': bool(pending_redemption or result.get('pending_benefit_reservation_id') or result.get('pending_coupon_reservation_id')),
+        'offline_save_blocked_reason': 'Resolve the pending redemption or reward online first.' if (pending_redemption or result.get('pending_benefit_reservation_id') or result.get('pending_coupon_reservation_id')) else None,
         'error_message': row.get('error_message'),
         'completed_at': row.get('completed_at'),
     }
@@ -45212,6 +45235,12 @@ def _companion_upsert_bridge_transaction(
     elif normalized.get('transaction_type') == 'void':
         status = 'voided'
 
+    if existing and (existing.get('status') in ('voided', 'refunded')
+            or existing.get('transaction_type') in ('void', 'refund')
+            or (isinstance(existing.get('raw_payload'), dict) and existing['raw_payload'].get('isCancelled'))):
+        # Historical sale reads must not resurrect a later cancellation.
+        return existing
+
     previous_processing = (existing or {}).get('processing_metadata') if isinstance((existing or {}).get('processing_metadata'), dict) else {}
     payload = {
         'integration_id': integration_id,
@@ -45235,6 +45264,7 @@ def _companion_upsert_bridge_transaction(
         },
         'transacted_at': normalized.get('transacted_at') or datetime.now(timezone.utc).isoformat(),
         'error_message': None,
+        'updated_at': datetime.now(timezone.utc).isoformat(),
     }
     try:
         if existing:
@@ -45253,8 +45283,23 @@ def _companion_upsert_bridge_transaction(
             # not rewrite the same Supabase row every few seconds.
             if same_provider_event:
                 return existing
-            rows = supabase.table('pos_transactions').update(payload).eq('id', existing.get('id')).execute().data or []
-            return rows[0] if rows else {**existing, **payload}
+            update = supabase.table('pos_transactions').update(payload).eq('id', existing.get('id'))
+            for field in ('status', 'transaction_type', 'customer_id', 'updated_at'):
+                value = existing.get(field)
+                update = update.is_(field, 'null') if value is None else update.eq(field, value)
+            if existing.get('updated_at') is None:
+                # Legacy rows without a version timestamp still compare their
+                # raw/provider metadata, including cancellation and claim state.
+                for field in ('raw_payload', 'processing_metadata'):
+                    value = existing.get(field)
+                    update = update.is_(field, 'null') if value is None else update.eq(field, json.dumps(value, sort_keys=True, separators=(',', ':')))
+            rows = update.execute().data or []
+            if rows:
+                return rows[0]
+            # A void, claim or loyalty commit won after our initial read. Return
+            # that authoritative row instead of synthesizing an eligible sale.
+            rows = supabase.table('pos_transactions').select('*').eq('id', existing.get('id')).limit(1).execute().data or []
+            return rows[0] if rows else None
         rows = supabase.table('pos_transactions').insert(payload).execute().data or []
         return rows[0] if rows else payload
     except Exception as exc:
@@ -46189,6 +46234,35 @@ def _companion_mock_upsert_transaction(
         raise _pos_schema_error(exc)
 
 
+def _companion_pending_offline_receipt_ids(device: dict, session: dict, transactions: list) -> set:
+    """Keep an earlier saved sale out of the next online member's candidates."""
+    real_sales = [tx for tx in transactions if not _companion_is_mock_transaction(tx)]
+    if str(device.get('provider') or '').lower() != 'storehub' or not real_sales:
+        return set()
+    scanned = _pos_parse_timestamp(session.get('scanned_at')) or datetime.now(timezone.utc)
+    expires = _pos_parse_timestamp(session.get('expires_at')) or scanned + timedelta(seconds=POS_COMPANION_SESSION_TTL_SECONDS)
+    try:
+        rows = (supabase.table('storehub_offline_sales').select('*')
+                .eq('integration_id', str(device.get('integration_id'))).eq('branch_id', str(device.get('branch_id')))
+                .in_('status', ['pending', 'awaiting_storehub', 'needs_review'])
+                .lte('scanned_at', (expires + timedelta(seconds=25)).isoformat())
+                .gte('completed_at', (scanned - timedelta(seconds=15)).isoformat())
+                .limit(501).execute().data or [])
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    if len(rows) > 500:
+        raise HTTPException(status_code=409, detail='Too many saved sales need review before automatic receipt matching can continue.')
+    protected = set()
+    for tx in real_sales:
+        raw = tx.get('raw_payload') if isinstance(tx.get('raw_payload'), dict) else {}
+        meta = tx.get('processing_metadata') if isinstance(tx.get('processing_metadata'), dict) else {}
+        normalized = {**tx, 'external_branch_id': raw.get('storeId') or meta.get('bridge_external_branch_id'),
+                      'external_terminal_id': _pos_transaction_register_id(tx)}
+        if any(offline_sale_matches(event, [normalized]) for event in rows):
+            protected.add(str(tx.get('id')))
+    return protected
+
+
 def _companion_session_candidates(device: dict, session: dict, transactions: list) -> list:
     device.update(_pos_current_register_device(device))
     scanned_at = _pos_parse_timestamp(session.get('scanned_at')) or datetime.now(timezone.utc)
@@ -46197,12 +46271,16 @@ def _companion_session_candidates(device: dict, session: dict, transactions: lis
     mapping = _companion_mock_mapping(device)
     mapping_settings = mapping.get('settings') if isinstance(mapping.get('settings'), dict) else {}
     device_terminal = str(metadata.get('external_terminal_id') or mapping.get('external_terminal_id') or mapping_settings.get('external_terminal_id') or '').strip()
+    protected_offline_ids = _companion_pending_offline_receipt_ids(device, session, transactions)
     candidates = []
     skipped = {
         'integration': 0, 'non_sale': 0, 'status': 0, 'branch': 0,
-        'customer': 0, 'time_window': 0, 'terminal': 0,
+        'customer': 0, 'time_window': 0, 'terminal': 0, 'saved_offline': 0,
     }
     for tx in transactions:
+        if str(tx.get('id')) in protected_offline_ids:
+            skipped['saved_offline'] += 1
+            continue
         if str(tx.get('integration_id')) != str(device.get('integration_id')):
             skipped['integration'] += 1
             continue
@@ -46260,18 +46338,64 @@ def _companion_session_candidates(device: dict, session: dict, transactions: lis
     return candidates
 
 
+def _companion_claim_transaction_customer(device: dict, session: dict, tx: dict) -> dict:
+    """Atomically bind a normalized receipt before any online/offline award."""
+    customer_id = session.get('customer_id')
+    if not customer_id:
+        raise HTTPException(status_code=409, detail='The checkout member is missing.')
+    if str(device.get('provider') or '').lower() == 'storehub' and not _companion_is_mock_transaction(tx):
+        pending_message = 'This receipt is reserved for a saved offline sale. Please wait for offline verification.'
+        try:
+            claimed = _offline_sale_rpc('pos_claim_companion_transaction_customer', {
+                'p_device_id': str(device['id']), 'p_transaction_id': str(tx.get('id') or ''),
+                'p_customer_id': str(customer_id),
+            })
+            if not claimed:
+                raise HTTPException(status_code=409, detail='This StoreHub receipt could not be claimed safely.')
+            return claimed
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raw = str(exc)
+            if pending_message in raw:
+                raise HTTPException(status_code=409, detail=pending_message)
+            if any(code in raw.lower() for code in ('p0001', '23505')) or str(getattr(exc, 'code', '')) in ('P0001', '23505'):
+                raise HTTPException(status_code=409, detail=friendly_db_error(exc))
+            raise _pos_schema_error(exc)
+    try:
+        # A conditional UPDATE locks the row. Competing members cannot both win
+        # even when each selected an unclaimed copy during an earlier poll.
+        supabase.table('pos_transactions').update({'customer_id': customer_id}).eq('id', tx.get('id')).eq('integration_id', device.get('integration_id')).eq('business_id', device.get('business_id')).eq('transaction_type', 'sale').in_('status', ['received', 'matched', 'processing', 'loyalty_applied']).is_('customer_id', 'null').execute()
+        rows = supabase.table('pos_transactions').select('*').eq('id', tx.get('id')).limit(1).execute().data or []
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    fresh = rows[0] if rows else None
+    if (not fresh or str(fresh.get('integration_id')) != str(device.get('integration_id'))
+            or str(fresh.get('business_id')) != str(device.get('business_id'))
+            or str(fresh.get('customer_id')) != str(customer_id)):
+        raise HTTPException(status_code=409, detail='This POS receipt is already linked to a different member or connection.')
+    if fresh.get('transaction_type') != 'sale' or fresh.get('status') in ('voided', 'refunded', 'ignored', 'failed'):
+        raise HTTPException(status_code=409, detail='This POS receipt is no longer a completed eligible sale.')
+    raw = fresh.get('raw_payload') if isinstance(fresh.get('raw_payload'), dict) else {}
+    if raw.get('isCancelled'):
+        raise HTTPException(status_code=409, detail='Cancelled StoreHub sales cannot earn loyalty.')
+    return fresh
+
+
 async def _companion_process_transaction(
     device: dict,
     session: dict,
     tx: dict,
     background_tasks: BackgroundTasks,
     allow_test_mode: bool = False,
+    persist_session: bool = True,
 ) -> dict:
     if not tx:
         raise HTTPException(status_code=404, detail='POS transaction not found.')
     # Re-check immediately before any loyalty mutation or duplicate acknowledgement:
     # a register can be reassigned after polling selected a receipt.
     _pos_assert_transaction_register(device, tx)
+    tx = _companion_claim_transaction_customer(device, session, tx)
     if tx.get('status') == 'loyalty_applied':
         if tx.get('customer_id') and str(tx.get('customer_id')) != str(session.get('customer_id')):
             raise HTTPException(status_code=409, detail='This POS transaction was already applied to a different member.')
@@ -46285,7 +46409,8 @@ async def _companion_process_transaction(
             'updated_at': datetime.now(timezone.utc).isoformat(),
         }
         try:
-            supabase.table('pos_companion_sessions').update(patch).eq('id', session.get('id')).execute()
+            if persist_session:
+                supabase.table('pos_companion_sessions').update(patch).eq('id', session.get('id')).execute()
         except Exception:
             pass
         return {'ok': True, 'duplicate_prevented': True, 'session': _companion_session_public({**session, **patch}), 'loyalty_result': result}
@@ -46336,7 +46461,8 @@ async def _companion_process_transaction(
 
     try:
         session_processing = {'status': 'processing', 'matched_pos_transaction_id': tx.get('id'), 'external_transaction_id': external_tx, 'gross_amount': tx.get('gross_amount'), 'currency': tx.get('currency') or 'PHP', 'error_message': None, 'updated_at': datetime.now(timezone.utc).isoformat()}
-        supabase.table('pos_companion_sessions').update(session_processing).eq('id', session.get('id')).execute()
+        if persist_session:
+            supabase.table('pos_companion_sessions').update(session_processing).eq('id', session.get('id')).execute()
 
         session_result = dict(session.get('result')) if isinstance(session.get('result'), dict) else {}
         reservation_id = session_result.get('redemption_reservation_id')
@@ -46656,7 +46782,8 @@ async def _companion_process_transaction(
             'error_message': None, 'completed_at': datetime.now(timezone.utc).isoformat(),
             'updated_at': datetime.now(timezone.utc).isoformat(),
         }
-        supabase.table('pos_companion_sessions').update(patch).eq('id', session.get('id')).execute()
+        if persist_session:
+            supabase.table('pos_companion_sessions').update(patch).eq('id', session.get('id')).execute()
         _companion_debug(
             'process_complete',
             device_id=str(device.get('id') or ''),
@@ -46685,7 +46812,8 @@ async def _companion_process_transaction(
             detail=str(exc.detail)[:500],
         )
         try:
-            supabase.table('pos_companion_sessions').update({'status': 'failed', 'error_message': str(exc.detail)[:1000], 'updated_at': datetime.now(timezone.utc).isoformat()}).eq('id', session.get('id')).execute()
+            if persist_session:
+                supabase.table('pos_companion_sessions').update({'status': 'failed', 'error_message': str(exc.detail)[:1000], 'updated_at': datetime.now(timezone.utc).isoformat()}).eq('id', session.get('id')).execute()
         except Exception:
             pass
         raise
@@ -47399,7 +47527,7 @@ def pos_companion_connectivity(
             'reason': 'POS integration not found.',
         }
 
-    provider_online = integration.get('status') == 'connected'
+    provider_online = integration.get('status') in ('connected', 'live')
     provider_error = integration.get('last_error')
     provider_probed = False
 
@@ -47412,7 +47540,7 @@ def pos_companion_connectivity(
             now_iso = datetime.now(timezone.utc).isoformat()
             try:
                 supabase.table('pos_integrations').update({
-                    'status': 'connected',
+                    'status': integration.get('status') if integration.get('status') == 'live' else 'connected',
                     'last_sync_at': now_iso,
                     'last_error': None,
                 }).eq('id', integration.get('id')).execute()
@@ -47568,6 +47696,239 @@ def owner_match_pos_offline_event(
         'event': _pos_offline_event_public(updated),
         'message': 'Offline event matched using the supplied exact StoreHub transaction ID.',
     }
+
+# Durable offline Done uses a separate queue; the legacy offline-sync API stays
+# available for older APKs. No client-entered amount directly changes loyalty.
+class POSOfflineSaleEvent(BaseModel):
+    client_event_id: str = Field(min_length=36, max_length=36)
+    customer_ref: str = Field(min_length=1, max_length=500)
+    receipt_reference: str = Field(default='', max_length=200)
+    receipt_match_mode: Literal['amount', 'suffix5', 'full'] = 'amount'
+    final_amount: Decimal = Field(gt=0, le=1000000000)
+    currency: str = Field(default='PHP', min_length=3, max_length=3)
+    scanned_at: datetime
+    completed_at: datetime
+    device_id: str = Field(min_length=1, max_length=120)
+    business_public_id: str = Field(min_length=1, max_length=200)
+    branch_public_id: str = Field(min_length=1, max_length=200)
+    external_branch_id: str = Field(min_length=1, max_length=200)
+    external_terminal_id: str = Field(min_length=1, max_length=120)
+    session_id: Optional[str] = Field(default=None, max_length=120)
+    pending_redemption: bool = False
+
+
+class POSOfflineSaleSyncRequest(BaseModel):
+    events: List[POSOfflineSaleEvent] = Field(min_length=1, max_length=50)
+
+
+class POSOfflineSaleReceiptRequest(BaseModel):
+    receipt_reference: str = Field(min_length=1, max_length=200)
+
+
+def _offline_sale_rpc(name: str, params: dict):
+    # Keep raw network/database exceptions distinguishable from rule conflicts;
+    # the older first-row helper maps every exception to HTTP 400.
+    data = supabase.rpc(name, params).execute().data
+    if name in ('pos_claim_offline_sales', 'pos_offline_sales_enqueue_batch'):
+        return data or []
+    return (data[0] if data else {}) if isinstance(data, list) else (data or {})
+
+
+def _offline_sale_context(device: dict, event: dict) -> dict:
+    # Worker calls have only the device ID. Always reload active scope, never use
+    # the auth cache as the authority for an old locally queued transaction.
+    rows = supabase.table('pos_devices').select('*').eq('id', device.get('id')).eq('status', 'active').limit(1).execute().data or []
+    if not rows:
+        raise OfflineSaleError('This POS device is inactive. Ask the owner to review its saved sales.', review=True)
+    device = _pos_current_register_device(rows[0])
+    business = _pos_business_by_id(device.get('business_id'))
+    if not business or billing_hold(business) or business.get('status') != 'active' or not business_has_plan_feature(business, 'pos_integration'):
+        raise OfflineSaleError('Business POS access needs the owner’s review before these rewards can sync.', review=True)
+    integration = _get_pos_integration(device.get('business_id'), 'storehub')
+    if (str(device.get('provider') or '').lower() != 'storehub' or not integration
+            or str(integration.get('id')) != str(device.get('integration_id'))
+            or integration.get('mode') != 'live' or integration.get('status') != 'live'):
+        raise OfflineSaleError('Offline earning requires this StoreHub integration to be live.', review=True)
+    mapping = _companion_mock_mapping(device)
+    branch_rows = supabase.table('branches').select('*').eq('id', device.get('branch_id')).limit(1).execute().data or []
+    branch = branch_rows[0] if branch_rows else {}
+    register_id = _pos_device_register_id(device)
+    if (not register_id or not mapping or mapping.get('is_active') is False
+            or str(mapping.get('business_id')) != str(device.get('business_id'))
+            or str(mapping.get('integration_id')) != str(device.get('integration_id'))
+            or str(mapping.get('branch_id')) != str(device.get('branch_id'))
+            or not branch or branch.get('is_active') is False):
+        raise OfflineSaleError('Save the branch and StoreHub Register ID before recording offline sales.', review=True)
+    context = {
+        'device': device, 'business': business, 'branch': branch, 'mapping': mapping, 'integration': integration,
+        'device_id': str(device['id']), 'business_id': str(business['id']), 'branch_id': str(branch['id']),
+        'integration_id': str(integration['id']), 'business_public_id': business.get('public_id'),
+        'branch_public_id': branch.get('public_id'), 'external_branch_id': str(mapping.get('external_branch_id') or ''),
+        'external_terminal_id': register_id, 'currency': business_currency(business),
+    }
+    for field in ('device_id', 'business_public_id', 'branch_public_id', 'external_branch_id', 'external_terminal_id'):
+        if str(event.get(field) or '') != str(context.get(field) or ''):
+            raise OfflineSaleError('This saved sale belongs to an earlier device, branch or register assignment. Ask the owner to review it.', review=True)
+    sale_start = _pos_parse_timestamp(event.get('scanned_at'))
+    sale_end = _pos_parse_timestamp(event.get('completed_at'))
+    if not sale_start or not sale_end:
+        raise OfflineSaleError('This saved sale has no valid original checkout times.', review=True)
+    for reservation_table in ('pos_coupon_reservations', 'pos_benefit_reservations'):
+        try:
+            holds = (supabase.table(reservation_table).select('id').eq('device_id', device['id'])
+                     .eq('status', 'reserved').gt('expires_at', datetime.now(timezone.utc).isoformat())
+                     .gte('created_at', (sale_start - timedelta(seconds=10)).isoformat())
+                     .lte('created_at', (sale_end + timedelta(seconds=10)).isoformat()).limit(1).execute().data or [])
+        except Exception as exc:
+            # An older earning-only deployment may never have installed these
+            # optional reward tables. Their absence means no reservations exist;
+            # other DB/auth/network failures remain a failed, unacknowledged save.
+            missing = str(exc).lower()
+            if reservation_table in missing and ('42p01' in missing or 'pgrst205' in missing or 'does not exist' in missing or 'could not find the table' in missing):
+                continue
+            raise
+        if holds:
+            raise OfflineSaleError('This checkout has a pending reward or benefit hold. Resolve it online before saving offline earning.', review=True)
+    session_id = str(event.get('session_id') or '').strip()
+    if session_id:
+        session_rows = supabase.table('pos_companion_sessions').select('*').eq('id', session_id).eq('device_id', device['id']).limit(1).execute().data or []
+        if session_rows:
+            session = session_rows[0]
+            result = session.get('result') if isinstance(session.get('result'), dict) else {}
+            reservation_id = result.get('redemption_reservation_id')
+            if reservation_id:
+                reservation = _pos_redemption_row(str(reservation_id))
+                if reservation and reservation.get('status') in ('reserved', 'discount_applied'):
+                    raise OfflineSaleError('This checkout has a points redemption hold. Resolve it online before saving offline earning.', review=True)
+            if result.get('pending_benefit_reservation_id') or result.get('pending_coupon_reservation_id'):
+                raise OfflineSaleError('This checkout has a pending reward. Resolve it online before saving offline earning.', review=True)
+    return context
+
+
+def _offline_sale_customer(customer_ref: str, context: dict) -> dict:
+    customer = safe_get_customer(_pos_scan_customer_public_id(customer_ref))
+    if not customer or str(customer.get('business_id')) != str(context['business_id']):
+        raise OfflineSaleError('The scanned member does not belong to this business.', review=True)
+    return _companion_choose_earning_membership(customer, context['business']['id'])
+
+
+def _offline_sale_fetch(event: dict, context: dict) -> tuple[list, bool]:
+    start = _pos_parse_timestamp(event['scanned_at']) - timedelta(seconds=10)
+    completed = _pos_parse_timestamp(event['completed_at']) + timedelta(seconds=10)
+    now = datetime.now(timezone.utc)
+    if now - start > timedelta(days=30):
+        raise OfflineSaleError('This sale is older than the automatic 30-day StoreHub recovery window. Ask the owner to review it.', review=True)
+    # StoreHub filters CREATED dates. A sale completed offline on Monday can
+    # be uploaded/created in its cloud on Tuesday. Search the bounded original
+    # date through today, then match only the original transactionTime window.
+    end = max(completed, now)
+    if STOREHUB_TX_PROBE_SLEEP_SECONDS:
+        time.sleep(STOREHUB_TX_PROBE_SLEEP_SECONDS)
+    _, raw_rows, meta = _storehub_fetch_recent_transaction_rows(
+        context['integration'], start=start, end=end,
+        external_branch_id=context['external_branch_id'], deep_probe=False, use_paging_hint=False,
+    )
+    complete = len(raw_rows) < STOREHUB_TX_PAGE_SIZE and not (meta or {}).get('stale_capped_page')
+    normalized = []
+    for raw in raw_rows:
+        item = _companion_normalize_provider_transaction('storehub', raw)
+        if item and (raw.get('refId') or raw.get('id')):
+            if str(raw.get('transactionType') or '').lower() != 'sale' and item.get('transaction_type') == 'sale':
+                item['transaction_type'] = 'unknown'
+            item['currency'] = str(raw.get('currency') or context['currency']).upper()
+            normalized.append(item)
+    return normalized, complete
+
+
+def _offline_sale_materialize(normalized: dict, context: dict) -> dict:
+    return _companion_upsert_bridge_transaction(context['device'], normalized, context['mapping'])
+
+
+async def _offline_sale_process(event: dict, context: dict, customer: dict, tx: dict) -> dict:
+    # An offline event is independent of the five-minute interactive session.
+    # Reuse the exact same receipt idempotency keys and Wallet pipeline as online.
+    session = {
+        'id': str(event['id']), 'device_id': context['device']['id'],
+        'customer_id': customer['id'], 'customer_public_id': customer['public_id'],
+        'source_customer_public_id': _pos_scan_customer_public_id(event['customer_ref']),
+        'scanned_at': event['scanned_at'], 'expires_at': event['completed_at'],
+        'result': {},
+    }
+    tasks = BackgroundTasks()
+    result = await _companion_process_transaction(context['device'], session, tx, tasks, persist_session=False)
+    fresh = safe_get_customer(customer['public_id']) or customer
+    queued = enqueue_wallet_sync(fresh, context['business'], 'offline_storehub_sale_verified')
+    if queued.get('status') == 'queue_error':
+        raise RuntimeError('Rewards were processed; the Wallet refresh will retry with this saved sale.')
+    # Durable Wallet work is already saved. Avoid external calls holding the
+    # receipt lease. These earning tasks only refresh Wallet providers; the
+    # durable queue performs that work using the fresh customer balance.
+    return {'external_transaction_id': tx.get('external_transaction_id'),
+            'loyalty_result': result.get('loyalty_result') or {}, 'wallet_sync': queued}
+
+
+def _storehub_offline_sales_service() -> OfflineSalesService:
+    return OfflineSalesService(
+        db=supabase, rpc=_offline_sale_rpc, context=_offline_sale_context,
+        customer=_offline_sale_customer, fetch=_offline_sale_fetch,
+        materialize=_offline_sale_materialize, process=_offline_sale_process,
+        log=_log_storehub_void_sync,
+    )
+
+
+@app.post('/api/v1/companion/offline-sales/sync')
+@app.post('/api/v1/pos-companion/offline-sales/sync')
+def pos_companion_offline_sales_sync(req: POSOfflineSaleSyncRequest, x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token')):
+    device = _require_pos_device(x_lt_device_token)
+    results = _storehub_offline_sales_service().enqueue(device, [event.model_dump() for event in req.events])
+    # Detach only a checkout that was safely recorded. Preserve its row/audit so
+    # the next customer can start while this independent offline event awaits sync.
+    for event, saved in zip(req.events, results):
+        if saved.get('acknowledged') and event.session_id:
+            try:
+                supabase.table('pos_companion_sessions').update({
+                    'status': 'cancelled', 'error_message': 'Saved as an offline sale; rewards await StoreHub verification.',
+                    'updated_at': datetime.now(timezone.utc).isoformat(),
+                }).eq('id', event.session_id).eq('device_id', device['id']).in_('status', ['waiting_for_sale', 'matching', 'manual_match_required']).execute()
+            except Exception:
+                pass
+    return {'ok': True, 'device_id': str(device['id']), 'results': results}
+
+
+@app.get('/api/v1/companion/offline-sales/status')
+@app.get('/api/v1/pos-companion/offline-sales/status')
+def pos_companion_offline_sales_status(client_event_ids: Optional[str] = None, x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token')):
+    device = _require_pos_device(x_lt_device_token)
+    query = supabase.table('storehub_offline_sales').select('*').eq('device_id', str(device['id']))
+    if client_event_ids:
+        identifiers = list(dict.fromkeys(part.strip() for part in client_event_ids.split(',') if part.strip()))
+        if len(identifiers) > 50 or any(len(part) > 120 for part in identifiers):
+            raise HTTPException(status_code=400, detail='Query at most 50 saved event IDs at a time.')
+        query = query.in_('client_event_id', identifiers)
+    try:
+        rows = query.order('created_at', desc=True).limit(100).execute().data or []
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    return {'ok': True, 'device_id': str(device['id']),
+            'pending': sum(row.get('status') in ('pending', 'awaiting_storehub', 'needs_review') for row in rows),
+            'events': [offline_sale_public(row) for row in rows]}
+
+
+@app.post('/api/v1/companion/offline-sales/{event_id}/receipt')
+@app.post('/api/v1/pos-companion/offline-sales/{event_id}/receipt')
+def pos_companion_offline_sales_receipt(event_id: str, req: POSOfflineSaleReceiptRequest, x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token')):
+    device = _require_pos_device(x_lt_device_token)
+    try:
+        row = _pos_rpc_first('pos_correct_offline_sale_receipt', {
+            'p_device_id': str(device['id']), 'p_event_id': event_id,
+            'p_receipt_reference': req.receipt_reference.strip(),
+        })
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=friendly_db_error(exc))
+    return {'ok': True, 'event': offline_sale_public(row)}
+
 
 # =============================================================================
 # LOYALTYTREE LENDING / LOAN MANAGEMENT v1
