@@ -7416,6 +7416,10 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
   const [maxAttendees, setMaxAttendees] = useState('')
   const [logoUrl, setLogoUrl] = useState('')
   const [coverUrl, setCoverUrl] = useState('')
+  const [notifMessage, setNotifMessage] = useState('')
+  const [geoLat, setGeoLat] = useState('')
+  const [geoLng, setGeoLng] = useState('')
+  const [geoRadius, setGeoRadius] = useState('200')
   const [uploading, setUploading] = useState(false)
   const [levels, setLevels] = useState([{ name: 'VIP', benefits: [''], price: '0', color: '#0d9488' }])
   const [saving, setSaving] = useState(false)
@@ -7476,6 +7480,7 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
 
   const resetForm = () => {
     setName(''); setEventDate(''); setVenue(''); setMaxAttendees(''); setLogoUrl(''); setCoverUrl('')
+    setNotifMessage(''); setGeoLat(''); setGeoLng(''); setGeoRadius('200')
     setLevels([{ name: 'VIP', benefits: [''], price: '0', color: '#0d9488' }])
   }
 
@@ -7493,6 +7498,10 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
           max_attendees: maxAttendees ? Number(maxAttendees) : null,
           logo_url: logoUrl || null,
           cover_url: coverUrl || null,
+          notification_message: notifMessage.trim() || null,
+          geo_latitude: geoLat ? Number(geoLat) : null,
+          geo_longitude: geoLng ? Number(geoLng) : null,
+          geo_radius_meters: geoRadius ? Number(geoRadius) : 200,
         }),
       })
       const created = await createRes.json().catch(() => ({}))
@@ -7683,6 +7692,15 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
             <input type="file" accept="image/*" onChange={e => uploadEventImage(e.target.files?.[0], setCoverUrl)} disabled={uploading} style={{ fontSize: 12 }} />
             {coverUrl && <img src={coverUrl} alt="" style={{ width: '100%', height: 60, objectFit: 'cover', marginTop: 6, borderRadius: 6 }} />}
           </div>
+        </div>
+        <div style={{ marginTop: 16 }}>
+          <label style={styles.label}>Notification Message</label>
+          <input value={notifMessage} onChange={e => setNotifMessage(e.target.value)} placeholder="You're near the event! Show your ticket." style={styles.input} />
+        </div>
+        <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: '1fr 1fr 100px', gap: 12 }}>
+          <div><label style={styles.label}>Latitude</label><input value={geoLat} onChange={e => setGeoLat(e.target.value)} placeholder="14.5995" style={styles.input} /></div>
+          <div><label style={styles.label}>Longitude</label><input value={geoLng} onChange={e => setGeoLng(e.target.value)} placeholder="120.9842" style={styles.input} /></div>
+          <div><label style={styles.label}>Radius (m)</label><input type="number" min="50" max="1000" value={geoRadius} onChange={e => setGeoRadius(e.target.value)} style={styles.input} /></div>
         </div>
         <div style={{ marginTop: 16 }}>
           <label style={styles.label}>Access Levels</label>

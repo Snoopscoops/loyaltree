@@ -49665,6 +49665,10 @@ class EventCreate(BaseModel):
     max_attendees: Optional[int] = Field(default=None, ge=1, le=100000)
     logo_url: Optional[str] = Field(default=None, max_length=1000)
     cover_url: Optional[str] = Field(default=None, max_length=1000)
+    notification_message: Optional[str] = Field(default=None, max_length=120)
+    geo_latitude: Optional[float] = None
+    geo_longitude: Optional[float] = None
+    geo_radius_meters: Optional[int] = Field(default=200, ge=50, le=1000)
 
 class AccessLevelCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
@@ -49721,6 +49725,10 @@ def create_event(public_id: str, payload: EventCreate, authorization: str = Head
         "max_attendees": payload.max_attendees,
         "logo_url": getattr(payload, "logo_url", None),
         "cover_url": getattr(payload, "cover_url", None),
+        "notification_message": getattr(payload, "notification_message", None),
+        "geo_latitude": getattr(payload, "geo_latitude", None),
+        "geo_longitude": getattr(payload, "geo_longitude", None),
+        "geo_radius_meters": getattr(payload, "geo_radius_meters", 200),
         "status": "draft",
         "created_at": datetime.utcnow().isoformat(),
         "updated_at": datetime.utcnow().isoformat(),
@@ -50169,6 +50177,14 @@ def generate_event_ticket_pkpass(ticket: dict, event: dict, access_level: dict, 
         },
     }
 
+    if event.get("geo_latitude") and event.get("geo_longitude"):
+        pass_json["locations"] = [{
+            "latitude": float(event["geo_latitude"]),
+            "longitude": float(event["geo_longitude"]),
+            "relevantText": (event.get("notification_message") or f"You're near {event.get('name', 'the event')}")[:120],
+            "maxDistance": int(event.get("geo_radius_meters") or 200),
+        }]
+
     def download_image(url: str) -> bytes | None:
         if not url:
             return None
@@ -50260,6 +50276,11 @@ def generate_google_event_ticket_jwt(ticket: dict, event: dict, access_level: di
             "sourceUri": {"uri": cover_url},
             "contentDescription": {"defaultValue": {"language": "en-US", "value": "Cover"}},
         }
+    if event.get("geo_latitude") and event.get("geo_longitude"):
+        class_body["merchantLocations"] = [{
+            "latitude": float(event["geo_latitude"]),
+            "longitude": float(event["geo_longitude"]),
+        }]
 
     try:
         import httpx
