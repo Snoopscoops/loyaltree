@@ -2904,6 +2904,8 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
     ? 'card'
     : ['billing','security','walletqueue','referrals'].includes(activeTab)
     ? 'more'
+    : activeTab === 'events'
+    ? 'events'
     : activeTab
 
   const goOwnerNav = (group) => {
@@ -2913,6 +2915,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
     if (group === 'grow') return setActiveTab('satisfaction')
     if (group === 'card') return setActiveTab('program')
     if (group === 'more') return setActiveTab('billing')
+    if (group === 'events') return setActiveTab('events')
   }
 
   const scopedCustomers = refreshEnabled ? customers.filter(c => customerMatchesFilter(c, customerFilter, stats)) : customers
@@ -3264,6 +3267,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
             { id:'operate', label:'Operate', icon:'▣' },
             { id:'grow', label:'Grow', icon:'↗' },
             { id:'card', label:'Card', icon:'◫' },
+            { id:'events', label:'Event Ticketing', icon:'🎟️' },
             { id:'more', label:'More', icon:'•••' },
           ].map(tab => (
             <button
@@ -3381,6 +3385,41 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
                   {c.reward_unlocked && <span style={styles.activityFruit}>🎁</span>}
                 </div>
               ))}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'events' && (
+          <div>
+            <div className="lt-owner-section-header" style={styles.sectionHeader}>
+              <h2 className="lt-owner-section-title" style={styles.sectionTitle}>🎟️ Event Ticketing</h2>
+            </div>
+            <div style={{...styles.card, padding: 24}}>
+              <h3 style={{marginTop: 0}}>Create a new event</h3>
+              <p style={{color: '#64748b', fontSize: 14}}>
+                Pricing: Growth & Pro get the first 50 tickets free per event. After that (or for Starter / ticketing-only) it is ₱10 per person. Email confirmation is +₱2 per ticket.
+              </p>
+              <div style={{marginTop: 20}}>
+                <label style={styles.label}>Event name</label>
+                <input placeholder="e.g. Summer Concert" style={styles.input} />
+              </div>
+              <div style={{marginTop: 12}}>
+                <label style={styles.label}>Up to how many attendees?</label>
+                <input type="number" min="1" placeholder="e.g. 200" style={styles.input} />
+              </div>
+              <div style={{marginTop: 20}}>
+                <label style={styles.label}>Access levels & benefits</label>
+                <p style={{fontSize: 13, color: '#64748b'}}>Add levels (VIP, Regular, Staff, etc.) and the benefits each level gets.</p>
+                <button style={styles.addBtn}>+ Add access level</button>
+              </div>
+              <div style={{marginTop: 24, display: 'flex', gap: 10}}>
+                <button style={styles.submitBtn}>Save as Draft</button>
+                <button style={{...styles.submitBtn, background: '#0f766e'}}>Publish Event</button>
+              </div>
+            </div>
+            <div style={{...styles.card, marginTop: 20, padding: 24}}>
+              <h3 style={{marginTop: 0}}>Your events</h3>
+              <p style={{color: '#94a3b8'}}>No events yet. Create and publish your first event above.</p>
             </div>
           </div>
         )}

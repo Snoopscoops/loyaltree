@@ -20583,6 +20583,12 @@ async def paymongo_webhook(request: Request):
         except Exception as e:
             print(f"WEBHOOK failure log update error: {e}")
 
+    # Event Ticketing: fulfill ticket after successful payment
+    if metadata.get("type") == "event_ticket":
+        ticket_public_id = metadata.get("ticket_public_id")
+        if ticket_public_id:
+            fulfill_event_ticket_payment(ticket_public_id)
+
     return {"received": True}
 
 @app.get("/api/v1/customer/{public_id}")
@@ -49650,3 +49656,525 @@ async def admin_set_custom_price(public_id: str, payload: AdminCustomPriceUpdate
 
 # Install last so monitoring surrounds all existing HTTP middleware.
 install_monitoring(app)
+# =============================================================================
+# EVENT TICKETING MODULE — append these routes & helpers to main.py
+# (place before the final install_monitoring(app) line)
+# =============================================================================
+
+# --- Pydantic models for Event Ticketing ---
+
+class EventCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    event_date: Optional[str] = None  # ISO datetime
+    venue: Optional[str] = Field(default=None, max_length=300)
+    max_attendees: Optional[int] = Field(default=None, ge=1, le=100000)
+
+class AccessLevelCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    benefits: Optional[str] = Field(default=None, max_length=1000)
+    ticket_price: float = Field(default=0, ge=0)
+    quantity_limit: Optional[int] = Field(default=None, ge=1)
+    color_hex: str = Field(default="#0d9488", max_length=7)
+
+class TicketClaimRequest(BaseModel):
+    access_level_public_id: str
+    attendee_name: str = Field(min_length=1, max_length=160)
+    attendee_email: Optional[str] = Field(default=None, max_length=254)
+    attendee_phone: Optional[str] = Field(default=None, max_length=40)
+    send_email_confirmation: bool = False
+
+class TicketScanRequest(BaseModel):
+    qr_payload: str  # expected format: "lt-ticket:<ticket_public_id>"
+
+
+def _require_event_owner(public_id: str, authorization: str) -> dict:
+    """Reuse existing owner session check."""
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    return business
+
+
+def _free_ticket_allowance(business: dict) -> int:
+    """Growth and Pro get 50 free tickets per event. Others get 0."""
+    plan = str(business.get("plan") or "").lower()
+    return 50 if plan in ("growth", "pro") else 0
+
+
+def _event_ticket_fee(business: dict, quantity: int) -> float:
+    """₱10 per ticket after free allotment. Email confirmation is +₱2 (handled separately)."""
+    free = _free_ticket_allowance(business)
+    billable = max(0, quantity - free)
+    return billable * 10.0
+
+
+# --- Merchant routes ---
+
+@app.post("/api/v1/business/{public_id}/events")
+def create_event(public_id: str, payload: EventCreate, authorization: str = Header(default="")):
+    business = _require_event_owner(public_id, authorization)
+    row = {
+        "public_id": f"evt_{uuid.uuid4().hex[:12]}",
+        "business_id": business["id"],
+        "name": payload.name.strip(),
+        "description": payload.description,
+        "event_date": payload.event_date,
+        "venue": payload.venue,
+        "max_attendees": payload.max_attendees,
+        "status": "draft",
+        "created_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+    try:
+        res = supabase.table("events").insert(row).execute()
+        return (res.data or [row])[0]
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+
+
+@app.get("/api/v1/business/{public_id}/events")
+def list_events(public_id: str, authorization: str = Header(default="")):
+    business = _require_event_owner(public_id, authorization)
+    try:
+        rows = (
+            supabase.table("events")
+            .select("*")
+            .eq("business_id", business["id"])
+            .order("created_at", desc=True)
+            .execute()
+            .data or []
+        )
+        return rows
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+
+
+@app.post("/api/v1/business/{public_id}/events/{event_public_id}/access-levels")
+def add_access_level(
+    public_id: str,
+    event_public_id: str,
+    payload: AccessLevelCreate,
+    authorization: str = Header(default=""),
+):
+    business = _require_event_owner(public_id, authorization)
+    try:
+        event_rows = (
+            supabase.table("events")
+            .select("id")
+            .eq("public_id", event_public_id)
+            .eq("business_id", business["id"])
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        if not event_rows:
+            raise HTTPException(status_code=404, detail="Event not found")
+        event_id = event_rows[0]["id"]
+        row = {
+            "public_id": f"lvl_{uuid.uuid4().hex[:12]}",
+            "event_id": event_id,
+            "name": payload.name.strip(),
+            "benefits": payload.benefits,
+            "ticket_price": payload.ticket_price,
+            "quantity_limit": payload.quantity_limit,
+            "color_hex": payload.color_hex,
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        res = supabase.table("event_access_levels").insert(row).execute()
+        return (res.data or [row])[0]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+
+
+@app.get("/api/v1/business/{public_id}/events/{event_public_id}/access-levels")
+def list_access_levels(public_id: str, event_public_id: str, authorization: str = Header(default="")):
+    business = _require_event_owner(public_id, authorization)
+    try:
+        event_rows = (
+            supabase.table("events")
+            .select("id")
+            .eq("public_id", event_public_id)
+            .eq("business_id", business["id"])
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        if not event_rows:
+            raise HTTPException(status_code=404, detail="Event not found")
+        levels = (
+            supabase.table("event_access_levels")
+            .select("*")
+            .eq("event_id", event_rows[0]["id"])
+            .order("sort_order")
+            .execute()
+            .data or []
+        )
+        return levels
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+
+
+# --- Public ticket claim (customer side) ---
+
+@app.post("/api/v1/public/events/{event_public_id}/tickets")
+def claim_event_ticket(event_public_id: str, payload: TicketClaimRequest):
+    try:
+        event_rows = (
+            supabase.table("events")
+            .select("*, businesses!inner(id, public_id, name, plan, pricing_region)")
+            .eq("public_id", event_public_id)
+            .eq("status", "published")
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        if not event_rows:
+            raise HTTPException(status_code=404, detail="Event not found or not published")
+        event = event_rows[0]
+        business = event.get("businesses") or {}
+
+        level_rows = (
+            supabase.table("event_access_levels")
+            .select("*")
+            .eq("public_id", payload.access_level_public_id)
+            .eq("event_id", event["id"])
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        if not level_rows:
+            raise HTTPException(status_code=404, detail="Access level not found")
+        level = level_rows[0]
+
+        # Enforce quantity limit if set
+        if level.get("quantity_limit"):
+            sold = (
+                supabase.table("event_tickets")
+                .select("id", count="exact")
+                .eq("access_level_id", level["id"])
+                .neq("status", "cancelled")
+                .execute()
+            )
+            if (sold.count or 0) >= level["quantity_limit"]:
+                raise HTTPException(status_code=409, detail="This access level is sold out")
+
+        ticket_public_id = f"tkt_{uuid.uuid4().hex[:16]}"
+        ticket_row = {
+            "public_id": ticket_public_id,
+            "event_id": event["id"],
+            "access_level_id": level["id"],
+            "attendee_name": payload.attendee_name.strip(),
+            "attendee_email": payload.attendee_email,
+            "attendee_phone": payload.attendee_phone,
+            "status": "issued",
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        res = supabase.table("event_tickets").insert(ticket_row).execute()
+        ticket = (res.data or [ticket_row])[0]
+
+        # Pricing note (actual charge happens via PayMongo if ticket_price > 0)
+        fee = _event_ticket_fee(business, 1)
+        email_fee = 2.0 if payload.send_email_confirmation else 0.0
+
+        return {
+            "ticket": ticket,
+            "qr_payload": f"lt-ticket:{ticket_public_id}",
+            "access_level": level.get("name"),
+            "estimated_platform_fee": fee + email_fee,
+            "note": "If this is a paid ticket, complete payment via the merchant's PayMongo account. Wallet pass will be issued after confirmation.",
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+
+
+# --- Staff scan at entrance ---
+
+@app.post("/api/v1/business/{public_id}/events/scan")
+def scan_event_ticket(
+    public_id: str,
+    payload: TicketScanRequest,
+    authorization: str = Header(default=""),
+):
+    # Reuse existing staff session check
+    claims = get_staff_session_claims(public_id, authorization)
+    if not claims:
+        raise HTTPException(status_code=401, detail="Staff session required")
+
+    raw = payload.qr_payload.strip()
+    if not raw.startswith("lt-ticket:"):
+        raise HTTPException(status_code=400, detail="Invalid ticket QR")
+    ticket_public_id = raw.split(":", 1)[1]
+
+    try:
+        rows = (
+            supabase.table("event_tickets")
+            .select("*, events!inner(business_id, name)")
+            .eq("public_id", ticket_public_id)
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        if not rows:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+        ticket = rows[0]
+        event = ticket.get("events") or {}
+        business = safe_get_business(public_id)
+        if not business or event.get("business_id") != business.get("id"):
+            raise HTTPException(status_code=403, detail="Ticket does not belong to this business")
+
+        if ticket.get("status") == "scanned":
+            raise HTTPException(status_code=409, detail="Ticket already scanned")
+
+        now = datetime.utcnow().isoformat()
+        supabase.table("event_tickets").update({
+            "status": "scanned",
+            "scanned_at": now,
+            "scanned_by_staff_id": claims.get("staff_id"),
+        }).eq("id", ticket["id"]).execute()
+
+        return {
+            "ok": True,
+            "ticket_public_id": ticket_public_id,
+            "attendee_name": ticket.get("attendee_name"),
+            "scanned_at": now,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+
+
+# --- Download endpoints (Apple .pkpass + Google Wallet link) ---
+
+@app.get("/api/v1/public/tickets/{ticket_public_id}/apple")
+def download_apple_event_ticket(ticket_public_id: str):
+    try:
+        rows = (
+            supabase.table("event_tickets")
+            .select("*, events!inner(*, businesses!inner(id, name, public_id)), event_access_levels!inner(*)")
+            .eq("public_id", ticket_public_id)
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        if not rows:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+        ticket = rows[0]
+        event = ticket.get("events") or {}
+        access_level = ticket.get("event_access_levels") or {}
+        business = (event.get("businesses") or {})
+
+        pkpass = generate_event_ticket_pkpass(ticket, event, access_level, business)
+        return Response(
+            content=pkpass,
+            media_type="application/vnd.apple.pkpass",
+            headers={"Content-Disposition": f'attachment; filename="{ticket_public_id}.pkpass"'},
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+
+
+@app.get("/api/v1/public/tickets/{ticket_public_id}/google")
+def get_google_event_ticket_link(ticket_public_id: str):
+    try:
+        rows = (
+            supabase.table("event_tickets")
+            .select("*, events!inner(*, businesses!inner(id, name, public_id)), event_access_levels!inner(*)")
+            .eq("public_id", ticket_public_id)
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        if not rows:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+        ticket = rows[0]
+        event = ticket.get("events") or {}
+        access_level = ticket.get("event_access_levels") or {}
+        business = (event.get("businesses") or {})
+
+        jwt = generate_google_event_ticket_jwt(ticket, event, access_level, business)
+        return {
+            "add_to_wallet_url": f"https://pay.google.com/gp/v/save/{jwt}",
+            "ticket_public_id": ticket_public_id,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+
+
+# --- Publish event ---
+
+@app.post("/api/v1/business/{public_id}/events/{event_public_id}/publish")
+def publish_event(public_id: str, event_public_id: str, authorization: str = Header(default="")):
+    business = _require_event_owner(public_id, authorization)
+    try:
+        res = (
+            supabase.table("events")
+            .update({"status": "published", "updated_at": datetime.utcnow().isoformat()})
+            .eq("public_id", event_public_id)
+            .eq("business_id", business["id"])
+            .execute()
+        )
+        if not res.data:
+            raise HTTPException(status_code=404, detail="Event not found")
+        return {"ok": True, "status": "published"}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+
+
+# --- Hook into existing PayMongo webhook ---
+# Call this from your existing PayMongo webhook handler when a ticket payment succeeds.
+# Example usage inside the webhook:
+#   if metadata.get("type") == "event_ticket":
+#       fulfill_event_ticket_payment(metadata.get("ticket_public_id"))
+
+def fulfill_event_ticket_payment(ticket_public_id: str):
+    """Mark ticket paid and generate wallet passes after PayMongo success."""
+    try:
+        rows = (
+            supabase.table("event_tickets")
+            .select("*, events!inner(*, businesses!inner(id, name, public_id)), event_access_levels!inner(*)")
+            .eq("public_id", ticket_public_id)
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        if not rows:
+            return False
+        ticket = rows[0]
+        if ticket.get("status") == "issued":
+            return True  # already fulfilled
+
+        event = ticket.get("events") or {}
+        access_level = ticket.get("event_access_levels") or {}
+        business = (event.get("businesses") or {})
+
+        supabase.table("event_tickets").update({
+            "status": "issued",
+            "updated_at": datetime.utcnow().isoformat(),
+        }).eq("id", ticket["id"]).execute()
+
+        # Optional: send email if requested
+        if ticket.get("attendee_email"):
+            send_event_ticket_email(ticket, event, business)
+
+        return True
+    except Exception as exc:
+        print(f"Event ticket fulfill error: {exc}")
+        return False
+
+def generate_event_ticket_pkpass(ticket: dict, event: dict, access_level: dict, business: dict) -> bytes:
+    """Build and sign an Apple Wallet eventTicket pass."""
+    serial = ticket.get("public_id", "")
+    qr_message = f"lt-ticket:{serial}"
+
+    event_date = event.get("event_date") or ""
+    try:
+        dt = datetime.fromisoformat(event_date.replace("Z", "+00:00")) if event_date else None
+        date_str = dt.strftime("%b %d, %Y %I:%M %p") if dt else "TBA"
+    except Exception:
+        date_str = event_date or "TBA"
+
+    pass_json = {
+        "formatVersion": 1,
+        "passTypeIdentifier": APPLE_PASS_TYPE_IDENTIFIER,
+        "teamIdentifier": APPLE_TEAM_IDENTIFIER,
+        "serialNumber": serial,
+        "organizationName": business.get("name", "LoyaltyTree"),
+        "description": f"{event.get('name', 'Event')} Ticket",
+        "logoText": business.get("name", "Event"),
+        "foregroundColor": "rgb(255,255,255)",
+        "backgroundColor": access_level.get("color_hex") or "#0d9488",
+        "labelColor": "rgb(255,255,255)",
+        "barcode": {
+            "message": qr_message,
+            "format": "PKBarcodeFormatQR",
+            "messageEncoding": "iso-8859-1",
+        },
+        "eventTicket": {
+            "primaryFields": [
+                {"key": "event", "label": "EVENT", "value": event.get("name", "Event")},
+            ],
+            "secondaryFields": [
+                {"key": "date", "label": "DATE", "value": date_str},
+                {"key": "venue", "label": "VENUE", "value": event.get("venue") or "TBA"},
+            ],
+            "auxiliaryFields": [
+                {"key": "level", "label": "ACCESS", "value": access_level.get("name", "General")},
+                {"key": "name", "label": "ATTENDEE", "value": ticket.get("attendee_name", "")},
+            ],
+            "backFields": [
+                {"key": "benefits", "label": "BENEFITS", "value": access_level.get("benefits") or "—"},
+                {"key": "ticket_id", "label": "TICKET ID", "value": serial},
+            ],
+        },
+    }
+
+    # Build minimal .pkpass (manifest + signature). Full implementation should
+    # also include icon.png / logo.png from your existing asset helpers.
+    import zipfile
+    from io import BytesIO
+
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("pass.json", json.dumps(pass_json))
+        # Minimal manifest
+        manifest = {"pass.json": hashlib.sha1(json.dumps(pass_json).encode()).hexdigest()}
+        zf.writestr("manifest.json", json.dumps(manifest))
+        sig = sign_pkpass_manifest(json.dumps(manifest).encode())
+        if sig:
+            zf.writestr("signature", sig)
+
+    return buf.getvalue()
+
+
+# --- Helper: Google Wallet Event Ticket JWT ---
+# Reuses get_google_wallet_credentials + create_google_wallet_jwt
+
+def generate_google_event_ticket_jwt(ticket: dict, event: dict, access_level: dict, business: dict) -> str:
+    """Return a Google Wallet 'Add to Wallet' JWT for an Event Ticket."""
+    issuer_id = GOOGLE_WALLET_ISSUER_ID
+    if not issuer_id:
+        raise HTTPException(status_code=500, detail="Google Wallet not configured")
+
+    class_id = f"{issuer_id}.event_{event.get('public_id', 'evt')}"
+    object_id = f"{issuer_id}.ticket_{ticket.get('public_id', 'tkt')}"
+
+    event_date = event.get("event_date") or ""
+    try:
+        dt = datetime.fromisoformat(event_date.replace("Z", "+00:00")) if event_date else None
+        start_date = dt.strftime("%Y-%m-%dT%H:%M:%S.000Z") if dt else None
+    except Exception:
+        start_date = None
+
+    event_object = {
+        "id": object_id,
+        "classId": class_id,
+        "state": "ACTIVE",
+        "eventName": {"defaultValue": {"language": "en-US", "value": event.get("name", "Event")}},
+        "venue": {"name": {"defaultValue": {"language": "en-US", "value": event.get("venue") or "TBA"}}},
+        "dateTime": {"start": start_date} if start_date else {},
+        "ticketHolderName": ticket.get("attendee_name", ""),
+        "ticketNumber": ticket.get("public_id", ""),
+        "ticketType": {"defaultValue": {"language": "en-US", "value": access_level.get("name", "General")}},
+        "barcode": {
+            "type": "QR_CODE",
+            "value": f"lt-ticket:{ticket.get('public_id', '')}",
+        },
+        "hexBackgroundColor": access_level.get("color_hex") or "#0d9488",
+    }
+
+    return create_google_wallet_jwt({"eventTicketObjects": [event_object]})
