@@ -7422,6 +7422,7 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
   const [selected, setSelected] = useState(null)
   const [details, setDetails] = useState(null)
   const [tickets, setTickets] = useState([])
+  const [eventLevels, setEventLevels] = useState([])
 
   const slug = user?.business_slug
 
@@ -7540,27 +7541,31 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
     setSelected(ev)
     setDetails(null)
     setTickets([])
+    setEventLevels([])
     setView('details')
     try {
-      const [sumRes, tixRes] = await Promise.all([
+      const [sumRes, tixRes, lvlRes] = await Promise.all([
         authFetch(`${API_BASE}/api/v1/business/${slug}/events/${ev.public_id}/summary`),
         authFetch(`${API_BASE}/api/v1/business/${slug}/events/${ev.public_id}/tickets`),
+        authFetch(`${API_BASE}/api/v1/public/events/${ev.public_id}`),
       ])
       const sum = await sumRes.json().catch(() => ({}))
       const tix = await tixRes.json().catch(() => [])
+      const lvlData = await lvlRes.json().catch(() => ({}))
       if (sumRes.ok) setDetails(sum)
       if (tixRes.ok) setTickets(Array.isArray(tix) ? tix : [])
+      if (lvlRes.ok) setEventLevels(lvlData.access_levels || [])
     } catch {}
   }
 
   const copyLink = (url) => navigator.clipboard.writeText(url).then(() => setMessage?.('Link copied')).catch(() => {})
-  const downloadQr = (url) => {
+  const downloadQr = (url, name) => {
     const a = document.createElement('a')
     a.href = `https://api.qrserver.com/v1/create-qr-code/?size=600x600&data=${encodeURIComponent(url)}`
-    a.download = 'event-qr.png'
+    a.download = `${name || 'event'}-qr.png`
     a.click()
   }
-  const joinUrl = (id) => `${window.location.origin}/join/event/${id}`
+  const levelJoinUrl = (eventId, levelId) => `${window.location.origin}/join/event/${eventId}?level=${levelId}`
 
   const levelCounts = tickets.reduce((acc, t) => {
     const lvl = t.event_access_levels?.name || 'Unknown'
@@ -7603,13 +7608,23 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
           </div>
         )}
         <div style={{ background: '#fff', borderRadius: 16, padding: 20, border: '1px solid #e2e8f0', marginBottom: 16 }}>
-          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Join Link & QR</div>
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
-            <code style={{ fontSize: 12, background: '#f8fafc', padding: '8px 12px', borderRadius: 8, border: '1px solid #e2e8f0' }}>{joinUrl(selected.public_id)}</code>
-            <button onClick={() => copyLink(joinUrl(selected.public_id))} style={styles.addBtn}>Copy Link</button>
-            <button onClick={() => downloadQr(joinUrl(selected.public_id))} style={{ ...styles.addBtn, background: '#0f766e', color: '#fff' }}>Download QR</button>
-          </div>
-          <img alt="QR" src={`https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(joinUrl(selected.public_id))}`} style={{ width: 160, height: 160, borderRadius: 12, border: '1px solid #e2e8f0' }} />
+          <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>Join Links & QR per Access Level</div>
+          {eventLevels.length === 0 ? <p style={{ color: '#94a3b8', fontSize: 13 }}>No access levels yet.</p> : (
+            eventLevels.map(lvl => {
+              const url = levelJoinUrl(selected.public_id, lvl.public_id)
+              return (
+                <div key={lvl.public_id} style={{ border: '1px solid #e2e8f0', borderRadius: 12, padding: 14, marginBottom: 12 }}>
+                  <div style={{ fontWeight: 700, marginBottom: 6 }}>{lvl.name}</div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 8 }}>
+                    <code style={{ fontSize: 11, background: '#f8fafc', padding: '6px 10px', borderRadius: 6 }}>{url}</code>
+                    <button onClick={() => copyLink(url)} style={styles.addBtn}>Copy</button>
+                    <button onClick={() => downloadQr(url, lvl.name)} style={{ ...styles.addBtn, background: '#0f766e', color: '#fff' }}>Download QR</button>
+                  </div>
+                  <img alt="QR" src={`https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=${encodeURIComponent(url)}`} style={{ width: 120, height: 120, borderRadius: 8 }} />
+                </div>
+              )
+            })
+          )}
         </div>
         <div style={{ background: '#fff', borderRadius: 16, padding: 20, border: '1px solid #e2e8f0' }}>
           <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>Attendees ({tickets.length})</div>
@@ -7640,7 +7655,6 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
         <h2 style={{ margin: 0, fontSize: 24 }}>🎟️ Event Ticketing</h2>
         <p style={{ margin: '6px 0 0', color: '#64748b', fontSize: 14 }}>Create events with custom access levels and track attendees.</p>
       </div>
-
       <div style={{ background: '#fff', borderRadius: 16, padding: 24, border: '1px solid #e2e8f0', marginBottom: 20 }}>
         <h3 style={{ marginTop: 0, fontSize: 16 }}>Create Event</h3>
         <div style={{ background: '#f0fdfa', borderRadius: 12, padding: 14, marginTop: 12, fontSize: 13, color: '#0f766e' }}>
@@ -7696,7 +7710,6 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
           <button disabled={saving || uploading} onClick={() => saveEvent(true)} style={styles.submitBtn}>{saving ? 'Publishing…' : 'Publish Event'}</button>
         </div>
       </div>
-
       <div style={{ background: '#fff', borderRadius: 16, padding: 20, border: '1px solid #e2e8f0' }}>
         <h3 style={{ marginTop: 0, fontSize: 16 }}>Your Events</h3>
         {loading ? <p>Loading…</p> : events.length === 0 ? <p style={{ color: '#94a3b8' }}>No events yet.</p> : (

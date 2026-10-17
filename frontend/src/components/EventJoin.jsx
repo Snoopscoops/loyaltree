@@ -1,8 +1,10 @@
 import React, { useState, useEffect } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useSearchParams } from 'react-router-dom'
 
 export default function EventJoin({ API_BASE }) {
   const { eventId } = useParams()
+  const [searchParams] = useSearchParams()
+  const lockedLevel = searchParams.get('level') || ''
   const [event, setEvent] = useState(null)
   const [levels, setLevels] = useState([])
   const [loading, setLoading] = useState(true)
@@ -29,7 +31,9 @@ export default function EventJoin({ API_BASE }) {
         if (!res.ok) throw new Error(data.detail || 'Event not found')
         setEvent(data.event || data)
         setLevels(data.access_levels || [])
-        if ((data.access_levels || []).length === 1) {
+        if (lockedLevel && (data.access_levels || []).some(l => l.public_id === lockedLevel)) {
+          setSelectedLevel(lockedLevel)
+        } else if ((data.access_levels || []).length === 1) {
           setSelectedLevel(data.access_levels[0].public_id)
         }
       } catch (e) {
@@ -121,7 +125,7 @@ export default function EventJoin({ API_BASE }) {
 
         <form onSubmit={handleSubmit}>
           <label style={styles.label}>Access Level</label>
-          <select value={selectedLevel} onChange={e => setSelectedLevel(e.target.value)} required style={styles.input}>
+          <select value={selectedLevel} onChange={e => setSelectedLevel(e.target.value)} required disabled={!!lockedLevel} style={styles.input}>
             <option value="">Select level</option>
             {levels.map(lvl => (
               <option key={lvl.public_id} value={lvl.public_id}>{lvl.name}</option>
