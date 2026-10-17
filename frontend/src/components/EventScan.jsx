@@ -7,6 +7,7 @@ export default function EventScan({ API_BASE, user, authFetch }) {
   const [scanning, setScanning] = useState(false)
 
   const slug = user?.business_slug
+  const token = user?.token
 
   const handleScan = async (e) => {
     e.preventDefault()
@@ -15,9 +16,12 @@ export default function EventScan({ API_BASE, user, authFetch }) {
     setError('')
     setResult(null)
     try {
-      const res = await authFetch(`${API_BASE}/api/v1/business/${slug}/events/scan`, {
+      const res = await fetch(`${API_BASE}/api/v1/business/${slug}/events/scan`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ qr_payload: qr.trim() }),
       })
       const data = await res.json().catch(() => ({}))

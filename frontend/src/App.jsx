@@ -13,6 +13,7 @@ const LendingDashboard = lazy(() => import('./components/LendingDashboard'))
 const CockpitDashboard = lazy(() => import('./components/CockpitDashboard'))
 const CashierApp = lazy(() => import('./components/CashierApp'))
 const EventScan = lazy(() => import('./components/EventScan'))
+const EventJoin = lazy(() => import('./components/EventJoin'))
 const AnalyticsDashboard = lazy(() => import('./components/AnalyticsDashboard'))
 const AdminDashboard = lazy(() => import('./components/AdminDashboard'))
 const PartnerDashboard = lazy(() => import('./components/PartnerDashboard'))
@@ -152,7 +153,9 @@ function App() {
   )
 
   function AppRoutes() { return <Routes>
-        <Route path="/event-scan" element={user ? <EventScan API_BASE={API_BASE} user={user} authFetch={authFetch} /> : <Navigate to="/login" />} />
+        <Route path="/event-scan" element={user ? <EventScan API_BASE={API_BASE} user={user} /> : <Navigate to="/login" />} />
+        <Route path="/join/event/:eventId" element={<EventJoin API_BASE={API_BASE} />} />
+        <Route path="/motolite/*" element={<MotoliteApp API_BASE={API_BASE} />} />
         <Route path="/" element={
           user ? (
             user.role === 'owner' ? <Navigate to="/dashboard" /> :
