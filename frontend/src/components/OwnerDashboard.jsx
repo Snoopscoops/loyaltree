@@ -7418,6 +7418,7 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
   const [saving, setSaving] = useState(false)
   const [selected, setSelected] = useState(null)
   const [details, setDetails] = useState(null)
+  const [tickets, setTickets] = useState([])
 
   const slug = user?.business_slug
 
@@ -7498,16 +7499,28 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
   const openDetails = async (ev) => {
     setSelected(ev)
     setDetails(null)
+    setTickets([])
     setView('details')
     try {
-      const res = await authFetch(`${API_BASE}/api/v1/business/${slug}/events/${ev.public_id}/summary`)
-      const data = await res.json().catch(() => ({}))
-      if (res.ok) setDetails(data)
+      const [sumRes, tixRes] = await Promise.all([
+        authFetch(`${API_BASE}/api/v1/business/${slug}/events/${ev.public_id}/summary`),
+        authFetch(`${API_BASE}/api/v1/business/${slug}/events/${ev.public_id}/tickets`),
+      ])
+      const sum = await sumRes.json().catch(() => ({}))
+      const tix = await tixRes.json().catch(() => [])
+      if (sumRes.ok) setDetails(sum)
+      if (tixRes.ok) setTickets(Array.isArray(tix) ? tix : [])
     } catch {}
   }
 
   const copyLink = (url) => navigator.clipboard.writeText(url).then(() => setMessage?.('Link copied')).catch(() => {})
   const joinUrl = (id) => `${window.location.origin}/join/event/${id}`
+
+  const levelCounts = tickets.reduce((acc, t) => {
+    const lvl = t.event_access_levels?.name || 'Unknown'
+    acc[lvl] = (acc[lvl] || 0) + 1
+    return acc
+  }, {})
 
   if (view === 'details' && selected) {
     return (
@@ -7520,11 +7533,16 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
           <div style={{ fontSize: 14, color: '#64748b', marginBottom: 16 }}>
             {selected.event_date ? new Date(selected.event_date).toLocaleString() : 'No date'} · {selected.venue || 'No venue'}
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 12, marginBottom: 20 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 12, marginBottom: 16 }}>
             <div style={{ background: '#f0fdfa', padding: 16, borderRadius: 12, textAlign: 'center' }}><b style={{ fontSize: 24, color: '#0f766e' }}>{details?.total_tickets || 0}</b><div style={{ fontSize: 12 }}>Claimed</div></div>
             <div style={{ background: '#f0fdfa', padding: 16, borderRadius: 12, textAlign: 'center' }}><b style={{ fontSize: 24, color: '#0f766e' }}>{details?.scanned || 0}</b><div style={{ fontSize: 12 }}>Scanned</div></div>
             <div style={{ background: '#f0fdfa', padding: 16, borderRadius: 12, textAlign: 'center' }}><b style={{ fontSize: 24, color: '#0f766e' }}>{details?.remaining ?? '—'}</b><div style={{ fontSize: 12 }}>Remaining</div></div>
           </div>
+          {Object.keys(levelCounts).length > 0 && (
+            <div style={{ marginBottom: 16, fontSize: 13 }}>
+              <b>By level:</b> {Object.entries(levelCounts).map(([k, v]) => `${k}: ${v}`).join(' · ')}
+            </div>
+          )}
           <div style={{ marginBottom: 16 }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: '#64748b' }}>JOIN LINK</div>
             <div style={{ display: 'flex', gap: 8, marginTop: 6, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -7532,11 +7550,27 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
               <button onClick={() => copyLink(joinUrl(selected.public_id))} style={styles.addBtn}>Copy</button>
             </div>
           </div>
-          <div>
+          <div style={{ marginBottom: 20 }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: '#64748b', marginBottom: 6 }}>QR CODE</div>
-            <img alt="QR" src={`https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(joinUrl(selected.public_id))}`} style={{ width: 160, height: 160, borderRadius: 8 }} />
+            <img alt="QR" src={`https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${encodeURIComponent(joinUrl(selected.public_id))}`} style={{ width: 140, height: 140, borderRadius: 8 }} />
           </div>
-          <div style={{ marginTop: 20 }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>Ticket holders ({tickets.length})</div>
+            {tickets.length === 0 ? <p style={{ color: '#94a3b8', fontSize: 13 }}>No tickets claimed yet.</p> : (
+              <div style={{ maxHeight: 280, overflowY: 'auto' }}>
+                {tickets.map(t => (
+                  <div key={t.public_id} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid #f1f5f9', fontSize: 13 }}>
+                    <div>
+                      <b>{t.attendee_name || '—'}</b>
+                      <div style={{ fontSize: 11, color: '#64748b' }}>{t.event_access_levels?.name || ''} · {t.status}</div>
+                    </div>
+                    <div style={{ fontSize: 11, color: '#94a3b8' }}>{t.created_at ? new Date(t.created_at).toLocaleDateString() : ''}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <div style={{ marginTop: 16 }}>
             <button onClick={() => deleteEvent(selected)} style={{ ...styles.addBtn, background: '#fef2f2', color: '#dc2626' }}>Delete event</button>
           </div>
         </div>
@@ -7585,7 +7619,6 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
           <button disabled={saving} onClick={() => saveEvent(true)} style={{ ...styles.submitBtn, background: '#0f766e' }}>{saving ? 'Publishing…' : 'Publish Event'}</button>
         </div>
       </div>
-
       <div style={{ ...styles.card, marginTop: 16, padding: 20 }}>
         <h3 style={{ marginTop: 0 }}>Your events</h3>
         {loading ? <p>Loading…</p> : events.length === 0 ? <p style={{ color: '#94a3b8' }}>No events yet.</p> : (

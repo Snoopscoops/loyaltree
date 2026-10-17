@@ -104,11 +104,16 @@ export default function EventJoin({ API_BASE }) {
   return (
     <div style={styles.page}>
       <div style={styles.card}>
-        <h2 style={{ marginTop: 0 }}>{event.name}</h2>
-        {event.event_date && <p style={{ color: '#64748b', margin: '4px 0' }}>{new Date(event.event_date).toLocaleString()}</p>}
-        {event.venue && <p style={{ color: '#64748b', margin: '4px 0' }}>{event.venue}</p>}
+        <div style={{ textAlign: 'center', marginBottom: 8 }}>
+          <div style={{ width: 56, height: 56, borderRadius: 28, background: '#0d9488', margin: '0 auto 10px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontWeight: 800, fontSize: 20 }}>
+            {event.name?.slice(0, 1) || 'E'}
+          </div>
+          <h2 style={{ margin: 0 }}>{event.name}</h2>
+          {event.event_date && <p style={{ color: '#64748b', margin: '4px 0', fontSize: 13 }}>{new Date(event.event_date).toLocaleString()}</p>}
+          {event.venue && <p style={{ color: '#64748b', margin: '2px 0', fontSize: 13 }}>{event.venue}</p>}
+        </div>
 
-        <form onSubmit={handleSubmit} style={{ marginTop: 20 }}>
+        <form onSubmit={handleSubmit} style={{ marginTop: 16 }}>
           <label style={styles.label}>Access level</label>
           <select value={selectedLevel} onChange={e => setSelectedLevel(e.target.value)} required style={styles.input}>
             <option value="">Select level</option>

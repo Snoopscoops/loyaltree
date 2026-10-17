@@ -50050,7 +50050,6 @@ def delete_event(public_id: str, event_public_id: str, authorization: str = Head
         return {"ok": True}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=friendly_db_error(exc))
-@app.post("/api/v1/business/{public_id}/events/{event_public_id}/publish")
 def publish_event(public_id: str, event_public_id: str, authorization: str = Header(default="")):
     business = _require_event_owner(public_id, authorization)
     try:
@@ -50112,10 +50111,7 @@ def fulfill_event_ticket_payment(ticket_public_id: str):
         return False
 
 def generate_event_ticket_pkpass(ticket: dict, event: dict, access_level: dict, business: dict) -> bytes:
-    """Build and sign an Apple Wallet eventTicket pass.
-    Logo is taken from business.logo_url if available.
-    """
-    logo_url = business.get("logo_url") or ""
+    """Build and sign an Apple Wallet eventTicket pass."""
     serial = ticket.get("public_id", "")
     qr_message = f"lt-ticket:{serial}"
 
@@ -50285,6 +50281,36 @@ def public_event_details(event_public_id: str):
             },
             "access_levels": levels,
         }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+
+
+@app.get("/api/v1/business/{public_id}/events/{event_public_id}/tickets")
+def list_event_tickets(public_id: str, event_public_id: str, authorization: str = Header(default="")):
+    business = _require_event_owner(public_id, authorization)
+    try:
+        event_rows = (
+            supabase.table("events")
+            .select("id")
+            .eq("public_id", event_public_id)
+            .eq("business_id", business["id"])
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        if not event_rows:
+            raise HTTPException(status_code=404, detail="Event not found")
+        tickets = (
+            supabase.table("event_tickets")
+            .select("public_id, attendee_name, attendee_email, attendee_phone, status, scanned_at, created_at, event_access_levels!inner(name)")
+            .eq("event_id", event_rows[0]["id"])
+            .order("created_at", desc=True)
+            .execute()
+            .data or []
+        )
+        return tickets
     except HTTPException:
         raise
     except Exception as exc:
