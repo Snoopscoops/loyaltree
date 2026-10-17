@@ -50212,3 +50212,37 @@ def generate_google_event_ticket_jwt(ticket: dict, event: dict, access_level: di
     }
 
     return create_google_wallet_jwt({"eventTicketObjects": [event_object]})
+
+
+@app.get("/api/v1/business/{public_id}/events/{event_public_id}/summary")
+def event_summary(public_id: str, event_public_id: str, authorization: str = Header(default="")):
+    business = _require_event_owner(public_id, authorization)
+    try:
+        event_rows = (
+            supabase.table("events")
+            .select("id, max_attendees")
+            .eq("public_id", event_public_id)
+            .eq("business_id", business["id"])
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        if not event_rows:
+            raise HTTPException(status_code=404, detail="Event not found")
+        event = event_rows[0]
+        tickets = (
+            supabase.table("event_tickets")
+            .select("status")
+            .eq("event_id", event["id"])
+            .execute()
+            .data or []
+        )
+        total = len(tickets)
+        scanned = sum(1 for t in tickets if t.get("status") == "scanned")
+        max_att = event.get("max_attendees") or 0
+        remaining = max(0, max_att - total) if max_att else None
+        return {"total_tickets": total, "scanned": scanned, "remaining": remaining}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
