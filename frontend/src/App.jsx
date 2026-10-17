@@ -12,12 +12,12 @@ const CarLendingDashboard = lazy(() => import('./components/CarLendingDashboard'
 const LendingDashboard = lazy(() => import('./components/LendingDashboard'))
 const CockpitDashboard = lazy(() => import('./components/CockpitDashboard'))
 const CashierApp = lazy(() => import('./components/CashierApp'))
+const EventScan = lazy(() => import('./components/EventScan'))
 const AnalyticsDashboard = lazy(() => import('./components/AnalyticsDashboard'))
 const AdminDashboard = lazy(() => import('./components/AdminDashboard'))
 const PartnerDashboard = lazy(() => import('./components/PartnerDashboard'))
 const MotoliteApp = lazy(() => import('./components/MotoliteApp'))
 const CustomerJoin = lazy(() => import('./components/CustomerJoin'))
-const EventJoin = lazy(() => import('./components/EventJoin'))
 import { trackEvent } from './analytics'
 
 const API_BASE = (
@@ -152,7 +152,7 @@ function App() {
   )
 
   function AppRoutes() { return <Routes>
-        <Route path="/motolite/*" element={<MotoliteApp API_BASE={API_BASE} />} />
+        <Route path="/event-scan" element={user ? <EventScan API_BASE={API_BASE} user={user} authFetch={authFetch} /> : <Navigate to="/login" />} />
         <Route path="/" element={
           user ? (
             user.role === 'owner' ? <Navigate to="/dashboard" /> :
@@ -217,7 +217,6 @@ function App() {
           user?.role === 'owner' ? <AnalyticsDashboard API_BASE={API_BASE} user={user} onLogout={handleLogout} /> : <Navigate to="/login" />
         } />
         <Route path="/join/:businessSlug" element={<CustomerJoin API_BASE={API_BASE} />} />
-        <Route path="/join/event/:eventId" element={<EventJoin API_BASE={API_BASE} />} />
         <Route path="/admin" element={
           user?.role === 'super_admin' ? <AdminDashboard API_BASE={API_BASE} user={user} onLogout={handleLogout} /> : <Navigate to="/login" />
         } />
