@@ -50112,7 +50112,10 @@ def fulfill_event_ticket_payment(ticket_public_id: str):
         return False
 
 def generate_event_ticket_pkpass(ticket: dict, event: dict, access_level: dict, business: dict) -> bytes:
-    """Build and sign an Apple Wallet eventTicket pass."""
+    """Build and sign an Apple Wallet eventTicket pass.
+    Logo is taken from business.logo_url if available.
+    """
+    logo_url = business.get("logo_url") or ""
     serial = ticket.get("public_id", "")
     qr_message = f"lt-ticket:{serial}"
 
