@@ -20583,12 +20583,6 @@ async def paymongo_webhook(request: Request):
         except Exception as e:
             print(f"WEBHOOK failure log update error: {e}")
 
-    # Event Ticketing: fulfill ticket after successful payment
-    if metadata.get("type") == "event_ticket":
-        ticket_public_id = metadata.get("ticket_public_id")
-        if ticket_public_id:
-            fulfill_event_ticket_payment(ticket_public_id)
-
     return {"received": True}
 
 @app.get("/api/v1/customer/{public_id}")
@@ -50015,7 +50009,47 @@ def get_google_event_ticket_link(ticket_public_id: str):
 
 # --- Publish event ---
 
-@app.post("/api/v1/business/{public_id}/events/{event_public_id}/publish")
+@app.patch("/api/v1/business/{public_id}/events/{event_public_id}")
+def update_event(public_id: str, event_public_id: str, payload: EventCreate, authorization: str = Header(default="")):
+    business = _require_event_owner(public_id, authorization)
+    try:
+        res = (
+            supabase.table("events")
+            .update({
+                "name": payload.name.strip(),
+                "description": payload.description,
+                "event_date": payload.event_date,
+                "venue": payload.venue,
+                "max_attendees": payload.max_attendees,
+                "updated_at": datetime.utcnow().isoformat(),
+            })
+            .eq("public_id", event_public_id)
+            .eq("business_id", business["id"])
+            .execute()
+        )
+        if not res.data:
+            raise HTTPException(status_code=404, detail="Event not found")
+        return res.data[0]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+
+
+@app.delete("/api/v1/business/{public_id}/events/{event_public_id}")
+def delete_event(public_id: str, event_public_id: str, authorization: str = Header(default="")):
+    business = _require_event_owner(public_id, authorization)
+    try:
+        res = (
+            supabase.table("events")
+            .delete()
+            .eq("public_id", event_public_id)
+            .eq("business_id", business["id"])
+            .execute()
+        )
+        return {"ok": True}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
 def publish_event(public_id: str, event_public_id: str, authorization: str = Header(default="")):
     business = _require_event_owner(public_id, authorization)
     try:

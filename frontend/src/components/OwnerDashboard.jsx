@@ -7410,9 +7410,13 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
   const [events, setEvents] = useState([])
   const [loading, setLoading] = useState(true)
   const [name, setName] = useState('')
+  const [eventDate, setEventDate] = useState('')
+  const [venue, setVenue] = useState('')
   const [maxAttendees, setMaxAttendees] = useState('')
-  const [levels, setLevels] = useState([{ name: 'VIP', benefits: '', price: '0' }])
+  const [levels, setLevels] = useState([{ name: 'VIP', benefits: [''], price: '0' }])
   const [saving, setSaving] = useState(false)
+  const [expanded, setExpanded] = useState(null)
+  const [editing, setEditing] = useState(null)
 
   const slug = user?.business_slug
 
@@ -7432,47 +7436,72 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
 
   useEffect(() => { loadEvents() }, [slug])
 
-  const addLevel = () => setLevels(prev => [...prev, { name: '', benefits: '', price: '0' }])
-
-  const updateLevel = (idx, field, value) => {
-    setLevels(prev => prev.map((lvl, i) => i === idx ? { ...lvl, [field]: value } : lvl))
-  }
-
+  const addLevel = () => setLevels(prev => [...prev, { name: '', benefits: [''], price: '0' }])
+  const updateLevel = (idx, field, value) => setLevels(prev => prev.map((lvl, i) => i === idx ? { ...lvl, [field]: value } : lvl))
   const removeLevel = (idx) => setLevels(prev => prev.filter((_, i) => i !== idx))
 
-  const createEvent = async (publish = false) => {
+  const addBenefit = (levelIdx) => setLevels(prev => prev.map((lvl, i) => i === levelIdx ? { ...lvl, benefits: [...lvl.benefits, ''] } : lvl))
+  const updateBenefit = (levelIdx, benefitIdx, value) => setLevels(prev => prev.map((lvl, i) => i === levelIdx ? { ...lvl, benefits: lvl.benefits.map((b, bi) => bi === benefitIdx ? value : b) } : lvl))
+  const removeBenefit = (levelIdx, benefitIdx) => setLevels(prev => prev.map((lvl, i) => i === levelIdx ? { ...lvl, benefits: lvl.benefits.filter((_, bi) => bi !== benefitIdx) } : lvl))
+
+  const resetForm = () => {
+    setName(''); setEventDate(''); setVenue(''); setMaxAttendees('')
+    setLevels([{ name: 'VIP', benefits: [''], price: '0' }])
+    setEditing(null)
+  }
+
+  const startEdit = (ev) => {
+    setEditing(ev)
+    setName(ev.name || '')
+    setEventDate(ev.event_date ? ev.event_date.slice(0, 16) : '')
+    setVenue(ev.venue || '')
+    setMaxAttendees(ev.max_attendees || '')
+    setLevels([{ name: 'VIP', benefits: [''], price: '0' }])
+  }
+
+  const saveEvent = async (publish = false) => {
     if (!name.trim()) return setMessage?.('Event name is required')
     setSaving(true)
     try {
-      const res = await authFetch(`${API_BASE}/api/v1/business/${slug}/events`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name.trim(), max_attendees: maxAttendees ? Number(maxAttendees) : null }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.detail || 'Could not create event')
-
-      const eventId = data.public_id
-      for (const lvl of levels.filter(l => l.name.trim())) {
-        await authFetch(`${API_BASE}/api/v1/business/${slug}/events/${eventId}/access-levels`, {
+      const body = {
+        name: name.trim(),
+        event_date: eventDate || null,
+        venue: venue.trim() || null,
+        max_attendees: maxAttendees ? Number(maxAttendees) : null,
+      }
+      let eventId
+      if (editing) {
+        const res = await authFetch(`${API_BASE}/api/v1/business/${slug}/events/${editing.public_id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok) throw new Error(data.detail || 'Could not update event')
+        eventId = editing.public_id
+      } else {
+        const res = await authFetch(`${API_BASE}/api/v1/business/${slug}/events`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name: lvl.name.trim(),
-            benefits: lvl.benefits.trim() || null,
-            ticket_price: Number(lvl.price || 0),
-          }),
+          body: JSON.stringify(body),
         })
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok) throw new Error(data.detail || 'Could not create event')
+        eventId = data.public_id
+        for (const lvl of levels.filter(l => l.name.trim())) {
+          const benefitsText = lvl.benefits.filter(b => b.trim()).join('\n')
+          await authFetch(`${API_BASE}/api/v1/business/${slug}/events/${eventId}/access-levels`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: lvl.name.trim(), benefits: benefitsText || null, ticket_price: Number(lvl.price || 0) }),
+          })
+        }
       }
-
       if (publish && eventId) {
         await authFetch(`${API_BASE}/api/v1/business/${slug}/events/${eventId}/publish`, { method: 'POST' })
       }
-
-      setName('')
-      setMaxAttendees('')
-      setLevels([{ name: 'VIP', benefits: '', price: '0' }])
-      setMessage?.(publish ? 'Event published' : 'Event saved as draft')
+      resetForm()
+      setMessage?.(editing ? 'Event updated' : (publish ? 'Event published' : 'Event saved as draft'))
       loadEvents()
     } catch (e) {
       setMessage?.(e.message || 'Could not save event')
@@ -7481,13 +7510,31 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
     }
   }
 
+  const deleteEvent = async (ev) => {
+    if (!window.confirm(`Delete "${ev.name}"? This cannot be undone.`)) return
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${slug}/events/${ev.public_id}`, { method: 'DELETE' })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.detail || 'Could not delete')
+      }
+      setMessage?.('Event deleted')
+      loadEvents()
+    } catch (e) {
+      setMessage?.(e.message || 'Could not delete event')
+    }
+  }
+
+  const copyLink = (url) => navigator.clipboard.writeText(url).then(() => setMessage?.('Link copied')).catch(() => setMessage?.('Could not copy'))
+  const joinUrl = (id) => `${window.location.origin}/join/event/${id}`
+
   return (
     <div>
       <div className="lt-owner-section-header" style={styles.sectionHeader}>
         <h2 className="lt-owner-section-title" style={styles.sectionTitle}>🎟️ Event Ticketing</h2>
       </div>
       <div style={{ ...styles.card, padding: 24 }}>
-        <h3 style={{ marginTop: 0 }}>Create a new event</h3>
+        <h3 style={{ marginTop: 0 }}>{editing ? 'Edit event' : 'Create a new event'}</h3>
         <p style={{ color: '#64748b', fontSize: 14 }}>
           Pricing: Growth & Pro get the first 50 tickets free per event. After that (or for Starter / ticketing-only) it is ₱10 per person. Email confirmation is +₱2 per ticket.
         </p>
@@ -7495,39 +7542,94 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
           <label style={styles.label}>Event name</label>
           <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Summer Concert" style={styles.input} />
         </div>
+        <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div>
+            <label style={styles.label}>Date & time</label>
+            <input type="datetime-local" value={eventDate} onChange={e => setEventDate(e.target.value)} style={styles.input} />
+          </div>
+          <div>
+            <label style={styles.label}>Venue / Location</label>
+            <input value={venue} onChange={e => setVenue(e.target.value)} placeholder="e.g. SM Mall of Asia Arena" style={styles.input} />
+          </div>
+        </div>
         <div style={{ marginTop: 12 }}>
           <label style={styles.label}>Up to how many attendees?</label>
           <input type="number" min="1" value={maxAttendees} onChange={e => setMaxAttendees(e.target.value)} placeholder="e.g. 200" style={styles.input} />
         </div>
-        <div style={{ marginTop: 20 }}>
-          <label style={styles.label}>Access levels & benefits</label>
-          <p style={{ fontSize: 13, color: '#64748b' }}>Add levels (VIP, Regular, Staff, etc.) and the benefits each level gets.</p>
-          {levels.map((lvl, idx) => (
-            <div key={idx} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 100px 40px', gap: 8, marginTop: 8, alignItems: 'center' }}>
-              <input value={lvl.name} onChange={e => updateLevel(idx, 'name', e.target.value)} placeholder="Level name (e.g. VIP)" style={styles.input} />
-              <input value={lvl.benefits} onChange={e => updateLevel(idx, 'benefits', e.target.value)} placeholder="Benefits" style={styles.input} />
-              <input type="number" min="0" value={lvl.price} onChange={e => updateLevel(idx, 'price', e.target.value)} placeholder="₱" style={styles.input} />
-              {levels.length > 1 && <button type="button" onClick={() => removeLevel(idx)} style={{ ...styles.addBtn, background: '#fef2f2', color: '#dc2626' }}>×</button>}
-            </div>
-          ))}
-          <button type="button" onClick={addLevel} style={{ ...styles.addBtn, marginTop: 10 }}>+ Add access level</button>
-        </div>
+        {!editing && (
+          <div style={{ marginTop: 20 }}>
+            <label style={styles.label}>Access levels & benefits</label>
+            <p style={{ fontSize: 13, color: '#64748b' }}>Add levels and multiple benefits per level.</p>
+            {levels.map((lvl, idx) => (
+              <div key={idx} style={{ background: '#f8fafc', borderRadius: 12, padding: 12, marginTop: 10 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 100px 40px', gap: 8, alignItems: 'center' }}>
+                  <input value={lvl.name} onChange={e => updateLevel(idx, 'name', e.target.value)} placeholder="Level name (e.g. VIP)" style={styles.input} />
+                  <input type="number" min="0" value={lvl.price} onChange={e => updateLevel(idx, 'price', e.target.value)} placeholder="₱" style={styles.input} />
+                  {levels.length > 1 && <button type="button" onClick={() => removeLevel(idx)} style={{ ...styles.addBtn, background: '#fef2f2', color: '#dc2626' }}>×</button>}
+                </div>
+                <div style={{ marginTop: 8 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: '#64748b', marginBottom: 4 }}>Benefits</div>
+                  {lvl.benefits.map((b, bi) => (
+                    <div key={bi} style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                      <input value={b} onChange={e => updateBenefit(idx, bi, e.target.value)} placeholder="e.g. Free drink" style={{ ...styles.input, marginBottom: 0 }} />
+                      {lvl.benefits.length > 1 && <button type="button" onClick={() => removeBenefit(idx, bi)} style={{ ...styles.addBtn, background: '#fef2f2', color: '#dc2626' }}>×</button>}
+                    </div>
+                  ))}
+                  <button type="button" onClick={() => addBenefit(idx)} style={{ ...styles.addBtn, marginTop: 6 }}>+ Add benefit</button>
+                </div>
+              </div>
+            ))}
+            <button type="button" onClick={addLevel} style={{ ...styles.addBtn, marginTop: 10 }}>+ Add access level</button>
+          </div>
+        )}
         <div style={{ marginTop: 24, display: 'flex', gap: 10 }}>
-          <button disabled={saving} onClick={() => createEvent(false)} style={styles.submitBtn}>{saving ? 'Saving…' : 'Save as Draft'}</button>
-          <button disabled={saving} onClick={() => createEvent(true)} style={{ ...styles.submitBtn, background: '#0f766e' }}>{saving ? 'Publishing…' : 'Publish Event'}</button>
+          <button disabled={saving} onClick={() => saveEvent(false)} style={styles.submitBtn}>{saving ? 'Saving…' : (editing ? 'Save changes' : 'Save as Draft')}</button>
+          {!editing && <button disabled={saving} onClick={() => saveEvent(true)} style={{ ...styles.submitBtn, background: '#0f766e' }}>{saving ? 'Publishing…' : 'Publish Event'}</button>}
+          {editing && <button onClick={resetForm} style={{ ...styles.addBtn }}>Cancel</button>}
         </div>
       </div>
+
       <div style={{ ...styles.card, marginTop: 20, padding: 24 }}>
         <h3 style={{ marginTop: 0 }}>Your events</h3>
         {loading ? <p>Loading…</p> : events.length === 0 ? (
           <p style={{ color: '#94a3b8' }}>No events yet. Create and publish your first event above.</p>
         ) : (
-          events.map(ev => (
-            <div key={ev.public_id} style={{ padding: '12px 0', borderBottom: '1px solid #e2e8f0' }}>
-              <strong>{ev.name}</strong>
-              <div style={{ fontSize: 12, color: '#64748b' }}>{ev.status} · {ev.max_attendees ? `up to ${ev.max_attendees}` : 'no limit'}</div>
-            </div>
-          ))
+          events.map(ev => {
+            const url = joinUrl(ev.public_id)
+            const isOpen = expanded === ev.public_id
+            return (
+              <div key={ev.public_id} style={{ padding: '14px 0', borderBottom: '1px solid #e2e8f0' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <div>
+                    <strong>{ev.name}</strong>
+                    <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
+                      Status: <b style={{ color: ev.status === 'published' ? '#0f766e' : '#b45309' }}>{ev.status}</b>
+                      {ev.event_date ? ` · ${new Date(ev.event_date).toLocaleString()}` : ''}
+                      {ev.venue ? ` · ${ev.venue}` : ''}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button onClick={() => startEdit(ev)} style={styles.addBtn}>Edit</button>
+                    <button onClick={() => deleteEvent(ev)} style={{ ...styles.addBtn, background: '#fef2f2', color: '#dc2626' }}>Delete</button>
+                    <button onClick={() => setExpanded(isOpen ? null : ev.public_id)} style={styles.addBtn}>{isOpen ? 'Hide' : 'QR & Link'}</button>
+                  </div>
+                </div>
+                {isOpen && (
+                  <div style={{ marginTop: 12, background: '#f8fafc', borderRadius: 12, padding: 14 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: '#64748b', marginBottom: 6 }}>JOIN LINK</div>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <code style={{ fontSize: 12, background: '#fff', padding: '6px 10px', borderRadius: 8, border: '1px solid #e2e8f0' }}>{url}</code>
+                      <button onClick={() => copyLink(url)} style={styles.addBtn}>Copy link</button>
+                    </div>
+                    <div style={{ marginTop: 12 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: '#64748b', marginBottom: 6 }}>QR CODE</div>
+                      <img alt="Event join QR" src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(url)}`} style={{ width: 180, height: 180, borderRadius: 8, border: '1px solid #e2e8f0' }} />
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })
         )}
       </div>
     </div>
