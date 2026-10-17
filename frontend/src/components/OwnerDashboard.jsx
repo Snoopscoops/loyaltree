@@ -2904,8 +2904,6 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
     ? 'card'
     : ['billing','security','walletqueue','referrals'].includes(activeTab)
     ? 'more'
-    : activeTab === 'events'
-    ? 'events'
     : activeTab
 
   const goOwnerNav = (group) => {
@@ -2915,7 +2913,6 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
     if (group === 'grow') return setActiveTab('satisfaction')
     if (group === 'card') return setActiveTab('program')
     if (group === 'more') return setActiveTab('billing')
-    if (group === 'events') return setActiveTab('events')
   }
 
   const scopedCustomers = refreshEnabled ? customers.filter(c => customerMatchesFilter(c, customerFilter, stats)) : customers
@@ -3267,7 +3264,6 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
             { id:'operate', label:'Operate', icon:'▣' },
             { id:'grow', label:'Grow', icon:'↗' },
             { id:'card', label:'Card', icon:'◫' },
-            { id:'events', label:'Event Ticketing', icon:'🎟️' },
             { id:'more', label:'More', icon:'•••' },
           ].map(tab => (
             <button
@@ -3390,38 +3386,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
         )}
 
         {activeTab === 'events' && (
-          <div>
-            <div className="lt-owner-section-header" style={styles.sectionHeader}>
-              <h2 className="lt-owner-section-title" style={styles.sectionTitle}>🎟️ Event Ticketing</h2>
-            </div>
-            <div style={{...styles.card, padding: 24}}>
-              <h3 style={{marginTop: 0}}>Create a new event</h3>
-              <p style={{color: '#64748b', fontSize: 14}}>
-                Pricing: Growth & Pro get the first 50 tickets free per event. After that (or for Starter / ticketing-only) it is ₱10 per person. Email confirmation is +₱2 per ticket.
-              </p>
-              <div style={{marginTop: 20}}>
-                <label style={styles.label}>Event name</label>
-                <input placeholder="e.g. Summer Concert" style={styles.input} />
-              </div>
-              <div style={{marginTop: 12}}>
-                <label style={styles.label}>Up to how many attendees?</label>
-                <input type="number" min="1" placeholder="e.g. 200" style={styles.input} />
-              </div>
-              <div style={{marginTop: 20}}>
-                <label style={styles.label}>Access levels & benefits</label>
-                <p style={{fontSize: 13, color: '#64748b'}}>Add levels (VIP, Regular, Staff, etc.) and the benefits each level gets.</p>
-                <button style={styles.addBtn}>+ Add access level</button>
-              </div>
-              <div style={{marginTop: 24, display: 'flex', gap: 10}}>
-                <button style={styles.submitBtn}>Save as Draft</button>
-                <button style={{...styles.submitBtn, background: '#0f766e'}}>Publish Event</button>
-              </div>
-            </div>
-            <div style={{...styles.card, marginTop: 20, padding: 24}}>
-              <h3 style={{marginTop: 0}}>Your events</h3>
-              <p style={{color: '#94a3b8'}}>No events yet. Create and publish your first event above.</p>
-            </div>
-          </div>
+          <EventTicketingSection API_BASE={API_BASE} user={user} authFetch={authFetch} setMessage={setMessage} />
         )}
 
         {activeTab === 'satisfaction' && (
@@ -7440,6 +7405,134 @@ const styles = {
 
 }
 
+
+function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
+  const [events, setEvents] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [name, setName] = useState('')
+  const [maxAttendees, setMaxAttendees] = useState('')
+  const [levels, setLevels] = useState([{ name: 'VIP', benefits: '', price: '0' }])
+  const [saving, setSaving] = useState(false)
+
+  const slug = user?.business_slug
+
+  const loadEvents = async () => {
+    if (!slug) return
+    setLoading(true)
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${slug}/events`)
+      const data = await res.json().catch(() => [])
+      if (res.ok) setEvents(Array.isArray(data) ? data : [])
+    } catch (e) {
+      setMessage?.(e.message || 'Could not load events')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { loadEvents() }, [slug])
+
+  const addLevel = () => setLevels(prev => [...prev, { name: '', benefits: '', price: '0' }])
+
+  const updateLevel = (idx, field, value) => {
+    setLevels(prev => prev.map((lvl, i) => i === idx ? { ...lvl, [field]: value } : lvl))
+  }
+
+  const removeLevel = (idx) => setLevels(prev => prev.filter((_, i) => i !== idx))
+
+  const createEvent = async (publish = false) => {
+    if (!name.trim()) return setMessage?.('Event name is required')
+    setSaving(true)
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${slug}/events`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name.trim(), max_attendees: maxAttendees ? Number(maxAttendees) : null }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not create event')
+
+      const eventId = data.public_id
+      for (const lvl of levels.filter(l => l.name.trim())) {
+        await authFetch(`${API_BASE}/api/v1/business/${slug}/events/${eventId}/access-levels`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: lvl.name.trim(),
+            benefits: lvl.benefits.trim() || null,
+            ticket_price: Number(lvl.price || 0),
+          }),
+        })
+      }
+
+      if (publish && eventId) {
+        await authFetch(`${API_BASE}/api/v1/business/${slug}/events/${eventId}/publish`, { method: 'POST' })
+      }
+
+      setName('')
+      setMaxAttendees('')
+      setLevels([{ name: 'VIP', benefits: '', price: '0' }])
+      setMessage?.(publish ? 'Event published' : 'Event saved as draft')
+      loadEvents()
+    } catch (e) {
+      setMessage?.(e.message || 'Could not save event')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div>
+      <div className="lt-owner-section-header" style={styles.sectionHeader}>
+        <h2 className="lt-owner-section-title" style={styles.sectionTitle}>🎟️ Event Ticketing</h2>
+      </div>
+      <div style={{ ...styles.card, padding: 24 }}>
+        <h3 style={{ marginTop: 0 }}>Create a new event</h3>
+        <p style={{ color: '#64748b', fontSize: 14 }}>
+          Pricing: Growth & Pro get the first 50 tickets free per event. After that (or for Starter / ticketing-only) it is ₱10 per person. Email confirmation is +₱2 per ticket.
+        </p>
+        <div style={{ marginTop: 20 }}>
+          <label style={styles.label}>Event name</label>
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Summer Concert" style={styles.input} />
+        </div>
+        <div style={{ marginTop: 12 }}>
+          <label style={styles.label}>Up to how many attendees?</label>
+          <input type="number" min="1" value={maxAttendees} onChange={e => setMaxAttendees(e.target.value)} placeholder="e.g. 200" style={styles.input} />
+        </div>
+        <div style={{ marginTop: 20 }}>
+          <label style={styles.label}>Access levels & benefits</label>
+          <p style={{ fontSize: 13, color: '#64748b' }}>Add levels (VIP, Regular, Staff, etc.) and the benefits each level gets.</p>
+          {levels.map((lvl, idx) => (
+            <div key={idx} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 100px 40px', gap: 8, marginTop: 8, alignItems: 'center' }}>
+              <input value={lvl.name} onChange={e => updateLevel(idx, 'name', e.target.value)} placeholder="Level name (e.g. VIP)" style={styles.input} />
+              <input value={lvl.benefits} onChange={e => updateLevel(idx, 'benefits', e.target.value)} placeholder="Benefits" style={styles.input} />
+              <input type="number" min="0" value={lvl.price} onChange={e => updateLevel(idx, 'price', e.target.value)} placeholder="₱" style={styles.input} />
+              {levels.length > 1 && <button type="button" onClick={() => removeLevel(idx)} style={{ ...styles.addBtn, background: '#fef2f2', color: '#dc2626' }}>×</button>}
+            </div>
+          ))}
+          <button type="button" onClick={addLevel} style={{ ...styles.addBtn, marginTop: 10 }}>+ Add access level</button>
+        </div>
+        <div style={{ marginTop: 24, display: 'flex', gap: 10 }}>
+          <button disabled={saving} onClick={() => createEvent(false)} style={styles.submitBtn}>{saving ? 'Saving…' : 'Save as Draft'}</button>
+          <button disabled={saving} onClick={() => createEvent(true)} style={{ ...styles.submitBtn, background: '#0f766e' }}>{saving ? 'Publishing…' : 'Publish Event'}</button>
+        </div>
+      </div>
+      <div style={{ ...styles.card, marginTop: 20, padding: 24 }}>
+        <h3 style={{ marginTop: 0 }}>Your events</h3>
+        {loading ? <p>Loading…</p> : events.length === 0 ? (
+          <p style={{ color: '#94a3b8' }}>No events yet. Create and publish your first event above.</p>
+        ) : (
+          events.map(ev => (
+            <div key={ev.public_id} style={{ padding: '12px 0', borderBottom: '1px solid #e2e8f0' }}>
+              <strong>{ev.name}</strong>
+              <div style={{ fontSize: 12, color: '#64748b' }}>{ev.status} · {ev.max_attendees ? `up to ${ev.max_attendees}` : 'no limit'}</div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  )
+}
 
 function PosOutletSwitch({ API_BASE, user, authFetch, setMessage }) {
   const [rows, setRows] = React.useState([])
