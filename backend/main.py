@@ -50112,7 +50112,11 @@ def fulfill_event_ticket_payment(ticket_public_id: str):
         return False
 
 def generate_event_ticket_pkpass(ticket: dict, event: dict, access_level: dict, business: dict) -> bytes:
-    """Build and sign an Apple Wallet eventTicket pass."""
+    """Build and sign an Apple Wallet eventTicket pass with logo and strip images."""
+    import zipfile
+    from io import BytesIO
+    import httpx
+
     serial = ticket.get("public_id", "")
     qr_message = f"lt-ticket:{serial}"
 
@@ -50122,6 +50126,9 @@ def generate_event_ticket_pkpass(ticket: dict, event: dict, access_level: dict, 
         date_str = dt.strftime("%b %d, %Y %I:%M %p") if dt else "TBA"
     except Exception:
         date_str = event_date or "TBA"
+
+    logo_url = event.get("logo_url") or business.get("logo_url") or ""
+    cover_url = event.get("cover_url") or ""
 
     pass_json = {
         "formatVersion": 1,
@@ -50158,16 +50165,36 @@ def generate_event_ticket_pkpass(ticket: dict, event: dict, access_level: dict, 
         },
     }
 
-    # Build minimal .pkpass (manifest + signature). Full implementation should
-    # also include icon.png / logo.png from your existing asset helpers.
-    import zipfile
-    from io import BytesIO
+    def download_image(url: str) -> bytes | None:
+        if not url:
+            return None
+        try:
+            with pooled_client(timeout=15) as client:
+                r = client.get(url)
+                if r.status_code == 200:
+                    return r.content
+        except Exception:
+            pass
+        return None
+
+    logo_bytes = download_image(logo_url)
+    cover_bytes = download_image(cover_url)
 
     buf = BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("pass.json", json.dumps(pass_json))
-        # Minimal manifest
+        if logo_bytes:
+            zf.writestr("logo.png", logo_bytes)
+            zf.writestr("icon.png", logo_bytes)
+        if cover_bytes:
+            zf.writestr("strip.png", cover_bytes)
+
         manifest = {"pass.json": hashlib.sha1(json.dumps(pass_json).encode()).hexdigest()}
+        if logo_bytes:
+            manifest["logo.png"] = hashlib.sha1(logo_bytes).hexdigest()
+            manifest["icon.png"] = hashlib.sha1(logo_bytes).hexdigest()
+        if cover_bytes:
+            manifest["strip.png"] = hashlib.sha1(cover_bytes).hexdigest()
         zf.writestr("manifest.json", json.dumps(manifest))
         sig = sign_pkpass_manifest(json.dumps(manifest).encode())
         if sig:
@@ -50205,6 +50232,9 @@ def generate_google_event_ticket_jwt(ticket: dict, event: dict, access_level: di
     if not access_token:
         raise HTTPException(status_code=500, detail="Could not get Google Wallet access token")
 
+    logo_url = event.get("logo_url") or business.get("logo_url") or ""
+    cover_url = event.get("cover_url") or ""
+
     class_body = {
         "id": class_id,
         "issuerName": (business.get("name") or "LoyaltyTree")[:20],
@@ -50216,6 +50246,16 @@ def generate_google_event_ticket_jwt(ticket: dict, event: dict, access_level: di
             }
         },
     }
+    if logo_url:
+        class_body["logo"] = {
+            "sourceUri": {"uri": logo_url},
+            "contentDescription": {"defaultValue": {"language": "en-US", "value": "Logo"}},
+        }
+    if cover_url:
+        class_body["heroImage"] = {
+            "sourceUri": {"uri": cover_url},
+            "contentDescription": {"defaultValue": {"language": "en-US", "value": "Cover"}},
+        }
 
     try:
         import httpx
