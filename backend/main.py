@@ -16188,7 +16188,7 @@ def _oa_require_owner_business(public_id: str, authorization: str, *, catalog: b
         raise HTTPException(status_code=404, detail='Business not found')
     # Only catalog routes accept QR Menu access; ordering/payment gates stay independent.
     if catalog and business_has_plan_feature(business, 'qr_menu'):
-        if business.get('status') != 'active' or billing_hold(business):
+        if str(business.get('status') or '').upper() != 'ACTIVE' or billing_hold(business):
             raise HTTPException(status_code=403, detail='An active business subscription is required for QR Menu.')
         return business
     if not bool(business.get('order_ahead_enabled')):

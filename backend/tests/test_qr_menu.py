@@ -1,5 +1,6 @@
 """QR Menu publication/access boundaries with isolated catalog and database doubles."""
 import ast
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
@@ -8,6 +9,7 @@ from unittest.mock import MagicMock
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from backend.qr_menu import public_catalog, register_qr_menu_routes, safe_image
+from backend.trial_coupons import billing_hold
 
 
 class Database:
@@ -48,7 +50,7 @@ def catalog():
 class QRMenuTests(unittest.TestCase):
     def setUp(self):
         self.db=Database()
-        self.business={'id':7,'public_id':'test-cafe','name':'Test Cafe','plan':'growth','status':'active','order_ahead_enabled':False}
+        self.business={'id':7,'public_id':'test-cafe','name':'Test Cafe','plan':'growth','status':'ACTIVE','order_ahead_enabled':False}
         self.menu=catalog()
         self.snapshot=MagicMock(side_effect=lambda business:self.menu)
         def owner(public_id, authorization):
@@ -56,7 +58,7 @@ class QRMenuTests(unittest.TestCase):
         self.app=FastAPI()
         register_qr_menu_routes(self.app,db=self.db,get_business=lambda value:self.business if value=='test-cafe' else None,
             require_owner=owner,has_feature=lambda business,feature:business.get('plan') in ('growth','pro'),
-            on_hold=lambda business:business.get('held',False),menu_snapshot=self.snapshot,
+            on_hold=lambda business:business.get('held',False) or billing_hold(business),menu_snapshot=self.snapshot,
             branding=lambda business:{'currency':'PHP','design':{'primary_color':'#235447','private_setting':'secret'}},
             frontend_url='https://menu.example.invalid')
         self.client=TestClient(self.app)
@@ -85,6 +87,43 @@ class QRMenuTests(unittest.TestCase):
         self.assertEqual(result.headers['cache-control'],'no-store')
         self.assertEqual({table for table,row in self.db.writes},{'qr_menu_settings'})
         self.assertNotIn('customer',str(result.json()).lower())
+
+    def test_active_status_matches_login_for_owner_preview_publish_and_public_menu(self):
+        for plan in ('growth', 'pro'):
+            for status in ('ACTIVE', 'active', 'Active'):
+                with self.subTest(plan=plan, status=status):
+                    self.business.update(plan=plan, status=status)
+                    self.assertEqual(self.client.get(self.base, headers=self.headers).status_code, 200)
+                    self.assertEqual(self.client.get(self.base+'/preview', headers=self.headers).status_code, 200)
+                    self.assertEqual(self.publish().status_code, 200)
+                    self.assertEqual(self.public().status_code, 200)
+
+    def test_inactive_statuses_still_block_every_qr_menu_entry_point(self):
+        self.publish()
+        for status in ('PENDING', 'REJECTED', 'SUSPENDED', 'INACTIVE', 'APPROVED', '', None):
+            with self.subTest(status=status):
+                self.business['status'] = status
+                self.assertEqual(self.client.get(self.base, headers=self.headers).status_code, 403)
+                self.assertEqual(self.client.get(self.base+'/preview', headers=self.headers).status_code, 403)
+                self.assertEqual(self.publish().status_code, 403)
+                self.assertEqual(self.public().status_code, 404)
+
+    def test_existing_trial_and_paid_grace_rules_still_apply(self):
+        now = datetime.now(timezone.utc)
+        for access, allowed in (
+            ({'trial_ends_at': (now+timedelta(days=2)).isoformat()}, True),
+            ({'trial_ends_at': (now-timedelta(days=1)).isoformat()}, False),
+            ({'last_paid_at': (now-timedelta(days=30)).isoformat(),
+              'subscription_expires_at': (now-timedelta(days=2)).isoformat()}, True),
+            ({'last_paid_at': (now-timedelta(days=60)).isoformat(),
+              'subscription_expires_at': (now-timedelta(days=15)).isoformat()}, False),
+        ):
+            with self.subTest(access=access):
+                for key in ('trial_ends_at', 'last_paid_at', 'subscription_expires_at'):
+                    self.business.pop(key, None)
+                self.business.update(access)
+                self.assertEqual(self.publish().status_code, 200 if allowed else 403)
+                self.assertEqual(self.public().status_code, 200 if allowed else 404)
 
     def test_unpublish_and_republish_keep_link_and_catalog(self):
         first=self.publish().json()['public_url']
@@ -163,19 +202,27 @@ class SharedCatalogAccessTests(unittest.TestCase):
         node=next(n for n in self.source.body if isinstance(n,ast.FunctionDef) and n.name=='_oa_require_owner_business')
         env=dict(HTTPException=HTTPException,require_owner_session=MagicMock(),safe_get_business=lambda slug:business,
                  business_has_plan_feature=lambda row,feature:row.get('plan') in ('growth','pro'),
-                 billing_hold=lambda row:row.get('held',False))
+                 billing_hold=lambda row:row.get('held',False) or billing_hold(row))
         exec(compile(ast.Module(body=[node],type_ignores=[]),'gate','exec'),env)
         return env['_oa_require_owner_business']
     def test_only_catalog_access_is_unlocked_for_growth_pro(self):
         for plan in ('growth','pro'):
-            business={'id':1,'plan':plan,'status':'active','order_ahead_enabled':False}
+            business={'id':1,'plan':plan,'status':'ACTIVE','order_ahead_enabled':False}
             gate=self.gate(business)
             self.assertEqual(gate('test','Bearer token',catalog=True),business)
             with self.assertRaises(HTTPException) as result:gate('test','Bearer token')
             self.assertEqual(result.exception.status_code,403)
+    def test_catalog_accepts_login_active_status_in_every_case(self):
+        for plan in ('growth', 'pro'):
+            for status in ('ACTIVE', 'active', 'Active'):
+                with self.subTest(plan=plan, status=status):
+                    business={'id':1,'plan':plan,'status':status,'order_ahead_enabled':False}
+                    self.assertEqual(self.gate(business)('test','Bearer token',catalog=True), business)
+
     def test_qr_catalog_access_requires_active_subscription(self):
-        for changes in ({'status':'suspended'},{'held':True}):
-            business={'id':1,'plan':'growth','status':'active',**changes}
+        for changes in ({'status':'suspended'},{'status':'PENDING'},{'status':None},{'held':True},
+                        {'trial_ends_at':'2000-01-01T00:00:00Z'}):
+            business={'id':1,'plan':'growth','status':'ACTIVE',**changes}
             with self.assertRaises(HTTPException):self.gate(business)('test','Bearer token',catalog=True)
     def test_existing_admin_enabled_order_ahead_access_remains(self):
         business={'id':1,'plan':'starter','order_ahead_enabled':True}

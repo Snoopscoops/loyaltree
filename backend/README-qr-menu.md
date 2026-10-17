@@ -18,7 +18,7 @@ The migration enables row-level security, removes anonymous/authenticated access
 - `GET /api/v1/public/menu/{public_id}`: anonymous published catalog. Optional `branch` must name an active branch belonging to this business.
 - `/menu/{public_id}?branch={branch_public_id}`: public React page. The generic business QR offers a location picker for multiple active branches; a branch QR opens that location directly. Businesses without branch rows can publish a business-wide menu.
 
-Public reads and publication require an active Growth/Pro business without a subscription hold. Downgrading, suspension or a billing hold hides the public menu. Owner authorization is checked independently of the client plan display. Existing admin-enabled Order Ahead accounts retain their existing catalog access, including legacy plans; that does not grant Starter public QR Menu publication.
+Public reads and publication require an active Growth/Pro business without a subscription hold. Business status uses the same case-insensitive `ACTIVE` check as owner login; existing trial access and paid grace periods use the shared billing-hold rules. Downgrading, suspension or a billing hold hides the public menu. Owner authorization is checked independently of the client plan display. Existing admin-enabled Order Ahead accounts retain their existing catalog access, including legacy plans; that does not grant Starter public QR Menu publication.
 
 The shared catalog management routes under `/order-ahead/` additionally admit active Growth/Pro owners for QR Menu. This exception is explicitly limited to categories, items, modifier groups, beverage quick setup and availability. It does not enable orders, payment settings or staff operations.
 

@@ -70,7 +70,7 @@ def menu_link(frontend_url, public_id, branch=None):
 def register_qr_menu_routes(app, *, db, get_business, require_owner, has_feature, on_hold,
                             menu_snapshot, branding, frontend_url):
     def eligible(business):
-        return bool(business and has_feature(business, 'qr_menu') and business.get('status') == 'active' and not on_hold(business))
+        return bool(business and has_feature(business, 'qr_menu') and str(business.get('status') or '').upper() == 'ACTIVE' and not on_hold(business))
 
     def owner_business(public_id, authorization):
         require_owner(public_id, authorization)
@@ -119,6 +119,7 @@ def register_qr_menu_routes(app, *, db, get_business, require_owner, has_feature
 
     @app.get('/api/v1/business/{public_id}/qr-menu')
     def owner_qr_menu(public_id: str, authorization: str = Header(default='')):
+        """Owner menu settings for Growth/Pro accounts with ACTIVE status (case-insensitive) and no billing hold."""
         business = owner_business(public_id, authorization)
         return response(business, settings(business))
 
