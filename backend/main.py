@@ -49666,8 +49666,8 @@ class EventCreate(BaseModel):
     logo_url: Optional[str] = Field(default=None, max_length=1000)
     cover_url: Optional[str] = Field(default=None, max_length=1000)
     notification_message: Optional[str] = Field(default=None, max_length=120)
-    geo_latitude: Optional[float] = None
-    geo_longitude: Optional[float] = None
+    geo_latitude: Optional[float] = Field(default=None, ge=-90, le=90)
+    geo_longitude: Optional[float] = Field(default=None, ge=-180, le=180)
     geo_radius_meters: Optional[int] = Field(default=200, ge=50, le=1000)
 
 class AccessLevelCreate(BaseModel):
@@ -50082,6 +50082,33 @@ def publish_event(public_id: str, event_public_id: str, authorization: str = Hea
         raise HTTPException(status_code=500, detail=friendly_db_error(exc))
 
 
+def send_event_ticket_email(ticket: dict, event: dict, business: dict, *, message: Optional[str] = None) -> bool:
+    """Use the existing transactional sender; report provider acceptance accurately."""
+    recipient = str(ticket.get("attendee_email") or "").strip()
+    if not recipient:
+        return False
+    event_name = str(event.get("name") or "Your event")
+    business_name = html_lib.escape(str(business.get("name") or "Loyalty Tree"))
+    title = "Event update" if message is not None else "Your event ticket"
+    subject_name = " ".join(event_name.split())[:200]
+    if message is not None:
+        content = '<p style="white-space:pre-wrap">' + html_lib.escape(message) + '</p>'
+    else:
+        content = '<p>Your event ticket is ready.</p>'
+        for label, value in (("Ticket", ticket.get("public_id")), ("Date", event.get("event_date")), ("Venue", event.get("venue"))):
+            if value:
+                content += f'<p><strong>{label}:</strong> {html_lib.escape(str(value))}</p>'
+    body = (f'<html><body style="font-family:Arial,sans-serif;line-height:1.6;color:#173f35">'
+            f'<p><strong>{business_name}</strong></p><h1>{title}</h1>'
+            f'<h2>{html_lib.escape(event_name)}</h2>{content}'
+            '<p style="font-size:12px;color:#64748b">Sent with Loyalty Tree.</p></body></html>')
+    try:
+        return bool(send_email(recipient, f"{title}: {subject_name}", body))
+    except Exception:
+        # Keep email outages from failing a paid-ticket fulfillment or bulk update.
+        return False
+
+
 @app.post("/api/v1/business/{public_id}/events/{event_public_id}/notify")
 def send_event_notification(public_id: str, event_public_id: str, payload: dict, authorization: str = Header(default="")):
     """Send a normal notification message to all ticket holders of this event."""
@@ -50092,7 +50119,7 @@ def send_event_notification(public_id: str, event_public_id: str, payload: dict,
     try:
         event_rows = (
             supabase.table("events")
-            .select("id")
+            .select("id, name")
             .eq("public_id", event_public_id)
             .eq("business_id", business["id"])
             .limit(1)
@@ -50115,20 +50142,20 @@ def send_event_notification(public_id: str, event_public_id: str, payload: dict,
             "last_notification_at": datetime.utcnow().isoformat(),
         }).eq("id", event_id).execute()
 
-        # Optional: email those who opted in
-        sent = 0
-        for t in tickets:
-            if t.get("attendee_email"):
-                try:
-                    send_event_ticket_email(
-                        {"attendee_email": t["attendee_email"], "attendee_name": "", "public_id": t["public_id"]},
-                        {"name": "Event update", "notification_message": message},
-                        business,
-                    )
-                    sent += 1
-                except Exception:
-                    pass
-        return {"ok": True, "message": message, "recipients": len(tickets), "emailed": sent}
+        sent = failed = skipped = 0
+        for ticket in tickets:
+            if not str(ticket.get("attendee_email") or "").strip():
+                skipped += 1
+                continue
+            if send_event_ticket_email(ticket, event_rows[0], business, message=message):
+                sent += 1
+            else:
+                failed += 1
+        log_event("event_notification", "warning" if failed else "info",
+                  business_slug=public_id, event_id=event_public_id, channel="email",
+                  recipients=len(tickets), delivered=sent, failed=failed, skipped=skipped)
+        return {"ok": True, "message": message, "recipients": len(tickets), "emailed": sent,
+                "email_failed": failed, "email_skipped": skipped}
     except HTTPException:
         raise
     except Exception as exc:
@@ -50230,13 +50257,13 @@ def generate_event_ticket_pkpass(ticket: dict, event: dict, access_level: dict, 
         },
     }
 
-    if event.get("geo_latitude") and event.get("geo_longitude"):
+    if event.get("geo_latitude") is not None and event.get("geo_longitude") is not None:
         pass_json["locations"] = [{
             "latitude": float(event["geo_latitude"]),
             "longitude": float(event["geo_longitude"]),
             "relevantText": (event.get("notification_message") or f"You're near {event.get('name', 'the event')}")[:120],
-            "maxDistance": int(event.get("geo_radius_meters") or 200),
         }]
+        pass_json["maxDistance"] = int(event.get("geo_radius_meters") or 200)
 
     def download_image(url: str) -> bytes | None:
         if not url:
@@ -50329,7 +50356,7 @@ def generate_google_event_ticket_jwt(ticket: dict, event: dict, access_level: di
             "sourceUri": {"uri": cover_url},
             "contentDescription": {"defaultValue": {"language": "en-US", "value": "Cover"}},
         }
-    if event.get("geo_latitude") and event.get("geo_longitude"):
+    if event.get("geo_latitude") is not None and event.get("geo_longitude") is not None:
         class_body["merchantLocations"] = [{
             "latitude": float(event["geo_latitude"]),
             "longitude": float(event["geo_longitude"]),

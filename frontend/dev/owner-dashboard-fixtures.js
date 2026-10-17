@@ -31,6 +31,9 @@ export function createFixtureTransport({ scenario = 'stamp', onRequest = () => {
   let announcements = [{ id:101,title:'A little weekend treat',message:'Drop by for your favorite coffee this weekend.',type:'promo',is_active:true,target_scope:'business',created_at:date(-2),notification_count:1,last_notified_at:date(-2),program_public_id:'',branch_public_id:'' }]
   const subscription = { plan:'pro',plan_label:'Pro',subscription_status:'active',billing_hold:false,subscription_expires_at:date(65),days_left:65,billing_cycle:'3_months',pricing_region:'PH',currency:'PHP',display_currency:'PHP',monthly_price:750,price_per_month:750,pricing:{monthly:750,'3_months':2250,'6_months':4500,annual:7500},branch_count:2,billable_branches:2,last_paid_at:date(-25),features:{gift_cards:true,pos_integration:true,max_programs:3} }
   const plan = () => ({ plan:'pro',plan_label:'Pro',usage:{announcements_limit:10,announcements_used_this_cycle:announcements.length,announcements_used_this_month:announcements.length},features:subscription.features })
+  const eventLevels = [{ public_id:'demo-level-vip',name:'VIP',benefits:'Priority entry',ticket_price:0,color_hex:'#0d9488' }]
+  let fixtureEvents = [{ public_id:'demo-event-daylight',name:'Daylight Community Night',venue:'Fictional event venue',event_date:date(7),status:'published',notification_message:'You are near the event venue.',geo_latitude:14.5995,geo_longitude:120.9842,geo_radius_meters:200 }]
+  const eventTickets = ['Jamie Cruz','Mika Santos','Sam Reyes'].map((name,i)=>({public_id:`demo-ticket-${i+1}`,attendee_name:name,status:i===0?'scanned':'issued',event_access_levels:eventLevels[0],created_at:date(-1)}))
   const settings = { birthday_enabled:true,birthday_message:'Happy birthday, {first_name}!',win_back_message:'We miss you at {business_name}.',churn_days:30 }
   const analytics = { overview:{card_type:cardType,total_customers:8,new_customers:2,total_stamps:48,total_rewards:2,active_members:7,customer_growth:12,stamp_growth:8,reward_growth:2},trends:{daily_customers:[1,0,2,1,0,2,1].map((value,i)=>({label:`Day ${i+1}`,value})),daily_stamps:[4,5,8,6,7,12,6].map((value,i)=>({label:`Day ${i+1}`,value})),peak_hours:[{label:'9 AM',value:18},{label:'12 PM',value:12},{label:'4 PM',value:7}]},customers:{retention_rate:68,churn_risk:1,active:7,inactive:1,new:2,returning:6},demographics:{age:{'18_24':3,'25_34':5},gender:{},privacy:{age_available:true,gender_available:false}},stamps:{total:48,average:6,daily_average:6.9,by_staff:[],by_branch:[]},rewards:{total:2,redemption_rate:25,pending:2,top_rewards:[]},revenue:{stamp_revenue:0,reward_cost:0,net_value:0,avg_transaction:0},branches,branch_performance:[],scope:{},time_analytics:{hours:[],weekdays:[]},pos_integrated:false }
   return async function fixtureFetch(input, options = {}) {
@@ -39,9 +42,20 @@ export function createFixtureTransport({ scenario = 'stamp', onRequest = () => {
     let body = {}; try { body = JSON.parse(options.body || '{}') } catch { /* Binary writes unsupported. */ }
     const done = (value,status=200) => { onRequest({ts:new Date().toISOString(),method,path:`${url.pathname}${url.search}`,status,simulated:true});return new Response(JSON.stringify(clone(value)),{status,headers:{'Content-Type':'application/json'}}) }
     if(url.hostname==='api.qrserver.com'&&method==='GET'){onRequest({ts:date(),method,path:'/local-placeholder-qr',status:200,simulated:true});return new Response(svg,{headers:{'Content-Type':'image/svg+xml'}})}
+    if(method==='GET' && url.pathname==='/__owner-fixtures/api/v1/public/events/demo-event-daylight') return done({event:fixtureEvents.find(event=>event.public_id==='demo-event-daylight'),access_levels:eventLevels})
     const prefix = `/__owner-fixtures/api/v1/business/${fixtureSlug}`
     if(!url.pathname.startsWith(prefix))return done({detail:'Blocked by local fixture transport. No external request was sent.'},501)
     const path = url.pathname.slice(prefix.length)||'/'
+    if(path==='/events' && method==='GET')return done(fixtureEvents)
+    if(path==='/events' && method==='POST'){
+      const event={...body,public_id:`demo-event-created-${fixtureEvents.length}`,status:'draft',created_at:date()}
+      fixtureEvents.unshift(event);return done(event)
+    }
+    if(path==='/events/demo-event-daylight/summary' && method==='GET')return done({total_tickets:3,scanned:1,remaining:2})
+    if(path==='/events/demo-event-daylight/tickets' && method==='GET')return done(eventTickets)
+    if(path==='/events/demo-event-daylight/notify' && method==='POST')return done({ok:true,message:body.message,recipients:3,emailed:0,email_failed:0,email_skipped:3,simulated:true})
+    if(/^\/events\/demo-event-[^/]+\/access-levels$/.test(path))return done(method==='POST'?{...body,public_id:'demo-created-level',simulated:true}:eventLevels)
+    if(/^\/events\/demo-event-[^/]+\/publish$/.test(path) && method==='POST')return done({ok:true,status:'published',simulated:true})
     const config = configs.find(c=>c.public_id===url.searchParams.get('program_id'))||configs[0]
     if(method==='GET'){
       const scopedCustomers = url.searchParams.get('program_id') === 'demo-program-weekend' ? [] : customers

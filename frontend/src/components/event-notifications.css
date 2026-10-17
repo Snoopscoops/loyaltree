@@ -1,0 +1,24 @@
+.lt-event-notification-composer,.lt-event-location { min-width:0; box-sizing:border-box; background:#fff; border:1px solid #dce8e2; border-radius:14px; padding:20px; margin:20px 0; color:#24483f; }
+.lt-event-notification-composer h3,.lt-event-location h3 { margin:0 0 8px; font-size:16px; }
+.lt-event-notification-composer p,.lt-event-location p { font-size:13px; color:#64748b; line-height:1.55; margin:0 0 14px; }
+.lt-event-notification-composer label,.lt-event-location label { display:block; font-size:12px; font-weight:650; margin:12px 0 6px; }
+.lt-event-notification-composer textarea,.lt-event-location textarea,.lt-event-location input:not([type="range"]) { box-sizing:border-box; display:block; width:100%; min-width:0; padding:11px 12px; border:1px solid #cbd8d1; border-radius:8px; background:#fff; color:#173f35; font:inherit; font-size:16px; }
+.lt-event-notification-composer textarea,.lt-event-location textarea { min-height:100px; resize:vertical; line-height:1.5; }
+.lt-event-notification-composer textarea:focus,.lt-event-location textarea:focus,.lt-event-location input:focus-visible { outline:2px solid #5ba99a; outline-offset:2px; }
+.lt-event-message-actions { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; margin:10px 0 15px; }
+.lt-event-message-actions > span { font-size:11px; color:#718278; }
+.lt-event-message-actions button { width:auto; flex:none; border:0; border-radius:8px; padding:11px 16px; min-height:42px; background:#0f766e; color:#fff; font-size:13px; font-weight:650; cursor:pointer; }
+.lt-event-message-actions button:disabled { opacity:.5; cursor:default; }
+.lt-event-message-preview { border:1px solid #dce9e1; border-radius:10px; background:#f3f8f5; padding:14px; overflow-wrap:anywhere; }
+.lt-event-message-preview small { display:block; color:#688277; font-size:9px; letter-spacing:.1em; margin-bottom:8px; }
+.lt-event-message-preview strong { display:block; font-size:13px; }
+.lt-event-message-preview p { white-space:pre-wrap; margin:6px 0 0; color:#365d50; }
+.lt-event-notification-composer .lt-event-delivery-note,.lt-event-location .lt-event-delivery-note { font-size:11px; margin:10px 0 0; }
+.lt-event-location .lt-event-location-status { padding:10px 12px; background:#eef7f2; border-radius:8px; }
+.lt-event-coordinate-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin-top:10px; }
+.lt-event-coordinate-fields input { margin-top:6px; }
+.lt-event-radius-controls { display:flex; align-items:center; gap:12px; }
+.lt-event-radius-controls input[type="range"] { min-width:0; flex:1; accent-color:#0f766e; }
+.lt-event-radius-controls input[type="number"] { width:90px; flex:none; }
+.lt-event-radius-controls > span { font-size:12px; }
+@media(max-width:600px) { .lt-event-notification-composer,.lt-event-location { padding:15px; } .lt-event-message-actions button { padding:10px 12px; } .lt-event-coordinate-fields { gap:8px; } }

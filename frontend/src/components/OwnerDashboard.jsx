@@ -2,6 +2,9 @@ import React, { useState, useEffect, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import OwnerDashboardNavigation from './OwnerDashboardNavigation'
 import CustomerSegmentsChart from './CustomerSegmentsChart'
+import EventLocationPicker from './EventLocationPicker'
+import { eventLocationPayload } from './eventNotificationSettings'
+import './event-notifications.css'
 import { customerMatchesFilter, overviewMetrics } from './ownerCustomerMetrics'
 import { canUseOwnerDashboardRefresh, ownerDashboardTab } from './ownerDashboardDesign'
 import './owner-dashboard-refresh.css'
@@ -7488,6 +7491,9 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
 
   const saveEvent = async (shouldPublish) => {
     if (!name.trim()) return setMessage?.('Event name is required')
+    let locationPayload
+    try { locationPayload = eventLocationPayload({ latitude: geoLat, longitude: geoLng, radius: geoRadius }) }
+    catch (error) { setMessage?.(error.message); return }
     setSaving(true)
     try {
       const createRes = await authFetch(`${API_BASE}/api/v1/business/${slug}/events`, {
@@ -7501,9 +7507,7 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
           logo_url: logoUrl || null,
           cover_url: coverUrl || null,
           notification_message: notifMessage.trim() || null,
-          geo_latitude: geoLat ? Number(geoLat) : null,
-          geo_longitude: geoLng ? Number(geoLng) : null,
-          geo_radius_meters: geoRadius ? Number(geoRadius) : 200,
+          ...locationPayload,
         }),
       })
       const created = await createRes.json().catch(() => ({}))
@@ -7571,7 +7575,7 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
   }
 
   const sendNotification = async () => {
-    if (!sendMsg.trim() || !selected) return
+    if (sending || !sendMsg.trim() || !selected) return
     setSending(true)
     try {
       const res = await authFetch(`${API_BASE}/api/v1/business/${slug}/events/${selected.public_id}/notify`, {
@@ -7581,7 +7585,7 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'Could not send')
-      setMessage?.(`Notification sent to ${data.recipients || 0} ticket holders`)
+      setMessage?.(`Event update saved for ${data.recipients || 0} ticket holders. Emails accepted: ${data.emailed || 0}; failed: ${data.email_failed || 0}; no email: ${data.email_skipped || 0}.`)
       setSendMsg('')
     } catch (e) {
       setMessage?.(e.message || 'Could not send notification')
@@ -7631,14 +7635,18 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
             <div style={{ fontSize: 32, fontWeight: 800, color: '#0f766e', marginTop: 4 }}>{details?.remaining ?? '—'}</div>
           </div>
         </div>
-        <div style={{ background: '#fff', borderRadius: 16, padding: 20, border: '1px solid #e2e8f0', marginBottom: 16 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>📢 Send Notification</div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <input value={sendMsg} onChange={e => setSendMsg(e.target.value)} placeholder="e.g. Gates open in 15 minutes!" style={{ ...styles.input, flex: 1, marginBottom: 0 }} />
-            <button disabled={sending || !sendMsg.trim()} onClick={sendNotification} style={styles.submitBtn}>{sending ? 'Sending…' : 'Send'}</button>
+        <section className="lt-event-notification-composer" aria-labelledby="event-notification-heading">
+          <h3 id="event-notification-heading">📢 Send Notification</h3>
+          <p>Write an update for ticket holders of <strong>{selected.name}</strong>.</p>
+          <label htmlFor="event-notification-message">Message</label>
+          <textarea id="event-notification-message" value={sendMsg} onChange={e => setSendMsg(e.target.value)} maxLength={120} rows={4} disabled={sending} placeholder="e.g. Gates open in 15 minutes!" />
+          <div className="lt-event-message-actions">
+            <span>{sendMsg.length}/120 characters</span>
+            <button type="button" disabled={sending || !sendMsg.trim()} onClick={sendNotification}>{sending ? 'Sending…' : 'Send notification'}</button>
           </div>
-          <p style={{ fontSize: 11, color: '#64748b', marginTop: 6, marginBottom: 0 }}>Sends to all ticket holders of this event.</p>
-        </div>
+          <div className="lt-event-message-preview"><small>MESSAGE PREVIEW</small><strong>{selected.name}</strong><p>{sendMsg.trim() || 'Your event update will appear here.'}</p></div>
+          <p className="lt-event-delivery-note">The current event notification service sends email to ticket holders with an email address.</p>
+        </section>
         {Object.keys(levelCounts).length > 0 && (
           <div style={{ background: '#fff', borderRadius: 16, padding: 18, border: '1px solid #e2e8f0', marginBottom: 16 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: '#334155', marginBottom: 8 }}>By Access Level</div>
@@ -7725,18 +7733,12 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
           </div>
         </div>
 
-        <div style={{ marginTop: 20, padding: 16, background: '#fffbeb', borderRadius: 12, border: '1px solid #fde68a' }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: '#92400e', marginBottom: 4 }}>📍 Map Pin Notification</div>
-          <p style={{ fontSize: 12, color: '#92400e', margin: '0 0 12px' }}>Drop a pin so ticket holders get a lock-screen notification when they are near the venue.</p>
-          <label style={styles.label}>Message (shown on notification)</label>
-          <input value={notifMessage} onChange={e => setNotifMessage(e.target.value)} placeholder="You're near the venue! Show your ticket." style={styles.input} />
-          <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: '1fr 1fr 100px', gap: 10 }}>
-            <div><label style={styles.label}>Latitude</label><input value={geoLat} onChange={e => setGeoLat(e.target.value)} placeholder="14.5995" style={styles.input} /></div>
-            <div><label style={styles.label}>Longitude</label><input value={geoLng} onChange={e => setGeoLng(e.target.value)} placeholder="120.9842" style={styles.input} /></div>
-            <div><label style={styles.label}>Radius (m)</label><input type="number" min="50" max="1000" value={geoRadius} onChange={e => setGeoRadius(e.target.value)} style={styles.input} /></div>
-          </div>
-          <p style={{ fontSize: 11, color: '#92400e', marginTop: 8, marginBottom: 0 }}>Get coordinates from Google Maps: right-click the venue → copy the numbers.</p>
-        </div>
+        <EventLocationPicker
+          message={notifMessage} onMessageChange={setNotifMessage}
+          latitude={geoLat} longitude={geoLng} radius={geoRadius}
+          onChange={({ latitude, longitude }) => { setGeoLat(latitude); setGeoLng(longitude) }}
+          onRadiusChange={setGeoRadius} disabled={saving}
+        />
 
         <div style={{ marginTop: 16 }}>
           <label style={styles.label}>Access Levels</label>

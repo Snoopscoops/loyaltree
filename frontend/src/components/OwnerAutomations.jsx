@@ -12,32 +12,36 @@ function parseMapPoint(raw) {
   return null
 }
 
-function NearbyPinMap({ latitude, longitude, radius, onMove, active = true }) {
+export function NearbyPinMap({ latitude, longitude, radius, onMove, active = true }) {
   const holder = React.useRef(null)
   const mapRef = React.useRef(null)
   const markerRef = React.useRef(null)
   const circleRef = React.useRef(null)
   const lat = Number(latitude)
   const lng = Number(longitude)
-  const hasPoint = latitude !== '' && longitude !== '' && latitude != null && longitude != null && Number.isFinite(lat) && Number.isFinite(lng)
-  const center = hasPoint ? [lat, lng] : [14.5995, 120.9842]
+  const hasPoint = latitude !== '' && longitude !== '' && latitude != null && longitude != null && Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180
+  const latest = React.useRef(null)
+  latest.current = { lat, lng, hasPoint, radius, onMove }
   React.useEffect(() => {
     let cancelled = false
     const boot = () => {
       if (cancelled || !holder.current || !window.L || mapRef.current) return
-      const map = window.L.map(holder.current, { scrollWheelZoom: false }).setView(center, hasPoint ? 16 : 12)
+      // Location can change while Leaflet is loading (for example, a phone lookup).
+      const current = latest.current
+      const center = current.hasPoint ? [current.lat, current.lng] : [14.5995, 120.9842]
+      const map = window.L.map(holder.current, { scrollWheelZoom: false }).setView(center, current.hasPoint ? 16 : 12)
       window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap' }).addTo(map)
       const marker = window.L.marker(center, { draggable: true }).addTo(map)
-      const circle = window.L.circle(center, { radius: Number(radius) || 150, color: '#0f766e', fillColor: '#14b8a6', fillOpacity: 0.18 }).addTo(map)
+      const circle = window.L.circle(center, { radius: Number(current.radius) || 150, color: '#0f766e', fillColor: '#14b8a6', fillOpacity: 0.18 }).addTo(map)
       marker.on('dragend', () => {
         const pos = marker.getLatLng()
         circle.setLatLng(pos)
-        onMove(Number(pos.lat.toFixed(6)), Number(pos.lng.toFixed(6)))
+        latest.current.onMove(Number(pos.lat.toFixed(6)), Number(pos.lng.toFixed(6)))
       })
       map.on('click', event => {
         marker.setLatLng(event.latlng)
         circle.setLatLng(event.latlng)
-        onMove(Number(event.latlng.lat.toFixed(6)), Number(event.latlng.lng.toFixed(6)))
+        latest.current.onMove(Number(event.latlng.lat.toFixed(6)), Number(event.latlng.lng.toFixed(6)))
       })
       mapRef.current = map
       markerRef.current = marker

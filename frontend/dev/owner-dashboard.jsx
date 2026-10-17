@@ -35,6 +35,12 @@ if (!import.meta.env.DEV) {
   localStorage.setItem(`loyaltree_onboarding_seen_${fixtureSlug}`, '1')
   // The fixture has its own fake business storage key; no live session is read.
   localStorage.removeItem(`loyaltree_selected_program_${fixtureSlug}`)
+  // Geolocation is always synthetic in this development-only workspace.
+  Object.defineProperty(navigator, 'geolocation', { configurable:true, value: {
+    getCurrentPosition(success, failure) {
+      queueMicrotask(() => params.get('geo') === 'denied' ? failure({ code:1 }) : success({ coords:{latitude:14.5995,longitude:120.9842} }))
+    },
+  } })
   const API_BASE = `${window.location.origin}/__owner-fixtures`
 
   class FixtureBoundary extends React.Component {
