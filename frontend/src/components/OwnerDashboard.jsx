@@ -7414,6 +7414,8 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
   const [eventDate, setEventDate] = useState('')
   const [venue, setVenue] = useState('')
   const [maxAttendees, setMaxAttendees] = useState('')
+  const [logoUrl, setLogoUrl] = useState('')
+  const [coverUrl, setCoverUrl] = useState('')
   const [levels, setLevels] = useState([{ name: 'VIP', benefits: [''], price: '0', color: '#0d9488' }])
   const [saving, setSaving] = useState(false)
   const [selected, setSelected] = useState(null)
@@ -7446,7 +7448,7 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
   const removeBenefit = (li, bi) => setLevels(prev => prev.map((lvl, i) => i === li ? { ...lvl, benefits: lvl.benefits.filter((_, j) => j !== bi) } : lvl))
 
   const resetForm = () => {
-    setName(''); setEventDate(''); setVenue(''); setMaxAttendees('')
+    setName(''); setEventDate(''); setVenue(''); setMaxAttendees(''); setLogoUrl(''); setCoverUrl('')
     setLevels([{ name: 'VIP', benefits: [''], price: '0', color: '#0d9488' }])
   }
 
@@ -7457,7 +7459,14 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
       const createRes = await authFetch(`${API_BASE}/api/v1/business/${slug}/events`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name.trim(), event_date: eventDate || null, venue: venue.trim() || null, max_attendees: maxAttendees ? Number(maxAttendees) : null }),
+        body: JSON.stringify({
+          name: name.trim(),
+          event_date: eventDate || null,
+          venue: venue.trim() || null,
+          max_attendees: maxAttendees ? Number(maxAttendees) : null,
+          logo_url: logoUrl.trim() || null,
+          cover_url: coverUrl.trim() || null,
+        }),
       })
       const created = await createRes.json().catch(() => ({}))
       if (!createRes.ok) throw new Error(created.detail || 'Could not create event')
@@ -7466,7 +7475,12 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
         await authFetch(`${API_BASE}/api/v1/business/${slug}/events/${eventId}/access-levels`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: lvl.name.trim(), benefits: lvl.benefits.filter(b => b.trim()).join('\n') || null, ticket_price: Number(lvl.price || 0), color_hex: lvl.color || '#0d9488' }),
+          body: JSON.stringify({
+            name: lvl.name.trim(),
+            benefits: lvl.benefits.filter(b => b.trim()).join('\n') || null,
+            ticket_price: Number(lvl.price || 0),
+            color_hex: lvl.color || '#0d9488',
+          }),
         })
       }
       if (shouldPublish) {
@@ -7514,6 +7528,12 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
   }
 
   const copyLink = (url) => navigator.clipboard.writeText(url).then(() => setMessage?.('Link copied')).catch(() => {})
+  const downloadQr = (url) => {
+    const a = document.createElement('a')
+    a.href = `https://api.qrserver.com/v1/create-qr-code/?size=600x600&data=${encodeURIComponent(url)}`
+    a.download = 'event-qr.png'
+    a.click()
+  }
   const joinUrl = (id) => `${window.location.origin}/join/event/${id}`
 
   const levelCounts = tickets.reduce((acc, t) => {
@@ -7525,53 +7545,63 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
   if (view === 'details' && selected) {
     return (
       <div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
           <button onClick={() => setView('list')} style={{ ...styles.addBtn, background: '#f1f5f9', color: '#334155' }}>← Back</button>
-          <h2 style={{ margin: 0, fontSize: 20 }}>{selected.name}</h2>
+          <div>
+            <h2 style={{ margin: 0, fontSize: 22 }}>{selected.name}</h2>
+            <div style={{ fontSize: 13, color: '#64748b', marginTop: 2 }}>
+              {selected.event_date ? new Date(selected.event_date).toLocaleString() : 'No date'} · {selected.venue || 'No venue'}
+            </div>
+          </div>
         </div>
-        <div style={{ ...styles.card, padding: 24 }}>
-          <div style={{ fontSize: 13, color: '#64748b', marginBottom: 18 }}>
-            {selected.event_date ? new Date(selected.event_date).toLocaleString() : 'No date'} · {selected.venue || 'No venue'}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 14, marginBottom: 20 }}>
+          <div style={{ background: '#fff', borderRadius: 16, padding: 20, border: '1px solid #e2e8f0' }}>
+            <div style={{ fontSize: 13, color: '#64748b' }}>Total Claimed</div>
+            <div style={{ fontSize: 32, fontWeight: 800, color: '#0f766e', marginTop: 4 }}>{details?.total_tickets || 0}</div>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 20 }}>
-            <div style={{ background: '#f0fdfa', padding: 18, borderRadius: 14, textAlign: 'center' }}><div style={{ fontSize: 28, fontWeight: 800, color: '#0f766e' }}>{details?.total_tickets || 0}</div><div style={{ fontSize: 12, color: '#64748b' }}>Claimed</div></div>
-            <div style={{ background: '#f0fdfa', padding: 18, borderRadius: 14, textAlign: 'center' }}><div style={{ fontSize: 28, fontWeight: 800, color: '#0f766e' }}>{details?.scanned || 0}</div><div style={{ fontSize: 12, color: '#64748b' }}>Scanned</div></div>
-            <div style={{ background: '#f0fdfa', padding: 18, borderRadius: 14, textAlign: 'center' }}><div style={{ fontSize: 28, fontWeight: 800, color: '#0f766e' }}>{details?.remaining ?? '—'}</div><div style={{ fontSize: 12, color: '#64748b' }}>Remaining</div></div>
+          <div style={{ background: '#fff', borderRadius: 16, padding: 20, border: '1px solid #e2e8f0' }}>
+            <div style={{ fontSize: 13, color: '#64748b' }}>Checked In</div>
+            <div style={{ fontSize: 32, fontWeight: 800, color: '#0f766e', marginTop: 4 }}>{details?.scanned || 0}</div>
           </div>
-          {Object.keys(levelCounts).length > 0 && (
-            <div style={{ background: '#f8fafc', padding: 12, borderRadius: 10, fontSize: 13, marginBottom: 16 }}>
-              <b>By level:</b> {Object.entries(levelCounts).map(([k, v]) => `${k}: ${v}`).join(' · ')}
+          <div style={{ background: '#fff', borderRadius: 16, padding: 20, border: '1px solid #e2e8f0' }}>
+            <div style={{ fontSize: 13, color: '#64748b' }}>Remaining</div>
+            <div style={{ fontSize: 32, fontWeight: 800, color: '#0f766e', marginTop: 4 }}>{details?.remaining ?? '—'}</div>
+          </div>
+        </div>
+        {Object.keys(levelCounts).length > 0 && (
+          <div style={{ background: '#fff', borderRadius: 16, padding: 18, border: '1px solid #e2e8f0', marginBottom: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#334155', marginBottom: 8 }}>By Access Level</div>
+            <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+              {Object.entries(levelCounts).map(([k, v]) => <div key={k} style={{ fontSize: 14 }}><b>{k}</b>: {v}</div>)}
+            </div>
+          </div>
+        )}
+        <div style={{ background: '#fff', borderRadius: 16, padding: 20, border: '1px solid #e2e8f0', marginBottom: 16 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Join Link & QR</div>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
+            <code style={{ fontSize: 12, background: '#f8fafc', padding: '8px 12px', borderRadius: 8, border: '1px solid #e2e8f0' }}>{joinUrl(selected.public_id)}</code>
+            <button onClick={() => copyLink(joinUrl(selected.public_id))} style={styles.addBtn}>Copy Link</button>
+            <button onClick={() => downloadQr(joinUrl(selected.public_id))} style={{ ...styles.addBtn, background: '#0f766e', color: '#fff' }}>Download QR</button>
+          </div>
+          <img alt="QR" src={`https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(joinUrl(selected.public_id))}`} style={{ width: 160, height: 160, borderRadius: 12, border: '1px solid #e2e8f0' }} />
+        </div>
+        <div style={{ background: '#fff', borderRadius: 16, padding: 20, border: '1px solid #e2e8f0' }}>
+          <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>Attendees ({tickets.length})</div>
+          {tickets.length === 0 ? <p style={{ color: '#94a3b8', fontSize: 13 }}>No tickets claimed yet.</p> : (
+            <div style={{ maxHeight: 340, overflowY: 'auto' }}>
+              {tickets.map(t => (
+                <div key={t.public_id} style={{ display: 'flex', justifyContent: 'space-between', padding: '12px 0', borderBottom: '1px solid #f1f5f9', fontSize: 14 }}>
+                  <div>
+                    <b>{t.attendee_name || '—'}</b>
+                    <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>{t.event_access_levels?.name || ''} · {t.status === 'scanned' ? 'Checked in' : 'Claimed'}</div>
+                  </div>
+                  <div style={{ fontSize: 12, color: '#94a3b8' }}>{t.created_at ? new Date(t.created_at).toLocaleDateString() : ''}</div>
+                </div>
+              ))}
             </div>
           )}
-          <div style={{ marginBottom: 16 }}>
-            <div style={{ fontSize: 11, fontWeight: 800, color: '#64748b', marginBottom: 6 }}>JOIN LINK</div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-              <code style={{ fontSize: 12, background: '#fff', padding: '8px 12px', borderRadius: 8, border: '1px solid #e2e8f0' }}>{joinUrl(selected.public_id)}</code>
-              <button onClick={() => copyLink(joinUrl(selected.public_id))} style={styles.addBtn}>Copy</button>
-            </div>
-          </div>
-          <div style={{ marginBottom: 20 }}>
-            <div style={{ fontSize: 11, fontWeight: 800, color: '#64748b', marginBottom: 6 }}>QR CODE</div>
-            <img alt="QR" src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(joinUrl(selected.public_id))}`} style={{ width: 150, height: 150, borderRadius: 10, border: '1px solid #e2e8f0' }} />
-          </div>
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>Ticket holders ({tickets.length})</div>
-            {tickets.length === 0 ? <p style={{ color: '#94a3b8', fontSize: 13 }}>No tickets claimed yet.</p> : (
-              <div style={{ maxHeight: 300, overflowY: 'auto', border: '1px solid #f1f5f9', borderRadius: 10 }}>
-                {tickets.map(t => (
-                  <div key={t.public_id} style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 14px', borderBottom: '1px solid #f1f5f9', fontSize: 13 }}>
-                    <div>
-                      <b>{t.attendee_name || '—'}</b>
-                      <div style={{ fontSize: 11, color: '#64748b' }}>{t.event_access_levels?.name || ''} · {t.status}</div>
-                    </div>
-                    <div style={{ fontSize: 11, color: '#94a3b8' }}>{t.created_at ? new Date(t.created_at).toLocaleDateString() : ''}</div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-          <div style={{ marginTop: 20 }}>
-            <button onClick={() => deleteEvent(selected)} style={{ ...styles.addBtn, background: '#fef2f2', color: '#dc2626' }}>Delete event</button>
+          <div style={{ marginTop: 16 }}>
+            <button onClick={() => deleteEvent(selected)} style={{ ...styles.addBtn, background: '#fef2f2', color: '#dc2626' }}>Delete Event</button>
           </div>
         </div>
       </div>
@@ -7580,28 +7610,40 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
 
   return (
     <div>
-      <div style={{ marginBottom: 8 }}>
-        <h2 style={{ margin: 0, fontSize: 22 }}>🎟️ Event Ticketing</h2>
-        <p style={{ margin: '4px 0 16px', color: '#64748b', fontSize: 13 }}>Create events, design tickets, and track attendees.</p>
+      <div style={{ marginBottom: 20 }}>
+        <h2 style={{ margin: 0, fontSize: 24 }}>🎟️ Event Ticketing</h2>
+        <p style={{ margin: '6px 0 0', color: '#64748b', fontSize: 14 }}>Create events with custom access levels and track attendees.</p>
       </div>
-      <div style={{ ...styles.card, padding: 24, marginBottom: 16 }}>
-        <h3 style={{ marginTop: 0, fontSize: 16 }}>Create a new event</h3>
+
+      <div style={{ background: '#fff', borderRadius: 16, padding: 24, border: '1px solid #e2e8f0', marginBottom: 20 }}>
+        <h3 style={{ marginTop: 0, fontSize: 16 }}>Create Event</h3>
+        <div style={{ background: '#f0fdfa', borderRadius: 12, padding: 14, marginTop: 12, fontSize: 13, color: '#0f766e' }}>
+          <b>Pricing</b><br />
+          Free events: first 50 tickets free (Growth & Pro). After that, ₱10 per ticket.<br />
+          Paid events: ₱10 platform fee per ticket (buyer pays or organizer absorbs).<br />
+          Email confirmation: +₱2 per ticket (optional).
+        </div>
         <div style={{ marginTop: 14 }}>
-          <label style={styles.label}>Event name</label>
-          <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Summer Concert" style={styles.input} />
+          <label style={styles.label}>Event Name</label>
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Summer Festival" style={styles.input} />
         </div>
         <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          <div><label style={styles.label}>Date & time</label><input type="datetime-local" value={eventDate} onChange={e => setEventDate(e.target.value)} style={styles.input} /></div>
+          <div><label style={styles.label}>Date & Time</label><input type="datetime-local" value={eventDate} onChange={e => setEventDate(e.target.value)} style={styles.input} /></div>
           <div><label style={styles.label}>Venue</label><input value={venue} onChange={e => setVenue(e.target.value)} placeholder="Venue" style={styles.input} /></div>
         </div>
-        <div style={{ marginTop: 12 }}><label style={styles.label}>Max attendees</label><input type="number" min="1" value={maxAttendees} onChange={e => setMaxAttendees(e.target.value)} placeholder="e.g. 200" style={styles.input} /></div>
+        <div style={{ marginTop: 12 }}><label style={styles.label}>Max Attendees</label><input type="number" min="1" value={maxAttendees} onChange={e => setMaxAttendees(e.target.value)} placeholder="e.g. 300" style={styles.input} /></div>
+        <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div><label style={styles.label}>Logo URL</label><input value={logoUrl} onChange={e => setLogoUrl(e.target.value)} placeholder="https://..." style={styles.input} /></div>
+          <div><label style={styles.label}>Cover Photo URL</label><input value={coverUrl} onChange={e => setCoverUrl(e.target.value)} placeholder="https://..." style={styles.input} /></div>
+        </div>
         <div style={{ marginTop: 16 }}>
-          <label style={styles.label}>Access levels</label>
+          <label style={styles.label}>Access Levels</label>
           {levels.map((lvl, idx) => (
-            <div key={idx} style={{ background: '#f8fafc', borderRadius: 12, padding: 12, marginTop: 8 }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 100px 36px', gap: 8, alignItems: 'center' }}>
-                <input value={lvl.name} onChange={e => updateLevel(idx, 'name', e.target.value)} placeholder="Level (VIP)" style={styles.input} />
+            <div key={idx} style={{ background: '#f8fafc', borderRadius: 12, padding: 14, marginTop: 8 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 100px 90px 36px', gap: 8, alignItems: 'center' }}>
+                <input value={lvl.name} onChange={e => updateLevel(idx, 'name', e.target.value)} placeholder="VIP / Guest / Media" style={styles.input} />
                 <input type="number" min="0" value={lvl.price} onChange={e => updateLevel(idx, 'price', e.target.value)} placeholder="₱" style={styles.input} />
+                <input type="color" value={lvl.color} onChange={e => updateLevel(idx, 'color', e.target.value)} style={{ width: 50, height: 36, border: 'none', background: 'transparent' }} />
                 {levels.length > 1 && <button type="button" onClick={() => removeLevel(idx)} style={{ ...styles.addBtn, background: '#fef2f2', color: '#dc2626', padding: '6px 10px' }}>×</button>}
               </div>
               {lvl.benefits.map((b, bi) => (
@@ -7613,15 +7655,16 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
               <button type="button" onClick={() => addBenefit(idx)} style={{ ...styles.addBtn, marginTop: 6 }}>+ Benefit</button>
             </div>
           ))}
-          <button type="button" onClick={addLevel} style={{ ...styles.addBtn, marginTop: 10 }}>+ Access level</button>
+          <button type="button" onClick={addLevel} style={{ ...styles.addBtn, marginTop: 10 }}>+ Access Level</button>
         </div>
-        <div style={{ marginTop: 18, display: 'flex', gap: 10 }}>
+        <div style={{ marginTop: 20, display: 'flex', gap: 10 }}>
           <button disabled={saving} onClick={() => saveEvent(false)} style={{ ...styles.submitBtn, background: '#e2e8f0', color: '#334155' }}>{saving ? 'Saving…' : 'Save Draft'}</button>
           <button disabled={saving} onClick={() => saveEvent(true)} style={styles.submitBtn}>{saving ? 'Publishing…' : 'Publish Event'}</button>
         </div>
       </div>
-      <div style={{ ...styles.card, padding: 20 }}>
-        <h3 style={{ marginTop: 0, fontSize: 16 }}>Your events</h3>
+
+      <div style={{ background: '#fff', borderRadius: 16, padding: 20, border: '1px solid #e2e8f0' }}>
+        <h3 style={{ marginTop: 0, fontSize: 16 }}>Your Events</h3>
         {loading ? <p>Loading…</p> : events.length === 0 ? <p style={{ color: '#94a3b8' }}>No events yet.</p> : (
           events.map(ev => (
             <div key={ev.public_id} onClick={() => openDetails(ev)} style={{ padding: '14px 4px', borderBottom: '1px solid #f1f5f9', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>

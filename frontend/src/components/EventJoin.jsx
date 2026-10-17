@@ -11,7 +11,11 @@ export default function EventJoin({ API_BASE }) {
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
-  const [sendEmail, setSendEmail] = useState(true)
+  const [address, setAddress] = useState('')
+  const [gender, setGender] = useState('')
+  const [ageBracket, setAgeBracket] = useState('')
+  const [employment, setEmployment] = useState('')
+  const [agreed, setAgreed] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [ticket, setTicket] = useState(null)
 
@@ -39,7 +43,7 @@ export default function EventJoin({ API_BASE }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
-    if (!selectedLevel || !name.trim()) return
+    if (!selectedLevel || !name.trim() || !agreed) return
     setSubmitting(true)
     setError('')
     try {
@@ -51,7 +55,10 @@ export default function EventJoin({ API_BASE }) {
           attendee_name: name.trim(),
           attendee_email: email.trim() || null,
           attendee_phone: phone.trim() || null,
-          send_email_confirmation: sendEmail && !!email.trim(),
+          address: address.trim() || null,
+          gender: gender || null,
+          age_bracket: ageBracket || null,
+          employment_status: employment || null,
         }),
       })
       const data = await res.json().catch(() => ({}))
@@ -85,15 +92,14 @@ export default function EventJoin({ API_BASE }) {
     return (
       <div style={styles.page}>
         <div style={styles.card}>
-          <h2 style={{ marginTop: 0, color: '#0f766e' }}>Ticket claimed!</h2>
-          <p>Your ticket for <strong>{event.name}</strong> is ready.</p>
-          <p style={{ fontSize: 13, color: '#64748b' }}>Add it to your wallet, then show the QR code at the entrance.</p>
-          {ticketId && (
-            <button onClick={addToWallet} style={styles.walletBtn}>
-              Add to Wallet
-            </button>
-          )}
-          <button onClick={() => { setTicket(null); setName(''); setEmail(''); setPhone('') }} style={{ ...styles.submit, background: '#e2e8f0', color: '#334155', marginTop: 12 }}>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ width: 64, height: 64, borderRadius: 32, background: '#0d9488', margin: '0 auto 12px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 28 }}>✓</div>
+            <h2 style={{ margin: '0 0 6px', color: '#0f766e' }}>Ticket Claimed!</h2>
+            <p style={{ margin: '0 0 16px', color: '#64748b' }}>Your ticket for <strong>{event.name}</strong> is ready.</p>
+          </div>
+          <p style={{ fontSize: 13, color: '#64748b', textAlign: 'center' }}>Add it to your wallet, then show the QR at the entrance.</p>
+          {ticketId && <button onClick={addToWallet} style={styles.walletBtn}>Add to Wallet</button>}
+          <button onClick={() => { setTicket(null); setName(''); setEmail(''); setPhone(''); setAddress(''); setGender(''); setAgeBracket(''); setEmployment(''); setAgreed(false) }} style={{ ...styles.submit, background: '#e2e8f0', color: '#334155', marginTop: 12 }}>
             Claim another
           </button>
         </div>
@@ -104,45 +110,77 @@ export default function EventJoin({ API_BASE }) {
   return (
     <div style={styles.page}>
       <div style={styles.card}>
-        <div style={{ textAlign: 'center', marginBottom: 8 }}>
-          <div style={{ width: 56, height: 56, borderRadius: 28, background: '#0d9488', margin: '0 auto 10px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontWeight: 800, fontSize: 20 }}>
+        <div style={{ textAlign: 'center', marginBottom: 18 }}>
+          <div style={{ width: 64, height: 64, borderRadius: 32, background: '#0d9488', margin: '0 auto 10px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontWeight: 800, fontSize: 24 }}>
             {event.name?.slice(0, 1) || 'E'}
           </div>
-          <h2 style={{ margin: 0 }}>{event.name}</h2>
-          {event.event_date && <p style={{ color: '#64748b', margin: '4px 0', fontSize: 13 }}>{new Date(event.event_date).toLocaleString()}</p>}
-          {event.venue && <p style={{ color: '#64748b', margin: '2px 0', fontSize: 13 }}>{event.venue}</p>}
+          <h2 style={{ margin: 0, fontSize: 22 }}>{event.name}</h2>
+          {event.event_date && <p style={{ color: '#64748b', margin: '6px 0 0', fontSize: 13 }}>{new Date(event.event_date).toLocaleString()}</p>}
+          {event.venue && <p style={{ color: '#64748b', margin: '2px 0 0', fontSize: 13 }}>{event.venue}</p>}
         </div>
 
-        <form onSubmit={handleSubmit} style={{ marginTop: 16 }}>
-          <label style={styles.label}>Access level</label>
+        <form onSubmit={handleSubmit}>
+          <label style={styles.label}>Access Level</label>
           <select value={selectedLevel} onChange={e => setSelectedLevel(e.target.value)} required style={styles.input}>
             <option value="">Select level</option>
             {levels.map(lvl => (
-              <option key={lvl.public_id} value={lvl.public_id}>
-                {lvl.name}{lvl.ticket_price > 0 ? ` — ₱${lvl.ticket_price}` : ' — Free'}
-              </option>
+              <option key={lvl.public_id} value={lvl.public_id}>{lvl.name}</option>
             ))}
           </select>
 
-          <label style={styles.label}>Your name</label>
-          <input value={name} onChange={e => setName(e.target.value)} required placeholder="Full name" style={styles.input} />
+          <label style={styles.label}>Full Name</label>
+          <input value={name} onChange={e => setName(e.target.value)} required placeholder="Juan Dela Cruz" style={styles.input} />
 
-          <label style={styles.label}>Email <span style={{ color: '#94a3b8' }}>(optional)</span></label>
+          <label style={styles.label}>Email</label>
           <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@email.com" style={styles.input} />
 
-          <label style={styles.label}>Phone <span style={{ color: '#94a3b8' }}>(optional)</span></label>
-          <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="09xx" style={styles.input} />
+          <label style={styles.label}>Phone Number</label>
+          <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="09xx xxx xxxx" style={styles.input} />
 
-          {email && (
-            <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, marginTop: 8 }}>
-              <input type="checkbox" checked={sendEmail} onChange={e => setSendEmail(e.target.checked)} />
-              Send email confirmation (+₱2)
-            </label>
-          )}
+          <label style={styles.label}>Address</label>
+          <input value={address} onChange={e => setAddress(e.target.value)} placeholder="City / Province" style={styles.input} />
 
-          {error && <p style={{ color: '#dc2626', fontSize: 13 }}>{error}</p>}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <div>
+              <label style={styles.label}>Gender</label>
+              <select value={gender} onChange={e => setGender(e.target.value)} style={styles.input}>
+                <option value="">Select</option>
+                <option value="male">Male</option>
+                <option value="female">Female</option>
+                <option value="prefer_not">Prefer not to say</option>
+              </select>
+            </div>
+            <div>
+              <label style={styles.label}>Age Bracket</label>
+              <select value={ageBracket} onChange={e => setAgeBracket(e.target.value)} style={styles.input}>
+                <option value="">Select</option>
+                <option value="18-24">18–24</option>
+                <option value="25-34">25–34</option>
+                <option value="35-44">35–44</option>
+                <option value="45-54">45–54</option>
+                <option value="55+">55+</option>
+              </select>
+            </div>
+          </div>
 
-          <button type="submit" disabled={submitting} style={styles.submit}>
+          <label style={styles.label}>Employment Status</label>
+          <select value={employment} onChange={e => setEmployment(e.target.value)} style={styles.input}>
+            <option value="">Select</option>
+            <option value="employed">Employed</option>
+            <option value="self_employed">Self-employed</option>
+            <option value="student">Student</option>
+            <option value="unemployed">Unemployed</option>
+            <option value="retired">Retired</option>
+          </select>
+
+          <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 13, marginTop: 14 }}>
+            <input type="checkbox" checked={agreed} onChange={e => setAgreed(e.target.checked)} required style={{ marginTop: 2 }} />
+            <span>I agree to the <a href="/terms" target="_blank" style={{ color: '#0d9488' }}>Terms and Conditions</a> and consent to the collection of my information for this event.</span>
+          </label>
+
+          {error && <p style={{ color: '#dc2626', fontSize: 13, marginTop: 8 }}>{error}</p>}
+
+          <button type="submit" disabled={submitting || !agreed} style={styles.submit}>
             {submitting ? 'Claiming…' : 'Claim Ticket'}
           </button>
         </form>
@@ -153,9 +191,9 @@ export default function EventJoin({ API_BASE }) {
 
 const styles = {
   page: { minHeight: '100vh', background: '#f0fdf4', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 },
-  card: { background: '#fff', borderRadius: 16, padding: 28, maxWidth: 420, width: '100%', boxShadow: '0 4px 20px rgba(0,0,0,0.08)' },
+  card: { background: '#fff', borderRadius: 16, padding: 28, maxWidth: 440, width: '100%', boxShadow: '0 4px 20px rgba(0,0,0,0.08)' },
   label: { display: 'block', fontSize: 13, fontWeight: 600, color: '#334155', marginTop: 12, marginBottom: 4 },
   input: { width: '100%', padding: '12px 14px', border: '1.5px solid #e2e8f0', borderRadius: 10, fontSize: 14, boxSizing: 'border-box' },
   submit: { width: '100%', padding: 14, background: '#0d9488', color: '#fff', border: 'none', borderRadius: 10, fontSize: 15, fontWeight: 700, marginTop: 18, cursor: 'pointer' },
-  walletBtn: { display: 'block', width: '100%', padding: 14, background: '#0d9488', color: '#fff', textAlign: 'center', borderRadius: 10, textDecoration: 'none', fontWeight: 600, border: 'none', cursor: 'pointer', fontSize: 15, marginTop: 16 },
+  walletBtn: { display: 'block', width: '100%', padding: 14, background: '#0d9488', color: '#fff', textAlign: 'center', borderRadius: 10, fontWeight: 600, border: 'none', cursor: 'pointer', fontSize: 15, marginTop: 16 },
 }
