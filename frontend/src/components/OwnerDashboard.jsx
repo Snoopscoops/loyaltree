@@ -7427,6 +7427,8 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
   const [details, setDetails] = useState(null)
   const [tickets, setTickets] = useState([])
   const [eventLevels, setEventLevels] = useState([])
+  const [sendMsg, setSendMsg] = useState('')
+  const [sending, setSending] = useState(false)
 
   const slug = user?.business_slug
 
@@ -7551,6 +7553,7 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
     setDetails(null)
     setTickets([])
     setEventLevels([])
+    setSendMsg('')
     setView('details')
     try {
       const [sumRes, tixRes, lvlRes] = await Promise.all([
@@ -7565,6 +7568,26 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
       if (tixRes.ok) setTickets(Array.isArray(tix) ? tix : [])
       if (lvlRes.ok) setEventLevels(lvlData.access_levels || [])
     } catch {}
+  }
+
+  const sendNotification = async () => {
+    if (!sendMsg.trim() || !selected) return
+    setSending(true)
+    try {
+      const res = await authFetch(`${API_BASE}/api/v1/business/${slug}/events/${selected.public_id}/notify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: sendMsg.trim() }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.detail || 'Could not send')
+      setMessage?.(`Notification sent to ${data.recipients || 0} ticket holders`)
+      setSendMsg('')
+    } catch (e) {
+      setMessage?.(e.message || 'Could not send notification')
+    } finally {
+      setSending(false)
+    }
   }
 
   const copyLink = (url) => navigator.clipboard.writeText(url).then(() => setMessage?.('Link copied')).catch(() => {})
@@ -7608,6 +7631,16 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
             <div style={{ fontSize: 32, fontWeight: 800, color: '#0f766e', marginTop: 4 }}>{details?.remaining ?? '—'}</div>
           </div>
         </div>
+
+        <div style={{ background: '#fff', borderRadius: 16, padding: 20, border: '1px solid #e2e8f0', marginBottom: 16 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>📢 Send Notification</div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input value={sendMsg} onChange={e => setSendMsg(e.target.value)} placeholder="e.g. Gates open in 15 minutes!" style={{ ...styles.input, flex: 1, marginBottom: 0 }} />
+            <button disabled={sending || !sendMsg.trim()} onClick={sendNotification} style={styles.submitBtn}>{sending ? 'Sending…' : 'Send'}</button>
+          </div>
+          <p style={{ fontSize: 11, color: '#64748b', marginTop: 6, marginBottom: 0 }}>Sends to all ticket holders of this event.</p>
+        </div>
+
         {Object.keys(levelCounts).length > 0 && (
           <div style={{ background: '#fff', borderRadius: 16, padding: 18, border: '1px solid #e2e8f0', marginBottom: 16 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: '#334155', marginBottom: 8 }}>By Access Level</div>
@@ -7693,14 +7726,16 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
             {coverUrl && <img src={coverUrl} alt="" style={{ width: '100%', height: 60, objectFit: 'cover', marginTop: 6, borderRadius: 6 }} />}
           </div>
         </div>
-        <div style={{ marginTop: 16 }}>
+        <div style={{ marginTop: 20, padding: 14, background: '#fffbeb', borderRadius: 12, border: '1px solid #fde68a' }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#92400e', marginBottom: 10 }}>📍 Nearby Notification (per event)</div>
           <label style={styles.label}>Notification Message</label>
-          <input value={notifMessage} onChange={e => setNotifMessage(e.target.value)} placeholder="You're near the event! Show your ticket." style={styles.input} />
-        </div>
-        <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: '1fr 1fr 100px', gap: 12 }}>
-          <div><label style={styles.label}>Latitude</label><input value={geoLat} onChange={e => setGeoLat(e.target.value)} placeholder="14.5995" style={styles.input} /></div>
-          <div><label style={styles.label}>Longitude</label><input value={geoLng} onChange={e => setGeoLng(e.target.value)} placeholder="120.9842" style={styles.input} /></div>
-          <div><label style={styles.label}>Radius (m)</label><input type="number" min="50" max="1000" value={geoRadius} onChange={e => setGeoRadius(e.target.value)} style={styles.input} /></div>
+          <input value={notifMessage} onChange={e => setNotifMessage(e.target.value)} placeholder="You're near the venue! Show your ticket." style={styles.input} />
+          <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: '1fr 1fr 100px', gap: 10 }}>
+            <div><label style={styles.label}>Latitude</label><input value={geoLat} onChange={e => setGeoLat(e.target.value)} placeholder="14.5995" style={styles.input} /></div>
+            <div><label style={styles.label}>Longitude</label><input value={geoLng} onChange={e => setGeoLng(e.target.value)} placeholder="120.9842" style={styles.input} /></div>
+            <div><label style={styles.label}>Radius (m)</label><input type="number" min="50" max="1000" value={geoRadius} onChange={e => setGeoRadius(e.target.value)} style={styles.input} /></div>
+          </div>
+          <p style={{ fontSize: 11, color: '#92400e', marginTop: 8, marginBottom: 0 }}>Attendees with this ticket will get a notification when they are near the venue.</p>
         </div>
         <div style={{ marginTop: 16 }}>
           <label style={styles.label}>Access Levels</label>

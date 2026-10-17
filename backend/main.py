@@ -50082,6 +50082,59 @@ def publish_event(public_id: str, event_public_id: str, authorization: str = Hea
         raise HTTPException(status_code=500, detail=friendly_db_error(exc))
 
 
+@app.post("/api/v1/business/{public_id}/events/{event_public_id}/notify")
+def send_event_notification(public_id: str, event_public_id: str, payload: dict, authorization: str = Header(default="")):
+    """Send a normal notification message to all ticket holders of this event."""
+    business = _require_event_owner(public_id, authorization)
+    message = (payload.get("message") or "").strip()[:120]
+    if not message:
+        raise HTTPException(status_code=400, detail="Message is required")
+    try:
+        event_rows = (
+            supabase.table("events")
+            .select("id")
+            .eq("public_id", event_public_id)
+            .eq("business_id", business["id"])
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        if not event_rows:
+            raise HTTPException(status_code=404, detail="Event not found")
+        event_id = event_rows[0]["id"]
+        tickets = (
+            supabase.table("event_tickets")
+            .select("public_id, attendee_email")
+            .eq("event_id", event_id)
+            .execute()
+            .data or []
+        )
+        # Store the latest notification on the event for reference
+        supabase.table("events").update({
+            "last_notification": message,
+            "last_notification_at": datetime.utcnow().isoformat(),
+        }).eq("id", event_id).execute()
+
+        # Optional: email those who opted in
+        sent = 0
+        for t in tickets:
+            if t.get("attendee_email"):
+                try:
+                    send_event_ticket_email(
+                        {"attendee_email": t["attendee_email"], "attendee_name": "", "public_id": t["public_id"]},
+                        {"name": "Event update", "notification_message": message},
+                        business,
+                    )
+                    sent += 1
+                except Exception:
+                    pass
+        return {"ok": True, "message": message, "recipients": len(tickets), "emailed": sent}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+
+
 # --- Hook into existing PayMongo webhook ---
 # Call this from your existing PayMongo webhook handler when a ticket payment succeeds.
 # Example usage inside the webhook:
