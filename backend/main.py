@@ -50050,6 +50050,7 @@ def delete_event(public_id: str, event_public_id: str, authorization: str = Head
         return {"ok": True}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+@app.post("/api/v1/business/{public_id}/events/{event_public_id}/publish")
 def publish_event(public_id: str, event_public_id: str, authorization: str = Header(default="")):
     business = _require_event_owner(public_id, authorization)
     try:
