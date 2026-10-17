@@ -7416,6 +7416,7 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
   const [maxAttendees, setMaxAttendees] = useState('')
   const [logoUrl, setLogoUrl] = useState('')
   const [coverUrl, setCoverUrl] = useState('')
+  const [uploading, setUploading] = useState(false)
   const [levels, setLevels] = useState([{ name: 'VIP', benefits: [''], price: '0', color: '#0d9488' }])
   const [saving, setSaving] = useState(false)
   const [selected, setSelected] = useState(null)
@@ -7423,6 +7424,31 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
   const [tickets, setTickets] = useState([])
 
   const slug = user?.business_slug
+
+  const uploadEventImage = async (file, setter) => {
+    if (!file || !slug) return
+    setUploading(true)
+    try {
+      const sr = await authFetch(`${API_BASE}/api/v1/business/${slug}/cloudinary-signature?purpose=event_image`, { method: 'POST' })
+      const sig = await sr.json()
+      if (!sr.ok) throw new Error(sig.detail || 'Could not prepare upload')
+      const form = new FormData()
+      form.append('file', file)
+      form.append('api_key', sig.api_key)
+      form.append('timestamp', sig.timestamp)
+      form.append('signature', sig.signature)
+      form.append('upload_preset', sig.upload_preset)
+      form.append('folder', sig.folder)
+      const ur = await fetch(`https://api.cloudinary.com/v1_1/${sig.cloud_name}/image/upload`, { method: 'POST', body: form })
+      const up = await ur.json()
+      if (!ur.ok) throw new Error(up.error?.message || 'Upload failed')
+      setter(up.secure_url || up.url || '')
+    } catch (e) {
+      setMessage?.(e.message || 'Image upload failed')
+    } finally {
+      setUploading(false)
+    }
+  }
 
   const loadEvents = async () => {
     if (!slug) return
@@ -7464,8 +7490,8 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
           event_date: eventDate || null,
           venue: venue.trim() || null,
           max_attendees: maxAttendees ? Number(maxAttendees) : null,
-          logo_url: logoUrl.trim() || null,
-          cover_url: coverUrl.trim() || null,
+          logo_url: logoUrl || null,
+          cover_url: coverUrl || null,
         }),
       })
       const created = await createRes.json().catch(() => ({}))
@@ -7620,7 +7646,7 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
         <div style={{ background: '#f0fdfa', borderRadius: 12, padding: 14, marginTop: 12, fontSize: 13, color: '#0f766e' }}>
           <b>Pricing</b><br />
           Free events: first 50 tickets free (Growth & Pro). After that, ₱10 per ticket.<br />
-          Paid events: ₱10 platform fee per ticket (buyer pays or organizer absorbs).<br />
+          Paid events: ₱10 platform fee per ticket.<br />
           Email confirmation: +₱2 per ticket (optional).
         </div>
         <div style={{ marginTop: 14 }}>
@@ -7633,8 +7659,16 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
         </div>
         <div style={{ marginTop: 12 }}><label style={styles.label}>Max Attendees</label><input type="number" min="1" value={maxAttendees} onChange={e => setMaxAttendees(e.target.value)} placeholder="e.g. 300" style={styles.input} /></div>
         <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          <div><label style={styles.label}>Logo URL</label><input value={logoUrl} onChange={e => setLogoUrl(e.target.value)} placeholder="https://..." style={styles.input} /></div>
-          <div><label style={styles.label}>Cover Photo URL</label><input value={coverUrl} onChange={e => setCoverUrl(e.target.value)} placeholder="https://..." style={styles.input} /></div>
+          <div>
+            <label style={styles.label}>Logo</label>
+            <input type="file" accept="image/*" onChange={e => uploadEventImage(e.target.files?.[0], setLogoUrl)} disabled={uploading} style={{ fontSize: 12 }} />
+            {logoUrl && <img src={logoUrl} alt="" style={{ width: 60, height: 40, objectFit: 'contain', marginTop: 6, borderRadius: 6 }} />}
+          </div>
+          <div>
+            <label style={styles.label}>Cover Photo</label>
+            <input type="file" accept="image/*" onChange={e => uploadEventImage(e.target.files?.[0], setCoverUrl)} disabled={uploading} style={{ fontSize: 12 }} />
+            {coverUrl && <img src={coverUrl} alt="" style={{ width: '100%', height: 60, objectFit: 'cover', marginTop: 6, borderRadius: 6 }} />}
+          </div>
         </div>
         <div style={{ marginTop: 16 }}>
           <label style={styles.label}>Access Levels</label>
@@ -7658,8 +7692,8 @@ function EventTicketingSection({ API_BASE, user, authFetch, setMessage }) {
           <button type="button" onClick={addLevel} style={{ ...styles.addBtn, marginTop: 10 }}>+ Access Level</button>
         </div>
         <div style={{ marginTop: 20, display: 'flex', gap: 10 }}>
-          <button disabled={saving} onClick={() => saveEvent(false)} style={{ ...styles.submitBtn, background: '#e2e8f0', color: '#334155' }}>{saving ? 'Saving…' : 'Save Draft'}</button>
-          <button disabled={saving} onClick={() => saveEvent(true)} style={styles.submitBtn}>{saving ? 'Publishing…' : 'Publish Event'}</button>
+          <button disabled={saving || uploading} onClick={() => saveEvent(false)} style={{ ...styles.submitBtn, background: '#e2e8f0', color: '#334155' }}>{saving ? 'Saving…' : 'Save Draft'}</button>
+          <button disabled={saving || uploading} onClick={() => saveEvent(true)} style={styles.submitBtn}>{saving ? 'Publishing…' : 'Publish Event'}</button>
         </div>
       </div>
 
