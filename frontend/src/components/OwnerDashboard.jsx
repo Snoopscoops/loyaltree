@@ -3093,10 +3093,11 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
 
       {(programs.length > 1 || programLimit > 1) && (
         <section className="lt-owner-programs" style={{maxWidth:1180,margin:'0 auto 14px',padding:isMobile?'0 12px':'0 20px',boxSizing:'border-box'}}>
-          <div style={{display:'flex',alignItems:isMobile?'stretch':'center',justifyContent:'space-between',gap:12,flexDirection:isMobile?'column':'row',background:'#fff',border:'1px solid #dbe5e1',borderRadius:16,padding:isMobile?12:'12px 14px',boxShadow:'0 8px 24px rgba(15,23,42,0.05)'}}>
-            <div style={{display:'flex',alignItems:isMobile?'stretch':'center',gap:10,flex:1,flexDirection:isMobile?'column':'row',minWidth:0}}>
-              <div style={{fontSize:10,fontWeight:900,letterSpacing:'.09em',color:'#64748b',whiteSpace:'nowrap'}}>VIEWING PROGRAM</div>
+          <div className="lt-owner-program-bar" style={{display:'flex',alignItems:isMobile?'stretch':'center',justifyContent:'space-between',gap:12,flexDirection:isMobile?'column':'row',background:'#fff',border:'1px solid #dbe5e1',borderRadius:16,padding:isMobile?12:'12px 14px',boxShadow:'0 8px 24px rgba(15,23,42,0.05)'}}>
+            <div className="lt-owner-program-main" style={{display:'flex',alignItems:isMobile?'stretch':'center',gap:10,flex:1,flexDirection:isMobile?'column':'row',minWidth:0}}>
+              <div className="lt-owner-program-label" style={{fontSize:10,fontWeight:900,letterSpacing:'.09em',color:'#64748b',whiteSpace:'nowrap'}}>VIEWING PROGRAM</div>
               <select
+                aria-label="Viewing program"
                 value={selectedProgramPublicId || ''}
                 onChange={e => selectProgram(e.target.value)}
                 style={{minWidth:isMobile?'100%':260,maxWidth:420,width:isMobile?'100%':'auto',padding:'10px 34px 10px 12px',border:'1px solid #cbd5e1',borderRadius:10,background:'#fff',fontWeight:800,color:'#0f172a'}}
@@ -3116,7 +3117,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
                 </span>
               )}
             </div>
-            <div style={{display:'flex',alignItems:'center',gap:8,justifyContent:isMobile?'space-between':'flex-end'}}>
+            <div className="lt-owner-program-actions" style={{display:'flex',alignItems:'center',gap:8,justifyContent:isMobile?'space-between':'flex-end'}}>
               <span style={{fontSize:10,color:'#64748b',fontWeight:800}}>{programs.length}/{programLimit} programs</span>
               <button
                 type="button"
@@ -3316,7 +3317,6 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
       <div className="lt-owner-content" style={{...styles.content,...(isTablet?styles.contentTablet:{}),...(isMobile?styles.contentMobile:{})}}>
         {activeTab === 'tree' && (
           <div className="lt-owner-overview" style={styles.treeTab}>
-            {refreshEnabled && <CustomerSegmentsChart stats={stats} scopeLabel={viewingAllPrograms ? 'All programs' : programs.find(p => p.public_id === selectedProgramPublicId)?.program_name || program?.program_name || 'Selected program'} />}
             <div className="lt-owner-industry" style={styles.industryInsight}>
               <div style={styles.industryInsightIcon}>{industry.icon}</div>
               <div>
@@ -3390,7 +3390,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
         )}
 
         {refreshEnabled && activeTab === 'analytics' && <section aria-label="Analytics">
-          <React.Suspense fallback={<p role="status">Loading business reports…</p>}><AnalyticsDashboard embedded API_BASE={API_BASE} user={user} onLogout={onLogout} designPreview={designPreview} /></React.Suspense>
+          <React.Suspense fallback={<p role="status">Loading business reports…</p>}><AnalyticsDashboard embedded API_BASE={API_BASE} user={user} onLogout={onLogout} designPreview={designPreview} customerMix={<CustomerSegmentsChart stats={stats} scopeLabel={viewingAllPrograms ? 'All programs' : programs.find(p => p.public_id === selectedProgramPublicId)?.program_name || program?.program_name || 'Selected program'} />} /></React.Suspense>
         </section>}
 
         {activeTab === 'customers' && (

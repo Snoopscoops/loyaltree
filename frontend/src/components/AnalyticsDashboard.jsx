@@ -6,7 +6,7 @@ import './analytics-dashboard-refresh.css'
 
 import InterBranchAnalytics from './InterBranchAnalytics'
 
-function AnalyticsDashboard({ API_BASE, user, onLogout, designPreview = false, embedded = false }) {
+function AnalyticsDashboard({ API_BASE, user, onLogout, designPreview = false, embedded = false, customerMix = null }) {
   const navigate = useNavigate()
   const location = useLocation()
   const ownerNavigation = location.state?.ownerDashboardNavigation || {}
@@ -540,6 +540,7 @@ function AnalyticsDashboard({ API_BASE, user, onLogout, designPreview = false, e
       )}
 
       {activeTab === 'overview' && <>
+        {customerMix}
         <div className="an-overview-grid" style={styles.overviewGrid}>
           <StatCard title="Active Members" value={overview.active_members ?? 0} change={overview.active_change} icon="⭐" color="#0d9488" />
           <StatCard title={branchScoped ? "New Known Customers" : "New Customers"} value={overview.new_customers ?? 0} change={overview.customer_change} icon="🆕" color="#10b981" />
