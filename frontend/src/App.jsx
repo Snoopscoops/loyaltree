@@ -17,6 +17,7 @@ const AdminDashboard = lazy(() => import('./components/AdminDashboard'))
 const PartnerDashboard = lazy(() => import('./components/PartnerDashboard'))
 const MotoliteApp = lazy(() => import('./components/MotoliteApp'))
 const CustomerJoin = lazy(() => import('./components/CustomerJoin'))
+const EventJoin = lazy(() => import('./components/EventJoin'))
 import { trackEvent } from './analytics'
 
 const API_BASE = (
@@ -216,6 +217,7 @@ function App() {
           user?.role === 'owner' ? <AnalyticsDashboard API_BASE={API_BASE} user={user} onLogout={handleLogout} /> : <Navigate to="/login" />
         } />
         <Route path="/join/:businessSlug" element={<CustomerJoin API_BASE={API_BASE} />} />
+        <Route path="/join/event/:eventId" element={<EventJoin API_BASE={API_BASE} />} />
         <Route path="/admin" element={
           user?.role === 'super_admin' ? <AdminDashboard API_BASE={API_BASE} user={user} onLogout={handleLogout} /> : <Navigate to="/login" />
         } />

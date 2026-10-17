@@ -50246,3 +50246,42 @@ def event_summary(public_id: str, event_public_id: str, authorization: str = Hea
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+
+
+@app.get("/api/v1/public/events/{event_public_id}")
+def public_event_details(event_public_id: str):
+    try:
+        event_rows = (
+            supabase.table("events")
+            .select("*, businesses!inner(name, public_id)")
+            .eq("public_id", event_public_id)
+            .eq("status", "published")
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        if not event_rows:
+            raise HTTPException(status_code=404, detail="Event not found or not published")
+        event = event_rows[0]
+        levels = (
+            supabase.table("event_access_levels")
+            .select("public_id, name, benefits, ticket_price, color_hex")
+            .eq("event_id", event["id"])
+            .order("sort_order")
+            .execute()
+            .data or []
+        )
+        return {
+            "event": {
+                "public_id": event["public_id"],
+                "name": event["name"],
+                "event_date": event.get("event_date"),
+                "venue": event.get("venue"),
+                "description": event.get("description"),
+            },
+            "access_levels": levels,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
