@@ -363,7 +363,11 @@ def resilient_read(kind):
                       error_type=type(current).__name__ if current else failure['type'],
                       error=str(current) if current else failure['error'])
             if kind == 'stats':
-                return dict(total_customers=0, total_stamps=0, unlocked_rewards=0, partial=True)
+                return dict(total_customers=None, customer_count_available=False,
+                            total_stamps=0, unlocked_rewards=0,
+                            total_customer_visits=None, return_rate=None, rewards_ready=None,
+                            customer_segments=None, customer_activity={},
+                            activity_available=False, rewards_available=False, partial=True)
             if kind == 'fraud-alerts':
                 return dict(alerts=[], total=0, reviewed_transactions=0, window_hours=kwargs.get('hours', 24), partial=True)
             return dict(total_customers=0, repeat_customers=0, repeat_customer_rate=0,

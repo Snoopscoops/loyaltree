@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import OwnerDashboardNavigation from './OwnerDashboardNavigation'
+import CustomerSegmentsChart from './CustomerSegmentsChart'
+import { customerMatchesFilter, overviewMetrics } from './ownerCustomerMetrics'
 import { canUseOwnerDashboardRefresh, ownerDashboardTab } from './ownerDashboardDesign'
 import './owner-dashboard-refresh.css'
 import Announcements from './Announcements'
@@ -15,6 +17,8 @@ import HelpChat from './HelpChat'
 import logo192 from './logo-192.png'
 import logo64 from './logo-64.png'
 import { formatMoney, currencySymbol } from './currency'
+
+const AnalyticsDashboard = React.lazy(() => import('./AnalyticsDashboard'))
 
 // Turns an ISO timestamp into a short relative label like "2 days ago"
 function formatLastStamped(isoString) {
@@ -930,7 +934,8 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
   })
   const [activeTab, setActiveTab] = useState(() => ownerDashboardTab(location.state?.ownerDashboardTab))
   const [business, setBusiness] = useState(null)
-  const [customers, setCustomers] = useState([])
+  const [customerSnapshot, setCustomers] = useState([])
+  const [customerScope, setCustomerScope] = useState(null)
   const [staff, setStaff] = useState([])
   const [branches, setBranches] = useState([])
   const [orderAheadSetup, setOrderAheadSetup] = useState(null)
@@ -959,10 +964,17 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
   const [orderAheadAvailabilitySaving, setOrderAheadAvailabilitySaving] = useState('')
   const [orderAheadStockBranchFilter, setOrderAheadStockBranchFilter] = useState('')
   const [orderAheadStockSearch, setOrderAheadStockSearch] = useState('')
-  const [stats, setStats] = useState(null)
+  const [statsSnapshot, setStats] = useState(null)
+  const [statsScope, setStatsScope] = useState(null)
+  const loadDataVersion = useRef(0)
+  const loadScopeEpoch = useRef(0)
+  const lastAppliedLoadVersion = useRef(0)
   const [program, setProgram] = useState(null)
   const [programs, setPrograms] = useState([])
   const [selectedProgramPublicId, setSelectedProgramPublicId] = useState('')
+  const customersAvailable = customerScope === selectedProgramPublicId
+  const customers = customersAvailable ? customerSnapshot : []
+  const stats = statsScope === selectedProgramPublicId ? statsSnapshot : null
   const [programLimit, setProgramLimit] = useState(1)
   const [canCreateProgram, setCanCreateProgram] = useState(false)
   const [showCreateProgram, setShowCreateProgram] = useState(false)
@@ -1010,6 +1022,11 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
   const [cashierDevices, setCashierDevices] = useState([])
   const [unlockingDevice, setUnlockingDevice] = useState('')
   const [customerSearch, setCustomerSearch] = useState('')
+  const [customerFilter, setCustomerFilter] = useState('all')
+  useEffect(() => {
+    if ((['regulars', 'at_risk'].includes(customerFilter) && stats?.activity_available !== true) ||
+        (customerFilter === 'rewards_ready' && (!stats || stats.rewards_available === false))) setCustomerFilter('all')
+  }, [stats?.activity_available, stats?.rewards_available, !!stats, customerFilter])
   const [staffSearch, setStaffSearch] = useState('')
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [onboardingStep, setOnboardingStep] = useState(0)
@@ -1253,6 +1270,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
   const selectProgram = (programPublicId) => {
     if (!programPublicId || programPublicId === selectedProgramPublicId) return
     if (programStorageKey) localStorage.setItem(programStorageKey, programPublicId)
+    loadScopeEpoch.current += 1
     setSelectedProgramPublicId(programPublicId)
     setSelectedCustomer(null)
     setCustomerAgreements([])
@@ -1284,7 +1302,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
       if (!res.ok) throw new Error(data.detail || 'Could not create program')
       const nextId = data.public_id || ''
       if (programStorageKey && nextId) localStorage.setItem(programStorageKey, nextId)
-      if (nextId) setSelectedProgramPublicId(nextId)
+      if (nextId) { loadScopeEpoch.current += 1; setSelectedProgramPublicId(nextId) }
       setShowCreateProgram(false)
       setNewProgram({ name: '', card_type: 'stamp' })
       setActiveTab('program')
@@ -1298,6 +1316,8 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
   }
 
   const loadData = async () => {
+    const version = ++loadDataVersion.current
+    const scopeEpoch = loadScopeEpoch.current
     try {
       // Resolve the owner-selected program first. Existing businesses keep their
       // stable default program, while Pro businesses can switch to additional
@@ -1307,6 +1327,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
       try {
         const programsRes = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/programs`)
         const programsData = await programsRes.json().catch(() => ({}))
+        if (scopeEpoch !== loadScopeEpoch.current || version < lastAppliedLoadVersion.current) return
         if (programsRes.ok) {
           programList = Array.isArray(programsData.programs) ? programsData.programs : []
           setPrograms(programList)
@@ -1355,14 +1376,17 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
       const kitData = await kitRes.json().catch(() => null)
       const deviceData = await deviceRes.json().catch(() => [])
       const orderAheadData = await orderAheadRes.json().catch(() => null)
+      if (scopeEpoch !== loadScopeEpoch.current || version < lastAppliedLoadVersion.current) return
 
+      lastAppliedLoadVersion.current = version
       // Error JSON is an object, not an empty collection. Keep the previous
       // valid state on failed reads so `.some`/`.map` never crash the page and
       // a temporary outage never makes existing configuration look absent.
       if (bizRes.ok && bizData && !bizData.detail) setBusiness(bizData)
-      if (custRes.ok && Array.isArray(custData)) setCustomers(custData)
+      if (custRes.ok && Array.isArray(custData)) { setCustomers(custData); setCustomerScope(scopeProgramId) }
       if (staffRes.ok && Array.isArray(staffData)) setStaff(staffData)
-      if (statsRes.ok && statsData && !statsData.detail) setStats(statsData)
+      if (statsRes.ok && statsData && !statsData.detail) { setStats(statsData); setStatsScope(scopeProgramId) }
+      else { setStats(null); setStatsScope(scopeProgramId) }
       if (progRes.ok && progData && !progData.detail) setProgram(progData)
       const failedReads = [
         ['business', bizRes], ['customers', custRes], ['staff', staffRes],
@@ -1436,7 +1460,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
     } catch (err) {
       console.error('Load error:', err)
     }
-    setLoading(false)
+    if (scopeEpoch === loadScopeEpoch.current && version >= lastAppliedLoadVersion.current) setLoading(false)
   }
 
   const loadOrderAheadOrders = async () => {
@@ -2562,21 +2586,6 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
     setSavingSetupKit(false)
   }
 
-  const goLive = async () => {
-    try {
-      const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/go-live`, { method: 'POST' })
-      const data = await res.json()
-      if (res.ok) {
-        setMessage(data.message)
-        loadData()
-      } else {
-        setMessage(data.detail || 'Go live failed')
-      }
-    } catch (err) {
-      setMessage('Network error')
-    }
-  }
-
   const fetchQRImage = async () => {
     if (viewingAllPrograms) {
       setMessage('Select one program first to view or share its Join QR.')
@@ -2849,14 +2858,10 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
   const needsRenewal = subStatus === 'expiring_soon' || subStatus === 'expired'
   const industry = INDUSTRY_META[business?.business_type] || INDUSTRY_META.other
 
-  const openAnalytics = () => navigate('/analytics', refreshEnabled ? {
-    state: { ownerDashboardNavigation: {
-      orderAheadEnabled: business?.order_ahead_enabled === true,
-      planLabel: subscription?.plan || business?.plan,
-      needsRenewal,
-      renewalText: subStatus === 'expired' ? 'Subscription expired · Renew now' : `Renews in ${subscription?.days_left}d · Pay now`,
-    } },
-  } : undefined)
+  const openAnalytics = () => {
+    if (refreshEnabled) { setActiveTab('analytics'); window.scrollTo({ top: 0 }); return }
+    navigate('/analytics')
+  }
 
   // Reuse the existing scanner navigation, including program scope and token.
   const scanCustomer = () => viewingAllPrograms
@@ -2910,13 +2915,14 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
     if (group === 'more') return setActiveTab('billing')
   }
 
+  const scopedCustomers = refreshEnabled ? customers.filter(c => customerMatchesFilter(c, customerFilter, stats)) : customers
   const filteredCustomers = customerSearchTerm
-    ? customers.filter(c => (
+    ? scopedCustomers.filter(c => (
         (c.name || '').toLowerCase().includes(customerSearchTerm) ||
         (c.phone || '').toLowerCase().includes(customerSearchTerm) ||
         (c.email || '').toLowerCase().includes(customerSearchTerm)
       ))
-    : customers
+    : scopedCustomers
 
   // Team members (staff) search - matches name, email, or role
   const staffSearchTerm = staffSearch.trim().toLowerCase()
@@ -3188,8 +3194,9 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
           </div>
         </div>
 
+        {refreshEnabled && stats?.activity_missing_sources?.length > 0 && <p role="status" className="lt-owner-metric-hint">Visit metrics use the available history. Some older activity sources are unavailable.</p>}
         <div className="lt-owner-metrics" style={{...styles.metricsGrid,...(isTablet?styles.metricsGridTablet:{}),...(isMobile?styles.metricsGridMobile:{})}}>
-          {(viewingAllPrograms
+          {(refreshEnabled ? overviewMetrics(stats, customers, customersAvailable) : viewingAllPrograms
             ? [
                 { value: customers.length, label: 'Card Memberships', hint: 'Memberships across all active programs' },
                 { value: programs.length, label: 'Active Programs', hint: 'Cards currently configured for this business' },
@@ -3381,12 +3388,23 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
           <div><div className="lt-owner-section-header" style={styles.sectionHeader}><div><h2 className="lt-owner-section-title" style={styles.sectionTitle}>⭐ Customer Satisfaction</h2><p style={styles.satisfactionIntro}>Feedback submitted from customers through their LoyaltyTree Wallet card.</p></div><button onClick={loadSatisfaction} style={styles.viewAnalyticsBtn} disabled={satisfactionLoading}>{satisfactionLoading?'Refreshing…':'↻ Refresh'}</button></div>{satisfactionError&&<div style={styles.satisfactionError}>{satisfactionError}</div>}<div style={{...styles.satisfactionMetrics,...(isMobile?styles.satisfactionMetricsMobile:{})}}>{[['Overall',satisfaction.summary?.average_rating??'—',`${satisfaction.summary?.response_count||0} responses`],['Positive',`${satisfaction.summary?.positive_percent??0}%`,'4–5 star ratings'],['Service',satisfaction.summary?.service_average??'—','Average rating'],['Quality',satisfaction.summary?.quality_average??'—','Average rating'],['Value',satisfaction.summary?.value_average??'—','Average rating']].map(([l,v,h])=><div style={styles.satisfactionMetricCard} key={l}><span style={styles.satisfactionMetricLabel}>{l}</span><strong style={styles.satisfactionMetricValue}>{v}</strong><span style={styles.satisfactionMetricHint}>{h}</span></div>)}</div><div style={styles.satisfactionList}>{satisfactionLoading&&!satisfaction.feedback.length&&<div style={styles.satisfactionEmpty}>Loading feedback…</div>}{!satisfactionLoading&&!satisfaction.feedback.length&&!satisfactionError&&<div style={styles.satisfactionEmpty}>No feedback yet. Customers can tap “Rate Your Experience” from their Wallet card details.</div>}{satisfaction.feedback.map(item=><article key={item.public_id||item.id} style={styles.satisfactionRow}><div style={styles.satisfactionRowTop}><div><strong style={styles.satisfactionName}>{item.customer_name||'Customer'}</strong><span style={styles.satisfactionDate}>{item.created_at?new Date(item.created_at).toLocaleString():''}</span></div><div style={styles.satisfactionStars}>{'★'.repeat(Number(item.rating||0))}<span style={{color:'#e2e8f0'}}>{'★'.repeat(Math.max(0,5-Number(item.rating||0)))}</span></div></div>{(item.service_rating||item.quality_rating||item.value_rating)&&<div style={styles.satisfactionSubratings}>{item.service_rating&&<span>Service <b>{item.service_rating}/5</b></span>}{item.quality_rating&&<span>Quality <b>{item.quality_rating}/5</b></span>}{item.value_rating&&<span>Value <b>{item.value_rating}/5</b></span>}</div>}{item.comment&&<p style={styles.satisfactionComment}>“{item.comment}”</p>}</article>)}</div></div>
         )}
 
+        {refreshEnabled && activeTab === 'analytics' && <section aria-label="Analytics">
+          <CustomerSegmentsChart stats={stats} scopeLabel={viewingAllPrograms ? 'All programs' : programs.find(p => p.public_id === selectedProgramPublicId)?.program_name || program?.program_name || 'Selected program'} />
+          <React.Suspense fallback={<p role="status">Loading business reports…</p>}><AnalyticsDashboard embedded API_BASE={API_BASE} user={user} onLogout={onLogout} designPreview={designPreview} /></React.Suspense>
+        </section>}
+
         {activeTab === 'customers' && (
           <div>
             <div className="lt-owner-section-header" style={styles.sectionHeader}>
-              <h2 className="lt-owner-section-title" style={styles.sectionTitle}>{cardExperience.customerIcon} {cardExperience.customerLabel} ({filteredCustomers.length}{customerSearchTerm ? ` of ${customers.length}` : ''})</h2>
+              <h2 className="lt-owner-section-title" style={styles.sectionTitle}>{cardExperience.customerIcon} {cardExperience.customerLabel} ({filteredCustomers.length}{(customerSearchTerm || (refreshEnabled && customerFilter !== 'all')) ? ` of ${customers.length}` : ''})</h2>
               <button onClick={() => { markAnalyticsChecked(); openAnalytics() }} style={styles.viewAnalyticsBtn}>📊 View Analytics</button>
             </div>
+            {refreshEnabled && <div className="lt-owner-customer-filters" role="group" aria-label="Filter customers">
+              {[
+                ['all', 'All customers'], ['regulars', 'Regulars'], ['rewards_ready', 'Rewards ready'], ['at_risk', 'At risk'],
+              ].map(([key, label]) => <button type="button" key={key} aria-pressed={customerFilter === key} className={customerFilter === key ? 'is-active' : ''} onClick={() => setCustomerFilter(key)} disabled={(['regulars', 'at_risk'].includes(key) && stats?.activity_available !== true) || (key === 'rewards_ready' && (!stats || stats.rewards_available === false))}>{label}</button>)}
+            </div>}
+            {refreshEnabled && (stats?.activity_available === false || stats?.rewards_available === false) && <p role="status" style={{fontSize:12,color:'#8b6027'}}>Some activity filters are temporarily unavailable. Your customer list is still available.</p>}
             <div className="lt-owner-customer-toolbar" style={styles.searchBarWrap}>
               <span style={styles.searchIcon}>🔍</span>
               <input
@@ -3400,8 +3418,9 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
                 <button onClick={() => setCustomerSearch('')} style={styles.searchClearBtn} aria-label="Clear search">✕</button>
               )}
             </div>
-            {filteredCustomers.length === 0 && (
-              <p style={styles.searchEmptyText}>No {cardExperience.customerLabel.toLowerCase()} match "{customerSearch}".</p>
+            {refreshEnabled && !customersAvailable && <p role="status" style={styles.searchEmptyText}>Customer data for this program is loading or temporarily unavailable. Please retry shortly.</p>}
+            {customersAvailable && filteredCustomers.length === 0 && (
+              <p style={styles.searchEmptyText}>{customerSearchTerm ? `No customers match “${customerSearch}” in this group.` : 'No customers in this group yet.'}</p>
             )}
             <div className="lt-owner-customer-table" style={{...styles.customerGrid,...(isMobile?styles.singleColumnGridMobile:{})}}>
               {filteredCustomers.map(c => (
@@ -4154,13 +4173,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
               </div>
             )}
 
-            {business?.status !== 'active' && (
-              <div style={{...styles.goLiveCard, marginTop: 16, maxWidth: 500, marginLeft: 'auto', marginRight: 'auto'}}>
-                <h3>🚀 Ready to Plant?</h3>
-                <p>Your loyalty program is configured. Go live to start growing!</p>
-                <button onClick={goLive} style={styles.goLiveBtn}>Go Live 🌱</button>
-              </div>
-            )}
+
           </div>
         )}
 
@@ -5572,6 +5585,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
           businessSlug={user.business_slug}
           businessName={user.business_name}
           ownerToken={user.token}
+          user={user}
           onClose={() => setShowAnnouncements(false)}
         />
       )}

@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react'
+import WalletPassPreview from './WalletPassPreview'
+import { buildWalletPassPreview } from './walletPassPreviewModel'
 
 const DESCRIPTION_LIMIT = 140
 
@@ -196,7 +198,8 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
   const [guidedStep, setGuidedStep] = useState(0)
   const [guidedError, setGuidedError] = useState('')
   const [guidedMobile, setGuidedMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth <= 640)
-  const [previewSurface, setPreviewSurface] = useState('card')
+  const [previewSurface, setPreviewSurface] = useState('apple')
+  const [previewTierId, setPreviewTierId] = useState('')
   const [hybridEditorSection, setHybridEditorSection] = useState('subscription')
   const [hybridRewardEditorType, setHybridRewardEditorType] = useState('points')
   const [showMobilePreview, setShowMobilePreview] = useState(false)
@@ -1382,6 +1385,9 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     ? form.vip_progression_type === 'stamps'
     : form.hybrid_tier_progression_type !== 'points'
 
+  const previewTiers = ensureTierZero(form.vip_tiers, form.primary_color)
+  const previewVipTier = previewTiers.find((tier, index) => String(tier.id || index) === previewTierId) || previewTiers[0] || {}
+
   const walletProgressOptions = []
   const hasPointsProgressGoal = (form.points_prizes || []).some(prize => Number(prize?.points_cost || 0) > 0)
   if (form.card_type === 'stamp' || (isHybrid && hybridStampsEnabled)) walletProgressOptions.push({value:'stamps',label:'Stamp progress'})
@@ -1415,14 +1421,14 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     if (type === 'points') {
       const costs = (form.points_prizes || []).map(p=>Number(p.points_cost)||0).filter(v=>v>0).sort((a,b)=>a-b)
       const goal = costs[0] || 500
-      const current = Math.max(1, Math.round(goal * .58))
-      return {slots:10,filled:6,label:`${current.toLocaleString()} / ${goal.toLocaleString()} points`}
+      const current = Math.min(Math.max(1, Math.round(goal * .58)), Math.max(1, Number(form.points_cap_limit) || Infinity))
+      return {slots:10,filled:Math.min(10, Math.round((current / goal) * 10)),label:`${current.toLocaleString()} / ${goal.toLocaleString()} points`}
     }
     const tiers = ensureTierZero(form.vip_tiers, form.primary_color)
-    const next = tiers.find(t=>Number(t.threshold||0)>0)
-    const goal = Number(next?.threshold || (tierUsesStamps ? 10 : 1000))
-    const current = Math.max(1, Math.round(goal * .55))
-    return {slots:10,filled:6,label:`${current.toLocaleString()} / ${goal.toLocaleString()} ${tierUsesStamps?'stamps':'points'}`}
+    const current = Math.max(0, Number(previewVipTier.threshold) || 0)
+    const next = tiers.find(t=>Number(t.threshold||0)>current)
+    const goal = Number(next?.threshold || current || (tierUsesStamps ? 10 : 1000))
+    return {slots:10,filled:Math.min(10, Math.round((current / goal) * 10)),label:`${current.toLocaleString()} / ${goal.toLocaleString()} ${tierUsesStamps?'stamps':'points'}`}
   })()
 
   const renderDynamicProgressPreview = (compact = false) => {
@@ -1431,7 +1437,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     const emptyUrl = String(form.wallet_progress_empty_icon_url || '').trim()
     const fallbackFilled = effectiveWalletProgressType === 'stamps' ? selectedStampIcon.symbol : '●'
     const slotCount = Math.min(20, dynamicProgressPreview.slots)
-    const availableWidth = compact ? 310 : 620
+    const availableWidth = compact ? 260 : 620
     const scale = Math.max(0.7, Math.min(1.3, Number(form.wallet_progress_scale) || 1))
     const density = Math.max(0.4, Math.min(1.05, Number(form.wallet_progress_density) || 0.56))
     const offset = Math.max(0, Math.min(1, Number(form.wallet_progress_offset ?? 0.5)))
@@ -1474,7 +1480,6 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
   }
 
   const walletPreset = form.wallet_style === 'minimal' ? 'classic' : (form.wallet_style || 'gradient')
-  const previewVipTier = ensureTierZero(form.vip_tiers, form.primary_color)[0] || {}
   const previewPrimary = (form.card_type === 'vip' || (form.card_type === 'hybrid' && hybridTierEnabled)) ? (previewVipTier.color || form.primary_color || '#0d9488') : (form.primary_color || '#0d9488')
   const previewSecondary = form.card_type === 'vip'
     ? (previewVipTier.secondary_color || form.wallet_secondary_color || '#111827')
@@ -1525,7 +1530,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
   const walletStampLines = (() => {
     if (stampDisplayStyle !== 'icon' || !stampVisualSupported) return []
     const goal = Math.min(20, Math.max(1, rawStampGoal))
-    const current = Math.max(0, Math.min(Math.min(5, rawStampGoal), goal))
+    const current = Math.max(0, Math.min(previewFilled, goal))
     const [filledGlyph, emptyGlyph] = walletStampGlyphMap[form.stamp_icon] || walletStampGlyphMap.star
     const tokens = Array.from({length:goal}, (_,i) => i < current ? filledGlyph : emptyGlyph)
     const lines = []
@@ -1535,10 +1540,22 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
   const walletPrimaryIsStamps = (!isHybrid && effectiveLoyaltyType==='stamp') || (isHybrid && hybridStampsEnabled && !hybridPointsEnabled)
   const walletStampNativeValue = stampDisplayStyle==='icon' && walletPrimaryIsStamps && rawStampGoal<=10 && walletStampLines.length
     ? walletStampLines[0]
-    : `${Math.min(5,rawStampGoal)} / ${rawStampGoal}`
-  const walletShowStampBelow = stampDisplayStyle==='icon' && walletStampLines.length > 0 && (
-    rawStampGoal > 10 || (isHybrid && hybridStampsEnabled && hybridPointsEnabled)
-  )
+    : `${Math.min(previewFilled,rawStampGoal)} / ${rawStampGoal}`
+  const walletPreviewModel = buildWalletPassPreview(form, {
+    businessName: user?.business_name || 'Your Business',
+    tier: previewVipTier,
+    stampValue: walletStampNativeValue,
+    sampleStamps: Math.min(previewFilled, rawStampGoal),
+    stampProgress: walletStampLines,
+  })
+  // Native Wallet surfaces use a solid color; the chosen finish belongs to
+  // the artwork/banner. Tier colors stay exact, matching issued passes.
+  const nativePreviewColor = (() => {
+    if (tierConfigActive || walletPreset !== 'premium') return previewPrimary
+    const hex = String(previewPrimary).replace('#', '')
+    if (!/^[a-f\d]{6}$/i.test(hex)) return previewPrimary
+    return '#' + [0, 2, 4].map(index => Math.round(parseInt(hex.slice(index, index + 2), 16) * .42 + 5 * .58).toString(16).padStart(2, '0')).join('')
+  })()
 
   const guidedCardLabel = form.card_type === 'hybrid'
     ? `Hybrid Card · Subscription + ${hybridRewardLabel}${hybridTierEnabled ? ` + Tier ${tierUsesStamps ? 'Stamps' : 'Points'}` : ''}`
@@ -2183,9 +2200,15 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
             <div style={styles.previewLabel}>Preview</div>
             <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:6,marginBottom:10}}>
               {[
-                ['card','LoyaltyTree'],['apple','Apple'],['google','Google']
+                ['apple','Apple Wallet'],['google','Google Wallet'],['card','Join page']
               ].map(([value,label]) => <button key={value} type="button" onClick={()=>setPreviewSurface(value)} style={{...styles.typeChangeBtn,padding:'8px 6px',...(previewSurface===value?{background:'#0d9488',color:'#fff',borderColor:'#0d9488'}:{})}}>{label}</button>)}
             </div>
+            {tierConfigActive && <label style={{...styles.miniLabel,display:'grid',gap:6,marginBottom:12}}>
+              Preview member tier
+              <select aria-label="Preview member tier" value={String(previewVipTier.id || previewTiers.indexOf(previewVipTier))} onChange={event => setPreviewTierId(event.target.value)} style={{...styles.input,padding:'8px 10px',fontSize:12}}>
+                {previewTiers.map((tier,index) => <option key={tier.id || index} value={String(tier.id || index)}>{tier.name || `Tier ${index}`}</option>)}
+              </select>
+            </label>}
             {previewSurface === 'card' ? (
               <>
             <div style={styles.card}>
@@ -2325,64 +2348,15 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
               </>
             ) : (
               <>
-            <div style={styles.previewLabel}>{previewSurface === 'apple' ? 'Apple Wallet preview' : 'Google Wallet preview'}</div>
-            <div style={{...styles.wallet20Preview,background:walletPreviewBackground}}>
-              {form.hero_image_url && <img src={form.hero_image_url} alt="" style={styles.wallet20PreviewBg}/>}
-              <div style={styles.wallet20PreviewShade}/>
-              <div style={styles.wallet20PreviewTop}>
-                <div style={styles.wallet20PreviewBrand}>
-                  {form.program_logo_url?<img src={form.program_logo_url} alt="" style={styles.wallet20PreviewLogo}/>:<span style={styles.wallet20PreviewLogoFallback}>🌳</span>}
-                  <div><b>{form.card_name||'Your Business Card'}</b><small>{form.card_type.toUpperCase()}</small></div>
-                </div>
-                <span style={styles.wallet20PreviewMenu}>•••</span>
-              </div>
-              {dynamicBannerActive && <div style={{padding:'0 14px 5px'}}>{renderDynamicProgressPreview(true)}</div>}
-              <div style={styles.wallet20PreviewBottom}>
-                <div style={{...styles.wallet20PreviewInfo,fontSize:Math.round(13*(Number(form.wallet_detail_font_scale)||1))}}>
-                  <div><small>CUSTOMER</small><strong>John Customer</strong></div>
-                  <div style={styles.wallet20PreviewMetric}>
-                    <small>{form.card_type==='hybrid'?(hybridPointsEnabled?'POINTS':'STAMPS'):form.card_type==='points'?'POINTS':form.card_type==='multipass'?'SESSIONS LEFT':form.card_type==='membership'?(form.membership_employee_mode?'EMPLOYEE ID':'STATUS'):form.card_type==='employee'?'EMPLOYEE ID':form.card_type==='vip'?'TIER':'STAMPS'}</small>
-                    <strong style={(walletPrimaryIsStamps && stampDisplayStyle==='icon' && rawStampGoal<=10)?{fontSize:previewSurface==='apple'?18:17,letterSpacing:1.1,whiteSpace:'nowrap'}:{}}>{form.card_type==='hybrid'?(hybridPointsEnabled?'2,850':walletStampNativeValue):form.card_type==='points'?'2,850':form.card_type==='multipass'?'5 / 10':form.card_type==='membership'?(form.membership_employee_mode?'EMP-001':'ACTIVE'):form.card_type==='employee'?'EMP-001':form.card_type==='vip'?'GOLD':walletStampNativeValue}</strong>
-                  </div>
-                </div>
-                <div style={styles.wallet20PreviewQrBox}>
-                  <img style={styles.wallet20PreviewQr} alt="QR preview" src={`https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${encodeURIComponent(`${API_BASE}/join/${user?.business_slug||'preview'}`)}`}/>
-                </div>
-              </div>
-              {walletShowStampBelow && (
-                <div style={{margin:'0 16px 9px',padding:'10px 12px',borderRadius:12,background:'rgba(255,255,255,.10)',border:'1px solid rgba(255,255,255,.14)'}}>
-                  <div style={{fontSize:9,fontWeight:900,letterSpacing:.9,opacity:.78,marginBottom:5}}>{isHybrid&&hybridPointsEnabled?'REWARD STAMPS':'STAMP PROGRESS'}</div>
-                  <div style={{display:'grid',gridTemplateColumns:walletStampLines.length>1?'1fr 1fr':'1fr',gap:8}}>
-                    {walletStampLines.map((line,idx)=><div key={idx} style={{minWidth:0}}>
-                      {walletStampLines.length>1&&<div style={{fontSize:8,opacity:.64,marginBottom:2}}>{idx===0?'1–10':`11–${rawStampGoal}`}</div>}
-                      <div style={{fontSize:previewSurface==='apple'?15:14,fontWeight:800,letterSpacing:.8,whiteSpace:'nowrap'}}>{line}</div>
-                    </div>)}
-                  </div>
-                </div>
-              )}
-              {form.card_type==='employee' && (
-                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginTop:10}}>
-                  <div><small>NAME</small><strong>EMPLOYEE NAME</strong></div>
-                  <div><small>BIRTHDAY</small><strong>JAN 01</strong></div>
-                  <div><small>STARTED</small><strong>SEP 16, 2026</strong></div>
-                  <div><small>BENEFITS</small><strong>{(form.employee_benefits||[]).length || '—'}</strong></div>
-                </div>
-              )}
-              {(isHybrid || (form.card_type==='membership' && !form.membership_employee_mode)) && (
-                <>
-                  {isHybrid && (
-                    <div style={{...styles.wallet20ResetPreview,marginBottom:8}}>
-                      <span>MEMBERSHIP STATUS</span><strong>ACTIVE</strong>
-                    </div>
-                  )}
-                  <div style={styles.wallet20ResetPreview}>
-                    <span>VALID UNTIL</span>
-                    <strong>{Number(form.membership_duration_days)||30} DAYS AFTER ACTIVATION</strong>
-                  </div>
-                </>
-              )}
-            </div>
-            <p style={styles.hint}>Preview is intentionally approximate: Apple and Google control parts of their native layout. LoyaltyTree keeps your logo, colors and customer information as consistent as each platform allows.</p>
+                <WalletPassPreview
+                  key={previewSurface}
+                  provider={previewSurface}
+                  form={form}
+                  model={walletPreviewModel}
+                  primaryColor={nativePreviewColor}
+                  bannerBackground={walletPreviewBackground}
+                  progressBanner={dynamicBannerActive ? renderDynamicProgressPreview(true) : null}
+                />
 
               </>
             )}
@@ -4102,20 +4076,6 @@ const styles = {
   walletStyleBtn:{padding:'11px 10px',border:'1px solid #cbd5e1',borderRadius:10,background:'#fff',color:'#475569',fontWeight:700,cursor:'pointer',display:'flex',flexDirection:'column',gap:3,textAlign:'left'},
   walletStyleBtnActive:{borderColor:'#2563eb',background:'#eff6ff',color:'#1d4ed8',boxShadow:'0 0 0 2px rgba(37,99,235,.08)'},
   walletToggle:{display:'flex',alignItems:'flex-start',gap:9,flex:1,minWidth:220,padding:'10px 0',color:'#334155',fontSize:12,cursor:'pointer'},
-  wallet20Preview:{height:220,borderRadius:18,overflow:'hidden',position:'relative',padding:18,color:'#fff',marginTop:8,boxShadow:'0 18px 40px rgba(15,23,42,.18)'},
-  wallet20PreviewBg:{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'cover'},
-  wallet20PreviewShade:{position:'absolute',inset:0,background:'linear-gradient(180deg,rgba(0,0,0,.10),rgba(0,0,0,.58))'},
-  wallet20PreviewTop:{position:'relative',zIndex:2,display:'flex',justifyContent:'space-between',alignItems:'flex-start'},
-  wallet20PreviewBrand:{display:'flex',gap:10,alignItems:'center'},
-  wallet20PreviewLogo:{width:56,height:56,borderRadius:12,objectFit:'cover',background:'#fff'},
-  wallet20PreviewLogoFallback:{width:56,height:56,borderRadius:12,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(255,255,255,.16)'},
-  wallet20PreviewMenu:{fontWeight:900,letterSpacing:2},
-  wallet20PreviewBottom:{position:'absolute',zIndex:2,left:18,right:18,bottom:18,display:'flex',justifyContent:'space-between',alignItems:'flex-end',gap:16},
-  wallet20PreviewInfo:{display:'flex',flexDirection:'column',gap:12,minWidth:0},
-  wallet20PreviewMetric:{},
-  wallet20PreviewQrBox:{width:64,height:64,flexShrink:0,background:'#fff',borderRadius:12,padding:6,boxShadow:'0 8px 22px rgba(0,0,0,.28)'},
-  wallet20PreviewQr:{display:'block',width:'100%',height:'100%'},
-  wallet20ResetPreview:{marginTop:14,paddingTop:12,borderTop:'1px solid rgba(255,255,255,.18)',display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,fontSize:11,color:'rgba(255,255,255,.72)',letterSpacing:.8,fontWeight:800},
   walletStatus: {
     display: 'flex',
     justifyContent: 'space-between',

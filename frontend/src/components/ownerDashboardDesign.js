@@ -19,7 +19,7 @@ export function canUseOwnerDashboardRefresh(user, { businesses = 'all', developm
 export const OWNER_DASHBOARD_TABS = Object.freeze([
   'tree', 'customers', 'staff', 'orderahead', 'giftcards', 'pos', 'satisfaction',
   'campaigns', 'program', 'billing', 'referrals', 'security', 'walletqueue',
-  'crm', 'retention', 'operations',
+  'crm', 'retention', 'operations', 'analytics',
 ])
 
 export function ownerDashboardTab(value) {

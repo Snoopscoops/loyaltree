@@ -108,7 +108,12 @@ class MonitoringTests(unittest.TestCase):
             except Exception as exc:
                 raise HTTPException(500,'failed') from exc
         with contextlib.redirect_stdout(io.StringIO()):
-            self.assertTrue(asyncio.run(stats('shop'))['partial'])
+            result = asyncio.run(stats('shop'))
+            self.assertTrue(result['partial'])
+            self.assertIsNone(result['total_customers'])
+            self.assertFalse(result['customer_count_available'])
+            self.assertFalse(result['activity_available'])
+            self.assertFalse(result['rewards_available'])
         @m.resilient_read('stats')
         def auth(public_id):
             raise HTTPException(401,'unauthorized')

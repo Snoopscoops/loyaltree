@@ -115,3 +115,6 @@
   .lt-analytics-refresh .an-module-card { padding: 15px !important; }
   .lt-analytics-refresh .an-statvalue { font-size: 25px !important; }
 }
+
+/* Embedded reports share the owner's existing sidebar and content spacing. */
+.lt-analytics-embedded > .an-container { padding:0!important; margin:0!important; max-width:none!important; min-height:0!important; background:transparent!important; }

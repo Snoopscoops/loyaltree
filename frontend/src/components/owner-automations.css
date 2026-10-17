@@ -1,0 +1,11 @@
+.lt-owner-automations { min-width:0; color:#223d34; }
+.lt-owner-automations button:disabled { cursor:wait; opacity:.55; }
+.lt-owner-automations .an-overview-grid { grid-template-columns:repeat(3,minmax(0,1fr))!important; gap:10px!important; }
+.lt-owner-automations .an-statcard { padding:14px!important; min-width:0; box-shadow:none!important; border:1px solid #e2e8e0!important; border-top:3px solid #173f35!important; }
+.lt-owner-automations .an-statvalue { font-size:24px!important; color:#173f35!important; }
+.lt-owner-automations .an-actionbtn { background:#173f35!important; }
+.lt-owner-automations input, .lt-owner-automations select, .lt-owner-automations textarea { max-width:100%; }
+@media(max-width:600px) {
+  .lt-owner-automations .an-overview-grid { grid-template-columns:repeat(2,minmax(0,1fr))!important; }
+  .lt-owner-automations .an-actionbtn { width:100%; }
+}

@@ -35,6 +35,7 @@ Python's `loyaltytree` logger to DEBUG emits source-only legacy diagnostics.
 | `wallet_sync` | `business_slug`, `business_name`, `customer_id`, `reason`, `targets`, `google_ok`, `google_failed`, `apple_ok`, `apple_failed`, `google_status`, `apple_status`, `sent` |
 | `hourly_summary` | `window_start`, `requests`, `status_2xx`, `status_4xx`, `status_5xx`, `pushes`, `apple_pushes`, `google_pushes`, `top_endpoints`, `top_businesses`, `endpoint_counts`, `business_counts`, `errors` (endpoint/error_type/count) |
 | `upstream_read_failed` | `endpoint`, `business_slug`, `error_type`, `error`; warning, dashboard response has `partial: true` |
+| `dashboard_metrics_unavailable` | `business_slug`, `metric` (`visits`/`rewards`/`programs`), `endpoint`, `error_type`; warning, optional dashboard metrics remain unavailable |
 | `keepalive_failed` | `error_type`, `error`; warning after a 60-second health ping timeout or non-success HTTP response |
 | `apple_push_failed` | `status`, `reason` for APNs rejection; or `error_type`, `error`, optional `stage` for connection/revision failure; warning |
 | `event_persist_failed` | `error_type`; warning; never recursively persisted |

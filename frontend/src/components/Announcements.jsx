@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react'
+import OwnerAutomations from './OwnerAutomations'
 
-function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClose, managerMode = false, lockedBranch = null, availablePrograms = [] }) {
+function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClose, managerMode = false, lockedBranch = null, availablePrograms = [], user = null }) {
+  const [section, setSection] = useState('announcements')
+  const [automationsOpened, setAutomationsOpened] = useState(false)
   const [announcements, setAnnouncements] = useState([])
   const [editing, setEditing] = useState(null)
   const [form, setForm] = useState({
@@ -8,7 +11,6 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
     message: '',
     type: 'info',
     is_active: true,
-    end_date: '',
     target_scope: managerMode ? 'branch' : 'business',
     branch_public_id: managerMode ? (lockedBranch?.public_id || '') : '',
     program_public_id: '',
@@ -183,7 +185,7 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
           }
         }
         setForm({
-          title: '', message: '', type: 'info', is_active: true, end_date: '',
+          title: '', message: '', type: 'info', is_active: true,
           target_scope: managerMode ? 'branch' : 'business', branch_public_id: managerMode ? (lockedBranch?.public_id || '') : '', program_public_id: '',
         })
         setEditing(null)
@@ -206,7 +208,6 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
       message: ann.message,
       type: ann.type || 'info',
       is_active: ann.is_active !== false,
-      end_date: ann.end_date ? ann.end_date.split('T')[0] : '',
       target_scope: managerMode ? 'branch' : (ann.target_scope === 'branch' ? 'branch' : 'business'),
       branch_public_id: managerMode ? (lockedBranch?.public_id || ann.branch_public_id || '') : (ann.branch_public_id || ''),
       program_public_id: ann.program_public_id || '',
@@ -260,7 +261,7 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
   const handleNew = () => {
     setEditing(null)
     setForm({
-      title: '', message: '', type: 'info', is_active: true, end_date: '',
+      title: '', message: '', type: 'info', is_active: true,
       target_scope: managerMode ? 'branch' : 'business', branch_public_id: managerMode ? (lockedBranch?.public_id || '') : '', program_public_id: '',
     })
   }
@@ -289,13 +290,25 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
 
   return (
     <div style={styles.overlay}>
-      <div style={styles.modal}>
+      <div style={{...styles.modal,maxWidth:section === 'automations' ? 920 : 720}}>
         <div style={styles.header}>
           <h2 style={styles.title}>📢 Announcements</h2>
           <button onClick={onClose} style={styles.closeBtn}>✕</button>
         </div>
 
+        {!managerMode && (
+          <div role="group" aria-label="Announcement sections" style={{display:'flex',gap:6,padding:'12px 24px 0',flexWrap:'wrap'}}>
+            {['announcements','automations'].map(tab => <button
+              key={tab}
+              type="button"
+              aria-pressed={section === tab}
+              onClick={() => { setSection(tab); if (tab === 'automations') setAutomationsOpened(true) }}
+              style={{border:'1px solid #d9e4dd',borderRadius:8,padding:'9px 14px',fontSize:13,fontWeight:700,cursor:'pointer',background:section===tab?'#173f35':'white',color:section===tab?'white':'#415c4d'}}
+            >{tab === 'announcements' ? 'Announcements' : 'Automations'}</button>)}
+          </div>
+        )}
         <div style={styles.body}>
+          <div hidden={section !== 'announcements'}>
           {banner && (
             <div style={{
               ...styles.banner,
@@ -445,15 +458,7 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
                     <option value="alert">⚠️ Alert</option>
                   </select>
                 </div>
-                <div style={styles.inputGroup}>
-                  <label style={styles.label}>End Date (optional)</label>
-                  <input
-                    type="date"
-                    value={form.end_date}
-                    onChange={e => setForm({...form, end_date: e.target.value})}
-                    style={styles.input}
-                  />
-                </div>
+
               </div>
               <div style={styles.formFooter}>
                 {editing && (
@@ -497,7 +502,6 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
                       <div style={styles.annMeta}>
                         <span style={styles.annDate}>
                           {new Date(ann.created_at).toLocaleDateString()}
-                          {ann.end_date && ` → ${new Date(ann.end_date).toLocaleDateString()}`}
                           {ann.notified_at && (
                             <span style={styles.sentTag}> · 🔔 sent {new Date(ann.notified_at).toLocaleDateString()}</span>
                           )}
@@ -520,6 +524,10 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
               </div>
             )}
           </div>
+          </div>
+          {!managerMode && automationsOpened && <div hidden={section !== 'automations'}>
+            <OwnerAutomations API_BASE={API_BASE} user={user || { business_slug:businessSlug, token:ownerToken }} active={section === 'automations'} />
+          </div>}
         </div>
       </div>
     </div>

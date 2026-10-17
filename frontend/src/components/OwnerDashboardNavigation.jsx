@@ -1,5 +1,6 @@
 import React, { useEffect, useId, useRef, useState } from 'react'
 import './owner-dashboard-refresh.css'
+import loyaltyTreeLogo from './logo-192.png'
 
 // Presentation only. Existing dashboard callbacks own navigation and all actions.
 function Icon({ name, className = '' }) {
@@ -34,9 +35,6 @@ function Icon({ name, className = '' }) {
     logout: <><path d="M9 3H3v18h6m5-14 5 5-5 5m-7-5h12"/></>,
   }
   return <svg className={`lt-owner-icon ${className}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name] || paths.card}</svg>
-}
-function TreeMark() {
-  return <svg className="lt-owner-tree-mark" viewBox="0 0 32 36" aria-hidden="true"><path d="M16 19v15M16 26l-7-7m7 10 8-9" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/><circle cx="11" cy="12" r="8"/><circle cx="22" cy="13" r="8"/><circle cx="16" cy="7" r="7"/></svg>
 }
 const tabTitles = {
   tree: 'Overview', customers: 'Customers', program: 'Loyalty card', analytics: 'Analytics', announcements: 'Announcements', staff: 'Team & locations',
@@ -104,7 +102,7 @@ export default function OwnerDashboardNavigation({
       role={isMobile && drawerOpen ? 'dialog' : undefined} aria-modal={isMobile && drawerOpen ? 'true' : undefined}
       aria-label="Owner navigation" aria-hidden={isMobile && !drawerOpen ? 'true' : undefined} inert={isMobile && !drawerOpen ? '' : undefined}>
       <div className="lt-owner-brand-row">
-        <button type="button" className="lt-owner-brand" onClick={() => navigateTo('tree')} aria-label="LoyaltyTree overview"><TreeMark/><span className="lt-owner-brand-word">LoyaltyTree<small>BUSINESS WORKSPACE</small></span></button>
+        <button type="button" className="lt-owner-brand" onClick={() => navigateTo('tree')} aria-label="Loyalty Tree overview"><img className="lt-owner-brand-logo" src={loyaltyTreeLogo} alt=""/><span className="lt-owner-brand-word">Loyalty Tree<small>BUSINESS WORKSPACE</small></span></button>
         <button type="button" ref={closeButtonRef} className="lt-owner-drawer-close" onClick={closeDrawer} aria-label="Close navigation"><Icon name="close"/></button>
       </div>
       <div className="lt-owner-workspace" title={name}><span className="lt-owner-workspace-monogram">{name.trim().slice(0, 1).toUpperCase()}</span><div><strong>{name}</strong><span>Owner dashboard</span></div></div>
@@ -147,7 +145,7 @@ export default function OwnerDashboardNavigation({
       <button type="button" className={activeTab === 'tree' ? 'is-active' : ''} onClick={() => navigateTo('tree')} aria-current={activeTab === 'tree' ? 'page' : undefined}><Icon name="home"/><span>Home</span></button>
       <button type="button" className={activeTab === 'customers' ? 'is-active' : ''} onClick={() => navigateTo('customers')} aria-current={activeTab === 'customers' ? 'page' : undefined}><Icon name="people"/><span>Customers</span></button>
       <button type="button" className="lt-owner-mobile-scan" onClick={() => act(onScan)} aria-label="Scan customer card"><Icon name="scan"/><span>Scan</span></button>
-      <button type="button" onClick={() => act(onAnalytics)}><Icon name="chart"/><span>Analytics</span></button>
+      <button type="button" className={activeTab === 'analytics' ? 'is-active' : ''} aria-current={activeTab === 'analytics' ? 'page' : undefined} onClick={() => act(onAnalytics)}><Icon name="chart"/><span>Analytics</span></button>
       <button type="button" className={drawerOpen ? 'is-active' : ''} onClick={openDrawer} aria-label="More dashboard navigation" aria-expanded={drawerOpen} aria-controls={sidebarId}><Icon name="more"/><span>More</span></button>
     </nav>
   </>

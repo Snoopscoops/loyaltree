@@ -44,8 +44,16 @@ export function createFixtureTransport({ scenario = 'stamp', onRequest = () => {
     const path = url.pathname.slice(prefix.length)||'/'
     const config = configs.find(c=>c.public_id===url.searchParams.get('program_id'))||configs[0]
     if(method==='GET'){
+      const scopedCustomers = url.searchParams.get('program_id') === 'demo-program-weekend' ? [] : customers
+      const visitCounts = [6,4,1,0,2,2,5,3]
+      const segmentNames = ['regulars','regulars','first_time','first_time','occasional','occasional','at_risk','at_risk']
+      const stats = { total_customers:scopedCustomers.length,total_stamps:48,total_rewards:2,customers_this_month:2,
+        total_customer_visits:scopedCustomers.length ? 23 : 0,return_rate:scopedCustomers.length ? 85.7 : 0,rewards_ready:scopedCustomers.filter(c=>c.reward_unlocked).length,
+        activity_available:true,rewards_available:true,churn_days:settings.churn_days,visit_definition:'unique_customer_visit_days',
+        customer_segments:scopedCustomers.length ? {regulars:2,first_time:2,occasional:2,at_risk:2} : {regulars:0,first_time:0,occasional:0,at_risk:0},
+        customer_activity:Object.fromEntries(scopedCustomers.map((c,i)=>[c.public_id,{visits:visitCounts[i],last_visit_at:c.last_visit_at,segment:segmentNames[i],rewards_ready:!!c.reward_unlocked}])) }
       const reads = {
-        '/':business,'/programs':{programs:configs,max_programs:3,can_create:true},'/customers':customers,'/staff':staff,'/stats':{total_customers:8,total_stamps:48,total_rewards:2,customers_this_month:2},'/loyalty-config':config,
+        '/':business,'/programs':{programs:configs,max_programs:3,can_create:true},'/customers':scopedCustomers,'/staff':staff,'/stats':stats,'/loyalty-config':config,
         '/staff/stamp-counts':staff.map((s,i)=>({staff_public_id:s.public_id,stamp_count:20+i*8})),'/branches':branches,'/subscription':subscription,'/subscription/payments':[{id:1,status:'paid',amount:2250,currency:'PHP',billing_cycle:'3_months',paid_at:date(-25),created_at:date(-25),payment_method:'qrph'}],'/plan':plan(),'/setup-kit':null,'/cashier-devices':[],
         '/platform-announcements':notices,'/announcements':announcements,'/order-ahead/setup':{enabled:true,settings:{pickup_mode:'both',min_prep_minutes:15,slot_interval_minutes:15,max_advance_days:7},branch_pickup_hours:[],payment:{enabled:false}},'/order-ahead/orders':{orders:[],branches,operator_scope:{role:'owner'}},'/order-ahead/menu':{categories:[],items:[],modifier_groups:[],branches},'/order-ahead/payment-config':{enabled:false},
         '/feedback':{summary:{total:12,average_rating:4.8,positive:11},feedback:[]},'/campaigns':{campaigns:[],branches},'/gift-cards':{cards:[]},'/gift-cards/overview':{feature_enabled:true,total_cards:0,active_cards:0,total_balance:0},'/gift-card-batches':{batches:[],print_requests:[]},'/customer-agreement':{program_exists:true,mode:'off',draft_title:'Customer Terms & Conditions',draft_body:'',versions:[]},

@@ -27,6 +27,10 @@ try:
     from .trial_coupons import register_trial_routes, coupon_available, billing_hold, subscription_access_expiry
 except ImportError:
     from trial_coupons import register_trial_routes, coupon_available, billing_hold, subscription_access_expiry
+try:
+    from .owner_activity import build_owner_activity, read_visit_rows, read_reward_rows, read_customer_rows, invalidate_owner_activity, VISIT_TABLES
+except ImportError:
+    from owner_activity import build_owner_activity, read_visit_rows, read_reward_rows, read_customer_rows, invalidate_owner_activity, VISIT_TABLES
 import os
 import builtins
 import re
@@ -12410,6 +12414,7 @@ def log_stamp_event(business_id: int, customer_id: int, staff_id: Optional[int] 
     Never raises - a logging hiccup should never block the stamp response
     to the cashier. staff_id/branch_id are None when the owner stamps
     directly from their dashboard (no staff PIN involved)."""
+    invalidate_owner_activity(business_id)
     try:
         event = {
             'business_id': business_id,
@@ -12453,6 +12458,7 @@ def log_points_event(business_id: int, customer_id: int, amount_spent: float, po
     """Best-effort event log for points-card sales - powers the Analytics
     dashboard the same way log_stamp_event powers it for stamp cards.
     Never raises."""
+    invalidate_owner_activity(business_id)
     try:
         event = {
             'business_id': business_id,
@@ -12474,6 +12480,7 @@ def log_multipass_event(business_id: int, customer_id: int, action: str, session
     """Best-effort event log for multipass issues/uses - powers the Analytics
     dashboard the same way log_stamp_event/log_points_event do for their
     card types. action is 'issued' or 'used'. Never raises."""
+    invalidate_owner_activity(business_id)
     try:
         event = {
             'business_id': business_id,
@@ -12792,6 +12799,7 @@ def issue_vip_tier_upgrade_coupons(business: dict, customer: dict, program: dict
 
 
 def log_vip_event(business_id, customer_id, action, points_delta, points_balance, amount_spent=None, old_tier=None, new_tier=None, staff_id=None, branch_id=None, note=None):
+    invalidate_owner_activity(business_id)
     try:
         supabase.table('vip_events').insert({
             'business_id': business_id, 'customer_id': customer_id, 'action': action,
@@ -13183,6 +13191,7 @@ def log_membership_event(business_id: int, customer_id: int, service_name: str, 
     customer row - the full history in membership_events IS the card.
     Returns the inserted row (so callers can hand back its id), or None on
     failure. Best-effort - never raises."""
+    invalidate_owner_activity(business_id)
     try:
         event = {
             'business_id': business_id,
@@ -20646,11 +20655,7 @@ async def get_customers(public_id: str, program_id: Optional[str] = Query(defaul
     if program_id and not all_programs and not program:
         raise HTTPException(status_code=404, detail='Program not found for this business')
     try:
-        query = supabase.table('customers').select('*').eq('business_id', business.get('id'))
-        if program:
-            query = query.eq('program_id', program.get('id'))
-        res = query.execute()
-        customers = res.data or []
+        customers = read_customer_rows(supabase, business.get('id'), (program or {}).get('id'))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -21907,6 +21912,102 @@ async def delete_staff(public_id: str, staff_public_id: str, authorization: str 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+def _owner_dashboard_activity_stats(business, customers, programs):
+    """Program-scoped visit days and earned rewards for the existing stats call.
+
+    A membership subscription, prepaid session or tier discount is access, not
+    an earned reward. Only unclaimed stamp milestones, affordable point prizes
+    and currently usable coupons contribute to Rewards ready.
+    """
+    by_program = {str(row.get('id')): row for row in programs}
+    # Owners can edit a card's engines/type. Read every historical visit ledger
+    # so disabling an engine does not erase its previously recorded visits.
+    tables = VISIT_TABLES
+    required_tables = set()
+    for row in programs:
+        if program_reward_uses_stamps(row):
+            required_tables.add('stamp_events')
+        if program_reward_uses_points(row):
+            required_tables.add('points_events')
+        if program_has_membership(row):
+            required_tables.add('membership_events')
+        if program_has_tier(row):
+            required_tables.add('vip_events')
+        if row.get('card_type') == 'multipass':
+            required_tables.add('multipass_events')
+        if program_is_employee_experience(row):
+            required_tables.add('employee_attendance_events')
+    ids = [row.get('id') for row in customers if row.get('id') is not None]
+    activity_available = rewards_available = bool(programs) or not customers
+    visits = {}
+    as_of = None
+    missing_sources = []
+    try:
+        visits, as_of, missing_sources = read_visit_rows(supabase, business.get('id'), ids, tables, required_tables)
+    except Exception as exc:
+        activity_available = False
+        log_event('dashboard_metrics_unavailable', 'warning',
+                  business_slug=business.get('public_id'), metric='visits',
+                  endpoint='/api/v1/business/{public_id}/stats', error_type=type(exc).__name__)
+    ready = {}
+    today = _loyalty_today()
+    try:
+        coupons, claims = read_reward_rows(supabase, business.get('id'), ids,
+                                           any(program_reward_uses_stamps(row) for row in programs))
+        coupon_customers = {
+            str(row.get('customer_id')) for row in coupons
+            if (not _date_only(row.get('starts_at')) or _date_only(row.get('starts_at')) <= today)
+            and (not _date_only(row.get('expires_at')) or _date_only(row.get('expires_at')) >= today)
+        }
+        claims_by_customer = defaultdict(set)
+        for row in claims:
+            claims_by_customer[(str(row.get('customer_id')), int(row.get('card_cycle') or 1))].add(str(row.get('milestone_id')))
+        for customer in customers:
+            cid = str(customer.get('id'))
+            row = by_program.get(str(customer.get('program_id'))) or {}
+            earned = cid in coupon_customers
+            expiry = _date_only(customer.get('card_expires_at'))
+            shared_expired = _card_cycle_enabled(row) and expiry and expiry < today
+            stamp_expiry = _date_only(customer.get('hybrid_stamps_expires_at'))
+            points_expiry = _date_only(customer.get('hybrid_points_expires_at'))
+            stamps_expired = shared_expired or (row.get('card_type') == 'hybrid' and _hybrid_expiry_enabled(row, 'stamps') and stamp_expiry and stamp_expiry < today)
+            points_expired = shared_expired or (row.get('card_type') == 'hybrid' and _hybrid_expiry_enabled(row, 'points') and points_expiry and points_expiry < today)
+            if program_reward_uses_stamps(row) and not stamps_expired:
+                claimed = claims_by_customer[(cid, max(1, int(customer.get('card_cycle') or 1)))]
+                earned = earned or any(int(customer.get('stamp_count') or 0) >= int(reward['stamps'])
+                                       and str(reward['id']) not in claimed
+                                       for reward in get_stamp_rewards(row))
+            if program_reward_uses_points(row) and not points_expired:
+                for prize in row.get('points_prizes') or []:
+                    if not isinstance(prize, dict):
+                        continue
+                    try:
+                        cost = int(float(prize.get('points_cost') or 0))
+                    except (TypeError, ValueError):
+                        continue
+                    if str(prize.get('name') or '').strip() and 0 < cost <= int(customer.get('points_balance') or 0):
+                        earned = True
+            ready[cid] = bool(earned)
+    except Exception as exc:
+        rewards_available = False
+        log_event('dashboard_metrics_unavailable', 'warning',
+                  business_slug=business.get('public_id'), metric='rewards',
+                  endpoint='/api/v1/business/{public_id}/stats', error_type=type(exc).__name__)
+    churn_days = 30
+    try:
+        rule = _get_retention_rule(business.get('id'), 'win_back') or {}
+        churn_days = max(1, min(3650, int(rule.get('days_threshold') or 30)))
+    except (TypeError, ValueError):
+        pass
+    result = build_owner_activity(customers, visits, ready, parse_ts=_parse_ts,
+                                  local_tz=LOYALTY_TIMEZONE, churn_days=churn_days,
+                                  activity_available=activity_available,
+                                  rewards_available=rewards_available, as_of=as_of)
+    if missing_sources:
+        result.update(activity_missing_sources=missing_sources, partial=True)
+    return result
+
+
 @app.get("/api/v1/business/{public_id}/stats")
 @resilient_read("stats")
 async def get_stats(public_id: str, program_id: Optional[str] = Query(default=None)):
@@ -21918,17 +22019,31 @@ async def get_stats(public_id: str, program_id: Optional[str] = Query(default=No
         program = None if all_programs else safe_get_loyalty_program(business.get('id'), program_public_id=program_id)
         if program_id and not all_programs and not program:
             raise HTTPException(status_code=404, detail='Program not found for this business')
-        query = supabase.table('customers').select('*').eq('business_id', business.get('id'))
-        if program:
-            query = query.eq('program_id', program.get('id'))
-        res = query.execute()
-        customers = res.data or []
+        customers = read_customer_rows(supabase, business.get('id'), (program or {}).get('id'))
         total_stamps = sum(c.get('stamp_count', 0) for c in customers)
-        return {
+        result = {
             "total_customers": len(customers),
+            "customer_count_available": True,
             "total_stamps": total_stamps,
             "unlocked_rewards": sum(1 for c in customers if c.get("reward_unlocked") or c.get("stamp_count", 0) >= 8),
         }
+        try:
+            programs = ([program] if program else
+                        (supabase.table('loyalty_programs').select('*')
+                         .eq('business_id', business.get('id')).execute().data or []))
+            result.update(await asyncio.to_thread(_owner_dashboard_activity_stats, business, customers, programs))
+        except Exception as exc:
+            # The original customer/balance snapshot remains usable when only
+            # optional metrics cannot be loaded during an upstream outage.
+            log_event('dashboard_metrics_unavailable', 'warning',
+                      business_slug=business.get('public_id'), metric='programs',
+                      endpoint='/api/v1/business/{public_id}/stats', error_type=type(exc).__name__)
+            result.update(build_owner_activity(customers, {}, {}, parse_ts=_parse_ts,
+                                                local_tz=LOYALTY_TIMEZONE,
+                                                activity_available=False, rewards_available=False))
+        return result
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -27038,6 +27153,10 @@ def start_transaction_audit(*, business_id, customer_id=None, staff_id=None, bra
 
 
 def complete_transaction_audit(audit_row, *, balance_after=None, response_json=None, metadata=None):
+    # A successful loyalty mutation must appear at the next dashboard poll,
+    # even if its best-effort audit write is unavailable.
+    if audit_row:
+        invalidate_owner_activity(audit_row.get('business_id'))
     if not audit_row or audit_row.get('_duplicate_response'):
         return
     audit_id = audit_row.get('id')
@@ -30455,6 +30574,7 @@ async def record_employee_attendance(public_id: str, req: EmployeeAttendanceRequ
         saved = (supabase.table('employee_attendance_events').insert(row).execute().data or [row])[0]
     except Exception as exc:
         raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+    invalidate_owner_activity(business.get('id'))
     return {'message': 'Timed in' if req.action == 'time_in' else 'Timed out', 'attendance': saved, 'state': get_employee_attendance_state(customer.get('id'))}
 
 
