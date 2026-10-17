@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { MemoryRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import OwnerDashboard from '../src/components/OwnerDashboard.jsx'
 import AnalyticsDashboard from '../src/components/AnalyticsDashboard.jsx'
+import QRMenuPage from '../src/components/QRMenuPage.jsx'
 import { createFixtureTransport, fixtureSlug, fixtureUser, qrImage, scenarios } from './owner-dashboard-fixtures.js'
 
 // The dev HTML is deliberately not an App route or a production build entry.
@@ -16,7 +17,7 @@ if (!import.meta.env.DEV) {
   const records = []
   const addRecord = record => { records.push(record); if (records.length > 400) records.shift(); window.dispatchEvent(new Event('owner-fixture-request')) }
   // Install synchronously before React renders. No native transport is retained.
-  window.fetch = createFixtureTransport({ scenario, onRequest: addRecord })
+  window.fetch = createFixtureTransport({ scenario, onRequest: addRecord, menuPlan: params.get('plan') || 'pro', orderAhead: params.get('orderAhead') !== 'off', menuPublished: params.get('published') === '1' })
   // Direct QR <img> requests are blocked by CSP, then replaced locally. This
   // keeps wallet previews useful without sending sample identifiers to a vendor.
   new MutationObserver(() => {
@@ -27,6 +28,8 @@ if (!import.meta.env.DEV) {
     const link = event.target.closest?.('a[href]')
     if (!link) return
     const target = new URL(link.href, window.location.href)
+    if (target.origin === window.location.origin && target.pathname.startsWith('/menu/')) { event.preventDefault(); window.dispatchEvent(new CustomEvent('fixture-menu-navigation', { detail: target.pathname + target.search })); return }
+    if (target.origin === window.location.origin && !target.pathname.startsWith('/dev/')) { event.preventDefault(); addRecord({ ts: new Date().toISOString(), method: 'LINK', path: target.pathname, status: 'blocked' }); return }
     if (target.origin !== window.location.origin && !['blob:', 'data:'].includes(target.protocol)) {
       event.preventDefault()
       addRecord({ ts: new Date().toISOString(), method: 'LINK', path: target.pathname, status: 'blocked' })
@@ -64,6 +67,7 @@ if (!import.meta.env.DEV) {
     useEffect(() => {
       const update = () => setRequestLog([...records])
       window.addEventListener('owner-fixture-request', update)
+      update()
       return () => window.removeEventListener('owner-fixture-request', update)
     }, [])
     useEffect(() => {
@@ -74,6 +78,7 @@ if (!import.meta.env.DEV) {
       measure()
       return () => { observer.disconnect(); document.documentElement.style.removeProperty('--lt-fixture-tools-height') }
     }, [])
+    useEffect(() => { const go = event => navigate(event.detail); window.addEventListener('fixture-menu-navigation', go); return () => window.removeEventListener('fixture-menu-navigation', go) }, [navigate])
     const change = (key, value) => {
       const query = new URLSearchParams(window.location.search)
       query.set(key, value)
@@ -103,6 +108,7 @@ if (!import.meta.env.DEV) {
           <Route path="/dashboard" element={<OwnerDashboard API_BASE={API_BASE} user={fixtureUser} onLogout={() => setSignedOut(true)} designPreview={refresh ? true : 'legacy'} />} />
           <Route path="/analytics" element={<AnalyticsDashboard API_BASE={API_BASE} user={fixtureUser} designPreview={refresh ? true : 'legacy'} />} />
           <Route path="/scanner" element={<ScannerPlaceholder />} />
+          <Route path="/menu/:businessId" element={<QRMenuPage API_BASE={API_BASE} />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>}
       </FixtureBoundary>
@@ -110,6 +116,6 @@ if (!import.meta.env.DEV) {
     </>
   }
   const root = createRoot(document.getElementById('root'))
-  root.render(<MemoryRouter initialEntries={['/dashboard']}><FixtureWorkspace /></MemoryRouter>)
+  root.render(<MemoryRouter initialEntries={[params.get('view') === 'menu' ? '/menu/demo-daylight' + (params.get('branch') ? '?branch='+encodeURIComponent(params.get('branch')) : '') : '/dashboard']}><FixtureWorkspace /></MemoryRouter>)
   if (import.meta.hot) import.meta.hot.dispose(() => root.unmount())
 }

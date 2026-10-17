@@ -19,10 +19,11 @@ function makeConfig(card_type, public_id = 'demo-program-main') {
     hybrid_loyalty_type: 'points', hybrid_points_enabled: true, hybrid_stamps_enabled: false, hybrid_tier_enabled: true, hybrid_tier_progression_type: 'points',
     employee_time_tracking_enabled: false, employee_benefits: [{ id:'demo-staff-benefit',name:'Staff coffee',benefit_type:'free_item',usage_limit:1,reset_period:'daily',active:true }], membership_employee_mode: false, program_logo_url: '', logo_url: '', hero_image_url: '' }
 }
-export function createFixtureTransport({ scenario = 'stamp', onRequest = () => {} } = {}) {
+export function createFixtureTransport({ scenario = 'stamp', onRequest = () => {}, menuPlan = 'pro', orderAhead = true, menuPublished = false } = {}) {
   const cardType = scenarios.includes(scenario) ? scenario : 'stamp'
+  const selectedPlan = ['starter','growth','pro'].includes(menuPlan) ? menuPlan : 'starter'
   const configs = [makeConfig(cardType), makeConfig(cardType, 'demo-program-weekend')]
-  const business = { public_id: 'demo-business-daylight', business_slug: fixtureSlug, business_name: 'Daylight Coffee', business_type: 'coffee', status: 'active', plan: 'pro', display_currency: 'PHP', country_code: 'PH', logo_url: '', onboarding_completed: true, onboarding_step: 9, order_ahead_enabled: true, owner_name: 'Alex Morgan', created_at: date(-180) }
+  const business = { public_id: 'demo-business-daylight', business_slug: fixtureSlug, business_name: 'Daylight Coffee', business_type: 'coffee', status: 'active', plan: selectedPlan, display_currency: 'PHP', country_code: 'PH', logo_url: '', onboarding_completed: true, onboarding_step: 9, order_ahead_enabled: orderAhead, owner_name: 'Alex Morgan', created_at: date(-180) }
   const branches = [{ id: 1, public_id: 'demo-branch-main', name: 'Main Café', is_active: true, address: 'Fictional location' }, { id: 2, public_id: 'demo-branch-riverside', name: 'Riverside', is_active: true, address: 'Fictional location' }]
   const customers = ['Jamie Cruz', 'Mika Santos', 'Sam Reyes', 'Avery Tan', 'Riley Lim', 'Casey Lee', 'Jordan Flores', 'Taylor Diaz'].map((name, i) => ({ id: i + 1, public_id: `demo-member-${i + 1}`, identity_id: `demo-person-${i + 1}`, name, email: '', phone: '', stamp_count: [8,6,3,7,1,4,2,8][i], points_balance: [125,80,55,140,20,65,30,100][i], reward_unlocked: i === 0 || i === 7, created_at: date(-50 + i * 3), last_stamped_at: date(-i), last_visit_at: date(-i), program_public_id: 'demo-program-main', branch_public_id: branches[i % 2].public_id,
     membership_status: i === 6 ? 'expired' : 'active', membership_effective_status: i === 6 ? 'expired' : 'active', membership_starts_at: date(-20), membership_expires_at: date(i === 6 ? -2 : i === 2 ? 3 : 25), multipass_total_sessions: 10, multipass_sessions_remaining: Math.max(0,9-i*2), vip_points: 100+i*20, vip_tier: { id:'tier-gold',name:'Gold',color:'#b58c46',discount_percent:10,benefits:['Priority pickup'] }, tier_stamp_count:10+i, employee_id_number:`D-${100+i}`, employee_position:'Team member', city:'Fictional City', is_active:true }))
@@ -30,7 +31,21 @@ export function createFixtureTransport({ scenario = 'stamp', onRequest = () => {
   const notices = [{ id:501,title:'Updates from LoyaltyTree',message:'Your platform announcements stay visible here. This local preview uses fictional data only.' }]
   let announcements = [{ id:101,title:'A little weekend treat',message:'Drop by for your favorite coffee this weekend.',type:'promo',is_active:true,target_scope:'business',created_at:date(-2),notification_count:1,last_notified_at:date(-2),program_public_id:'',branch_public_id:'' }]
   const subscription = { plan:'pro',plan_label:'Pro',subscription_status:'active',billing_hold:false,subscription_expires_at:date(65),days_left:65,billing_cycle:'3_months',pricing_region:'PH',currency:'PHP',display_currency:'PHP',monthly_price:750,price_per_month:750,pricing:{monthly:750,'3_months':2250,'6_months':4500,annual:7500},branch_count:2,billable_branches:2,last_paid_at:date(-25),features:{gift_cards:true,pos_integration:true,max_programs:3} }
-  const plan = () => ({ plan:'pro',plan_label:'Pro',usage:{announcements_limit:10,announcements_used_this_cycle:announcements.length,announcements_used_this_month:announcements.length},features:subscription.features })
+  subscription.plan=selectedPlan; subscription.plan_label=selectedPlan[0].toUpperCase()+selectedPlan.slice(1); subscription.features.qr_menu=selectedPlan!=='starter'
+  const plan = () => ({ plan:selectedPlan,plan_label:subscription.plan_label,usage:{announcements_limit:10,announcements_used_this_cycle:announcements.length,announcements_used_this_month:announcements.length},features:subscription.features })
+  let qrPublished = menuPublished
+  let menuCategories = [{public_id:'menu-coffee',name:'Coffee',is_active:true},{public_id:'menu-bakes',name:'Fresh bakes',is_active:true},{public_id:'menu-seasonal',name:'Seasonal',is_active:true}]
+  let menuGroups = [{public_id:'menu-size',name:'Size',selection_type:'single',is_required:true,min_selections:1,max_selections:1,is_active:true,category_public_ids:['menu-coffee'],options:[{public_id:'size-regular',name:'Regular',price_delta:0,is_active:true},{public_id:'size-large',name:'Large',price_delta:25,is_active:true}]}]
+  const illustration = (color, shape='cup') => 'data:image/svg+xml,'+encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="400" height="320" viewBox="0 0 400 320"><rect width="400" height="320" fill="${color}"/><ellipse cx="200" cy="257" rx="100" ry="16" fill="#000" opacity=".06"/>${shape==='cup'?'<path d="M132 108h123l-14 130H148z" fill="#fff9ef"/><path d="M255 127h15c54 0 47 70-22 70" fill="none" stroke="#fff9ef" stroke-width="18"/><ellipse cx="194" cy="109" rx="62" ry="13" fill="#8c5c3c"/><path d="M170 80q-17-20 0-38m30 38q-17-20 0-38m30 38q-17-20 0-38" fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round" opacity=".7"/>':'<path d="M100 208q10-116 100-119 90 3 100 119-100 72-200 0" fill="#d9a35c"/><path d="M150 112q-10 50 13 117m40-137q-5 77 17 144m29-125q-4 54 16 107" fill="none" stroke="#b67e3f" stroke-width="9"/>'}</svg>`)
+  let menuItems = [
+    {public_id:'menu-latte',name:'Iced Spanish Latte',description:'Espresso, milk, and a little sweetness. Your everyday pick-me-up.',category_public_id:'menu-coffee',base_price:145,image_url:illustration('#d9c2a4'),modifier_group_public_ids:['menu-size']},
+    {public_id:'menu-americano',name:'Americano',description:'A smooth, full-bodied cup with notes of chocolate.',category_public_id:'menu-coffee',base_price:110,image_url:illustration('#c8c4b5'),modifier_group_public_ids:['menu-size']},
+    {public_id:'menu-matcha',name:'Matcha Latte',description:'Earthy matcha, silky milk, and a moment to slow down.',category_public_id:'menu-seasonal',base_price:160,image_url:illustration('#b5c6a3'),modifier_group_public_ids:['menu-size'],unavailable_branch_public_ids:['demo-branch-riverside']},
+    {public_id:'menu-croissant',name:'Butter Croissant',description:'Flaky layers, baked fresh for a little morning joy.',category_public_id:'menu-bakes',base_price:95,image_url:illustration('#e5d1b3','bake'),is_available:false},
+    {public_id:'menu-roll',name:'Cinnamon Roll',description:'Soft swirls, warm cinnamon, and cream cheese glaze.',category_public_id:'menu-bakes',base_price:105,image_url:illustration('#dcc4b4','bake')},
+  ].map(item=>({is_active:true,is_available:true,unavailable_branch_public_ids:[],modifier_group_public_ids:[],...item}))
+  const menuSnapshot = () => ({categories:menuCategories,items:menuItems.map(item=>({...item,direct_modifier_group_public_ids:item.modifier_group_public_ids,effective_modifier_group_public_ids:item.modifier_group_public_ids})),modifier_groups:menuGroups,branches})
+  const publicMenu = () => ({business:{public_id:fixtureSlug,name:business.business_name,currency:'PHP',logo_url:'',hero_url:'',join_url:'/join/demo-daylight'},design:{primary_color:'#235447',background_color:'#f7f8f3',surface_color:'#fff',text_color:'#173f35',muted_color:'#6b7e75',product_layout:'image_left'},categories:menuCategories.filter(c=>c.is_active!==false),items:menuItems.filter(i=>i.is_active!==false&&(!i.category_public_id||menuCategories.some(c=>c.public_id===i.category_public_id&&c.is_active!==false))).map(i=>({...i,modifier_groups:menuGroups.filter(g=>g.is_active!==false&&i.modifier_group_public_ids.includes(g.public_id))})),branches,selected_branch:null,is_published:qrPublished})
   const eventLevels = [{ public_id:'demo-level-vip',name:'VIP',benefits:'Priority entry',ticket_price:0,color_hex:'#0d9488' }]
   let fixtureEvents = [{ public_id:'demo-event-daylight',name:'Daylight Community Night',venue:'Fictional event venue',event_date:date(7),status:'published',notification_message:'You are near the event venue.',geo_latitude:14.5995,geo_longitude:120.9842,geo_radius_meters:200 }]
   const eventTickets = ['Jamie Cruz','Mika Santos','Sam Reyes'].map((name,i)=>({public_id:`demo-ticket-${i+1}`,attendee_name:name,status:i===0?'scanned':'issued',event_access_levels:eventLevels[0],created_at:date(-1)}))
@@ -42,10 +57,32 @@ export function createFixtureTransport({ scenario = 'stamp', onRequest = () => {
     let body = {}; try { body = JSON.parse(options.body || '{}') } catch { /* Binary writes unsupported. */ }
     const done = (value,status=200) => { onRequest({ts:new Date().toISOString(),method,path:`${url.pathname}${url.search}`,status,simulated:true});return new Response(JSON.stringify(clone(value)),{status,headers:{'Content-Type':'application/json'}}) }
     if(url.hostname==='api.qrserver.com'&&method==='GET'){onRequest({ts:date(),method,path:'/local-placeholder-qr',status:200,simulated:true});return new Response(svg,{headers:{'Content-Type':'image/svg+xml'}})}
+    if(method==='GET' && url.pathname==='/__owner-fixtures/api/v1/public/menu/demo-daylight')return qrPublished && selectedPlan!=='starter'?done(publicMenu()):done({detail:'This menu is not available right now.'},404)
     if(method==='GET' && url.pathname==='/__owner-fixtures/api/v1/public/events/demo-event-daylight') return done({event:fixtureEvents.find(event=>event.public_id==='demo-event-daylight'),access_levels:eventLevels})
     const prefix = `/__owner-fixtures/api/v1/business/${fixtureSlug}`
     if(!url.pathname.startsWith(prefix))return done({detail:'Blocked by local fixture transport. No external request was sent.'},501)
     const path = url.pathname.slice(prefix.length)||'/'
+    const qrSetup=()=>({is_published:qrPublished,public_url:url.origin+'/menu/'+fixtureSlug,branches:branches.map(branch=>({...branch,public_url:url.origin+'/menu/'+fixtureSlug+'?branch='+branch.public_id}))})
+    if(path.startsWith('/qr-menu')){
+      if(selectedPlan==='starter')return done({detail:'QR Menu is included in Growth and Pro.'},403)
+      if(path==='/qr-menu/preview')return done(publicMenu())
+      if(path==='/qr-menu'&&method==='PUT'){
+        if(body.is_published&&!publicMenu().items.length)return done({detail:'Add at least one visible menu item before publishing.'},400)
+        qrPublished=body.is_published===true
+      }
+      return done(qrSetup())
+    }
+    if(path==='/order-ahead/menu'&&method==='GET')return done(menuSnapshot())
+    const catalog=path.match(/^\/order-ahead\/(categories|items|modifier-groups)(?:\/([^/]+))?$/)
+    if(catalog&&method!=='GET'){
+      let list=catalog[1]==='categories'?menuCategories:catalog[1]==='items'?menuItems:menuGroups
+      const id=catalog[2]
+      if(method==='DELETE')list=list.filter(row=>row.public_id!==id)
+      else if(id)list=list.map(row=>row.public_id===id?{...row,...body}:row)
+      else list.push({...body,public_id:'menu-created-'+Date.now(),modifier_group_public_ids:body.modifier_group_public_ids||[]})
+      if(catalog[1]==='categories')menuCategories=list;else if(catalog[1]==='items')menuItems=list;else menuGroups=list
+      return done({success:true,simulated:true})
+    }
     if(path==='/events' && method==='GET')return done(fixtureEvents)
     if(path==='/events' && method==='POST'){
       const event={...body,public_id:`demo-event-created-${fixtureEvents.length}`,status:'draft',created_at:date()}

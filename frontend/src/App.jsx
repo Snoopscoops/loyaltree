@@ -14,6 +14,7 @@ const CockpitDashboard = lazy(() => import('./components/CockpitDashboard'))
 const CashierApp = lazy(() => import('./components/CashierApp'))
 const EventScan = lazy(() => import('./components/EventScan'))
 const EventJoin = lazy(() => import('./components/EventJoin'))
+const QRMenuPage = lazy(() => import('./components/QRMenuPage'))
 const AnalyticsDashboard = lazy(() => import('./components/AnalyticsDashboard'))
 const AdminDashboard = lazy(() => import('./components/AdminDashboard'))
 const PartnerDashboard = lazy(() => import('./components/PartnerDashboard'))
@@ -89,6 +90,14 @@ function PublicRouteAnalytics({ API_BASE }) {
   return null
 }
 
+function RouteBusinessAccess({ user, children, onLogout }) {
+  const { pathname } = useLocation()
+  // A public menu stays public even with an unrelated, expired owner session.
+  // The menu API checks the menu business itself.
+  if (pathname.startsWith('/menu/') || !['owner','manager','cashier'].includes(user?.role)) return children
+  return <BusinessAccessGate API_BASE={API_BASE} user={user} onLogout={onLogout}>{children}</BusinessAccessGate>
+}
+
 function App() {
   const [user, setUser] = useState(() => {
     try {
@@ -147,12 +156,13 @@ function App() {
         }
       `}</style>
       <Suspense fallback={<p role="status" style={{ padding: 32 }}>Loading…</p>}>
-      {user && ['owner','manager','cashier'].includes(user.role) ? <BusinessAccessGate API_BASE={API_BASE} user={user} onLogout={handleLogout}><AppRoutes /></BusinessAccessGate> : <AppRoutes />}
+      <RouteBusinessAccess user={user} onLogout={handleLogout}><AppRoutes /></RouteBusinessAccess>
       </Suspense>
     </BrowserRouter>
   )
 
   function AppRoutes() { return <Routes>
+        <Route path="/menu/:businessId" element={<QRMenuPage API_BASE={API_BASE} />} />
         <Route path="/event-scan" element={user ? <EventScan API_BASE={API_BASE} user={user} /> : <Navigate to="/login" />} />
         <Route path="/join/event/:eventId" element={<EventJoin API_BASE={API_BASE} />} />
         <Route path="/motolite/*" element={<MotoliteApp API_BASE={API_BASE} />} />

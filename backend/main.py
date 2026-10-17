@@ -19,6 +19,11 @@ except ImportError:
     from wallet_class_publish import upsert_loyalty_class
 
 try:
+    from .qr_menu import register_qr_menu_routes
+except ImportError:
+    from qr_menu import register_qr_menu_routes
+
+try:
     from .business_welcome_email import build_business_getting_started_email
 except ImportError:
     from business_welcome_email import build_business_getting_started_email
@@ -314,6 +319,7 @@ SUBSCRIPTION_PLANS = {
         'geofence_notifications': False,
         # Growth-tier product modules. Starter cannot create/edit these.
         'hybrid_cards': False,
+        'qr_menu': False,
         'gift_cards': False,
         'pos_integration': False,
         'dynamic_progress_banner': False,
@@ -334,6 +340,7 @@ SUBSCRIPTION_PLANS = {
         'max_branches': 10,
         'geofence_notifications': False,
         'hybrid_cards': True,
+        'qr_menu': True,
         'gift_cards': True,
         'pos_integration': False,
         'dynamic_progress_banner': False,
@@ -355,6 +362,7 @@ SUBSCRIPTION_PLANS = {
         'geofence_notifications': False,
         # Pro inherits Growth product modules and includes POS Integration.
         'hybrid_cards': True,
+        'qr_menu': True,
         'gift_cards': True,
         'pos_integration': True,
         'dynamic_progress_banner': True,
@@ -16173,11 +16181,16 @@ def _oa_finish_webhook_event(event_id: Optional[str], result: str):
         print(f'ORDER AHEAD webhook idempotency update warning: {e}')
 
 
-def _oa_require_owner_business(public_id: str, authorization: str) -> dict:
+def _oa_require_owner_business(public_id: str, authorization: str, *, catalog: bool = False) -> dict:
     require_owner_session(public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail='Business not found')
+    # Only catalog routes accept QR Menu access; ordering/payment gates stay independent.
+    if catalog and business_has_plan_feature(business, 'qr_menu'):
+        if business.get('status') != 'active' or billing_hold(business):
+            raise HTTPException(status_code=403, detail='An active business subscription is required for QR Menu.')
+        return business
     if not bool(business.get('order_ahead_enabled')):
         raise HTTPException(status_code=403, detail='Order Ahead must be enabled by LoyaltyTree Admin first')
     return business
@@ -16814,7 +16827,7 @@ async def owner_update_order_ahead_payment_config(
 
 @app.get('/api/v1/business/{public_id}/order-ahead/menu')
 async def owner_get_order_ahead_menu(public_id: str, authorization: str = Header(default='')):
-    business=_oa_require_owner_business(public_id,authorization)
+    business=_oa_require_owner_business(public_id,authorization,catalog=True)
     try:
         return _oa_menu_snapshot(business)
     except Exception as e:
@@ -16825,7 +16838,7 @@ async def owner_get_order_ahead_menu(public_id: str, authorization: str = Header
 
 @app.post('/api/v1/business/{public_id}/order-ahead/categories')
 async def owner_create_oa_category(public_id: str, payload: OrderAheadCategoryPayload, authorization: str = Header(default='')):
-    business=_oa_require_owner_business(public_id,authorization)
+    business=_oa_require_owner_business(public_id,authorization,catalog=True)
     row={'business_id':business.get('id'),**payload.dict(),'updated_at':datetime.now(timezone.utc).isoformat()}
     try:
         res=supabase.table('order_ahead_categories').insert(row).execute()
@@ -16835,7 +16848,7 @@ async def owner_create_oa_category(public_id: str, payload: OrderAheadCategoryPa
 
 @app.patch('/api/v1/business/{public_id}/order-ahead/categories/{category_public_id}')
 async def owner_update_oa_category(public_id: str, category_public_id: str, payload: OrderAheadCategoryPayload, authorization: str = Header(default='')):
-    business=_oa_require_owner_business(public_id,authorization)
+    business=_oa_require_owner_business(public_id,authorization,catalog=True)
     row=_oa_public_row('order_ahead_categories',category_public_id,business.get('id'))
     if not row: raise HTTPException(status_code=404,detail='Category not found')
     patch={**payload.dict(),'updated_at':datetime.now(timezone.utc).isoformat()}
@@ -16845,7 +16858,7 @@ async def owner_update_oa_category(public_id: str, category_public_id: str, payl
 
 @app.delete('/api/v1/business/{public_id}/order-ahead/categories/{category_public_id}')
 async def owner_delete_oa_category(public_id: str, category_public_id: str, authorization: str = Header(default='')):
-    business=_oa_require_owner_business(public_id,authorization)
+    business=_oa_require_owner_business(public_id,authorization,catalog=True)
     row=_oa_public_row('order_ahead_categories',category_public_id,business.get('id'))
     if not row: raise HTTPException(status_code=404,detail='Category not found')
     supabase.table('order_ahead_categories').delete().eq('id',row.get('id')).execute()
@@ -16885,7 +16898,7 @@ def _oa_sync_modifier_group_categories(business: dict, group: dict, category_pub
 
 @app.post('/api/v1/business/{public_id}/order-ahead/modifier-groups')
 async def owner_create_oa_modifier_group(public_id: str, payload: OrderAheadModifierGroupPayload, authorization: str = Header(default='')):
-    business=_oa_require_owner_business(public_id,authorization)
+    business=_oa_require_owner_business(public_id,authorization,catalog=True)
     data=payload.dict(exclude={'options','category_public_ids'}); data['business_id']=business.get('id'); data['updated_at']=datetime.now(timezone.utc).isoformat()
     res=supabase.table('order_ahead_modifier_groups').insert(data).execute(); group=_supabase_first_row(res)
     if not group: raise HTTPException(status_code=500,detail='Could not create option group')
@@ -16896,7 +16909,7 @@ async def owner_create_oa_modifier_group(public_id: str, payload: OrderAheadModi
 
 @app.patch('/api/v1/business/{public_id}/order-ahead/modifier-groups/{group_public_id}')
 async def owner_update_oa_modifier_group(public_id: str, group_public_id: str, payload: OrderAheadModifierGroupPayload, authorization: str = Header(default='')):
-    business=_oa_require_owner_business(public_id,authorization)
+    business=_oa_require_owner_business(public_id,authorization,catalog=True)
     group=_oa_public_row('order_ahead_modifier_groups',group_public_id,business.get('id'))
     if not group: raise HTTPException(status_code=404,detail='Option group not found')
     data=payload.dict(exclude={'options','category_public_ids'}); data['updated_at']=datetime.now(timezone.utc).isoformat()
@@ -16909,7 +16922,7 @@ async def owner_update_oa_modifier_group(public_id: str, group_public_id: str, p
 
 @app.delete('/api/v1/business/{public_id}/order-ahead/modifier-groups/{group_public_id}')
 async def owner_delete_oa_modifier_group(public_id: str, group_public_id: str, authorization: str = Header(default='')):
-    business=_oa_require_owner_business(public_id,authorization)
+    business=_oa_require_owner_business(public_id,authorization,catalog=True)
     group=_oa_public_row('order_ahead_modifier_groups',group_public_id,business.get('id'))
     if not group: raise HTTPException(status_code=404,detail='Option group not found')
     supabase.table('order_ahead_modifier_groups').delete().eq('id',group.get('id')).execute(); return {'success':True}
@@ -16921,7 +16934,7 @@ async def owner_quick_setup_beverage_modifiers(public_id: str, authorization: st
     beverage categories. The core engine no longer depends on category-name
     guessing; owners can explicitly assign ANY option group to ANY categories.
     """
-    business = _oa_require_owner_business(public_id, authorization)
+    business = _oa_require_owner_business(public_id, authorization, catalog=True)
     bid = business.get('id')
     now = datetime.now(timezone.utc).isoformat()
     groups = supabase.table('order_ahead_modifier_groups').select('*').eq('business_id', bid).execute().data or []
@@ -17022,7 +17035,7 @@ def _oa_sync_item_relations(business: dict, item: dict, payload: OrderAheadItemP
 
 @app.post('/api/v1/business/{public_id}/order-ahead/items')
 async def owner_create_oa_item(public_id: str, payload: OrderAheadItemPayload, authorization: str = Header(default='')):
-    business=_oa_require_owner_business(public_id,authorization); bid=business.get('id'); category_id=None
+    business=_oa_require_owner_business(public_id,authorization,catalog=True); bid=business.get('id'); category_id=None
     if payload.category_public_id:
         cat=_oa_public_row('order_ahead_categories',payload.category_public_id,bid)
         if not cat: raise HTTPException(status_code=400,detail='Category not found')
@@ -17035,7 +17048,7 @@ async def owner_create_oa_item(public_id: str, payload: OrderAheadItemPayload, a
 
 @app.patch('/api/v1/business/{public_id}/order-ahead/items/{item_public_id}')
 async def owner_update_oa_item(public_id: str, item_public_id: str, payload: OrderAheadItemPayload, authorization: str = Header(default='')):
-    business=_oa_require_owner_business(public_id,authorization); bid=business.get('id'); item=_oa_public_row('order_ahead_items',item_public_id,bid)
+    business=_oa_require_owner_business(public_id,authorization,catalog=True); bid=business.get('id'); item=_oa_public_row('order_ahead_items',item_public_id,bid)
     if not item: raise HTTPException(status_code=404,detail='Menu item not found')
     category_id=None
     if payload.category_public_id:
@@ -17048,7 +17061,7 @@ async def owner_update_oa_item(public_id: str, item_public_id: str, payload: Ord
 
 @app.delete('/api/v1/business/{public_id}/order-ahead/items/{item_public_id}')
 async def owner_delete_oa_item(public_id: str, item_public_id: str, authorization: str = Header(default='')):
-    business=_oa_require_owner_business(public_id,authorization); item=_oa_public_row('order_ahead_items',item_public_id,business.get('id'))
+    business=_oa_require_owner_business(public_id,authorization,catalog=True); item=_oa_public_row('order_ahead_items',item_public_id,business.get('id'))
     if not item: raise HTTPException(status_code=404,detail='Menu item not found')
     supabase.table('order_ahead_items').delete().eq('id',item.get('id')).execute(); return {'success':True}
 
@@ -17756,7 +17769,7 @@ async def owner_update_order_ahead_item_availability(
     branch_public_id=None toggles the item globally. With a branch id, only
     that branch is changed; deleting the override restores normal availability.
     """
-    business = _oa_require_owner_business(public_id, authorization)
+    business = _oa_require_owner_business(public_id, authorization, catalog=True)
     item = _oa_public_row('order_ahead_items', item_public_id, business.get('id'))
     if not item:
         raise HTTPException(status_code=404, detail='Menu item not found')
@@ -50537,3 +50550,19 @@ def list_event_tickets(public_id: str, event_public_id: str, authorization: str 
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+
+
+def _qr_menu_branding(business):
+    program = safe_get_loyalty_program(business.get('id')) or {}
+    return {
+        'logo_url': program.get('program_logo_url') or business.get('logo_url') or '',
+        'hero_url': program.get('hero_image_url') or '',
+        'currency': business_currency(business),
+        'design': _resolve_order_ahead_ui_config(business),
+    }
+
+
+register_qr_menu_routes(app, db=supabase, get_business=safe_get_business,
+    require_owner=require_owner_session, has_feature=business_has_plan_feature,
+    on_hold=billing_hold, menu_snapshot=_oa_menu_snapshot, branding=_qr_menu_branding,
+    frontend_url=FRONTEND_URL or 'https://theloyaltytree.com')
