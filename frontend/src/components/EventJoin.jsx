@@ -69,25 +69,33 @@ export default function EventJoin({ API_BASE }) {
   if (!event) return <div style={styles.page}><p>Event not found.</p></div>
 
   if (ticket) {
-    const ticketId = ticket.ticket?.public_id
+    const ticketId = ticket.ticket?.public_id || ticket.ticket_public_id
+    const addToWallet = async () => {
+      const isApple = /iPhone|iPad|Macintosh/.test(navigator.userAgent)
+      if (isApple) {
+        window.location.href = `${API_BASE}/api/v1/public/tickets/${ticketId}/apple`
+      } else {
+        try {
+          const res = await fetch(`${API_BASE}/api/v1/public/tickets/${ticketId}/google`)
+          const data = await res.json().catch(() => ({}))
+          if (data.add_to_wallet_url) window.location.href = data.add_to_wallet_url
+        } catch {}
+      }
+    }
     return (
       <div style={styles.page}>
         <div style={styles.card}>
           <h2 style={{ marginTop: 0, color: '#0f766e' }}>Ticket claimed!</h2>
           <p>Your ticket for <strong>{event.name}</strong> is ready.</p>
+          <p style={{ fontSize: 13, color: '#64748b' }}>Add it to your wallet, then show the QR code at the entrance.</p>
           {ticketId && (
-            <div style={{ marginTop: 20 }}>
-              <a href={`${API_BASE}/api/v1/public/tickets/${ticketId}/apple`} style={styles.walletBtn}>
-                Add to Apple Wallet
-              </a>
-              <a href={`${API_BASE}/api/v1/public/tickets/${ticketId}/google`} style={{ ...styles.walletBtn, background: '#1a73e8', marginTop: 10 }}>
-                Add to Google Wallet
-              </a>
-            </div>
+            <button onClick={addToWallet} style={styles.walletBtn}>
+              Add to Wallet
+            </button>
           )}
-          <p style={{ fontSize: 12, color: '#64748b', marginTop: 16 }}>
-            Show the QR code in your wallet at the entrance.
-          </p>
+          <button onClick={() => { setTicket(null); setName(''); setEmail(''); setPhone('') }} style={{ ...styles.submit, background: '#e2e8f0', color: '#334155', marginTop: 12 }}>
+            Claim another
+          </button>
         </div>
       </div>
     )
@@ -144,5 +152,5 @@ const styles = {
   label: { display: 'block', fontSize: 13, fontWeight: 600, color: '#334155', marginTop: 12, marginBottom: 4 },
   input: { width: '100%', padding: '12px 14px', border: '1.5px solid #e2e8f0', borderRadius: 10, fontSize: 14, boxSizing: 'border-box' },
   submit: { width: '100%', padding: 14, background: '#0d9488', color: '#fff', border: 'none', borderRadius: 10, fontSize: 15, fontWeight: 700, marginTop: 18, cursor: 'pointer' },
-  walletBtn: { display: 'block', width: '100%', padding: 14, background: '#1c1c1e', color: '#fff', textAlign: 'center', borderRadius: 10, textDecoration: 'none', fontWeight: 600 },
+  walletBtn: { display: 'block', width: '100%', padding: 14, background: '#0d9488', color: '#fff', textAlign: 'center', borderRadius: 10, textDecoration: 'none', fontWeight: 600, border: 'none', cursor: 'pointer', fontSize: 15, marginTop: 16 },
 }
