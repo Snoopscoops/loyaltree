@@ -37,7 +37,7 @@ A visit is a recorded customer-card visit day in the configured loyalty timezone
 
 Rewards ready counts customers with an unclaimed earned stamp milestone, an affordable points prize, or a currently usable coupon. Active memberships, tier perks and prepaid sessions alone do not count as earned rewards. Missing upstream data displays an unavailable value rather than a confirmed zero. Missing optional historical tables are identified as partial history. Customer and ledger reads paginate beyond PostgREST's 1,000-row default. Narrow visit reads cache for up to 120 seconds and local successful loyalty mutations invalidate that cache; another worker's updates can take up to two minutes to appear.
 
-Analytics opens inside the owner dashboard. Its customer pie uses the selected-program scope and all available history; the existing business reports beneath it remain business-wide, with their branch and time filters clearly labeled. Existing `/analytics` bookmarks still work.
+Overview includes the Customer Mix pie directly below its four summary metrics, using the selected-program scope and all available history. Analytics opens inside the owner dashboard with the existing business-wide reports and their branch and time filters clearly labeled. Existing `/analytics` bookmarks still work.
 
 Announcements contains the existing birthday greeting/reward, churn/win-back and geolocation automation controls. These settings remain business-wide with their existing access gates. Opening or editing the screen does not send a notification. End date is removed from the editor to match the API, which already clears announcement expiry. Platform updates from Loyalty Tree remain visible separately.
 

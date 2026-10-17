@@ -3316,6 +3316,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
       <div className="lt-owner-content" style={{...styles.content,...(isTablet?styles.contentTablet:{}),...(isMobile?styles.contentMobile:{})}}>
         {activeTab === 'tree' && (
           <div className="lt-owner-overview" style={styles.treeTab}>
+            {refreshEnabled && <CustomerSegmentsChart stats={stats} scopeLabel={viewingAllPrograms ? 'All programs' : programs.find(p => p.public_id === selectedProgramPublicId)?.program_name || program?.program_name || 'Selected program'} />}
             <div className="lt-owner-industry" style={styles.industryInsight}>
               <div style={styles.industryInsightIcon}>{industry.icon}</div>
               <div>
@@ -3389,7 +3390,6 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
         )}
 
         {refreshEnabled && activeTab === 'analytics' && <section aria-label="Analytics">
-          <CustomerSegmentsChart stats={stats} scopeLabel={viewingAllPrograms ? 'All programs' : programs.find(p => p.public_id === selectedProgramPublicId)?.program_name || program?.program_name || 'Selected program'} />
           <React.Suspense fallback={<p role="status">Loading business reports…</p>}><AnalyticsDashboard embedded API_BASE={API_BASE} user={user} onLogout={onLogout} designPreview={designPreview} /></React.Suspense>
         </section>}
 
