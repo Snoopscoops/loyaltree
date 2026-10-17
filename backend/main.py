@@ -49663,6 +49663,8 @@ class EventCreate(BaseModel):
     event_date: Optional[str] = None  # ISO datetime
     venue: Optional[str] = Field(default=None, max_length=300)
     max_attendees: Optional[int] = Field(default=None, ge=1, le=100000)
+    logo_url: Optional[str] = Field(default=None, max_length=1000)
+    cover_url: Optional[str] = Field(default=None, max_length=1000)
 
 class AccessLevelCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
@@ -49717,6 +49719,8 @@ def create_event(public_id: str, payload: EventCreate, authorization: str = Head
         "event_date": payload.event_date,
         "venue": payload.venue,
         "max_attendees": payload.max_attendees,
+        "logo_url": getattr(payload, "logo_url", None),
+        "cover_url": getattr(payload, "cover_url", None),
         "status": "draft",
         "created_at": datetime.utcnow().isoformat(),
         "updated_at": datetime.utcnow().isoformat(),
@@ -50265,7 +50269,20 @@ def generate_google_event_ticket_jwt(ticket: dict, event: dict, access_level: di
                 headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
                 json=class_body,
             )
-            if resp.status_code not in (200, 409):
+            if resp.status_code == 409:
+                # Class exists — patch it so logo/cover are applied
+                patch_body = {}
+                if logo_url:
+                    patch_body["logo"] = class_body.get("logo")
+                if cover_url:
+                    patch_body["heroImage"] = class_body.get("heroImage")
+                if patch_body:
+                    client.patch(
+                        f"https://walletobjects.googleapis.com/walletobjects/v1/eventTicketClass/{class_id}",
+                        headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+                        json=patch_body,
+                    )
+            elif resp.status_code not in (200, 201):
                 err_text = resp.text[:800]
                 print(f"EventTicketClass create failed: {resp.status_code} {err_text}")
                 raise HTTPException(status_code=500, detail=f"Google class create failed: {resp.status_code} - {err_text[:200]}")
