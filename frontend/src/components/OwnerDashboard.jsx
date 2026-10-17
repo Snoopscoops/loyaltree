@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
+import OwnerDashboardNavigation from './OwnerDashboardNavigation'
+import { canUseOwnerDashboardRefresh, ownerDashboardTab } from './ownerDashboardDesign'
+import './owner-dashboard-refresh.css'
 import Announcements from './Announcements'
 import PlatformPromoBanner from './PlatformPromoBanner'
 import LoyaltyCardCustomizer from './LoyaltyCardCustomizer'
@@ -842,9 +845,10 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
   )
 }
 
-function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
+function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }) {
   const [installPrompt, setInstallPrompt] = useState(null)
   const [showInstallHelp, setShowInstallHelp] = useState(false)
+  const [showSupportShortcut, setShowSupportShortcut] = useState(false)
   const [installPlatform, setInstallPlatform] = useState('other')
   const [isStandaloneApp, setIsStandaloneApp] = useState(false)
 
@@ -918,7 +922,13 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
   }
 
   const navigate = useNavigate()
-  const [activeTab, setActiveTab] = useState('tree')
+  const location = useLocation()
+  const refreshEnabled = canUseOwnerDashboardRefresh(user, {
+    businesses: import.meta.env.VITE_OWNER_DASHBOARD_REFRESH,
+    development: import.meta.env.DEV,
+    preview: designPreview,
+  })
+  const [activeTab, setActiveTab] = useState(() => ownerDashboardTab(location.state?.ownerDashboardTab))
   const [business, setBusiness] = useState(null)
   const [customers, setCustomers] = useState([])
   const [staff, setStaff] = useState([])
@@ -2839,6 +2849,35 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
   const needsRenewal = subStatus === 'expiring_soon' || subStatus === 'expired'
   const industry = INDUSTRY_META[business?.business_type] || INDUSTRY_META.other
 
+  const openAnalytics = () => navigate('/analytics', refreshEnabled ? {
+    state: { ownerDashboardNavigation: {
+      orderAheadEnabled: business?.order_ahead_enabled === true,
+      planLabel: subscription?.plan || business?.plan,
+      needsRenewal,
+      renewalText: subStatus === 'expired' ? 'Subscription expired · Renew now' : `Renews in ${subscription?.days_left}d · Pay now`,
+    } },
+  } : undefined)
+
+  // Reuse the existing scanner navigation, including program scope and token.
+  const scanCustomer = () => viewingAllPrograms
+    ? setMessage('Select one program first, then scan the card for that program.')
+    : navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name, ownerToken: user.token, programPublicId: selectedProgramPublicId } })
+
+  useEffect(() => {
+    if (loading || !refreshEnabled) return
+    if (location.state?.ownerDashboardTab) setActiveTab(ownerDashboardTab(location.state.ownerDashboardTab))
+    const requestedAction = location.state?.ownerDashboardAction
+    if (!requestedAction) return
+    const { ownerDashboardAction, ...remainingState } = location.state
+    navigate('/dashboard', { replace: true, state: remainingState })
+    if (requestedAction === 'announcements') { setShowAnnouncements(true); markAnnouncementsChecked() }
+    if (requestedAction === 'setup') { setOnboardingStep(0); setShowOnboarding(true) }
+    if (requestedAction === 'support') setShowSupportShortcut(true)
+    if (requestedAction === 'scan') scanCustomer()
+    if (requestedAction === 'share') fetchQRImage()
+    if (requestedAction === 'install') setShowInstallHelp(true)
+  }, [loading, refreshEnabled, location.key])
+
 
   if (loading) return (
     <div style={styles.container}>
@@ -2890,9 +2929,29 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
     : staff
 
   return (
-    <div style={styles.container}>
+    <div className={refreshEnabled ? 'lt-owner-refresh' : undefined} data-owner-tab={activeTab} style={styles.container}>
       {/* Header */}
-      <header style={{...styles.header,...(isTablet?styles.headerTablet:{}),...(isMobile?styles.headerMobile:{})}}>
+      {refreshEnabled ? (
+        <OwnerDashboardNavigation
+          activeTab={activeTab}
+          onNavigate={tab => { setActiveTab(tab); window.scrollTo({ top: 0 }) }}
+          onAnalytics={() => { markAnalyticsChecked(); openAnalytics() }}
+          onAnnouncements={() => { setShowAnnouncements(true); markAnnouncementsChecked() }}
+          onSetup={() => { setOnboardingStep(0); setShowOnboarding(true) }}
+          onSupport={contactLoyaltyTreeSupport}
+          onScan={scanCustomer}
+          onShare={fetchQRImage}
+          onInstall={handleAddToHomeScreen}
+          onLogout={onLogout}
+          businessName={business?.business_name || business?.name || user?.business_name}
+          ownerName={user?.name || 'Workspace owner'}
+          planLabel={subscription?.plan || business?.plan}
+          needsRenewal={needsRenewal}
+          renewalText={subStatus === 'expired' ? 'Subscription expired · Renew now' : `Renews in ${subscription?.days_left}d · Pay now`}
+          orderAheadEnabled={business?.order_ahead_enabled === true}
+          isStandaloneApp={isStandaloneApp}
+        />
+      ) : <header style={{...styles.header,...(isTablet?styles.headerTablet:{}),...(isMobile?styles.headerMobile:{})}}>
         <div style={{...styles.brand,...(isTablet||isMobile?styles.brandResponsive:{}),...((isTablet||isMobile)?styles.brandMobile:{})}}>
           <img src={logo192} alt="LoyaltyTree" style={styles.logo} />
           <div>
@@ -2948,9 +3007,20 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
           <button onClick={() => { setMobileHeaderOpen(false); onLogout() }} style={{...styles.logoutBtn,...(isTablet||isMobile?styles.headerActionResponsive:{})}}>Logout</button>
         </div>
         )}
-      </header>
+      </header>}
 
-      <PlatformPromoBanner API_BASE={API_BASE} businessSlug={user?.business_slug} />
+      <PlatformPromoBanner API_BASE={API_BASE} businessSlug={user?.business_slug} refreshed={refreshEnabled} />
+
+      {showSupportShortcut && (
+        <div style={styles.installOverlay}>
+          <section role="dialog" aria-modal="true" aria-labelledby="owner-support-title" style={styles.installModal}>
+            <button type="button" autoFocus onClick={() => setShowSupportShortcut(false)} style={styles.installClose} aria-label="Close support">×</button>
+            <h2 id="owner-support-title" style={styles.installTitle}>LoyaltyTree Support</h2>
+            <p style={styles.installText}>Open our Messenger conversation. Your business details will be copied so you can paste them with your concern.</p>
+            <button type="button" style={styles.installDoneBtn} onClick={() => { setShowSupportShortcut(false); contactLoyaltyTreeSupport() }}>Open Messenger support</button>
+          </section>
+        </div>
+      )}
 
       {showInstallHelp && (
         <div style={styles.installOverlay} onClick={() => setShowInstallHelp(false)}>
@@ -3016,7 +3086,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
       )}
 
       {(programs.length > 1 || programLimit > 1) && (
-        <section style={{maxWidth:1180,margin:'0 auto 14px',padding:isMobile?'0 12px':'0 20px',boxSizing:'border-box'}}>
+        <section className="lt-owner-programs" style={{maxWidth:1180,margin:'0 auto 14px',padding:isMobile?'0 12px':'0 20px',boxSizing:'border-box'}}>
           <div style={{display:'flex',alignItems:isMobile?'stretch':'center',justifyContent:'space-between',gap:12,flexDirection:isMobile?'column':'row',background:'#fff',border:'1px solid #dbe5e1',borderRadius:16,padding:isMobile?12:'12px 14px',boxShadow:'0 8px 24px rgba(15,23,42,0.05)'}}>
             <div style={{display:'flex',alignItems:isMobile?'stretch':'center',gap:10,flex:1,flexDirection:isMobile?'column':'row',minWidth:0}}>
               <div style={{fontSize:10,fontWeight:900,letterSpacing:'.09em',color:'#64748b',whiteSpace:'nowrap'}}>VIEWING PROGRAM</div>
@@ -3083,9 +3153,9 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
       )}
 
       {/* Professional dashboard summary */}
-      <section style={{...styles.dashboardShell,...(isTablet?styles.dashboardShellTablet:{}),...(isMobile?styles.dashboardShellMobile:{})}}>
-        <div style={{...styles.dashboardHero,...(isTablet?styles.dashboardHeroTablet:{}),...(isMobile?styles.dashboardHeroMobile:{})}}>
-          <div style={{...styles.heroTreeWrap,...(isTablet?styles.heroTreeWrapTablet:{}),...(isMobile?styles.heroTreeWrapMobile:{})}} aria-hidden="true">
+      <section className="lt-owner-summary" style={{...styles.dashboardShell,...(isTablet?styles.dashboardShellTablet:{}),...(isMobile?styles.dashboardShellMobile:{})}}>
+        <div className="lt-owner-heading" style={{...styles.dashboardHero,...(isTablet?styles.dashboardHeroTablet:{}),...(isMobile?styles.dashboardHeroMobile:{})}}>
+          <div className="lt-owner-hero-tree" style={{...styles.heroTreeWrap,...(isTablet?styles.heroTreeWrapTablet:{}),...(isMobile?styles.heroTreeWrapMobile:{})}} aria-hidden="true">
             <div style={styles.heroTreeGlow}></div>
             <div style={styles.heroTree}>🌳</div>
             <div style={styles.heroTreeGround}>
@@ -3096,8 +3166,8 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
           <div style={{...styles.heroIdentity,...(isTablet?styles.heroIdentityTablet:{}),...(isMobile?styles.heroIdentityMobile:{})}}>
             <div style={{minWidth: 0}}>
               <p style={styles.heroEyebrow}>{industry.icon} {industry.label} · {cardExperience.dashboardLabel}</p>
-              <h2 style={styles.heroTitle}>{user?.business_name}</h2>
-              <p style={styles.heroDescription}>{cardExperience.editDescription}</p>
+              <h2 className="lt-owner-hero-title" style={styles.heroTitle}>{user?.business_name}</h2>
+              <p className="lt-owner-hero-subtitle" style={styles.heroDescription}>{cardExperience.editDescription}</p>
               <div style={styles.heroGrowthRow}>
                 <span style={styles.heroGrowthBadge}>
                   {growthStage === 'seedling' ? '🌱 Seedling' : growthStage === 'sapling' ? '🌿 Sapling' : growthStage === 'growing' ? '🌳 Growing Tree' : '🌲 Mature Tree'}
@@ -3107,7 +3177,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
             </div>
           </div>
 
-          <div style={{...styles.heroQuickActions,...(isTablet?styles.heroQuickActionsTablet:{}),...(isMobile?styles.heroQuickActionsMobile:{})}}>
+          <div className="lt-owner-hero-actions" style={{...styles.heroQuickActions,...(isTablet?styles.heroQuickActionsTablet:{}),...(isMobile?styles.heroQuickActionsMobile:{})}}>
             <button
               onClick={() => viewingAllPrograms ? setMessage('Select one program first, then scan the card for that program.') : navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name, ownerToken: user.token, programPublicId: selectedProgramPublicId } })}
               style={{...styles.primaryActionBtn, background: '#0d9488'}}
@@ -3118,7 +3188,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
           </div>
         </div>
 
-        <div style={{...styles.metricsGrid,...(isTablet?styles.metricsGridTablet:{}),...(isMobile?styles.metricsGridMobile:{})}}>
+        <div className="lt-owner-metrics" style={{...styles.metricsGrid,...(isTablet?styles.metricsGridTablet:{}),...(isMobile?styles.metricsGridMobile:{})}}>
           {(viewingAllPrograms
             ? [
                 { value: customers.length, label: 'Card Memberships', hint: 'Memberships across all active programs' },
@@ -3169,17 +3239,17 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
                 { value: unlockedRewards, label: 'Rewards Ready', hint: 'Customers with available rewards' },
               ]
           ).map(metric => (
-            <article key={metric.label} style={styles.metricCard}>
+            <article className="lt-owner-metric" key={metric.label} style={styles.metricCard}>
               <div style={{...styles.metricAccent, background: '#0d9488'}} />
-              <span style={styles.metricLabel}>{metric.label}</span>
-              <strong style={{...styles.metricValue, color: '#0f766e'}}>{metric.value}</strong>
-              <span style={styles.metricHint}>{metric.hint}</span>
+              <span className="lt-owner-metric-label" style={styles.metricLabel}>{metric.label}</span>
+              <strong className="lt-owner-metric-value" style={{...styles.metricValue, color: '#0f766e'}}>{metric.value}</strong>
+              <span className="lt-owner-metric-hint" style={styles.metricHint}>{metric.hint}</span>
             </article>
           ))}
         </div>
 
         {/* Navigation Tabs */}
-        <nav style={{...styles.tabs,...(isTablet?styles.tabsTablet:{}),...(isMobile?styles.tabsMobile:{})}} aria-label="Owner dashboard sections">
+        <nav className="lt-owner-legacy-nav" style={{...styles.tabs,...(isTablet?styles.tabsTablet:{}),...(isMobile?styles.tabsMobile:{})}} aria-label="Owner dashboard sections">
           {[
             { id:'tree', label:'Overview', icon:'⌂' },
             { id:'customers', label:cardExperience.customerLabel, icon:'◉' },
@@ -3204,7 +3274,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
         </nav>
 
         {activeNavGroup === 'operate' && (
-          <div style={{...styles.subTabs,...(isMobile?styles.subTabsMobile:{})}}>
+          <div className="lt-owner-subnav" style={{...styles.subTabs,...(isMobile?styles.subTabsMobile:{})}}>
             <button style={{...styles.subTab,...(activeTab==='staff'?styles.subTabActive:{})}} onClick={()=>setActiveTab('staff')}>Team</button>
             {business?.order_ahead_enabled && <button style={{...styles.subTab,...(activeTab==='orderahead'?styles.subTabActive:{})}} onClick={()=>setActiveTab('orderahead')}>Order Ahead</button>}
             <button style={{...styles.subTab,...(activeTab==='giftcards'?styles.subTabActive:{})}} onClick={()=>setActiveTab('giftcards')}>Gift Cards</button>
@@ -3218,15 +3288,15 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
           </div>
         )}
         {activeNavGroup === 'grow' && (
-          <div style={{...styles.subTabs,...(isMobile?styles.subTabsMobile:{})}}>
+          <div className="lt-owner-subnav" style={{...styles.subTabs,...(isMobile?styles.subTabsMobile:{})}}>
             <button style={{...styles.subTab,...(activeTab==='satisfaction'?styles.subTabActive:{})}} onClick={()=>setActiveTab('satisfaction')}>Satisfaction</button>
             <button style={{...styles.subTab,...(activeTab==='campaigns'?styles.subTabActive:{})}} onClick={()=>setActiveTab('campaigns')}>Campaigns</button>
             <button style={styles.subTab} onClick={()=>{setShowAnnouncements(true);markAnnouncementsChecked()}}>Announcements</button>
-            <button style={styles.subTab} onClick={()=>{markAnalyticsChecked();navigate('/analytics')}}>Analytics</button>
+            <button style={styles.subTab} onClick={()=>{markAnalyticsChecked();openAnalytics()}}>Analytics</button>
           </div>
         )}
         {activeNavGroup === 'more' && (
-          <div style={{...styles.subTabs,...(isMobile?styles.subTabsMobile:{})}}>
+          <div className="lt-owner-subnav" style={{...styles.subTabs,...(isMobile?styles.subTabsMobile:{})}}>
             <button style={{...styles.subTab,...(activeTab==='billing'?styles.subTabActive:{})}} onClick={()=>setActiveTab('billing')}>{needsRenewal?'Billing ⚠️':'Billing'}</button>
             <button style={{...styles.subTab,...(activeTab==='referrals'?styles.subTabActive:{})}} onClick={()=>setActiveTab('referrals')}>Referrals</button>
             <button style={styles.subTab} onClick={()=>{setOnboardingStep(0);setShowOnboarding(true)}}>Setup Guide</button>
@@ -3236,10 +3306,10 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
       </section>
 
       {/* Tab Content */}
-      <div style={{...styles.content,...(isTablet?styles.contentTablet:{}),...(isMobile?styles.contentMobile:{})}}>
+      <div className="lt-owner-content" style={{...styles.content,...(isTablet?styles.contentTablet:{}),...(isMobile?styles.contentMobile:{})}}>
         {activeTab === 'tree' && (
-          <div style={styles.treeTab}>
-            <div style={styles.industryInsight}>
+          <div className="lt-owner-overview" style={styles.treeTab}>
+            <div className="lt-owner-industry" style={styles.industryInsight}>
               <div style={styles.industryInsightIcon}>{industry.icon}</div>
               <div>
                 <div style={styles.industryInsightLabel}>{industry.label} setup</div>
@@ -3247,23 +3317,23 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
                 <div style={styles.industryInsightText}>Focus analytics: {industry.focus}.</div>
               </div>
             </div>
-            <div style={{...styles.actionCards,...(isTablet?styles.actionCardsTablet:{}),...(isMobile?styles.actionCardsMobile:{})}}>
-              <div style={{...styles.actionCard,...(isTablet?styles.actionCardTablet:{}), borderColor: cardExperience.border}} onClick={() => setActiveTab('customers')}>
+            <div className="lt-owner-actions" onKeyDown={refreshEnabled ? e => { if (e.target.getAttribute('role') === 'button' && ['Enter', ' '].includes(e.key)) { e.preventDefault(); e.target.click() } } : undefined} style={{...styles.actionCards,...(isTablet?styles.actionCardsTablet:{}),...(isMobile?styles.actionCardsMobile:{})}}>
+              <div className="lt-owner-action" role={refreshEnabled ? 'button' : undefined} tabIndex={refreshEnabled ? 0 : undefined} style={{...styles.actionCard,...(isTablet?styles.actionCardTablet:{}), borderColor: cardExperience.border}} onClick={() => setActiveTab('customers')}>
                 <div style={styles.actionIcon}>{cardExperience.customerIcon}</div>
                 <h3>View {cardExperience.customerLabel}</h3>
                 <p>{customers.length} connected</p>
               </div>
-              <div style={{...styles.actionCard,...(isTablet?styles.actionCardTablet:{}), borderColor: cardExperience.border}} onClick={() => viewingAllPrograms ? setMessage('Select one program first, then scan the card for that program.') : navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name, ownerToken: user.token, programPublicId: selectedProgramPublicId } })}>
+              <div className="lt-owner-action" role={refreshEnabled ? 'button' : undefined} tabIndex={refreshEnabled ? 0 : undefined} style={{...styles.actionCard,...(isTablet?styles.actionCardTablet:{}), borderColor: cardExperience.border}} onClick={() => viewingAllPrograms ? setMessage('Select one program first, then scan the card for that program.') : navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name, ownerToken: user.token, programPublicId: selectedProgramPublicId } })}>
                 <div style={styles.actionIcon}>📷</div>
                 <h3>{cardExperience.scanTitle}</h3>
                 <p>{cardExperience.scanDescription}</p>
               </div>
-              <div style={{...styles.actionCard,...(isTablet?styles.actionCardTablet:{}), borderColor: cardExperience.border}} onClick={() => setShowInviteModal(true)}>
+              <div className="lt-owner-action" role={refreshEnabled ? 'button' : undefined} tabIndex={refreshEnabled ? 0 : undefined} style={{...styles.actionCard,...(isTablet?styles.actionCardTablet:{}), borderColor: cardExperience.border}} onClick={() => setShowInviteModal(true)}>
                 <div style={styles.actionIcon}>🌿</div>
                 <h3>Manage Team</h3>
                 <p>Invite staff members</p>
               </div>
-              <div style={{...styles.actionCard,...(isTablet?styles.actionCardTablet:{}), borderColor: cardExperience.border}} onClick={fetchQRImage}>
+              <div className="lt-owner-action" role={refreshEnabled ? 'button' : undefined} tabIndex={refreshEnabled ? 0 : undefined} style={{...styles.actionCard,...(isTablet?styles.actionCardTablet:{}), borderColor: cardExperience.border}} onClick={fetchQRImage}>
                 <div style={styles.actionIcon}>🔗</div>
                 <h3>Share Join Link</h3>
                 <p>Get the customer signup QR code</p>
@@ -3291,8 +3361,8 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
               </div>
             </section>}
 
-            <div style={styles.recentActivity}>
-              <h3 style={styles.sectionTitle}>{cardExperience.icon} {cardExperience.recentTitle}</h3>
+            <div className="lt-owner-activity" style={styles.recentActivity}>
+              <h3 className="lt-owner-section-title" style={styles.sectionTitle}>{cardExperience.icon} {cardExperience.recentTitle}</h3>
               {customers.slice(0, 5).map(c => (
                 <div key={c.public_id} style={styles.activityRow}>
                   <span style={styles.activityLeaf}>🍃</span>
@@ -3308,16 +3378,16 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
         )}
 
         {activeTab === 'satisfaction' && (
-          <div><div style={styles.sectionHeader}><div><h2 style={styles.sectionTitle}>⭐ Customer Satisfaction</h2><p style={styles.satisfactionIntro}>Feedback submitted from customers through their LoyaltyTree Wallet card.</p></div><button onClick={loadSatisfaction} style={styles.viewAnalyticsBtn} disabled={satisfactionLoading}>{satisfactionLoading?'Refreshing…':'↻ Refresh'}</button></div>{satisfactionError&&<div style={styles.satisfactionError}>{satisfactionError}</div>}<div style={{...styles.satisfactionMetrics,...(isMobile?styles.satisfactionMetricsMobile:{})}}>{[['Overall',satisfaction.summary?.average_rating??'—',`${satisfaction.summary?.response_count||0} responses`],['Positive',`${satisfaction.summary?.positive_percent??0}%`,'4–5 star ratings'],['Service',satisfaction.summary?.service_average??'—','Average rating'],['Quality',satisfaction.summary?.quality_average??'—','Average rating'],['Value',satisfaction.summary?.value_average??'—','Average rating']].map(([l,v,h])=><div style={styles.satisfactionMetricCard} key={l}><span style={styles.satisfactionMetricLabel}>{l}</span><strong style={styles.satisfactionMetricValue}>{v}</strong><span style={styles.satisfactionMetricHint}>{h}</span></div>)}</div><div style={styles.satisfactionList}>{satisfactionLoading&&!satisfaction.feedback.length&&<div style={styles.satisfactionEmpty}>Loading feedback…</div>}{!satisfactionLoading&&!satisfaction.feedback.length&&!satisfactionError&&<div style={styles.satisfactionEmpty}>No feedback yet. Customers can tap “Rate Your Experience” from their Wallet card details.</div>}{satisfaction.feedback.map(item=><article key={item.public_id||item.id} style={styles.satisfactionRow}><div style={styles.satisfactionRowTop}><div><strong style={styles.satisfactionName}>{item.customer_name||'Customer'}</strong><span style={styles.satisfactionDate}>{item.created_at?new Date(item.created_at).toLocaleString():''}</span></div><div style={styles.satisfactionStars}>{'★'.repeat(Number(item.rating||0))}<span style={{color:'#e2e8f0'}}>{'★'.repeat(Math.max(0,5-Number(item.rating||0)))}</span></div></div>{(item.service_rating||item.quality_rating||item.value_rating)&&<div style={styles.satisfactionSubratings}>{item.service_rating&&<span>Service <b>{item.service_rating}/5</b></span>}{item.quality_rating&&<span>Quality <b>{item.quality_rating}/5</b></span>}{item.value_rating&&<span>Value <b>{item.value_rating}/5</b></span>}</div>}{item.comment&&<p style={styles.satisfactionComment}>“{item.comment}”</p>}</article>)}</div></div>
+          <div><div className="lt-owner-section-header" style={styles.sectionHeader}><div><h2 className="lt-owner-section-title" style={styles.sectionTitle}>⭐ Customer Satisfaction</h2><p style={styles.satisfactionIntro}>Feedback submitted from customers through their LoyaltyTree Wallet card.</p></div><button onClick={loadSatisfaction} style={styles.viewAnalyticsBtn} disabled={satisfactionLoading}>{satisfactionLoading?'Refreshing…':'↻ Refresh'}</button></div>{satisfactionError&&<div style={styles.satisfactionError}>{satisfactionError}</div>}<div style={{...styles.satisfactionMetrics,...(isMobile?styles.satisfactionMetricsMobile:{})}}>{[['Overall',satisfaction.summary?.average_rating??'—',`${satisfaction.summary?.response_count||0} responses`],['Positive',`${satisfaction.summary?.positive_percent??0}%`,'4–5 star ratings'],['Service',satisfaction.summary?.service_average??'—','Average rating'],['Quality',satisfaction.summary?.quality_average??'—','Average rating'],['Value',satisfaction.summary?.value_average??'—','Average rating']].map(([l,v,h])=><div style={styles.satisfactionMetricCard} key={l}><span style={styles.satisfactionMetricLabel}>{l}</span><strong style={styles.satisfactionMetricValue}>{v}</strong><span style={styles.satisfactionMetricHint}>{h}</span></div>)}</div><div style={styles.satisfactionList}>{satisfactionLoading&&!satisfaction.feedback.length&&<div style={styles.satisfactionEmpty}>Loading feedback…</div>}{!satisfactionLoading&&!satisfaction.feedback.length&&!satisfactionError&&<div style={styles.satisfactionEmpty}>No feedback yet. Customers can tap “Rate Your Experience” from their Wallet card details.</div>}{satisfaction.feedback.map(item=><article key={item.public_id||item.id} style={styles.satisfactionRow}><div style={styles.satisfactionRowTop}><div><strong style={styles.satisfactionName}>{item.customer_name||'Customer'}</strong><span style={styles.satisfactionDate}>{item.created_at?new Date(item.created_at).toLocaleString():''}</span></div><div style={styles.satisfactionStars}>{'★'.repeat(Number(item.rating||0))}<span style={{color:'#e2e8f0'}}>{'★'.repeat(Math.max(0,5-Number(item.rating||0)))}</span></div></div>{(item.service_rating||item.quality_rating||item.value_rating)&&<div style={styles.satisfactionSubratings}>{item.service_rating&&<span>Service <b>{item.service_rating}/5</b></span>}{item.quality_rating&&<span>Quality <b>{item.quality_rating}/5</b></span>}{item.value_rating&&<span>Value <b>{item.value_rating}/5</b></span>}</div>}{item.comment&&<p style={styles.satisfactionComment}>“{item.comment}”</p>}</article>)}</div></div>
         )}
 
         {activeTab === 'customers' && (
           <div>
-            <div style={styles.sectionHeader}>
-              <h2 style={styles.sectionTitle}>{cardExperience.customerIcon} {cardExperience.customerLabel} ({filteredCustomers.length}{customerSearchTerm ? ` of ${customers.length}` : ''})</h2>
-              <button onClick={() => { markAnalyticsChecked(); navigate('/analytics') }} style={styles.viewAnalyticsBtn}>📊 View Analytics</button>
+            <div className="lt-owner-section-header" style={styles.sectionHeader}>
+              <h2 className="lt-owner-section-title" style={styles.sectionTitle}>{cardExperience.customerIcon} {cardExperience.customerLabel} ({filteredCustomers.length}{customerSearchTerm ? ` of ${customers.length}` : ''})</h2>
+              <button onClick={() => { markAnalyticsChecked(); openAnalytics() }} style={styles.viewAnalyticsBtn}>📊 View Analytics</button>
             </div>
-            <div style={styles.searchBarWrap}>
+            <div className="lt-owner-customer-toolbar" style={styles.searchBarWrap}>
               <span style={styles.searchIcon}>🔍</span>
               <input
                 type="text"
@@ -3333,9 +3403,9 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
             {filteredCustomers.length === 0 && (
               <p style={styles.searchEmptyText}>No {cardExperience.customerLabel.toLowerCase()} match "{customerSearch}".</p>
             )}
-            <div style={{...styles.customerGrid,...(isMobile?styles.singleColumnGridMobile:{})}}>
+            <div className="lt-owner-customer-table" style={{...styles.customerGrid,...(isMobile?styles.singleColumnGridMobile:{})}}>
               {filteredCustomers.map(c => (
-                <div key={c.public_id} style={styles.customerCard}>
+                <div className="lt-owner-customer-row" key={c.public_id} style={styles.customerCard}>
                   <div style={styles.customerAvatar}>{c.name?.[0]?.toUpperCase() || '?'}</div>
                   <div style={styles.customerInfo}>
                     <h4 style={styles.customerName}>{c.name}</h4>
@@ -3477,11 +3547,11 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
 
         {activeTab === 'staff' && (
           <div>
-            <div style={styles.sectionHeader}>
-              <h2 style={styles.sectionTitle}>🌿 Your Team ({filteredStaff.length}{staffSearchTerm ? ` of ${staff.length}` : ''})</h2>
+            <div className="lt-owner-section-header" style={styles.sectionHeader}>
+              <h2 className="lt-owner-section-title" style={styles.sectionTitle}>🌿 Your Team ({filteredStaff.length}{staffSearchTerm ? ` of ${staff.length}` : ''})</h2>
               <button onClick={() => setShowInviteModal(true)} style={styles.addBtn}>+ Grow Team</button>
             </div>
-            <div style={styles.searchBarWrap}>
+            <div className="lt-owner-customer-toolbar" style={styles.searchBarWrap}>
               <span style={styles.searchIcon}>🔍</span>
               <input
                 type="text"
@@ -3618,9 +3688,9 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
 
         {activeTab === 'security' && (
           <div>
-            <div style={styles.sectionHeader}>
+            <div className="lt-owner-section-header" style={styles.sectionHeader}>
               <div>
-                <h2 style={styles.sectionTitle}>🛡️ Transactions & Security</h2>
+                <h2 className="lt-owner-section-title" style={styles.sectionTitle}>🛡️ Transactions & Security</h2>
                 <p style={{margin:'4px 0 0', color:'#64748b', fontSize:13}}>Review loyalty activity across all card types and investigate unusual patterns. Alerts never block a cashier automatically.</p>
               </div>
               <button onClick={() => loadTransactionsSecurity()} disabled={securityLoading} style={styles.addBtn}>{securityLoading ? 'Refreshing…' : '↻ Refresh'}</button>
@@ -3672,25 +3742,25 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
         )}
 
         {activeTab === 'walletqueue' && (
-          <div style={styles.section}><div style={styles.sectionHeader}><h2 style={styles.sectionTitle}>👛 Wallet Queue</h2><button onClick={loadGrowthSuite} style={styles.addBtn}>↻ Refresh</button></div>
+          <div style={styles.section}><div className="lt-owner-section-header" style={styles.sectionHeader}><h2 className="lt-owner-section-title" style={styles.sectionTitle}>👛 Wallet Queue</h2><button onClick={loadGrowthSuite} style={styles.addBtn}>↻ Refresh</button></div>
             <div style={styles.statsGrid}><div style={styles.statCard}><div style={styles.statValue}>{walletQueue.pending||0}</div><div style={styles.statLabel}>Pending / Processing</div></div><div style={styles.statCard}><div style={styles.statValue}>{walletQueue.failed||0}</div><div style={styles.statLabel}>Failed</div></div></div>
             {(walletQueue.jobs||[]).slice(0,50).map(j=><div key={j.id} style={{background:'white',padding:12,border:'1px solid #e2e8f0',borderRadius:10,marginBottom:8}}><b>Job #{j.id}</b> · {j.reason} · <b>{j.status}</b> · attempts {j.attempts}/{j.max_attempts}{j.last_error&&<div style={{color:'#b91c1c',fontSize:12,marginTop:4}}>{j.last_error}</div>}</div>)}
           </div>
         )}
         {activeTab === 'crm' && (
-          <div style={styles.section}><div style={styles.sectionHeader}><h2 style={styles.sectionTitle}>👥 Customer CRM</h2><button onClick={loadGrowthSuite} style={styles.addBtn}>↻ Refresh</button></div>
+          <div style={styles.section}><div className="lt-owner-section-header" style={styles.sectionHeader}><h2 className="lt-owner-section-title" style={styles.sectionTitle}>👥 Customer CRM</h2><button onClick={loadGrowthSuite} style={styles.addBtn}>↻ Refresh</button></div>
             <div style={styles.statsGrid}>{Object.entries(crmData.segments||{}).map(([k,v])=><div style={styles.statCard} key={k}><div style={styles.statValue}>{v}</div><div style={styles.statLabel}>{k.replaceAll('_',' ')}</div></div>)}</div>
             {(crmData.customers||[]).map(c=><div key={c.public_id} style={{background:'white',padding:12,border:'1px solid #e2e8f0',borderRadius:10,marginBottom:8}}><b>{c.name||c.email||'Customer'}</b><div style={{fontSize:13,color:'#64748b'}}>Segment: {c.crm?.segment?.replaceAll('_',' ')} · Transactions: {c.crm?.total_transactions||0} · Last activity: {c.crm?.days_since_last_activity ?? '—'} days ago</div></div>)}
           </div>
         )}
         {activeTab === 'retention' && (
-          <div style={styles.section}><div style={styles.sectionHeader}><h2 style={styles.sectionTitle}>🔁 Retention Analytics & Opportunities</h2><button onClick={loadGrowthSuite} style={styles.addBtn}>↻ Refresh</button></div>
+          <div style={styles.section}><div className="lt-owner-section-header" style={styles.sectionHeader}><h2 className="lt-owner-section-title" style={styles.sectionTitle}>🔁 Retention Analytics & Opportunities</h2><button onClick={loadGrowthSuite} style={styles.addBtn}>↻ Refresh</button></div>
             <div style={styles.statsGrid}><div style={styles.statCard}><div style={styles.statValue}>{retentionData.repeat_customer_rate||0}%</div><div style={styles.statLabel}>Repeat customer rate</div></div><div style={styles.statCard}><div style={styles.statValue}>{retentionData.retention_30_rate||0}%</div><div style={styles.statLabel}>Active within 30 days</div></div><div style={styles.statCard}><div style={styles.statValue}>{retentionData.average_days_between_activity ?? '—'}</div><div style={styles.statLabel}>Avg days between activity</div></div><div style={styles.statCard}><div style={styles.statValue}>{retentionOps.length}</div><div style={styles.statLabel}>Retention opportunities</div></div></div>
             {retentionOps.map((o,i)=><div key={i} style={{background:'white',padding:12,border:'1px solid #e2e8f0',borderRadius:10,marginBottom:8}}><b>{o.customer_name||'Customer'}</b> · {o.type.replaceAll('_',' ')}<div style={{fontSize:13,color:'#64748b',marginTop:3}}>{o.suggested_message}</div></div>)}
           </div>
         )}
         {activeTab === 'operations' && (
-          <div style={styles.section}><div style={styles.sectionHeader}><h2 style={styles.sectionTitle}>📈 Branch / Cashier Analytics</h2><button onClick={loadGrowthSuite} style={styles.addBtn}>↻ Refresh</button></div>
+          <div style={styles.section}><div className="lt-owner-section-header" style={styles.sectionHeader}><h2 className="lt-owner-section-title" style={styles.sectionTitle}>📈 Branch / Cashier Analytics</h2><button onClick={loadGrowthSuite} style={styles.addBtn}>↻ Refresh</button></div>
             <h3>Branches — last 30 days</h3>{(opsAnalytics.branches||[]).map(x=><div key={x.id} style={{background:'white',padding:12,border:'1px solid #e2e8f0',borderRadius:10,marginBottom:8}}><b>{x.name}</b> · {x.transactions} transactions · {x.adjustments} adjustments · {x.failed} failed</div>)}
             <h3 style={{marginTop:20}}>Cashiers — last 30 days</h3>{(opsAnalytics.cashiers||[]).map(x=><div key={x.id} style={{background:'white',padding:12,border:'1px solid #e2e8f0',borderRadius:10,marginBottom:8}}><b>{x.name}</b> · {x.transactions} transactions · {x.adjustments} adjustments · {x.failed} failed</div>)}
           </div>
@@ -3698,9 +3768,9 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
 
         {activeTab === 'orderahead' && business?.order_ahead_enabled && (
           <div style={styles.section}>
-            <div style={styles.sectionHeader}>
+            <div className="lt-owner-section-header" style={styles.sectionHeader}>
               <div>
-                <h2 style={styles.sectionTitle}>🛍️ Order Ahead</h2>
+                <h2 className="lt-owner-section-title" style={styles.sectionTitle}>🛍️ Order Ahead</h2>
                 <p style={{margin:'5px 0 0',fontSize:13,color:'#64748b'}}>Standardized ordering engine, using your Loyalty Tree branding and branches.</p>
               </div>
               <span style={{background:'#ecfdf5',color:'#047857',padding:'7px 11px',borderRadius:999,fontSize:11,fontWeight:800}}>BETA · ENABLED BY LOYALTYTREE</span>
@@ -3724,28 +3794,28 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
             </div>
 
             <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))',gap:12}}>
-              <div style={styles.card}>
+              <div className="lt-owner-card" style={styles.card}>
                 <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'flex-start'}}>
                   <div><div style={{fontSize:11,fontWeight:850,color:'#64748b'}}>1 · WALLET ACTION</div><h3 style={{margin:'5px 0 4px'}}>✓ {orderAheadSetup?.button_label || business?.order_ahead_button_label || 'Order Ahead'}</h3><p style={{margin:0,fontSize:12,color:'#64748b'}}>Already added to member Apple/Google Wallet passes by Loyalty Tree Admin.</p></div>
                   <span style={{color:'#047857',fontWeight:850}}>Ready</span>
                 </div>
               </div>
 
-              <div style={styles.card}>
+              <div className="lt-owner-card" style={styles.card}>
                 <div style={{fontSize:11,fontWeight:850,color:'#64748b'}}>2 · BRANCHES</div>
                 <h3 style={{margin:'5px 0 8px'}}>{branches.length} active location{branches.length===1?'':'s'}</h3>
                 <div style={{display:'grid',gap:6,marginBottom:10}}>{branches.slice(0,4).map(b=><div key={b.public_id} style={{fontSize:12,color:'#475569'}}>🏢 {b.name}</div>)}{branches.length>4&&<div style={{fontSize:11,color:'#94a3b8'}}>+{branches.length-4} more</div>}</div>
                 <button type="button" style={styles.addBtn} onClick={()=>setActiveTab('staff')}>Manage branches</button>
               </div>
 
-              <div style={styles.card}>
+              <div className="lt-owner-card" style={styles.card}>
                 <div style={{fontSize:11,fontWeight:850,color:'#64748b'}}>3 · MENU</div>
                 <h3 style={{margin:'5px 0 4px'}}>{orderAheadSetup?.menu?.items_count || 0} menu item{(orderAheadSetup?.menu?.items_count||0)===1?'':'s'}</h3>
                 <p style={{margin:'0 0 10px',fontSize:12,color:'#64748b'}}>{orderAheadSetup?.menu?.categories_count || 0} categories · reusable option groups · branch availability · sold-out control.</p>
                 <span style={{display:'inline-block',background:'#ecfdf5',color:'#047857',padding:'6px 9px',borderRadius:999,fontSize:11,fontWeight:800}}>Menu Builder ready</span>
               </div>
 
-              <div style={styles.card}>
+              <div className="lt-owner-card" style={styles.card}>
                 <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'flex-start'}}>
                   <div>
                     <div style={{fontSize:11,fontWeight:850,color:'#64748b'}}>4 · PAYMENT</div>
@@ -3846,7 +3916,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
 
             <OrderAheadMenuBuilder API_BASE={API_BASE} user={user} business={business} branches={branches} authFetch={authFetch} onChanged={loadData} setMessage={setMessage} />
 
-            <div style={{...styles.card,marginTop:14}}>
+            <div className="lt-owner-card" style={{...styles.card,marginTop:14}}>
               <h3 style={{margin:'0 0 4px'}}>Pickup settings</h3>
               <p style={{margin:'0 0 16px',fontSize:12,color:'#64748b'}}>These rules control ASAP and scheduled pickup. Each branch also needs pickup hours before customers can continue from cart to checkout.</p>
               <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(2,minmax(0,1fr))',gap:12}}>
@@ -3927,7 +3997,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
             </>}
 
             {orderAheadWorkspaceTab === 'orders' && (
-            <div style={{...styles.card,marginTop:0}}>
+            <div className="lt-owner-card" style={{...styles.card,marginTop:0}}>
               <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',flexWrap:'wrap'}}>
                 <div>
                   <div style={{fontSize:11,fontWeight:900,color:'#0f766e'}}>BUSINESS ORDERS WORKSPACE</div>
@@ -3992,7 +4062,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
 
             {orderAheadWorkspaceTab === 'operations' && (
             <div style={{display:'grid',gap:14}}>
-              <div style={styles.card}>
+              <div className="lt-owner-card" style={styles.card}>
                 <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'flex-start',flexWrap:'wrap'}}><div><div style={{fontSize:11,fontWeight:900,color:'#0f766e'}}>LIVE OPERATIONS</div><h3 style={{margin:'5px 0 3px'}}>Branch Rush Controls</h3><p style={{margin:0,fontSize:12,color:'#64748b'}}>Temporary controls take effect immediately after Save without changing the permanent weekly pickup hours.</p></div><button type="button" style={styles.addBtn} onClick={loadOrderAheadQuickMenu} disabled={orderAheadQuickMenuLoading}>{orderAheadQuickMenuLoading?'Loading…':'↻ Refresh stock'}</button></div>
 
                 {!activeOrderAheadBranches.length ? <div style={{marginTop:12,padding:14,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:10,color:'#92400e',fontSize:12}}>Create an active branch first.</div> : <>
@@ -4014,7 +4084,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
                 </>}
               </div>
 
-              <div style={styles.card}>
+              <div className="lt-owner-card" style={styles.card}>
                 <div><div style={{fontSize:11,fontWeight:900,color:'#0f766e'}}>QUICK STOCK CONTROL</div><h3 style={{margin:'5px 0 3px'}}>Sold Out / Reopen Items</h3><p style={{margin:0,fontSize:12,color:'#64748b'}}>Use this during service instead of opening the full Menu Builder.</p></div>
                 <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'minmax(180px,.7fr) minmax(220px,1fr)',gap:8,marginTop:12}}><select value={orderAheadStockBranchFilter} onChange={e=>setOrderAheadStockBranchFilter(e.target.value)} style={{...styles.input,margin:0,padding:'9px'}}><option value="">All branches</option>{activeOrderAheadBranches.map(branch=><option key={branch.public_id} value={branch.public_id}>{branch.name}</option>)}</select><input value={orderAheadStockSearch} onChange={e=>setOrderAheadStockSearch(e.target.value)} placeholder="Search menu item…" style={{...styles.input,margin:0,padding:'9px'}}/></div>
                 {orderAheadQuickMenuLoading&&<div style={{padding:18,textAlign:'center',color:'#94a3b8'}}>Loading menu…</div>}
@@ -4029,12 +4099,12 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
         {activeTab === 'program' && (
           <div style={styles.programTab}>
             {viewingAllPrograms ? (
-              <div style={{...styles.card,padding:22,textAlign:'center'}}><h3 style={{margin:'0 0 6px'}}>Select one program to edit its card</h3><p style={{margin:0,color:'#64748b',fontSize:13}}>All Programs is for viewing customers and combined analytics. Card design, QR and Wallet settings belong to one specific program.</p></div>
+              <div className="lt-owner-card" style={{...styles.card,padding:22,textAlign:'center'}}><h3 style={{margin:'0 0 6px'}}>Select one program to edit its card</h3><p style={{margin:0,color:'#64748b',fontSize:13}}>All Programs is for viewing customers and combined analytics. Card design, QR and Wallet settings belong to one specific program.</p></div>
             ) : (
               <LoyaltyCardCustomizer API_BASE={API_BASE} user={user} programPublicId={selectedProgramPublicId} onSaved={loadData} />
             )}
             {!viewingAllPrograms && isMembershipCard && (
-              <div style={{...styles.card, marginTop: 18}}>
+              <div className="lt-owner-card" style={{...styles.card, marginTop: 18}}>
                 <h3 style={{marginTop: 0}}>Membership subscription settings</h3>
                 <label style={styles.label}>Default duration (days)</label>
                 <input
@@ -4132,7 +4202,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
 
         {activeTab === 'referrals' && (
           <div style={styles.programCard}>
-            <div style={styles.sectionHeader}>
+            <div className="lt-owner-section-header" style={styles.sectionHeader}>
               <div>
                 <div style={{background:'linear-gradient(135deg,#0f766e,#14b8a6)',color:'#fff',borderRadius:14,padding:'14px 16px',marginBottom:12}}>
                   <div style={{fontSize:11,fontWeight:900,letterSpacing:.6}}>LOYALTYTREE REFERRAL</div>
@@ -5882,6 +5952,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout }) {
       {!showOnboarding && (
         <HelpChat
           role="owner"
+          bottom={refreshEnabled && viewportWidth <= 700 ? 94 : 22}
           businessName={business?.business_name || business?.name || user?.business_name}
           currentPage={activeTab}
           API_BASE={API_BASE}

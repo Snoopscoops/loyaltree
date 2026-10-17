@@ -1,4 +1,8 @@
 import React, { useState, useEffect } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
+import OwnerDashboardNavigation from './OwnerDashboardNavigation'
+import { canUseOwnerDashboardRefresh } from './ownerDashboardDesign'
+import './analytics-dashboard-refresh.css'
 
 function parseMapPoint(raw) {
   const text = String(raw || '').trim()
@@ -85,7 +89,17 @@ function NearbyPinMap({ latitude, longitude, radius, onMove }) {
 
 import InterBranchAnalytics from './InterBranchAnalytics'
 
-function AnalyticsDashboard({ API_BASE, user }) {
+function AnalyticsDashboard({ API_BASE, user, onLogout, designPreview = false }) {
+  const navigate = useNavigate()
+  const location = useLocation()
+  const ownerNavigation = location.state?.ownerDashboardNavigation || {}
+  const refreshDesign = canUseOwnerDashboardRefresh(user, {
+    businesses: import.meta.env.VITE_OWNER_DASHBOARD_REFRESH,
+    development: import.meta.env.DEV,
+    preview: designPreview,
+  })
+  const openOwnerTab = tab => navigate('/dashboard', { state: { ownerDashboardTab: tab } })
+  const openOwnerAction = action => navigate('/dashboard', { state: { ownerDashboardAction: action } })
   const [timeRange, setTimeRange] = useState('7d')
   const [selectedBranch, setSelectedBranch] = useState('all')
   const [selectedWeekday, setSelectedWeekday] = useState('all')
@@ -637,6 +651,27 @@ function AnalyticsDashboard({ API_BASE, user }) {
   }
 
   return (
+    <div className={refreshDesign ? 'lt-owner-refresh lt-analytics-refresh' : undefined}>
+      {refreshDesign && (
+        <OwnerDashboardNavigation
+          activeTab="analytics"
+          onNavigate={openOwnerTab}
+          onAnalytics={() => selectTab('overview')}
+          onAnnouncements={() => openOwnerAction('announcements')}
+          onSetup={() => openOwnerAction('setup')}
+          onSupport={() => openOwnerAction('support')}
+          onScan={() => openOwnerAction('scan')}
+          onShare={() => openOwnerAction('share')}
+          onInstall={() => openOwnerAction('install')}
+          onLogout={onLogout}
+          businessName={user?.business_name}
+          ownerName={user?.name || user?.owner_name}
+          planLabel={ownerNavigation.planLabel || user?.plan || ''}
+          needsRenewal={ownerNavigation.needsRenewal === true}
+          renewalText={ownerNavigation.renewalText}
+          orderAheadEnabled={ownerNavigation.orderAheadEnabled === true || analytics?.order_ahead_enabled === true}
+        />
+      )}
     <div className="an-container" style={styles.container}>
       <style>{`
         @media (max-width: 768px) {
@@ -675,7 +710,8 @@ function AnalyticsDashboard({ API_BASE, user }) {
       `}</style>
       <div className="an-header" style={styles.header}>
         <div>
-          <h1 className="an-title" style={styles.title}>📊 Analytics Dashboard</h1>
+          {refreshDesign && <p className="an-eyebrow">BUSINESS INSIGHTS</p>}
+          <h1 className="an-title" style={styles.title}>{refreshDesign ? 'Analytics' : '📊 Analytics Dashboard'}</h1>
           <div style={{...styles.mutedText,marginTop:4}}>{scopeDescription}</div>
         </div>
         <div style={styles.analyticsHeaderControls}>
@@ -704,6 +740,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
                 <button
                   key={range}
                   className="an-rangebtn"
+                  aria-pressed={timeRange === range}
                   onClick={() => setTimeRange(range)}
                   style={{
                     ...styles.rangeBtn,
@@ -719,8 +756,8 @@ function AnalyticsDashboard({ API_BASE, user }) {
         </div>
       </div>
 
-      <div style={styles.analyticsTopBar}>
-        <div className="an-tabs" style={styles.tabs}>
+      <div className="an-topbar" style={styles.analyticsTopBar}>
+        <div className="an-tabs" style={styles.tabs} role="group" aria-label="Analytics sections">
           {[
             ['overview','Overview'],
             ['customers','Customers'],
@@ -732,6 +769,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
             <button
               key={key}
               type="button"
+              aria-pressed={activeTab === key}
               onClick={() => selectTab(key)}
               style={{...styles.tabBtn,...(activeTab===key?styles.tabBtnActive:{})}}
             >
@@ -739,9 +777,9 @@ function AnalyticsDashboard({ API_BASE, user }) {
             </button>
           ))}
         </div>
-        <div style={styles.sourceBadgeWrap}>
-          <span style={{...styles.sourceBadge,...(posEnhanced?styles.sourceBadgePos:{})}}>● {dataSourceLabel}</span>
-          <span style={styles.sourceHint}>{dataSourceDescription}</span>
+        <div className="an-source" style={styles.sourceBadgeWrap}>
+          <span className="an-sourcebadge" style={{...styles.sourceBadge,...(posEnhanced?styles.sourceBadgePos:{})}}>● {dataSourceLabel}</span>
+          <span className="an-sourcehint" style={styles.sourceHint}>{dataSourceDescription}</span>
         </div>
       </div>
 
@@ -765,7 +803,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
         </div>
 
         <div style={styles.section}>
-          <div style={styles.sectionHeadingRow}>
+          <div className="an-section-heading" style={styles.sectionHeadingRow}>
             <div>
               <h2 className="an-section-title" style={{...styles.sectionTitle,marginBottom:4}}>What matters this period</h2>
               <div style={styles.mutedText}>A short summary instead of a wall of numbers.</div>
@@ -783,14 +821,14 @@ function AnalyticsDashboard({ API_BASE, user }) {
         </div>
 
         <div style={styles.section}>
-          <div style={styles.sectionHeadingRow}>
+          <div className="an-section-heading" style={styles.sectionHeadingRow}>
             <div>
               <h2 className="an-section-title" style={{...styles.sectionTitle,marginBottom:4}}>Recommended actions</h2>
               <div style={styles.mutedText}>Suggestions are based on recorded Loyalty Tree activity and only appear when there is something actionable.</div>
             </div>
           </div>
           {suggestedActions.length === 0 ? (
-            <div style={styles.insightCard}><div style={styles.noData}>No urgent action detected for this period.</div></div>
+            <div className="an-insight-card" style={styles.insightCard}><div style={styles.noData}>No urgent action detected for this period.</div></div>
           ) : (
             <div style={{display:'grid',gap:10}}>
               {suggestedActions.slice(0,3).map((item,i)=>(
@@ -821,7 +859,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
 
       {activeTab === 'activity' && <>
         <div style={styles.section}>
-          <div style={styles.sectionHeadingRow}>
+          <div className="an-section-heading" style={styles.sectionHeadingRow}>
             <div>
               <h2 className="an-section-title" style={{...styles.sectionTitle,marginBottom:4}}>Peak activity</h2>
               <div style={styles.mutedText}>{posEnhanced ? 'POS-enhanced timing view when transaction timestamps are available.' : 'Based on Loyalty Tree card activity timestamps.'}</div>
@@ -860,7 +898,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
 
       {activeTab === 'customers' && <>
         <div style={styles.section}>
-          <div style={styles.sectionHeadingRow}>
+          <div className="an-section-heading" style={styles.sectionHeadingRow}>
             <div>
               <h2 className="an-section-title" style={{...styles.sectionTitle,marginBottom:4}}>🆕 New Joiner Demographics</h2>
               <div style={styles.mutedText}>
@@ -879,14 +917,14 @@ function AnalyticsDashboard({ API_BASE, user }) {
           </div>
 
           <div className="an-charts-row" style={styles.chartsRow}>
-            <div style={styles.insightCard}>
+            <div className="an-insight-card" style={styles.insightCard}>
               <div style={{display:'flex',justifyContent:'space-between',gap:10}}><h4 style={styles.insightTitle}>Age of new joiners</h4><span style={styles.statusPill}>Selected range</span></div>
               {!joinerPrivacy.age_available || !joinerAgeRows.length ? <div style={styles.noData}>Not enough new-joiner age responses to show a private aggregate yet.</div> : <>
                 {joinerAgeRows.map(([label,value])=><div key={label} style={styles.customerRow}><span style={styles.customerName}>{label}</span><strong>{Number(value||0).toLocaleString()}</strong></div>)}
                 {joinerPrivacy.age_suppressed && <div style={styles.mutedText}>Small brackets plus one additional bracket are suppressed to prevent reconstruction.</div>}
               </>}
             </div>
-            <div style={styles.insightCard}>
+            <div className="an-insight-card" style={styles.insightCard}>
               <div style={{display:'flex',justifyContent:'space-between',gap:10}}><h4 style={styles.insightTitle}>Gender of new joiners</h4><span style={styles.statusPill}>Selected range</span></div>
               {!joinerPrivacy.gender_available || !joinerGenderRows.length ? <div style={styles.noData}>Not enough new-joiner gender responses to show a private aggregate yet.</div> : <>
                 {joinerGenderRows.map(([label,value])=><div key={label} style={styles.customerRow}><span style={styles.customerName}>{label}</span><strong>{Number(value||0).toLocaleString()}</strong></div>)}
@@ -895,7 +933,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
             </div>
           </div>
 
-          <div style={styles.insightCard}>
+          <div className="an-insight-card" style={styles.insightCard}>
             <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-start',flexWrap:'wrap',marginBottom:10}}>
               <div>
                 <h4 style={{...styles.insightTitle,marginBottom:4}}>Daily joiner mix</h4>
@@ -922,21 +960,21 @@ function AnalyticsDashboard({ API_BASE, user }) {
         </div>
 
         <div style={styles.section}>
-          <div style={styles.sectionHeadingRow}>
+          <div className="an-section-heading" style={styles.sectionHeadingRow}>
             <div>
               <h2 className="an-section-title" style={{...styles.sectionTitle,marginBottom:4}}>Customer profile</h2>
               <div style={styles.mutedText}>Demographics are aggregated. Individual street addresses are never displayed here.</div>
             </div>
           </div>
           <div className="an-insights-grid" style={styles.insightsGrid}>
-            <div style={styles.insightCard}>
+            <div className="an-insight-card" style={styles.insightCard}>
               <h4 style={styles.insightTitle}>New vs. returning</h4>
               <div style={styles.customerRow}><span style={styles.customerName}>{branchScoped ? 'New known customers' : 'New customers'}</span><strong>{Number(overview.new_customers||0).toLocaleString()}</strong></div>
               <div style={styles.customerRow}><span style={styles.customerName}>30-day retention</span><strong>{Number(customers.retention_rate||0)}%</strong></div>
               <div style={styles.customerRow}><span style={styles.customerName}>Churn risk</span><strong>{Number(customers.churn_risk||0).toLocaleString()}</strong></div>
             </div>
 
-            <div style={styles.insightCard}>
+            <div className="an-insight-card" style={styles.insightCard}>
               <div style={{display:'flex',justifyContent:'space-between',gap:10}}><h4 style={styles.insightTitle}>Gender</h4><span style={styles.statusPill}>🔒 Aggregate only</span></div>
               {!demographicPrivacy.gender_available || !genderRows.length ? <div style={styles.noData}>Not enough gender responses to show a private aggregate yet.</div> : <>
                 {genderRows.map(([label,value])=><div key={label} style={styles.customerRow}><span style={styles.customerName}>{label}</span><strong>{Number(value||0).toLocaleString()}</strong></div>)}
@@ -944,7 +982,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
               </>}
             </div>
 
-            <div style={styles.insightCard}>
+            <div className="an-insight-card" style={styles.insightCard}>
               <div style={{display:'flex',justifyContent:'space-between',gap:10}}><h4 style={styles.insightTitle}>Age brackets</h4><span style={styles.statusPill}>🔒 Aggregate only</span></div>
               {!demographicPrivacy.age_available || !ageRows.length ? <div style={styles.noData}>Not enough age-bracket responses to show a private aggregate yet.</div> : <>
                 {ageRows.map(([label,value])=><div key={label} style={styles.customerRow}><span style={styles.customerName}>{label}</span><strong>{Number(value||0).toLocaleString()}</strong></div>)}
@@ -952,7 +990,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
               </>}
             </div>
 
-            <div style={styles.insightCard}>
+            <div className="an-insight-card" style={styles.insightCard}>
               <h4 style={styles.insightTitle}>Top customer areas</h4>
               {topAreas.length === 0 ? (
                 <div style={styles.noData}>No aggregate city / municipality data available yet.</div>
@@ -966,7 +1004,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
               <div style={{...styles.mutedText,marginTop:10}}>Small location segments can be grouped later to protect customer privacy.</div>
             </div>
 
-            <div style={styles.insightCard}>
+            <div className="an-insight-card" style={styles.insightCard}>
               <h4 style={styles.insightTitle}>Top customers by loyalty activity</h4>
               {(customers.top_customers || []).length === 0 ? <div style={styles.noData}>No customer activity yet.</div> : (customers.top_customers || []).slice(0,5).map((c,i)=>(
                 <div key={`${c.name||'customer'}-${i}`} style={styles.customerRow}>
@@ -977,7 +1015,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
               ))}
             </div>
 
-            <div style={styles.insightCard}>
+            <div className="an-insight-card" style={styles.insightCard}>
               <h4 style={styles.insightTitle}>Upcoming birthdays</h4>
               <div className="an-bignumber" style={styles.bigNumber}>{birthdayData.counts?.next_30_days || 0}</div>
               <div style={styles.insightDesc}>saved birthdays in the next 30 days</div>
@@ -996,7 +1034,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
 
       {/* Time-Based Analytics */}
       <div style={styles.section}>
-        <div style={styles.sectionHeadingRow}>
+        <div className="an-section-heading" style={styles.sectionHeadingRow}>
           <div>
             <h2 className="an-section-title" style={{...styles.sectionTitle,marginBottom:4}}>🕒 Time-Based Analytics</h2>
             <div style={styles.mutedText}>
@@ -1060,7 +1098,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
 
             {selectedTimeRow && (
               <div className="an-charts-row" style={{...styles.chartsRow,marginTop:16}}>
-                <div style={styles.insightCard}>
+                <div className="an-insight-card" style={styles.insightCard}>
                   <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'flex-start',marginBottom:12}}>
                     <div>
                       <h4 style={{...styles.insightTitle,marginBottom:3}}>
@@ -1082,7 +1120,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
                   </div>
                 </div>
 
-                <div style={styles.insightCard}>
+                <div className="an-insight-card" style={styles.insightCard}>
                   <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'flex-start',marginBottom:8}}>
                     <h4 style={{...styles.insightTitle,marginBottom:0}}>{time_analytics?.demographics_are_purchase_linked ? 'Buyer demographics' : 'Customer demographics'}</h4>
                     <span style={styles.statusPill}>🔒 Aggregate only</span>
@@ -1157,7 +1195,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
             </div>
           </div>
         ) : (
-          <div style={styles.insightCard}>
+          <div className="an-insight-card" style={styles.insightCard}>
             <p style={styles.insightDesc}>
               Purchase value is not available for this program yet. Loyalty Tree can still report real card activity, retention, demographics and redemptions without guessing. Connect a supported POS to unlock stronger sales, average-order and sales-by-time analytics.
             </p>
@@ -1199,7 +1237,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
       {/* Branch Performance */}
       {Array.isArray(branch_performance) && branch_performance.length > 1 && (
         <div style={styles.section}>
-          <div style={styles.sectionHeadingRow}>
+          <div className="an-section-heading" style={styles.sectionHeadingRow}>
             <div>
               <h2 className="an-section-title" style={{...styles.sectionTitle,marginBottom:4}}>🏢 Branch Performance</h2>
               <div style={styles.mutedText}>Compare branches inside the selected date range. Sales value appears only when a real transaction amount was recorded.</div>
@@ -1255,7 +1293,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
           <MiniMetric label="Failed" value={walletQueue.failed || 0} danger={(walletQueue.failed || 0) > 0} />
           <MiniMetric label="Recent Jobs" value={(walletQueue.jobs || []).length} />
         </div>
-        <div style={styles.insightCard}>
+        <div className="an-insight-card" style={styles.insightCard}>
           {(walletQueue.jobs || []).length === 0 ? (
             <div style={styles.noData}>No wallet sync jobs yet.</div>
           ) : (walletQueue.jobs || []).slice(0, 12).map(job => (
@@ -1306,7 +1344,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
           <MiniMetric label="Adjustments" value={auditTransactions.filter(t => /adjust|remove|correction|override/i.test(t.action || '')).length} />
         </div>
         <div className="an-charts-row" style={styles.chartsRow}>
-          <div style={styles.insightCard}>
+          <div className="an-insight-card" style={styles.insightCard}>
             <h4 style={styles.insightTitle}>Security Alerts — last 24 hours</h4>
             {fraudAlerts.length === 0 ? <div style={styles.noData}>No suspicious activity detected.</div> :
               fraudAlerts.slice(0, 12).map((a, i) => (
@@ -1319,7 +1357,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
                 </div>
               ))}
           </div>
-          <div style={styles.insightCard}>
+          <div className="an-insight-card" style={styles.insightCard}>
             <h4 style={styles.insightTitle}>Recent Transaction Audit</h4>
             {auditTransactions.length === 0 ? <div style={styles.noData}>No audit transactions yet.</div> :
               auditTransactions.slice(0, 20).map((t, i) => (
@@ -1420,7 +1458,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
           <MiniMetric label="Retention Opportunities" value={retentionOps.length} />
         </div>
         <div className="an-module-grid" style={styles.moduleGrid}>
-          {retentionOps.length === 0 ? <div style={styles.insightCard}><div style={styles.noData}>No retention opportunities detected right now.</div></div> :
+          {retentionOps.length === 0 ? <div className="an-insight-card" style={styles.insightCard}><div style={styles.noData}>No retention opportunities detected right now.</div></div> :
             retentionOps.slice(0, 30).map((o, i) => (
               <div key={`${o.customer_public_id || 'customer'}-${i}`} style={styles.insightCard}>
                 <div style={{display:'flex',justifyContent:'space-between',gap:10}}>
@@ -1699,7 +1737,7 @@ function AnalyticsDashboard({ API_BASE, user }) {
 
       {activeTab === 'reports' && (
         <div style={styles.section}>
-          <div style={styles.reportHero}>
+          <div className="an-report-hero" style={styles.reportHero}>
             <div>
               <div style={styles.eyebrow}>WEEKLY REPORT</div>
               <h2 style={{...styles.sectionTitle,margin:'4px 0 6px'}}>Latest 7-day business report</h2>
@@ -1728,13 +1766,13 @@ function AnalyticsDashboard({ API_BASE, user }) {
           </div>
 
           <div className="an-charts-row" style={styles.chartsRow}>
-            <div style={styles.insightCard}>
+            <div className="an-insight-card" style={styles.insightCard}>
               <h4 style={styles.insightTitle}>Customer profile snapshot</h4>
               <div style={styles.customerRow}><span style={styles.customerName}>Largest age group</span><strong>{largestAgeGroup?.[0] || '—'}</strong></div>
               <div style={styles.customerRow}><span style={styles.customerName}>Top customer area</span><strong>{topAreas?.[0]?.[0] || '—'}</strong></div>
               <div style={styles.customerRow}><span style={styles.customerName}>Upcoming birthdays</span><strong>{birthdayData.counts?.next_30_days || 0}</strong></div>
             </div>
-            <div style={styles.insightCard}>
+            <div className="an-insight-card" style={styles.insightCard}>
               <h4 style={styles.insightTitle}>Insights & suggestions</h4>
               {insightItems.slice(0,4).map((item,i)=>(
                 <div key={`${item.title}-${i}`} style={{padding:'9px 0',borderBottom:i<Math.min(insightItems.length,4)-1?'1px solid #f1f5f9':'none'}}>
@@ -1792,13 +1830,14 @@ function AnalyticsDashboard({ API_BASE, user }) {
       {extendedError && <div style={{...styles.moduleNotice,color:'#b45309'}}>{extendedError}</div>}
 
     </div>
+    </div>
   )
 }
 
 // Sub-components
 function MiniMetric({ label, value, danger = false }) {
   return (
-    <div className="an-statcard" style={{...styles.statCard, borderTop:`4px solid ${danger ? '#ef4444' : '#0d9488'}`}}>
+    <div className="an-statcard" data-danger={danger ? "true" : undefined} style={{...styles.statCard, borderTop:`4px solid ${danger ? '#ef4444' : '#0d9488'}`}}>
       <div className="an-statvalue" style={{...styles.statValue, color: danger ? '#b91c1c' : '#1e293b'}}>{value}</div>
       <div style={styles.statTitle}>{label}</div>
     </div>

@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react'
 // from the admin dashboard) at the top of the owner's dashboard. Separate
 // from <Announcements /> which is the owner's own announcements to their
 // customers - this is the platform talking to the owner.
-function PlatformPromoBanner({ API_BASE, businessSlug }) {
+function PlatformPromoBanner({ API_BASE, businessSlug, refreshed = false }) {
   const [promos, setPromos] = useState([])
   const [dismissing, setDismissing] = useState(null)
 
@@ -32,9 +32,10 @@ function PlatformPromoBanner({ API_BASE, businessSlug }) {
   if (promos.length === 0) return null
 
   return (
-    <div style={styles.stack}>
+    <div className={refreshed ? 'lt-owner-platform-updates' : undefined} style={styles.stack}>
+      {refreshed && <h2 className="lt-owner-platform-label">Updates from LoyaltyTree</h2>}
       {promos.map(promo => (
-        <div key={promo.id} style={styles.banner}>
+        <div className={refreshed ? 'lt-owner-platform-banner' : undefined} key={promo.id} style={styles.banner}>
           <span style={styles.icon}>📣</span>
           <div style={styles.textCol}>
             <div style={styles.title}>{promo.title}</div>

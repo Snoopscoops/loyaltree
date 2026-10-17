@@ -213,7 +213,7 @@ function App() {
         } />
         <Route path="/wallet/:customerId" element={<RedirectToBackend base={API_BASE} sub="wallet" />} />
         <Route path="/analytics" element={
-          user?.role === 'owner' ? <AnalyticsDashboard API_BASE={API_BASE} user={user} /> : <Navigate to="/login" />
+          user?.role === 'owner' ? <AnalyticsDashboard API_BASE={API_BASE} user={user} onLogout={handleLogout} /> : <Navigate to="/login" />
         } />
         <Route path="/join/:businessSlug" element={<CustomerJoin API_BASE={API_BASE} />} />
         <Route path="/admin" element={
