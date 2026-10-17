@@ -50179,67 +50179,78 @@ def generate_event_ticket_pkpass(ticket: dict, event: dict, access_level: dict, 
 # Reuses get_google_wallet_credentials + create_google_wallet_jwt
 
 def generate_google_event_ticket_jwt(ticket: dict, event: dict, access_level: dict, business: dict) -> str:
-    """Return a Google Wallet 'Add to Wallet' JWT for an Event Ticket.
-    Creates the EventTicketClass if needed and builds a proper event-ticket JWT.
+    """Build a Google Wallet Event Ticket JWT.
+    Creates the EventTicketClass first (required), then returns a signed JWT.
     """
     issuer_id = GOOGLE_WALLET_ISSUER_ID
     if not issuer_id:
         raise HTTPException(status_code=500, detail="Google Wallet not configured")
 
-    safe_event = _google_wallet_safe_fragment(event.get("public_id") or "evt")
-    safe_ticket = _google_wallet_safe_fragment(ticket.get("public_id") or "tkt")
-    class_id = f"{issuer_id}.event_{safe_event}"
-    object_id = f"{issuer_id}.ticket_{safe_ticket}"
+    event_pub = (event.get("public_id") or "evt")[:40]
+    ticket_pub = (ticket.get("public_id") or "tkt")[:40]
+    class_id = f"{issuer_id}.evt_{event_pub}"
+    object_id = f"{issuer_id}.tkt_{ticket_pub}"
 
-    start_date = None
+    start_iso = None
     raw_date = event.get("event_date") or ""
     if raw_date:
         try:
-            dt = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
-            start_date = dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            dt = datetime.fromisoformat(str(raw_date).replace("Z", "+00:00"))
+            start_iso = dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
         except Exception:
-            start_date = None
+            start_iso = None
 
     access_token = get_google_access_token()
-    if access_token:
-        class_payload = {
-            "id": class_id,
-            "issuerName": (business.get("name") or "LoyaltyTree")[:50],
-            "reviewStatus": "UNDER_REVIEW",
-            "eventName": {"defaultValue": {"language": "en-US", "value": (event.get("name") or "Event")[:100]}},
-            "venue": {"name": {"defaultValue": {"language": "en-US", "value": (event.get("venue") or "TBA")[:100]}}},
-            "hexBackgroundColor": access_level.get("color_hex") or "#0d9488",
-        }
-        if start_date:
-            class_payload["dateTime"] = {"start": start_date}
-        try:
-            import httpx
-            with pooled_client(timeout=15) as client:
-                client.post(
-                    "https://walletobjects.googleapis.com/walletobjects/v1/eventTicketClass",
-                    headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
-                    json=class_payload,
-                )
-        except Exception as exc:
-            print(f"EventTicketClass create warning: {exc}")
+    if not access_token:
+        raise HTTPException(status_code=500, detail="Could not get Google Wallet access token")
+
+    class_body = {
+        "id": class_id,
+        "issuerName": (business.get("name") or "LoyaltyTree")[:50],
+        "reviewStatus": "UNDER_REVIEW",
+        "eventName": {"defaultValue": {"language": "en-US", "value": (event.get("name") or "Event")[:80]}},
+        "venue": {"name": {"defaultValue": {"language": "en-US", "value": (event.get("venue") or "TBA")[:80]}}},
+        "hexBackgroundColor": (access_level.get("color_hex") or "#0d9488")[:7],
+    }
+    if start_iso:
+        class_body["dateTime"] = {"start": start_iso}
+
+    try:
+        import httpx
+        with pooled_client(timeout=25) as client:
+            resp = client.post(
+                "https://walletobjects.googleapis.com/walletobjects/v1/eventTicketClass",
+                headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+                json=class_body,
+            )
+            if resp.status_code not in (200, 409):
+                err_text = resp.text[:500]
+                print(f"EventTicketClass create failed: {resp.status_code} {err_text}")
+                raise HTTPException(status_code=500, detail=f"Google class create failed: {resp.status_code}")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"EventTicketClass request error: {exc}")
+        raise HTTPException(status_code=500, detail="Could not create Google EventTicketClass")
 
     event_object = {
         "id": object_id,
         "classId": class_id,
         "state": "ACTIVE",
-        "eventName": {"defaultValue": {"language": "en-US", "value": (event.get("name") or "Event")[:100]}},
-        "venue": {"name": {"defaultValue": {"language": "en-US", "value": (event.get("venue") or "TBA")[:100]}}},
-        "ticketHolderName": (ticket.get("attendee_name") or "")[:50],
-        "ticketNumber": ticket.get("public_id") or "",
-        "ticketType": {"defaultValue": {"language": "en-US", "value": (access_level.get("name") or "General")[:50]}},
+        "eventName": {"defaultValue": {"language": "en-US", "value": (event.get("name") or "Event")[:80]}},
+        "venue": {"name": {"defaultValue": {"language": "en-US", "value": (event.get("venue") or "TBA")[:80]}}},
+        "ticketHolderName": (ticket.get("attendee_name") or "Attendee")[:40],
+        "ticketNumber": (ticket.get("public_id") or "")[:40],
+        "ticketType": {"defaultValue": {"language": "en-US", "value": (access_level.get("name") or "General")[:40]}},
         "barcode": {
             "type": "QR_CODE",
             "value": f"lt-ticket:{ticket.get('public_id') or ''}",
+            "alternateText": ticket.get("public_id") or "",
         },
-        "hexBackgroundColor": access_level.get("color_hex") or "#0d9488",
+        "hexBackgroundColor": (access_level.get("color_hex") or "#0d9488")[:7],
     }
-    if start_date:
-        event_object["dateTime"] = {"start": start_date}
+    if start_iso:
+        event_object["dateTime"] = {"start": start_iso}
 
     creds = get_google_wallet_credentials()
     if not creds:
@@ -50252,9 +50263,9 @@ def generate_google_event_ticket_jwt(ticket: dict, event: dict, access_level: di
         payload = {
             "iss": client_email,
             "aud": "google",
-            "iat": now,
-            "exp": now + timedelta(hours=1),
-            "origins": [BASE_URL, "https://theloyaltytree.com"],
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(hours=1)).timestamp()),
+            "origins": [BASE_URL, "https://theloyaltytree.com", "https://loyaltree-five.vercel.app"],
             "typ": "savetowallet",
             "payload": {"eventTicketObjects": [event_object]},
         }
