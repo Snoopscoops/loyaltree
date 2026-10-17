@@ -50206,14 +50206,15 @@ def generate_google_event_ticket_jwt(ticket: dict, event: dict, access_level: di
 
     class_body = {
         "id": class_id,
-        "issuerName": (business.get("name") or "LoyaltyTree")[:50],
+        "issuerName": (business.get("name") or "LoyaltyTree")[:20],
         "reviewStatus": "UNDER_REVIEW",
-        "eventName": {"defaultValue": {"language": "en-US", "value": (event.get("name") or "Event")[:80]}},
-        "venue": {"name": {"defaultValue": {"language": "en-US", "value": (event.get("venue") or "TBA")[:80]}}},
-        "hexBackgroundColor": (access_level.get("color_hex") or "#0d9488")[:7],
+        "eventName": {
+            "defaultValue": {
+                "language": "en-US",
+                "value": (event.get("name") or "Event")[:80],
+            }
+        },
     }
-    if start_iso:
-        class_body["dateTime"] = {"start": start_iso}
 
     try:
         import httpx
@@ -50224,9 +50225,9 @@ def generate_google_event_ticket_jwt(ticket: dict, event: dict, access_level: di
                 json=class_body,
             )
             if resp.status_code not in (200, 409):
-                err_text = resp.text[:500]
+                err_text = resp.text[:800]
                 print(f"EventTicketClass create failed: {resp.status_code} {err_text}")
-                raise HTTPException(status_code=500, detail=f"Google class create failed: {resp.status_code}")
+                raise HTTPException(status_code=500, detail=f"Google class create failed: {resp.status_code} - {err_text[:200]}")
     except HTTPException:
         raise
     except Exception as exc:
