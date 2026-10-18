@@ -6,6 +6,18 @@ export function filterMenuItems(items, category, search) {
   return items.filter(item => (category === 'all' || item.category_public_id === category) &&
     (!needle || `${item.name} ${item.description || ''}`.toLocaleLowerCase().includes(needle)))
 }
+export function groupMenuCategories(categories, items, branchId) {
+  const grouped = categories.map(category => {
+    const members = items.filter(item => item.category_public_id === category.public_id)
+    const photo = members.find(item => item.image_url && menuItemAvailable(item, branchId)) || members.find(item => item.image_url)
+    return { ...category, items: members, image_url: photo?.image_url || '' }
+  }).filter(category => category.items.length)
+  if (!grouped.length) return []
+  const knownIds = new Set(categories.map(category => category.public_id))
+  const others = items.filter(item => !knownIds.has(item.category_public_id))
+  if (others.length) grouped.push({ public_id: '__uncategorized__', name: 'More favorites', items: others, image_url: others.find(item => item.image_url)?.image_url || '' })
+  return grouped
+}
 export function toggleMenuOption(selected, group, optionId) {
   if (!group.options.some(option => option.public_id === optionId)) return selected
   const current = selected[group.public_id] || []

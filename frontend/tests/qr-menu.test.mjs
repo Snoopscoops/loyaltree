@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { menuItemAvailable, filterMenuItems, menuItemPrice, toggleMenuOption, validMenuPayload } from '../src/components/qrMenuModel.js'
+import { menuItemAvailable, filterMenuItems, groupMenuCategories, menuItemPrice, toggleMenuOption, validMenuPayload } from '../src/components/qrMenuModel.js'
 import { createFixtureTransport, fixtureSlug } from '../dev/owner-dashboard-fixtures.js'
 const size={public_id:'size',selection_type:'single',max_selections:1,options:[{public_id:'small',price_delta:0},{public_id:'large',price_delta:25}]}
 const extras={public_id:'extras',selection_type:'multiple',max_selections:1,options:[{public_id:'oat',price_delta:20},{public_id:'syrup',price_delta:10}]}
@@ -14,6 +14,22 @@ test('search and categories combine without removing sold-out items from browsin
   assert.deepEqual(filterMenuItems(items,'coffee',' OAT '),[items[0]])
   assert.deepEqual(filterMenuItems(items,'bakes','latte'),[])
   assert.deepEqual(filterMenuItems(items,'all',''),items)
+})
+test('category browsing keeps every item reachable and prefers an available cover photo at the chosen branch',()=>{
+  const categories=[{public_id:'coffee',name:'Coffee'},{public_id:'bakes',name:'Bakes'},{public_id:'empty',name:'Empty'}]
+  const items=[
+    {public_id:'latte',category_public_id:'coffee',image_url:'/latte.jpg',unavailable_branch_public_ids:['main']},
+    {public_id:'americano',category_public_id:'coffee',image_url:'/americano.jpg'},
+    {public_id:'croissant',category_public_id:'bakes',image_url:'/croissant.jpg',is_available:false},
+    {public_id:'special',category_public_id:null},
+  ]
+  const groups=groupMenuCategories(categories,items,'main')
+  assert.deepEqual(groups.map(group=>group.name),['Coffee','Bakes','More favorites'])
+  assert.equal(groups[0].image_url,'/americano.jpg')
+  assert.equal(groups[1].image_url,'/croissant.jpg')
+  assert.deepEqual(groups.flatMap(group=>group.items),items)
+  assert.equal(groupMenuCategories(categories,items,'riverside')[0].image_url,'/latte.jpg')
+  assert.deepEqual(groupMenuCategories([],items,'main'),[])
 })
 test('price preview replaces single choices and caps multiple options without mutating state',()=>{
   const initial={size:['small']}
