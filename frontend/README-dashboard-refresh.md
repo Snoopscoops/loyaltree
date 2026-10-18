@@ -14,7 +14,7 @@ VITE_OWNER_DASHBOARD_REFRESH=off
 
 Unset/empty or `all` enables the design for all standard owners. An optional comma-separated list enables only exact `business_slug` or `business_public_id` matches. `*` is not a supported wildcard. This setting changes presentation only and grants no permissions. No SQL migration or backend environment change is needed.
 
-Payment processing, prices, subscription rules, staff permissions, program scope, wallet issuance and notification delivery stay on their existing implementations. Both platform-to-owner updates and owner-to-customer announcements remain separate and retain their current content and actions. The original design refresh did not alter Events; separate Events notification adjustments are documented below.
+Payment processing, prices, subscription rules, staff permissions, program scope, wallet issuance and notification delivery stay on their existing implementations. Both platform-to-owner updates and owner-to-customer announcements remain separate and retain their current content and actions.
 
 ## Local verification
 
@@ -25,7 +25,7 @@ npm run build
 npm run dev -- --host 127.0.0.1
 ```
 
-Open `http://127.0.0.1:3000/dev/owner-dashboard.html?scenario=stamp&design=refresh` for an isolated test workspace. It renders the real components with fictional data and intercepts all fetches; unknown API calls fail locally. External links, checkout frames and real payments/pushes are blocked. The Events map loads Leaflet and OpenStreetMap assets; location tests use fictional coordinates instead of the device location. The request log omits headers and bodies. The fixture page is a development-only entry and is not included in the production build.
+Open `http://127.0.0.1:3000/dev/owner-dashboard.html?scenario=stamp&design=refresh` for an isolated test workspace. It renders the real components with fictional data and intercepts all fetches; unknown API calls fail locally. External links, checkout frames and real payments/pushes are blocked. The request log omits headers and bodies. The fixture page is a development-only entry and is not included in the production build.
 
 Use the controls to compare the current design and the refresh and to check stamp, points, subscription, multipass, tier, hybrid and employee card scenarios. Check platform update dismissal, customer search/details, program selection and the All Programs scanner restriction, announcements and delivery summaries, billing screens, analytics tabs, setup, and desktop/mobile navigation. These fixture checks do not constitute a live payment or provider-delivery test.
 
@@ -45,14 +45,8 @@ The card editor has separate Apple and Google Wallet previews driven by draft va
 
 Deploy both backend and frontend for these refinements. No new SQL migration, environment variable, package, payment integration or notification-delivery change is required.
 
-## Events notification adjustments
+## Product scope
 
-Event details use a full-width message area with a 120-character counter, multiline preview and a separate send button. The existing event notification endpoint saves the update and emails ticket holders who have an email address; the result separates provider-accepted emails, failures and tickets without an email address. The missing event email sender has been restored using the existing transactional email service. Provider acceptance does not guarantee inbox delivery. This change does not add wallet push delivery to that endpoint.
+Event ticketing has been removed from the owner dashboard and API, including ticket claims, scanning, event notifications and event wallet endpoints. Legacy `/event-scan` and `/join/event/:eventId` links redirect to the homepage. QR Menu and the existing loyalty/business features remain available. This release does not delete historical database rows or require a migration.
 
-New events reuse the Announcements map for nearby notifications: request the device location once with **Use my current location**, click or drag a venue pin, or enter coordinates manually. A slider and numeric input preview a 50–1,000 meter radius. Save Draft or Publish Event saves the nearby message, coordinates and radius. Permission denial or a location timeout leaves manual pin placement available. No background location tracking is added.
-
-Apple event passes now put `maxDistance` at the pass root and accept zero-valued coordinates. Apple applies system relevance limits; Google Wallet controls its nearby radius and notification timing. This does not refresh previously downloaded event passes automatically. Deploy frontend and backend together; no new SQL migration, package or environment variable is needed for these adjustments.
-
-The local fixture includes a fictional published event and intercepts event creation and notification sends. Append `&geo=denied` to test denied location permission; the default simulates a successful location lookup. No real notifications are sent.
-
-`event_notification` logs each manual event update with `business_slug`, `event_id`, `channel`, `recipients`, `delivered` (provider-accepted count), `failed` and `skipped`. Failures use warning level. Recipient addresses and message content are omitted.
+The homepage shows only the registered business count. Its public community-stats endpoint returns `businesses` and `updated_at`, caches for five minutes and no longer queries customers, stamp events or point events.

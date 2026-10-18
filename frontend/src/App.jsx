@@ -12,8 +12,6 @@ const CarLendingDashboard = lazy(() => import('./components/CarLendingDashboard'
 const LendingDashboard = lazy(() => import('./components/LendingDashboard'))
 const CockpitDashboard = lazy(() => import('./components/CockpitDashboard'))
 const CashierApp = lazy(() => import('./components/CashierApp'))
-const EventScan = lazy(() => import('./components/EventScan'))
-const EventJoin = lazy(() => import('./components/EventJoin'))
 const QRMenuPage = lazy(() => import('./components/QRMenuPage'))
 const AnalyticsDashboard = lazy(() => import('./components/AnalyticsDashboard'))
 const AdminDashboard = lazy(() => import('./components/AdminDashboard'))
@@ -163,8 +161,8 @@ function App() {
 
   function AppRoutes() { return <Routes>
         <Route path="/menu/:businessId" element={<QRMenuPage API_BASE={API_BASE} />} />
-        <Route path="/event-scan" element={user ? <EventScan API_BASE={API_BASE} user={user} /> : <Navigate to="/login" />} />
-        <Route path="/join/event/:eventId" element={<EventJoin API_BASE={API_BASE} />} />
+        <Route path="/event-scan" element={<Navigate to="/" replace />} />
+        <Route path="/join/event/:eventId" element={<Navigate to="/" replace />} />
         <Route path="/motolite/*" element={<MotoliteApp API_BASE={API_BASE} />} />
         <Route path="/" element={
           user ? (

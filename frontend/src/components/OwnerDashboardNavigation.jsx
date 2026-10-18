@@ -41,7 +41,6 @@ const tabTitles = {
   qrmenu: 'QR Menu', orderahead: 'Order Ahead', giftcards: 'Gift cards', pos: 'Integrations', campaigns: 'Campaigns',
   satisfaction: 'Satisfaction', billing: 'Billing', referrals: 'Referrals', security: 'Transactions & security',
   walletqueue: 'Wallet queue', crm: 'Customer segments', retention: 'Retention', operations: 'Branch operations',
-  events: 'Event Ticketing',
 }
 const advancedTabs = ['security', 'walletqueue', 'crm', 'retention', 'operations']
 
@@ -111,7 +110,6 @@ export default function OwnerDashboardNavigation({
         <div className="lt-owner-nav-section">WORKSPACE</div>
         {item('tree', 'Overview', 'home')}{item('customers', 'Customers', 'people')}{item('program', 'Loyalty card', 'card')}
         {item('analytics', 'Analytics', 'chart', () => act(onAnalytics))}
-        {item('events', 'Event Ticketing', 'gift')}
         <div className="lt-owner-nav-section">GROW</div>
         {item('announcements', 'Announcements', 'announcement', () => act(onAnnouncements))}
         {item('campaigns', 'Campaigns', 'campaign')}{item('satisfaction', 'Satisfaction', 'star')}
