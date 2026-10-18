@@ -2070,7 +2070,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                       <option value="monthly">Monthly billing</option>
                       <option value="3_months">3-month billing</option>
                       <option value="6_months">6-month billing</option>
-                      <option value="annual">1-year billing · 2 months free</option>
+                      <option value="annual">1-year billing</option>
                     </select>
                     {b.price_current != null && (
                       <div style={styles.rowPriceHint}>

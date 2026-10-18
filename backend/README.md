@@ -83,7 +83,7 @@ python -m unittest discover -s backend/tests -v
 Standard plans outside the Philippines are priced in USD: Starter $15, Growth
 $39, Pro $69 per month for one branch. Annual rates are $150/$390/$690 (12 months
 for the price of 10). Existing branch packages and monthly/3-month/6-month/annual
-terms continue to apply. PH remains PHP350/PHP550/PHP750, with its 3-month minimum.
+terms continue to apply. PH monthly rates remain PHP350/PHP550/PHP750. Monthly billing is available. Standard PH prepaid branch packages reduce the monthly package rate by PHP25 for 3 months, PHP50 for 6 months, or PHP100 for 12 months, paid upfront. The discount applies once per monthly branch package, not per branch. Custom quotes retain their existing prices. No migration or new environment variable is needed.
 
 Named markets and all other identified countries use the same USD subscription
 rates. Other countries use the `INT` pricing region. An unknown location still

@@ -1,3 +1,4 @@
+import { BILLING_TERMS as PRICING_BILLING_TERMS, prepaidPrice, billingSavings, PH_REFERENCE_DISCOUNTS } from './billingPricing'
 import React, { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import logo192 from './logo-192.png'
@@ -131,17 +132,7 @@ const PAGE_CONTENT = {
 }
 
 
-const PRICING_BILLING_TERMS = {
-  monthly: { label: 'Monthly', multiplier: 1, unit: '/mo' },
-  '3_months': { label: '3 Months', multiplier: 3, unit: '/3 months' },
-  '6_months': { label: '6 Months', multiplier: 6, unit: '/6 months' },
-  annual: { label: '1 Year', multiplier: 10, unit: '/yr', savings: '2 months free', note: '12 months access' },
-}
-
-function pricingAmount(monthlyAmount, billingCycle) {
-  const term = PRICING_BILLING_TERMS[billingCycle] || PRICING_BILLING_TERMS.monthly
-  return Number(monthlyAmount || 0) * term.multiplier
-}
+function pricingAmount(monthly, cycle, discounts) { return prepaidPrice(monthly, cycle, discounts) }
 
 function PublicInfoPage({ type='overview', API_BASE='' }) {
   const navigate = useNavigate()
@@ -211,9 +202,8 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
     detected_by: 'fallback',
   })
 
-  useEffect(() => {
-    if (pricingContext.country_code === 'PH' && pricingBillingCycle === 'monthly') setPricingBillingCycle('3_months')
-  }, [pricingContext.country_code, pricingBillingCycle])
+
+  const pricingDiscounts = plan => pricingContext.plans?.[plan]?.billing_discounts ?? (pricingContext.detected_by === 'fallback' ? PH_REFERENCE_DISCOUNTS : {})
 
   const loadPricingContext = async (country) => {
     const configuredBase = (API_BASE || import.meta.env.VITE_API_BASE_URL || 'https://api.theloyaltytree.com').replace(/\/$/, '')
@@ -930,7 +920,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
           </div>
 
           <div style={s.pricingBillingRow}>
-            {Object.entries(PRICING_BILLING_TERMS).filter(([key]) => pricingContext.country_code === 'PH' ? key !== 'monthly' : true).map(([key,term])=><button key={key} onClick={()=>setPricingBillingCycle(key)} style={{...s.pricingBillingBtn,...(pricingBillingCycle===key?s.pricingBillingBtnActive:{})}}>{term.label}{term.savings&&<span style={s.pricingSaveBadge}>{term.savings}</span>}</button>)}
+            {Object.entries(PRICING_BILLING_TERMS).map(([key,term])=><button key={key} onClick={()=>setPricingBillingCycle(key)} style={{...s.pricingBillingBtn,...(pricingBillingCycle===key?s.pricingBillingBtnActive:{})}}>{term.label}{billingSavings(key,pricingContext.currency,pricingDiscounts('starter'))&&<span style={s.pricingSaveBadge}>{billingSavings(key,pricingContext.currency,pricingDiscounts('starter'))}</span>}</button>)}
           </div>
 
           <div className="overview-pricing-branches" style={s.pricingBranchRow}>
@@ -967,7 +957,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
 
                   {plan.prices && (
                     <div style={s.pricingPriceWrap}>
-                      <span style={s.pricingPrice}>{formatMoney(pricingAmount(plan.prices[pricingBranchTier], pricingBillingCycle), pricingContext.currency)}</span>
+                      <span style={s.pricingPrice}>{formatMoney(pricingAmount(plan.prices[pricingBranchTier], pricingBillingCycle, pricingDiscounts(plan.key)), pricingContext.currency)}</span>
                       <span style={s.pricingUnit}>{PRICING_BILLING_TERMS[pricingBillingCycle]?.unit || '/mo'}</span>
                       {PRICING_BILLING_TERMS[pricingBillingCycle]?.note&&<span style={s.pricingAnnualNote}>{PRICING_BILLING_TERMS[pricingBillingCycle].note}</span>}
                     </div>
@@ -1047,7 +1037,7 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
                   <h3 style={specialized?s.pricingSpecializedTitle:s.pricingPlanName}>{plan.name}</h3>
                   <p style={specialized?s.pricingSpecializedTagline:s.pricingTagline}>{plan.tagline}</p>
                   {!specialized && plan.prices && <div style={s.pricingPriceWrap}>
-                    <span style={s.pricingPrice}>{formatMoney(pricingAmount(plan.prices[pricingBranchTier], pricingBillingCycle), pricingContext.currency)}</span>
+                    <span style={s.pricingPrice}>{formatMoney(pricingAmount(plan.prices[pricingBranchTier], pricingBillingCycle, pricingDiscounts(plan.key)), pricingContext.currency)}</span>
                     <span style={s.pricingUnit}>{PRICING_BILLING_TERMS[pricingBillingCycle]?.unit || '/mo'}</span>
                     {PRICING_BILLING_TERMS[pricingBillingCycle]?.note&&<span style={s.pricingAnnualNote}>{PRICING_BILLING_TERMS[pricingBillingCycle].note}</span>}
                   </div>}

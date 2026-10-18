@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { formatMoney } from './currency'
+import { BILLING_TERMS, normalizeBillingCycle, billingSavings, billingSummary } from './billingPricing'
 
 // Owner billing + post-signup activation.
 // PH: QR Ph by default, with an optional card path.
@@ -17,20 +18,6 @@ function formatDate(iso) {
   const d = new Date(iso)
   if (isNaN(d.getTime())) return iso
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
-}
-
-const BILLING_TERMS = {
-  monthly: { label: 'Monthly', payLabel: '1 Month', pricingKey: 'monthly', summary: '30 days of access per payment.' },
-  '3_months': { label: '3 Months', payLabel: '3 Months', pricingKey: '3_months', summary: 'Prepay 3 months of access at the regular monthly rate.' },
-  '6_months': { label: '6 Months', payLabel: '6 Months', pricingKey: '6_months', summary: 'Prepay 6 months of access at the regular monthly rate.' },
-  annual: { label: '1 Year', payLabel: '1 Year', pricingKey: 'annual', summary: '12 months of access for the price of 10 monthly periods.', savings: '2 months free' },
-}
-
-function normalizeBillingCycle(value, region='PH') {
-  const allowed = String(region || 'PH').toUpperCase() === 'PH'
-    ? ['3_months', '6_months', 'annual']
-    : ['monthly', '3_months', '6_months', 'annual']
-  return allowed.includes(value) ? value : allowed[0]
 }
 
 function billingCycleLabel(value) {
@@ -345,7 +332,7 @@ function SubscriptionPayment({
         {!checkout ? (
           <>
             <div style={styles.billingToggle}>
-              {Object.entries(BILLING_TERMS).filter(([key]) => (isPH ? key !== 'monthly' : true)).map(([key, term]) => (
+              {Object.entries(BILLING_TERMS).map(([key, term]) => (
                 <button
                   key={key}
                   type="button"
@@ -356,11 +343,11 @@ function SubscriptionPayment({
                   {subscription?.pricing?.[term.pricingKey] != null && (
                     <span style={styles.billingTogglePrice}>{formatMoney(subscription.pricing[term.pricingKey], subscription?.currency || 'PHP')}</span>
                   )}
-                  {term.savings && <small style={styles.billingSavings}>{term.savings}</small>}
+                  {billingSavings(key,subscription?.currency,subscription?.pricing?.billing_discounts) && <small style={styles.billingSavings}>{billingSavings(key,subscription?.currency,subscription?.pricing?.billing_discounts)}</small>}
                 </button>
               ))}
             </div>
-            <div style={styles.billingSummary}>{BILLING_TERMS[billingCycle]?.summary || BILLING_TERMS.monthly.summary}</div>
+            <div style={styles.billingSummary}>{billingSummary(billingCycle,subscription?.currency,subscription?.pricing?.billing_discounts)}</div>
 
             {isPH && (
               <div style={styles.methodRow}>

@@ -13,10 +13,11 @@ SOURCE=Path(__file__).resolve().parents[1]/'main.py'
 TREE=ast.parse(SOURCE.read_text())
 ASSIGNMENTS={'SUBSCRIPTION_PLANS','INTERNATIONAL_PLAN_PRICES','MARKET_CURRENCIES',
              'PRICING_REGIONS','SUPPORTED_PRICING_COUNTRIES','COUNTRY_ALIASES',
-             'DEFAULT_FX_TO_PHP','BILLING_CYCLE_CONFIG','ANNUAL_BILLABLE_MONTHS'}
+             'DEFAULT_FX_TO_PHP','BILLING_CYCLE_CONFIG','ANNUAL_BILLABLE_MONTHS','PH_BILLING_MONTHLY_DISCOUNTS'}
 FUNCTIONS={'normalize_country_code','pricing_region_config','business_pricing_region',
            'business_currency','business_currency_symbol','subscription_currency','price_tiers_for_region',
            'branch_price_bracket','normalize_billing_cycle','self_serve_billing_cycle','get_price_for_plan',
+           'billing_monthly_discounts','prepaid_subscription_price',
            'business_custom_monthly_price','billing_branch_count','get_price_for_business',
            'get_plan_features','subscription_plans_payload','public_pricing_context'}
 
@@ -49,12 +50,34 @@ class InternationalPricingTests(unittest.TestCase):
                     self.assertEqual(self.env['get_price_for_plan'](plan,1,'3_months',country),price*3)
                     self.assertEqual(self.env['get_price_for_plan'](plan,1,'6_months',country),price*6)
 
-    def test_ph_prices_and_minimum_term_unchanged(self):
+    def test_ph_monthly_and_prepaid_prices_match_the_confirmed_discounts(self):
         self.assertEqual(self.env['pricing_region_config']('PH')['currency'],'PHP')
-        for plan,price in [('starter',350),('growth',550),('pro',750)]:
-            self.assertEqual(self.env['get_price_for_plan'](plan,1,'monthly','PH'),price)
-        self.assertEqual(self.env['self_serve_billing_cycle']('monthly','PH'),'3_months')
+        for plan, totals in [('starter', [350, 975, 1800, 3000]),
+                             ('growth', [550, 1575, 3000, 5400]),
+                             ('pro', [750, 2175, 4200, 7800])]:
+            for cycle, total in zip(('monthly', '3_months', '6_months', 'annual'), totals):
+                with self.subTest(plan=plan, cycle=cycle):
+                    self.assertEqual(self.env['get_price_for_plan'](plan,1,cycle,'PH'),total)
+        self.assertEqual(self.env['self_serve_billing_cycle']('monthly','PH'),'monthly')
         self.assertEqual(self.env['self_serve_billing_cycle']('monthly','SG'),'monthly')
+
+    def test_public_payload_and_branch_packages_use_the_same_discounted_totals(self):
+        payload = self.env['subscription_plans_payload']('PH')
+        for plan, data in payload.items():
+            self.assertEqual(data['billing_discounts'], {'monthly':0,'3_months':25,'6_months':50,'annual':100})
+            self.assertEqual(data['annual_savings_months'], 0)
+            for cycle in ('3_months', '6_months', 'annual'):
+                self.assertEqual(data['price_'+cycle], self.env['get_price_for_plan'](plan,1,cycle,'PH'))
+                for branches in (1,2,3,5):
+                    self.assertEqual(data['price_tiers_'+cycle][str(branches)],
+                                     self.env['get_price_for_plan'](plan,branches,cycle,'PH'))
+        self.assertEqual(self.env['get_price_for_plan']('starter',2,'3_months','PH'),2025)
+        self.assertEqual(self.env['get_price_for_plan']('starter',6,'6_months','PH'),11400)
+
+    def test_custom_ph_quote_retains_its_existing_terms(self):
+        business={'plan':'growth','country_code':'PH','custom_monthly_price':777}
+        for cycle, multiplier in [('monthly',1),('3_months',3),('6_months',6),('annual',10)]:
+            self.assertEqual(self.env['get_price_for_business'](business,cycle),777*multiplier)
 
     def test_standard_billing_is_usd_without_reinterpreting_sales_or_custom_quotes(self):
         business={'country_code':'SG','display_currency':'SGD','plan':'growth'}

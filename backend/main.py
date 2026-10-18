@@ -235,12 +235,14 @@ CLOUDINARY_API_KEY = os.getenv('CLOUDINARY_API_KEY', '')
 CLOUDINARY_API_SECRET = os.getenv('CLOUDINARY_API_SECRET', '')
 CLOUDINARY_UPLOAD_PRESET = os.getenv('CLOUDINARY_UPLOAD_PRESET', 'LoyaltyTree_Images')
 MONTHLY_SUBSCRIPTION_PERIOD_DAYS = 30  # existing monthly access period
-ANNUAL_BILLABLE_MONTHS = 10  # annual billing = 12 months of access for the price of 10
+ANNUAL_BILLABLE_MONTHS = 10  # international/custom annual price; standard PH uses its prepaid discount
 SUBSCRIPTION_PERIOD_DAYS = MONTHLY_SUBSCRIPTION_PERIOD_DAYS  # backwards-compatible alias
 
-# Self-serve prepaid billing terms. Three- and six-month terms are exact
-# multiples of the normal monthly package price; annual keeps the 2-month-free
-# offer (10 paid monthly periods for 12 months of access).
+# Standard PH prepaid terms discount the monthly branch-package price.
+# International and custom quotes retain their existing annual 10-month price.
+PH_BILLING_MONTHLY_DISCOUNTS = {
+    'monthly': 0, '3_months': 25, '6_months': 50, 'annual': 100,
+}
 BILLING_CYCLE_CONFIG = {
     'monthly': {'label': 'Monthly', 'access_months': 1, 'billable_months': 1},
     '3_months': {'label': '3 Months', 'access_months': 3, 'billable_months': 3},
@@ -694,11 +696,8 @@ def normalize_billing_cycle(value: Optional[str]) -> str:
 
 
 def self_serve_billing_cycle(value: Optional[str], pricing_region: Optional[str]) -> str:
-    """Philippines self-serve has a 3-month minimum. Other regions may pay monthly."""
-    cycle = normalize_billing_cycle(value)
-    if normalize_country_code(pricing_region) == 'PH' and cycle == 'monthly':
-        return '3_months'
-    return cycle
+    """Every region supports monthly or prepaid self-service billing."""
+    return normalize_billing_cycle(value)
 
 
 def billing_cycle_label(value: Optional[str]) -> str:
@@ -714,7 +713,19 @@ def billing_period_label(value: Optional[str]) -> str:
         return '3-month prepaid subscription period'
     if cycle == '6_months':
         return '6-month prepaid subscription period'
-    return '12-month annual term (2 months free)'
+    return '12-month annual prepaid subscription period'
+
+
+def billing_monthly_discounts(pricing_region: str = 'PH') -> dict:
+    """Discount per month of the standard branch package, never per branch."""
+    return dict(PH_BILLING_MONTHLY_DISCOUNTS) if normalize_country_code(pricing_region) == 'PH' else {}
+
+
+def prepaid_subscription_price(monthly_price: int, billing_cycle: str, pricing_region: str = 'PH') -> int:
+    cycle = normalize_billing_cycle(billing_cycle)
+    discount = billing_monthly_discounts(pricing_region).get(cycle, 0)
+    months = BILLING_CYCLE_CONFIG[cycle]['access_months' if discount else 'billable_months']
+    return max(0, int(monthly_price) - discount) * int(months)
 
 
 def get_price_for_plan(plan: Optional[str], branch_count: int, billing_cycle: str = 'monthly', pricing_region: str = 'PH') -> int:
@@ -736,9 +747,7 @@ def get_price_for_plan(plan: Optional[str], branch_count: int, billing_cycle: st
         single_branch_price = int(tiers.get('1', 0) or 0)
         monthly_price = five_branch_price + ((branch_count - 5) * single_branch_price)
 
-    cycle = normalize_billing_cycle(billing_cycle)
-    multiplier = int(BILLING_CYCLE_CONFIG[cycle]['billable_months'])
-    return monthly_price * multiplier
+    return prepaid_subscription_price(monthly_price, billing_cycle, pricing_region)
 
 
 
@@ -784,10 +793,10 @@ def subscription_plans_payload(pricing_region: str = 'PH') -> dict:
         item['price_month']=monthly_tiers['1']
         item['price_tiers']=monthly_tiers
         for cycle in ('3_months', '6_months', 'annual'):
-            multiplier = int(BILLING_CYCLE_CONFIG[cycle]['billable_months'])
-            item[f'price_{cycle}'] = int(monthly_tiers['1']) * multiplier
-            item[f'price_tiers_{cycle}'] = {bracket:int(amount)*multiplier for bracket,amount in monthly_tiers.items()}
-        item['annual_savings_months'] = 2
+            item[f'price_{cycle}'] = prepaid_subscription_price(monthly_tiers['1'], cycle, code)
+            item[f'price_tiers_{cycle}'] = {bracket:prepaid_subscription_price(amount, cycle, code) for bracket,amount in monthly_tiers.items()}
+        item['billing_discounts'] = billing_monthly_discounts(code)
+        item['annual_savings_months'] = 0 if code == 'PH' else 2
         payload[key] = item
     return payload
 
@@ -20214,7 +20223,8 @@ async def get_subscription_status(public_id: str):
             "3_months": get_price_for_business(business, '3_months', branch_count),
             "6_months": get_price_for_business(business, '6_months', branch_count),
             "annual": get_price_for_business(business, 'annual', branch_count),
-            "annual_savings_months": 2,
+            "billing_discounts": billing_monthly_discounts(pricing_region) if not business_custom_monthly_price(business) else {},
+            "annual_savings_months": 0 if pricing_region == 'PH' and not business_custom_monthly_price(business) else 2,
         },
         "payment_capabilities": {
             "provider": "paymongo",

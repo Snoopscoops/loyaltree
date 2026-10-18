@@ -4,31 +4,11 @@ import SubscriptionPayment from './SubscriptionPayment'
 import logo128 from './logo-128.png'
 import { COUNTRY_OPTIONS, formatMoney } from './currency'
 import legalPolicy from '../legal-content.json'
-
-// Mirrors the backend's branch_price_bracket(). Two branches stay on
-// per-branch pricing; the 3-branch package starts only at exactly 3 branches.
-function branchBracket(branchCount) {
-  const n = Number(branchCount) || 1
-  if (n <= 1) return '1'
-  if (n === 2) return '2'
-  if (n === 3) return '3'
-  return '5'
-}
-
-const BILLING_TERMS = {
-  monthly: { label: 'Monthly', unit: '/30 days', multiplier: 1 },
-  '3_months': { label: '3 Months', unit: '/3 months', multiplier: 3 },
-  '6_months': { label: '6 Months', unit: '/6 months', multiplier: 6 },
-  annual: { label: '1 Year', unit: '/year', multiplier: 10, savings: '2 months free' },
-}
+import { BILLING_TERMS, planPrice as priceFor, billingSavings } from './billingPricing'
 
 const SELF_SERVE_BILLING_CYCLES = new Set(['monthly', '3_months', '6_months', 'annual'])
 
-function allowedBillingCycles(country) {
-  return String(country || 'PH').toUpperCase() === 'PH'
-    ? ['3_months', '6_months', 'annual']
-    : ['monthly', '3_months', '6_months', 'annual']
-}
+function allowedBillingCycles() { return Object.keys(BILLING_TERMS) }
 function normalizeSelfServeBillingCycle(value, country='PH') {
   const allowed = allowedBillingCycles(country)
   return allowed.includes(value) ? value : allowed[0]
@@ -59,25 +39,6 @@ function apiErrorMessage(payload, fallback) {
   }
 
   return fallback
-}
-
-function priceFor(planData, branchCount, billingCycle = 'monthly') {
-  if (!planData) return null
-
-  const n = Math.max(1, Number(branchCount) || 1)
-  let monthly
-
-  if (n <= 5) {
-    const bracket = branchBracket(n)
-    monthly = planData.price_tiers?.[bracket] ?? planData.price_month
-  } else {
-    const oneBranch = Number(planData.price_tiers?.['1'] ?? planData.price_month ?? 0)
-    const fiveBranches = Number(planData.price_tiers?.['5'] ?? oneBranch)
-    monthly = fiveBranches + ((n - 5) * oneBranch)
-  }
-
-  const cycle = BILLING_TERMS[billingCycle] ? billingCycle : 'monthly'
-  return Number(monthly || 0) * BILLING_TERMS[cycle].multiplier
 }
 
 function planHighlights(planData) {
@@ -473,14 +434,14 @@ function Signup({ API_BASE }) {
       {wizardStep===3&&<section><p style={styles.eyebrow}>3 · BRAND</p><h1 style={styles.title}>Upload your logo</h1><p style={styles.subtitle}>{pricingContext.setup_kit_available ? 'Your logo will appear throughout your LoyaltyTree experience and helps us prepare your PR Kit.' : 'Your logo will appear on your digital loyalty card, Wallet pass, and join page.'}</p>
         <label style={styles.uploadBox}><input type="file" accept="image/png,image/jpeg,image/webp" onChange={e=>handleLogoUpload(e.target.files?.[0])} style={{display:'none'}}/>{form.logo_url?<><img src={form.logo_url} alt="Business logo" style={styles.logoPreview}/><strong>Logo uploaded</strong><span>Click to replace</span></>:<><div style={{fontSize:42}}>🖼️</div><strong>Choose your business logo</strong><span>PNG, JPG or WebP · maximum 8MB</span></>}</label>{logoUpload.uploading&&<p style={styles.tip}>Uploading…</p>}{logoUpload.error&&<div style={styles.error}>{logoUpload.error}</div>}
       </section>}
-      {wizardStep===4&&<section><p style={styles.eyebrow}>4 · PLAN + PR KIT</p><h1 style={styles.title}>Choose how you’ll launch</h1><p style={styles.subtitle}>{pricingContext.country_code === 'AU' ? 'Australian prices include GST. Choose monthly or a prepaid term of 3 months, 6 months, or 1 year. The 1-year option gives 12 months of access for the price of 10. Gift Cards and the physical kit are not available here; you will pay by card.' : `${pricingContext.country_code === 'PH' ? 'Choose a prepaid term of 3 months, 6 months, or 1 year. Philippine self-service subscriptions have a 3-month minimum.' : 'Choose monthly (30 days) or a prepaid term of 3 months, 6 months, or 1 year.'} The 1-year option gives 12 months of access for the price of 10. Your exact plan, branch count, billing term, subscription price, and optional PR Kit total will appear in the agreement you sign next.`}</p>
+      {wizardStep===4&&<section><p style={styles.eyebrow}>4 · PLAN + PR KIT</p><h1 style={styles.title}>Choose how you’ll launch</h1><p style={styles.subtitle}>{pricingContext.country_code === 'PH' ? 'Choose 1 month, 3 months, 6 months, or 1 year. Standard prepaid packages save ₱25/month for 3 months, ₱50/month for 6 months, or ₱100/month for 1 year. The selected total is paid upfront.' : 'Choose monthly or prepaid USD billing. Annual billing provides 12 months for the price of 10. Gift Cards and the physical kit are Philippines-only.'}</p>
         <div style={styles.billingToggle}>
-          {Object.entries(BILLING_TERMS).filter(([key])=>allowedBillingCycles(form.country_code).includes(key)).map(([key,term])=><button key={key} type="button" onClick={()=>setForm({...form,billing_cycle:key})} style={{...styles.billingToggleBtn,...(form.billing_cycle===key?styles.billingToggleBtnActive:{})}}>{term.label}{term.savings?` · ${term.savings}`:''}</button>)}
+          {Object.entries(BILLING_TERMS).filter(([key])=>allowedBillingCycles(form.country_code).includes(key)).map(([key,term])=><button key={key} type="button" onClick={()=>setForm({...form,billing_cycle:key})} style={{...styles.billingToggleBtn,...(form.billing_cycle===key?styles.billingToggleBtnActive:{})}}>{term.label}{billingSavings(key,pricingContext.currency,selectedPlanData?.billing_discounts)?` · ${billingSavings(key,pricingContext.currency,selectedPlanData?.billing_discounts)}`:''}</button>)}
         </div>
-        <div className="lt-signup-plans" style={styles.planGrid}>{plans&&Object.entries(plans).map(([key,p])=>{const price=priceFor(p,branchCount,form.billing_cycle),selected=form.plan===key,cap=p.max_branches!=null&&branchCount>p.max_branches,highlights=planHighlights(p);return <button type="button" key={key} onClick={()=>setForm({...form,plan:key})} style={{...styles.planCard,...(selected?styles.planSelected:{})}}><b>{p.label}</b><strong>{formatMoney(price,pricingContext.currency)}<small>{BILLING_TERMS[form.billing_cycle]?.unit || '/30 days'}</small></strong>{form.billing_cycle==='annual'&&<span style={styles.annualNote}>12 months access · 2 months free</span>}{highlights.length>0&&<span style={styles.planIncludes}>Includes {highlights.join(' + ')}</span>}{key==='growth'&&<span style={styles.planBadge}>MOST POPULAR</span>}{cap&&<span style={styles.warning}>Up to {p.max_branches} branch(es)</span>}</button>})}</div>
+        <div className="lt-signup-plans" style={styles.planGrid}>{plans&&Object.entries(plans).map(([key,p])=>{const price=priceFor(p,branchCount,form.billing_cycle),selected=form.plan===key,cap=p.max_branches!=null&&branchCount>p.max_branches,highlights=planHighlights(p);return <button type="button" key={key} onClick={()=>setForm({...form,plan:key})} style={{...styles.planCard,...(selected?styles.planSelected:{})}}><b>{p.label}</b><strong>{formatMoney(price,pricingContext.currency)}<small>{BILLING_TERMS[form.billing_cycle]?.unit || '/30 days'}</small></strong>{form.billing_cycle==='annual'&&<span style={styles.annualNote}>12 months access · {billingSavings(form.billing_cycle,pricingContext.currency,p.billing_discounts)}</span>}{highlights.length>0&&<span style={styles.planIncludes}>Includes {highlights.join(' + ')}</span>}{key==='growth'&&<span style={styles.planBadge}>MOST POPULAR</span>}{cap&&<span style={styles.warning}>Up to {p.max_branches} branch(es)</span>}</button>})}</div>
         {pricingContext.setup_kit_available ? <><label style={{...styles.kitCard,...(form.setup_kit_requested?styles.kitSelected:{})}}><input type="checkbox" checked={form.setup_kit_requested} onChange={e=>setForm({...form,setup_kit_requested:e.target.checked})}/><div><strong>Add Physical QR / PR Kit · ₱150 per branch one-time</strong><p>{form.setup_kit_requested ? `For ${branchCount} branch${branchCount===1?'':'es'}: ₱${kitTotal.toLocaleString()} total.` : 'Sintra board QR display prepared per branch and delivered after payment confirmation.'}</p></div></label>
         {form.setup_kit_requested&&<div style={styles.delivery}><div className="lt-signup-two" style={styles.twoCol}><Field label="Recipient"><input name="kit_recipient_name" value={form.kit_recipient_name} onChange={handleChange} style={styles.input}/></Field><Field label="Contact number"><input name="kit_contact_number" value={form.kit_contact_number} onChange={handleChange} style={styles.input}/></Field></div><Field label="Delivery address"><textarea name="kit_delivery_address" value={form.kit_delivery_address} onChange={handleChange} style={{...styles.input,minHeight:70}}/></Field><Field label="Instructions (optional)"><input name="kit_delivery_instructions" value={form.kit_delivery_instructions} onChange={handleChange} style={styles.input}/></Field></div>}</> : <div style={styles.kitCard}><div><strong>Digital launch only in {pricingContext.country_name}</strong><p>{'Standard subscriptions outside the Philippines are billed in USD. Gift Cards and the physical QR / PR Kit are available only in the Philippines. You can download and print your join QR locally.'}</p></div></div>}
-        <div style={styles.priceDisclosure}><strong>Agreement preview</strong><span>Billing: {BILLING_TERMS[form.billing_cycle]?.label || 'Monthly'}{form.billing_cycle==='annual'?' · 2 months free':''}</span><span>Subscription: {formatMoney(selectedPrice||0,pricingContext.currency)}{BILLING_TERMS[form.billing_cycle]?.unit || '/30 days'}</span>{kitTotal>0&&<span>PR Kit: ₱{kitTotal.toLocaleString()} one-time</span>}</div>
+        <div style={styles.priceDisclosure}><strong>Agreement preview</strong><span>Billing: {BILLING_TERMS[form.billing_cycle]?.label || 'Monthly'}{billingSavings(form.billing_cycle,pricingContext.currency,selectedPlanData?.billing_discounts)?` · ${billingSavings(form.billing_cycle,pricingContext.currency,selectedPlanData?.billing_discounts)}`:''}</span><span>Subscription: {formatMoney(selectedPrice||0,pricingContext.currency)}{BILLING_TERMS[form.billing_cycle]?.unit || '/30 days'}</span>{kitTotal>0&&<span>PR Kit: ₱{kitTotal.toLocaleString()} one-time</span>}</div>
       </section>}
       {wizardStep===5&&<section><p style={styles.eyebrow}>5 · REVIEW + SIGN</p><h1 style={styles.title}>Review your LoyaltyTree agreement</h1><p style={styles.subtitle}>Review the Business Subscription & Data Processing Agreement below. The account will not be created until an authorized representative signs it.</p>
         <div style={styles.kitCard}><div style={{width:'100%'}}><Field label="Free trial coupon (optional)"><input style={styles.input} value={coupon} maxLength={64} onChange={e=>setCoupon(e.target.value.toUpperCase())} placeholder="Enter coupon code"/></Field><button type="button" style={styles.secondary} disabled={couponBusy||!coupon.trim()} onClick={applyCoupon}>{couponBusy?'Checking…':'Apply coupon'}</button>{coupon&&<button type="button" style={styles.secondary} onClick={()=>setCoupon('')}>Remove</button>}{couponError&&<p role="alert" style={{color:'#b91c1c'}}>{couponError}</p>}{couponPreview&&<p role="status"><strong>{couponPreview.trial_days}-day free trial applied.</strong> Estimated end: {new Date(couponPreview.trial_ends_at).toLocaleString('en-PH',{timeZone:'Asia/Manila'})} (PH). Starts at successful signup. No payment required to start; renew after the trial to continue. The PR Kit is charged separately and is not included.</p>}</div></div>
@@ -488,7 +449,7 @@ function Signup({ API_BASE }) {
         {agreementLoading&&<div style={styles.loadingBox}>Preparing your agreement…</div>}
         {!agreementLoading&&agreementDoc&&<>
           <div className="lt-agreement-summary" style={styles.agreementSummary}>
-            <Summary label="Business" value={form.name}/><Summary label="Plan" value={agreementDoc.plan_label}/><Summary label="Branches" value={String(branchCount)}/><Summary label="Billing" value={`${BILLING_TERMS[agreementDoc.billing_cycle]?.label || 'Monthly'}${agreementDoc.billing_cycle==='annual'?' · 2 months free':''}`}/><Summary label="Subscription" value={`${formatMoney(agreementDoc.billing_price||agreementDoc.price_month||0,agreementDoc.currency||pricingContext.currency)} ${BILLING_TERMS[agreementDoc.billing_cycle]?.unit || '/30 days'}`}/>{agreementDoc.setup_kit_amount>0&&<Summary label="PR Kit" value={`₱${Number(agreementDoc.setup_kit_amount).toLocaleString()} one-time`}/>}<Summary label="Agreement version" value={agreementDoc.agreement_version}/>
+            <Summary label="Business" value={form.name}/><Summary label="Plan" value={agreementDoc.plan_label}/><Summary label="Branches" value={String(branchCount)}/><Summary label="Billing" value={`${BILLING_TERMS[agreementDoc.billing_cycle]?.label || 'Monthly'}`}/><Summary label="Subscription" value={`${formatMoney(agreementDoc.billing_price||agreementDoc.price_month||0,agreementDoc.currency||pricingContext.currency)} ${BILLING_TERMS[agreementDoc.billing_cycle]?.unit || '/30 days'}`}/>{agreementDoc.setup_kit_amount>0&&<Summary label="PR Kit" value={`₱${Number(agreementDoc.setup_kit_amount).toLocaleString()} one-time`}/>}<Summary label="Agreement version" value={agreementDoc.agreement_version}/>
           </div>
           <div style={styles.paperHeader}><strong>{agreementDoc.title}</strong><span>{agreementDoc.operator?.name}</span><small>{agreementDoc.operator?.location} · {agreementDoc.operator?.phone} · {agreementDoc.operator?.email}</small></div>
           <div style={styles.paper} onScroll={e=>{const el=e.currentTarget;if(el.scrollTop+el.clientHeight>=el.scrollHeight-32)setAgreementRead(true)}}>

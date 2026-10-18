@@ -21,6 +21,7 @@ SOURCE = Path(__file__).resolve().parents[1] / 'main.py'
 TREE = ast.parse(SOURCE.read_text())
 NAMES = {'branch_price_bracket', 'normalize_billing_cycle', 'get_price_for_plan',
          'business_custom_monthly_price', 'billing_branch_count', 'get_price_for_business',
+         'billing_monthly_discounts', 'prepaid_subscription_price', 'self_serve_billing_cycle',
          'AdminBusinessUpdate', 'admin_update_business', 'get_subscription_status', 'create_subscription_checkout'}
 
 def namespace():
@@ -29,12 +30,12 @@ def namespace():
                Depends=lambda value: None, require_admin=lambda: True,
                SUBSCRIPTION_PLANS={'starter': {}},
                price_tiers_for_region=lambda *args: {'1': 100, '2': 200, '3': 250, '5': 400},
-               business_pricing_region=lambda b: 'PH', business_currency=lambda b: 'PHP', subscription_currency=lambda b: 'PHP',
+               normalize_country_code=lambda value: value, business_pricing_region=lambda b: 'PH', business_currency=lambda b: 'PHP', subscription_currency=lambda b: 'PHP',
                business_has_plan_feature=lambda *args: False,
                PAYMONGO_SECRET_KEY='', paymongo_card_configured=lambda: False)
     nodes = []
     for node in TREE.body:
-        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id in {'BILLING_CYCLE_CONFIG', 'ANNUAL_BILLABLE_MONTHS'} for t in node.targets):
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id in {'BILLING_CYCLE_CONFIG', 'ANNUAL_BILLABLE_MONTHS', 'PH_BILLING_MONTHLY_DISCOUNTS'} for t in node.targets):
             nodes.append(node)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name in NAMES:
             node.decorator_list = []
@@ -53,8 +54,8 @@ class BillingBranchTests(unittest.TestCase):
 
     def test_override_prices_all_cycles_and_extra_branches(self):
         price = self.env['get_price_for_business']
-        for cycle, multiplier in [('monthly', 1), ('3_months', 3), ('6_months', 6), ('annual', 10)]:
-            self.assertEqual(price(self.business, cycle, 1), 250 * multiplier)
+        for cycle, total in [('monthly',250),('3_months',675),('6_months',1200),('annual',1800)]:
+            self.assertEqual(price(self.business, cycle, 1), total)
         self.business['billing_branch_count'] = 6
         self.assertEqual(price(self.business, 'monthly', 1), 500)
 
@@ -99,7 +100,7 @@ class BillingBranchTests(unittest.TestCase):
         self.assertEqual(result['branch_count'], 3)
         self.assertEqual(result['configured_branch_count'], 1)
         self.assertEqual(result['pricing']['monthly'], 250)
-        self.assertEqual(result['pricing']['annual'], 2500)
+        self.assertEqual(result['pricing']['annual'], 1800)
 
     def test_checkout_uses_override_and_preserves_physical_kit_quantity(self):
         checkout = MagicMock(return_value={'intent_id': 'test-payment'})
@@ -110,12 +111,28 @@ class BillingBranchTests(unittest.TestCase):
                         create_qrph_checkout=checkout, generate_public_id=lambda: 'payment')
         self.business['setup_kit_requested'] = True
         result = asyncio.run(self.env['create_subscription_checkout']('biz'))
-        self.assertEqual(result['subscription_amount'], 750)
-        self.assertEqual(result['amount'], 900)  # one physical kit + three operating branches
+        self.assertEqual(result['subscription_amount'], 675)
+        self.assertEqual(result['amount'], 825)  # one physical kit + three operating branches
         self.assertEqual(checkout.call_args.kwargs['metadata']['setup_kit_branch_count'], '1')
         payment = self.db.table.return_value.insert.call_args.args[0]
         self.assertEqual(payment['branch_count'], 3)
-        self.assertEqual(payment['amount'], 900)
+        self.assertEqual(payment['amount'], 825)
+
+    def test_checkout_accepts_monthly_and_all_discounted_terms(self):
+        checkout=MagicMock(return_value={'intent_id':'test-payment'})
+        self.env.update(fx_to_php=lambda amount,currency:(amount,1),
+                        billing_cycle_label=lambda cycle:cycle, SETUP_KIT_PRICE_PER_BRANCH=150,
+                        SUBSCRIPTION_QR_EXPIRES_SECONDS=900, create_qrph_checkout=checkout,
+                        generate_public_id=lambda:'payment')
+        for cycle, total in [('monthly',250),('3_months',675),('6_months',1200),('annual',1800)]:
+            with self.subTest(cycle=cycle):
+                req=SimpleNamespace(billing_cycle=cycle,payment_method='qrph')
+                result=asyncio.run(self.env['create_subscription_checkout']('biz',req))
+                self.assertEqual(result['billing_cycle'],cycle)
+                self.assertEqual(result['subscription_amount'],total)
+                payment=self.db.table.return_value.insert.call_args.args[0]
+                self.assertEqual(payment['amount'],total)
+                self.assertEqual(payment['billing_cycle'],cycle)
 
     def test_admin_authorization_dependency_remains(self):
         route = next(n for n in ast.parse(SOURCE.read_text()).body if isinstance(n, ast.AsyncFunctionDef) and n.name == 'admin_update_business')

@@ -1,8 +1,8 @@
 {
-  "version": "2026-10-11-v4",
+  "version": "2026-10-18-v1",
   "status": "prepared_for_deployment",
-  "prepared_at": "2026-10-11",
-  "effective_date": "2026-10-11",
+  "prepared_at": "2026-10-18",
+  "effective_date": "2026-10-18",
   "operator": {
     "name": "LoyaltyTree Information Technology Solutions",
     "location": "Isabela, Philippines",
@@ -169,7 +169,7 @@
         {
           "title": "Plans, billing and branch counts",
           "paragraphs": [
-            "The confirmed order identifies the plan, operating branch count, pricing region, currency, billing period, taxes/charges and optional items before payment. Philippine self-service subscriptions have a 3-month minimum, with 3-month, 6-month and annual options. The annual package provides 12 months of access for the price of 10 monthly reference periods. International options and quotes may differ.",
+            "The confirmed order identifies the plan, operating branch count, pricing region, currency, billing period, taxes/charges and optional items before payment. Philippine self-service subscriptions offer 1 month, 3 months, 6 months or 12 months. Standard prepaid branch packages reduce the monthly package rate by PHP25 for 3 months, PHP50 for 6 months, or PHP100 for 12 months, with the full discounted term paid upfront. International annual pricing remains 10 monthly reference periods for 12 months of access. Custom quotes follow the confirmed order.",
             "Administrators can correct the recorded operating branch count used for billing. A changed price or scope must be disclosed before a new payment or separately agreed adjustment. Signing an agreement does not itself charge a payment method. Renewal is not automatic unless a separate recurring-payment arrangement is expressly accepted.",
             "A business may request non-renewal or stop using the service. For voluntary early cancellation of an activated prepaid period, access continues until its paid expiry and there is no prorated refund solely because use stops early. This does not remove refunds or other remedies required by law, or agreed remedies for LoyaltyTree’s failure to deliver. Approved physical-kit and custom-project terms apply to those purchases."
           ]
@@ -288,7 +288,7 @@
           ]
         }
       ],
-      "version": "2026-10-11-v2"
+      "version": "2026-10-18-v1"
     },
     "business-agreement": {
       "title": "Business Subscription Agreement",
@@ -318,7 +318,7 @@
         {
           "title": "Fees, operating branches, renewal and cancellation",
           "paragraphs": [
-            "The Business pays the price shown in the accepted Order Summary, with its plan, operating branch count, region, currency and prepaid term. Philippine self-service terms are 3 months, 6 months or annually; the annual price is 10 monthly reference periods for 12 months of access. Other markets follow the options stated in their confirmed order.",
+            "The Business pays the price shown in the accepted Order Summary, with its plan, operating branch count, region, currency and billing term. Philippine standard terms offer 1 month, 3 months, 6 months or 12 months. Prepaid monthly package discounts are PHP25, PHP50 or PHP100 for the 3-, 6- or 12-month term respectively; they apply once to the monthly branch package, not separately per branch. The full discounted term is paid upfront. International pricing and custom quotes follow the confirmed order.",
             "A successful payment activates or extends the applicable access period. No automatic renewal or recurring debit is assumed unless separately disclosed and accepted. The Business should renew before expiry to maintain access. Nonpayment can leave a new account pending or cause an expired account to be limited or suspended.",
             "LoyaltyTree administrators may correct recorded operating branch counts. Applicable branch pricing and any separately charged adjustment must be disclosed before payment; an administrative correction does not authorise an undisclosed retrospective fee. Extra taxes, setup, integration, hardware, delivery or provider charges must be disclosed or agreed.",
             "A Physical QR / PR Kit, if selected and available in the market, is charged once at the amount shown in the Order Summary. For the current Philippine standard kit, the reference charge is PHP150 per selected branch. Fulfilment begins after payment confirmation. Custom work and physical items follow their confirmed order/fulfilment terms.",
@@ -580,12 +580,12 @@
           "As quoted"
         ]
       ],
-      "version": "2026-10-11-v5"
+      "version": "2026-10-18-v1"
     }
   },
   "versions": {
-    "business_agreement": "2026-10-11-v5",
-    "terms": "2026-10-11-v2",
+    "business_agreement": "2026-10-18-v1",
+    "terms": "2026-10-18-v1",
     "privacy": "2026-10-11-v2",
     "dpa": "2026-10-11-v2",
     "presentation": "2026-10-11-v2",

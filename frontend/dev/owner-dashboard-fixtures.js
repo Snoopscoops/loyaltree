@@ -1,3 +1,4 @@
+import { prepaidPrice, PH_REFERENCE_DISCOUNTS } from '../src/components/billingPricing.js'
 // Fictional data only. No native fetch, credentials, charges, or wallet sends.
 export const fixtureSlug = 'demo-daylight'
 export const fixtureUser = { role: 'owner', token: 'local-fixture-not-a-signed-token', name: 'Alex Morgan', business_slug: fixtureSlug, business_public_id: 'demo-business-daylight', business_name: 'Daylight Coffee', business_type: 'coffee' }
@@ -31,6 +32,10 @@ export function createFixtureTransport({ scenario = 'stamp', onRequest = () => {
   const notices = [{ id:501,title:'Updates from LoyaltyTree',message:'Your platform announcements stay visible here. This local preview uses fictional data only.' }]
   let announcements = [{ id:101,title:'A little weekend treat',message:'Drop by for your favorite coffee this weekend.',type:'promo',is_active:true,target_scope:'business',created_at:date(-2),notification_count:1,last_notified_at:date(-2),program_public_id:'',branch_public_id:'' }]
   const subscription = { plan:'pro',plan_label:'Pro',subscription_status:'active',billing_hold:false,subscription_expires_at:date(65),days_left:65,billing_cycle:'3_months',pricing_region:'PH',currency:'PHP',display_currency:'PHP',monthly_price:750,price_per_month:750,pricing:{monthly:750,'3_months':2250,'6_months':4500,annual:7500},branch_count:2,billable_branches:2,last_paid_at:date(-25),features:{gift_cards:true,pos_integration:true,max_programs:3} }
+  const billingDiscounts = PH_REFERENCE_DISCOUNTS
+  const packagePrice = {starter:700,growth:1100,pro:1500}[selectedPlan]
+  subscription.monthly_price=packagePrice; subscription.price_per_month=packagePrice
+  subscription.pricing={...Object.fromEntries(['monthly','3_months','6_months','annual'].map(cycle=>[cycle,prepaidPrice(packagePrice,cycle,billingDiscounts)])),billing_discounts:billingDiscounts}
   subscription.plan=selectedPlan; subscription.plan_label=selectedPlan[0].toUpperCase()+selectedPlan.slice(1); subscription.features.qr_menu=selectedPlan!=='starter'
   const plan = () => ({ plan:selectedPlan,plan_label:subscription.plan_label,usage:{announcements_limit:10,announcements_used_this_cycle:announcements.length,announcements_used_this_month:announcements.length},features:subscription.features })
   let qrPublished = menuPublished
