@@ -187,4 +187,27 @@ immediate automatic retries when the backend asks it to wait. Deploy backend
 new environment variables are needed. Local fake-transport tests cover lost
 create responses, same-ID conflicts, stale-design recovery and failure mapping;
 live Google latency still requires a post-deploy publishing check.
+## Admin customer demographics
+
+Admin → Customer Demographics calls `GET /api/v1/admin/customer-demographics`
+with the existing admin authentication. It summarizes saved customers of all
+non-demo businesses, including inactive accounts. Owner profiles and website
+visitors are not demographic sources; employee-only cards are excluded.
+
+Shared customer identities count once within each business, across programs.
+Legacy memberships without an identity count separately. The report includes
+age ranges, gender, occupation, missing-data coverage and average customers per
+business (including businesses with zero customers). It does not estimate an
+exact mean age from age ranges or infer customer location from business addresses.
+Distributions require at least 10 valid responses. Groups below 5 responses and
+an additional group are hidden to prevent small counts being recovered by subtraction.
+
+Reads use narrow, paginated selects and cache only aggregate results in memory
+for five minutes. During an upstream failure, a previous successful report can
+be returned for up to one hour with `stale: true`; otherwise the endpoint returns
+a sanitized 503. Responses use `Cache-Control: private, no-store`. No new SQL
+migration or environment variable is required. Deploy the backend and frontend
+together. The local preview at `/dev/admin-demographics.html` uses fictional
+fixtures and blocks network requests; it is not a production route.
+
 # points_prizes update

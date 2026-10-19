@@ -1,0 +1,455 @@
+{
+  "complete": {
+    "generated_at": "2026-10-19T07:00:57.178555+00:00",
+    "stale": false,
+    "scope": "Customers registered with all non-demo businesses",
+    "summary": {
+      "customers": 60,
+      "memberships": 60,
+      "businesses": 3,
+      "businesses_with_customers": 3,
+      "average_customers_per_business": 20.0,
+      "identity_linked_memberships": 60,
+      "unlinked_memberships": 0,
+      "employee_memberships_excluded": 0
+    },
+    "age": {
+      "available": true,
+      "sample_size": 60,
+      "missing": 0,
+      "coverage_percent": 100.0,
+      "suppressed": false,
+      "rows": [
+        {
+          "key": "under_18",
+          "label": "Under 18",
+          "count": 0,
+          "percent": 0.0
+        },
+        {
+          "key": "18_24",
+          "label": "18\u201324",
+          "count": 15,
+          "percent": 25.0
+        },
+        {
+          "key": "25_34",
+          "label": "25\u201334",
+          "count": 35,
+          "percent": 58.3
+        },
+        {
+          "key": "35_44",
+          "label": "35\u201344",
+          "count": 10,
+          "percent": 16.7
+        },
+        {
+          "key": "45_54",
+          "label": "45\u201354",
+          "count": 0,
+          "percent": 0.0
+        },
+        {
+          "key": "55_64",
+          "label": "55\u201364",
+          "count": 0,
+          "percent": 0.0
+        },
+        {
+          "key": "65_plus",
+          "label": "65+",
+          "count": 0,
+          "percent": 0.0
+        }
+      ],
+      "largest_group": {
+        "label": "25\u201334",
+        "count": 35,
+        "percent": 58.3
+      }
+    },
+    "gender": {
+      "available": true,
+      "sample_size": 60,
+      "missing": 0,
+      "coverage_percent": 100.0,
+      "suppressed": false,
+      "rows": [
+        {
+          "key": "female",
+          "label": "Female",
+          "count": 35,
+          "percent": 58.3
+        },
+        {
+          "key": "male",
+          "label": "Male",
+          "count": 20,
+          "percent": 33.3
+        },
+        {
+          "key": "lgbtq",
+          "label": "LGBTQ+",
+          "count": 0,
+          "percent": 0.0
+        },
+        {
+          "key": "rather_not_say",
+          "label": "Prefer not to say",
+          "count": 5,
+          "percent": 8.3
+        }
+      ],
+      "largest_group": {
+        "label": "Female",
+        "count": 35,
+        "percent": 58.3
+      }
+    },
+    "occupation": {
+      "available": true,
+      "sample_size": 50,
+      "missing": 10,
+      "coverage_percent": 83.3,
+      "suppressed": false,
+      "rows": [
+        {
+          "key": "working",
+          "label": "Working",
+          "count": 40,
+          "percent": 80.0
+        },
+        {
+          "key": "business_owner",
+          "label": "Business owner",
+          "count": 10,
+          "percent": 20.0
+        },
+        {
+          "key": "unemployed",
+          "label": "Unemployed",
+          "count": 0,
+          "percent": 0.0
+        }
+      ],
+      "largest_group": {
+        "label": "Working",
+        "count": 40,
+        "percent": 80.0
+      }
+    },
+    "privacy": {
+      "minimum_sample": 10,
+      "minimum_cell": 5,
+      "secondary_suppression": true
+    },
+    "methodology": {
+      "counting": "Shared identities count once per business, across their cards. A person visiting two businesses counts once at each. Legacy memberships without a shared identity count separately.",
+      "responses": "The latest available valid response per customer is used. Missing or invalid values are excluded from each demographic denominator.",
+      "age": "Age ranges are reported. An exact average age cannot be calculated from age ranges; legacy saved ages or full birthdays are converted to ranges.",
+      "average": "Customer count divided by all non-demo businesses, including businesses with no customers. Business account status does not filter the population.",
+      "location": "Customer city/region is not consistently collected. Business addresses and website visitor locations are not used to guess customer demographics."
+    },
+    "source_fields_missing": [],
+    "cache_seconds": 300
+  },
+  "small": {
+    "generated_at": "2026-10-19T07:00:57.178984+00:00",
+    "stale": false,
+    "scope": "Customers registered with all non-demo businesses",
+    "summary": {
+      "customers": 3,
+      "memberships": 3,
+      "businesses": 3,
+      "businesses_with_customers": 3,
+      "average_customers_per_business": 1.0,
+      "identity_linked_memberships": 3,
+      "unlinked_memberships": 0,
+      "employee_memberships_excluded": 0
+    },
+    "age": {
+      "available": false,
+      "sample_size": 3,
+      "missing": 0,
+      "coverage_percent": 100.0,
+      "suppressed": true,
+      "rows": [
+        {
+          "key": "under_18",
+          "label": "Under 18",
+          "count": null,
+          "percent": null
+        },
+        {
+          "key": "18_24",
+          "label": "18\u201324",
+          "count": null,
+          "percent": null
+        },
+        {
+          "key": "25_34",
+          "label": "25\u201334",
+          "count": null,
+          "percent": null
+        },
+        {
+          "key": "35_44",
+          "label": "35\u201344",
+          "count": null,
+          "percent": null
+        },
+        {
+          "key": "45_54",
+          "label": "45\u201354",
+          "count": null,
+          "percent": null
+        },
+        {
+          "key": "55_64",
+          "label": "55\u201364",
+          "count": null,
+          "percent": null
+        },
+        {
+          "key": "65_plus",
+          "label": "65+",
+          "count": null,
+          "percent": null
+        }
+      ],
+      "largest_group": null
+    },
+    "gender": {
+      "available": false,
+      "sample_size": 3,
+      "missing": 0,
+      "coverage_percent": 100.0,
+      "suppressed": true,
+      "rows": [
+        {
+          "key": "female",
+          "label": "Female",
+          "count": null,
+          "percent": null
+        },
+        {
+          "key": "male",
+          "label": "Male",
+          "count": null,
+          "percent": null
+        },
+        {
+          "key": "lgbtq",
+          "label": "LGBTQ+",
+          "count": null,
+          "percent": null
+        },
+        {
+          "key": "rather_not_say",
+          "label": "Prefer not to say",
+          "count": null,
+          "percent": null
+        }
+      ],
+      "largest_group": null
+    },
+    "occupation": {
+      "available": false,
+      "sample_size": 3,
+      "missing": 0,
+      "coverage_percent": 100.0,
+      "suppressed": true,
+      "rows": [
+        {
+          "key": "working",
+          "label": "Working",
+          "count": null,
+          "percent": null
+        },
+        {
+          "key": "business_owner",
+          "label": "Business owner",
+          "count": null,
+          "percent": null
+        },
+        {
+          "key": "unemployed",
+          "label": "Unemployed",
+          "count": null,
+          "percent": null
+        }
+      ],
+      "largest_group": null
+    },
+    "privacy": {
+      "minimum_sample": 10,
+      "minimum_cell": 5,
+      "secondary_suppression": true
+    },
+    "methodology": {
+      "counting": "Shared identities count once per business, across their cards. A person visiting two businesses counts once at each. Legacy memberships without a shared identity count separately.",
+      "responses": "The latest available valid response per customer is used. Missing or invalid values are excluded from each demographic denominator.",
+      "age": "Age ranges are reported. An exact average age cannot be calculated from age ranges; legacy saved ages or full birthdays are converted to ranges.",
+      "average": "Customer count divided by all non-demo businesses, including businesses with no customers. Business account status does not filter the population.",
+      "location": "Customer city/region is not consistently collected. Business addresses and website visitor locations are not used to guess customer demographics."
+    },
+    "source_fields_missing": [],
+    "cache_seconds": 300
+  },
+  "stale": {
+    "generated_at": "2026-10-19T07:00:57.178555+00:00",
+    "stale": true,
+    "scope": "Customers registered with all non-demo businesses",
+    "summary": {
+      "customers": 60,
+      "memberships": 60,
+      "businesses": 3,
+      "businesses_with_customers": 3,
+      "average_customers_per_business": 20.0,
+      "identity_linked_memberships": 60,
+      "unlinked_memberships": 0,
+      "employee_memberships_excluded": 0
+    },
+    "age": {
+      "available": true,
+      "sample_size": 60,
+      "missing": 0,
+      "coverage_percent": 100.0,
+      "suppressed": false,
+      "rows": [
+        {
+          "key": "under_18",
+          "label": "Under 18",
+          "count": 0,
+          "percent": 0.0
+        },
+        {
+          "key": "18_24",
+          "label": "18\u201324",
+          "count": 15,
+          "percent": 25.0
+        },
+        {
+          "key": "25_34",
+          "label": "25\u201334",
+          "count": 35,
+          "percent": 58.3
+        },
+        {
+          "key": "35_44",
+          "label": "35\u201344",
+          "count": 10,
+          "percent": 16.7
+        },
+        {
+          "key": "45_54",
+          "label": "45\u201354",
+          "count": 0,
+          "percent": 0.0
+        },
+        {
+          "key": "55_64",
+          "label": "55\u201364",
+          "count": 0,
+          "percent": 0.0
+        },
+        {
+          "key": "65_plus",
+          "label": "65+",
+          "count": 0,
+          "percent": 0.0
+        }
+      ],
+      "largest_group": {
+        "label": "25\u201334",
+        "count": 35,
+        "percent": 58.3
+      }
+    },
+    "gender": {
+      "available": true,
+      "sample_size": 60,
+      "missing": 0,
+      "coverage_percent": 100.0,
+      "suppressed": false,
+      "rows": [
+        {
+          "key": "female",
+          "label": "Female",
+          "count": 35,
+          "percent": 58.3
+        },
+        {
+          "key": "male",
+          "label": "Male",
+          "count": 20,
+          "percent": 33.3
+        },
+        {
+          "key": "lgbtq",
+          "label": "LGBTQ+",
+          "count": 0,
+          "percent": 0.0
+        },
+        {
+          "key": "rather_not_say",
+          "label": "Prefer not to say",
+          "count": 5,
+          "percent": 8.3
+        }
+      ],
+      "largest_group": {
+        "label": "Female",
+        "count": 35,
+        "percent": 58.3
+      }
+    },
+    "occupation": {
+      "available": true,
+      "sample_size": 50,
+      "missing": 10,
+      "coverage_percent": 83.3,
+      "suppressed": false,
+      "rows": [
+        {
+          "key": "working",
+          "label": "Working",
+          "count": 40,
+          "percent": 80.0
+        },
+        {
+          "key": "business_owner",
+          "label": "Business owner",
+          "count": 10,
+          "percent": 20.0
+        },
+        {
+          "key": "unemployed",
+          "label": "Unemployed",
+          "count": 0,
+          "percent": 0.0
+        }
+      ],
+      "largest_group": {
+        "label": "Working",
+        "count": 40,
+        "percent": 80.0
+      }
+    },
+    "privacy": {
+      "minimum_sample": 10,
+      "minimum_cell": 5,
+      "secondary_suppression": true
+    },
+    "methodology": {
+      "counting": "Shared identities count once per business, across their cards. A person visiting two businesses counts once at each. Legacy memberships without a shared identity count separately.",
+      "responses": "The latest available valid response per customer is used. Missing or invalid values are excluded from each demographic denominator.",
+      "age": "Age ranges are reported. An exact average age cannot be calculated from age ranges; legacy saved ages or full birthdays are converted to ranges.",
+      "average": "Customer count divided by all non-demo businesses, including businesses with no customers. Business account status does not filter the population.",
+      "location": "Customer city/region is not consistently collected. Business addresses and website visitor locations are not used to guess customer demographics."
+    },
+    "source_fields_missing": [],
+    "cache_seconds": 300
+  }
+}

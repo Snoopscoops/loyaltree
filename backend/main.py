@@ -24,6 +24,11 @@ except ImportError:
     from qr_menu import register_qr_menu_routes
 
 try:
+    from .customer_demographics import register_customer_demographics_routes
+except ImportError:
+    from customer_demographics import register_customer_demographics_routes
+
+try:
     from .business_welcome_email import build_business_getting_started_email
 except ImportError:
     from business_welcome_email import build_business_getting_started_email
@@ -49657,3 +49662,6 @@ register_qr_menu_routes(app, db=supabase, get_business=safe_get_business,
     require_owner=require_owner_session, has_feature=business_has_plan_feature,
     on_hold=billing_hold, menu_snapshot=_oa_menu_snapshot, branding=_qr_menu_branding,
     frontend_url=FRONTEND_URL or 'https://theloyaltytree.com')
+
+register_customer_demographics_routes(app, db=supabase, require_admin=require_admin,
+    on_warning=lambda error_type: log_event('customer_demographics_unavailable', level='warning', error_type=error_type))
