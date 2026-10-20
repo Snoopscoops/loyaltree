@@ -238,6 +238,16 @@ not a cap on the application's total memory. Existing balance/dirty-marker
 fingerprint checks still invalidate signed passes. These small bounded local
 caches are a containment fix; no Render Key Value service is provisioned.
 
+Normal Apple Add to Wallet and signup prewarm now share the Store Card cache,
+including Order Ahead businesses. Concurrent cold requests recheck the current
+fingerprint inside the existing rendering lock and reuse the first successful
+build; valid cache hits bypass that lock. Failed builds remain retryable, and
+stamp/design/announcement/revision changes still invalidate the cached bytes.
+The download response includes `X-LoyaltyTree-Apple-Cache: HIT|MISS`.
+Authenticated installed-pass updates retain their existing rebuild/conditional
+GET behavior. This reduces duplicate work; transient native image allocations
+and retained allocator memory can still raise RSS during/after a genuine build.
+
 `runtime_memory` samples Linux RSS, cgroup memory and cache bytes every 30 seconds.
 `wallet_memory` records before/after pass builds and pushes with business slug
 and request ID, without customer profiles, images, signed bytes or device tokens.
