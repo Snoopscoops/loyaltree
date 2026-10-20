@@ -1,0 +1,730 @@
+{
+  "complete": {
+    "generated_at": "2026-10-20T08:12:00Z",
+    "process": {
+      "pid": 71,
+      "started_at": "2026-10-20T07:32:00Z",
+      "uptime_seconds": 2400,
+      "scope": "current_process",
+      "sample_interval_seconds": 30,
+      "current": {
+        "rss_mb": 281.5,
+        "rss_peak_mb": 328.6,
+        "container_memory_mb": 314.2,
+        "container_limit_mb": 512,
+        "threads": 6,
+        "cpu_percent": 121.4,
+        "python_heap_mb": null,
+        "trace_overhead_mb": null
+      }
+    },
+    "summary": {
+      "requests": 482,
+      "status_2xx": 469,
+      "status_4xx": 11,
+      "status_5xx": 2,
+      "inflight": 2,
+      "peak_inflight": 9,
+      "avg_ms": 142.8,
+      "max_ms": 3261,
+      "response_bytes": 3624110
+    },
+    "samples": [
+      {
+        "rss_mb": 244.1,
+        "rss_peak_mb": 328.6,
+        "container_memory_mb": 276.8,
+        "container_limit_mb": 512,
+        "threads": 6,
+        "cpu_percent": 13.2,
+        "python_heap_mb": null,
+        "trace_overhead_mb": null,
+        "ts": "2026-10-20T08:06:30Z",
+        "inflight": 0
+      },
+      {
+        "rss_mb": 245,
+        "rss_peak_mb": 328.6,
+        "container_memory_mb": 277.7,
+        "container_limit_mb": 512,
+        "threads": 6,
+        "cpu_percent": 13.2,
+        "python_heap_mb": null,
+        "trace_overhead_mb": null,
+        "ts": "2026-10-20T08:07:00Z",
+        "inflight": 1
+      },
+      {
+        "rss_mb": 247.4,
+        "rss_peak_mb": 328.6,
+        "container_memory_mb": 280.1,
+        "container_limit_mb": 512,
+        "threads": 6,
+        "cpu_percent": 13.2,
+        "python_heap_mb": null,
+        "trace_overhead_mb": null,
+        "ts": "2026-10-20T08:07:30Z",
+        "inflight": 2
+      },
+      {
+        "rss_mb": 249,
+        "rss_peak_mb": 328.6,
+        "container_memory_mb": 281.7,
+        "container_limit_mb": 512,
+        "threads": 6,
+        "cpu_percent": 13.2,
+        "python_heap_mb": null,
+        "trace_overhead_mb": null,
+        "ts": "2026-10-20T08:08:00Z",
+        "inflight": 0
+      },
+      {
+        "rss_mb": 263.1,
+        "rss_peak_mb": 328.6,
+        "container_memory_mb": 295.8,
+        "container_limit_mb": 512,
+        "threads": 6,
+        "cpu_percent": 13.2,
+        "python_heap_mb": null,
+        "trace_overhead_mb": null,
+        "ts": "2026-10-20T08:08:30Z",
+        "inflight": 1
+      },
+      {
+        "rss_mb": 281.8,
+        "rss_peak_mb": 328.6,
+        "container_memory_mb": 314.5,
+        "container_limit_mb": 512,
+        "threads": 6,
+        "cpu_percent": 13.2,
+        "python_heap_mb": null,
+        "trace_overhead_mb": null,
+        "ts": "2026-10-20T08:09:00Z",
+        "inflight": 2
+      },
+      {
+        "rss_mb": 279.2,
+        "rss_peak_mb": 328.6,
+        "container_memory_mb": 311.9,
+        "container_limit_mb": 512,
+        "threads": 6,
+        "cpu_percent": 13.2,
+        "python_heap_mb": null,
+        "trace_overhead_mb": null,
+        "ts": "2026-10-20T08:09:30Z",
+        "inflight": 0
+      },
+      {
+        "rss_mb": 280,
+        "rss_peak_mb": 328.6,
+        "container_memory_mb": 312.7,
+        "container_limit_mb": 512,
+        "threads": 6,
+        "cpu_percent": 13.2,
+        "python_heap_mb": null,
+        "trace_overhead_mb": null,
+        "ts": "2026-10-20T08:10:00Z",
+        "inflight": 1
+      },
+      {
+        "rss_mb": 295.8,
+        "rss_peak_mb": 328.6,
+        "container_memory_mb": 328.5,
+        "container_limit_mb": 512,
+        "threads": 6,
+        "cpu_percent": 13.2,
+        "python_heap_mb": null,
+        "trace_overhead_mb": null,
+        "ts": "2026-10-20T08:10:30Z",
+        "inflight": 2
+      },
+      {
+        "rss_mb": 289.3,
+        "rss_peak_mb": 328.6,
+        "container_memory_mb": 322.0,
+        "container_limit_mb": 512,
+        "threads": 6,
+        "cpu_percent": 13.2,
+        "python_heap_mb": null,
+        "trace_overhead_mb": null,
+        "ts": "2026-10-20T08:11:00Z",
+        "inflight": 0
+      },
+      {
+        "rss_mb": 283,
+        "rss_peak_mb": 328.6,
+        "container_memory_mb": 315.7,
+        "container_limit_mb": 512,
+        "threads": 6,
+        "cpu_percent": 13.2,
+        "python_heap_mb": null,
+        "trace_overhead_mb": null,
+        "ts": "2026-10-20T08:11:30Z",
+        "inflight": 1
+      },
+      {
+        "rss_mb": 281.5,
+        "rss_peak_mb": 328.6,
+        "container_memory_mb": 314.2,
+        "container_limit_mb": 512,
+        "threads": 6,
+        "cpu_percent": 13.2,
+        "python_heap_mb": null,
+        "trace_overhead_mb": null,
+        "ts": "2026-10-20T08:12:00Z",
+        "inflight": 2
+      }
+    ],
+    "startup": [
+      {
+        "name": "profiler_initialized",
+        "ts": "2026-10-20T07:32:00Z",
+        "elapsed_ms": 0,
+        "rss_mb": 26.4,
+        "rss_peak_mb": 26.4,
+        "python_heap_mb": null,
+        "cpu_total_seconds": 0.1
+      },
+      {
+        "name": "core_imports_ready",
+        "ts": "2026-10-20T07:32:00Z",
+        "elapsed_ms": 1760,
+        "rss_mb": 158.2,
+        "rss_peak_mb": 158.2,
+        "python_heap_mb": null,
+        "cpu_total_seconds": 1.2
+      },
+      {
+        "name": "application_ready",
+        "ts": "2026-10-20T07:32:00Z",
+        "elapsed_ms": 2642,
+        "rss_mb": 244.1,
+        "rss_peak_mb": 244.1,
+        "python_heap_mb": null,
+        "cpu_total_seconds": 2.6
+      }
+    ],
+    "endpoints": [
+      {
+        "method": "GET",
+        "endpoint": "/api/v1/business/{slug}/stats",
+        "requests": 140,
+        "status_2xx": 140,
+        "status_4xx": 0,
+        "status_5xx": 0,
+        "avg_ms": 154.3,
+        "max_ms": 3261,
+        "avg_work_ms": 154.3,
+        "response_bytes": 514201,
+        "largest_response_bytes": 76408,
+        "observed_rss_max_rise_mb": 6.2,
+        "rss_observations": 140
+      },
+      {
+        "method": "GET",
+        "endpoint": "/api/v1/wallet/apple/pass/{customer_id}",
+        "requests": 18,
+        "status_2xx": 18,
+        "status_4xx": 0,
+        "status_5xx": 0,
+        "avg_ms": 623.7,
+        "max_ms": 3261,
+        "avg_work_ms": 623.7,
+        "response_bytes": 514201,
+        "largest_response_bytes": 76408,
+        "observed_rss_max_rise_mb": 14.8,
+        "rss_observations": 18
+      }
+    ],
+    "businesses": [
+      {
+        "business_slug": "sample-cafe",
+        "requests": 218,
+        "avg_ms": 161.2,
+        "max_ms": 3261,
+        "response_bytes": 1470800,
+        "status_5xx": 0
+      },
+      {
+        "business_slug": "sample-shop",
+        "requests": 140,
+        "avg_ms": 161.2,
+        "max_ms": 3261,
+        "response_bytes": 1470800,
+        "status_5xx": 0
+      }
+    ],
+    "wallet_jobs": [
+      {
+        "operation": "apple_pass_render",
+        "calls": 18,
+        "failed": 0,
+        "avg_ms": 458.2,
+        "max_ms": 1362.4,
+        "avg_wait_ms": 165.5,
+        "max_wait_ms": 1898.6,
+        "observed_rss_max_rise_mb": 14.8
+      }
+    ],
+    "recent_wallet_jobs": [
+      {
+        "ts": "2026-10-20T08:11:40Z",
+        "operation": "apple_pass_render",
+        "business_slug": "sample-cafe",
+        "duration_ms": 482.5,
+        "wait_ms": 114.2,
+        "outcome": "ok",
+        "rss_before_mb": 282,
+        "rss_after_mb": 281.5,
+        "observed_rss_change_mb": -0.5
+      }
+    ],
+    "caches": [
+      {
+        "name": "wallet_images",
+        "items": 8,
+        "bytes": 312342,
+        "max_bytes": 8388608
+      },
+      {
+        "name": "wallet_strips",
+        "items": 4,
+        "bytes": 4194304,
+        "max_bytes": 16777216
+      }
+    ],
+    "retained_maps": [
+      {
+        "name": "design_publish_locks",
+        "items": 3
+      },
+      {
+        "name": "background_wallet_jobs",
+        "items": 0
+      }
+    ],
+    "trace": {
+      "enabled": false,
+      "source": "off",
+      "running": false,
+      "deadline": null,
+      "started_at": null,
+      "last_capture": {
+        "finished_at": "2026-10-20T08:11:00Z",
+        "duration_seconds": 30,
+        "scope": "current_process",
+        "top_allocations": [
+          {
+            "file": "wallet_apple.py",
+            "line": 428,
+            "bytes": 534112,
+            "count": 42
+          },
+          {
+            "file": "httpx/_models.py",
+            "line": 871,
+            "bytes": 158024,
+            "count": 106
+          }
+        ],
+        "error": null
+      },
+      "overhead_mb": null
+    },
+    "limits": {
+      "sample_capacity": 120,
+      "endpoint_capacity": 100,
+      "business_capacity": 100,
+      "endpoint_overflow_requests": 0,
+      "business_overflow_requests": 0
+    },
+    "notes": [
+      "Memory changes are process-wide observations and cannot be assigned to an individual business.",
+      "The allocation profiler measures traced Python memory; native image buffers may not appear."
+    ]
+  },
+  "empty": {
+    "generated_at": "2026-10-20T08:12:00Z",
+    "process": {
+      "pid": 71,
+      "started_at": "2026-10-20T07:32:00Z",
+      "uptime_seconds": 2400,
+      "scope": "current_process",
+      "sample_interval_seconds": 30,
+      "current": {
+        "rss_mb": 281.5,
+        "rss_peak_mb": 328.6,
+        "container_memory_mb": 314.2,
+        "container_limit_mb": 512,
+        "threads": 6,
+        "cpu_percent": 121.4,
+        "python_heap_mb": null,
+        "trace_overhead_mb": null
+      }
+    },
+    "summary": {
+      "requests": 0,
+      "status_2xx": 0,
+      "status_4xx": 0,
+      "status_5xx": 0,
+      "inflight": 0,
+      "peak_inflight": 0,
+      "avg_ms": 0,
+      "max_ms": 0,
+      "response_bytes": 0
+    },
+    "samples": [],
+    "startup": [],
+    "endpoints": [],
+    "businesses": [],
+    "wallet_jobs": [],
+    "recent_wallet_jobs": [],
+    "caches": [],
+    "retained_maps": [],
+    "trace": {
+      "enabled": false,
+      "source": "off",
+      "running": false,
+      "deadline": null,
+      "started_at": null,
+      "last_capture": null,
+      "overhead_mb": null
+    },
+    "limits": {
+      "sample_capacity": 120,
+      "endpoint_capacity": 100,
+      "business_capacity": 100,
+      "endpoint_overflow_requests": 0,
+      "business_overflow_requests": 0
+    },
+    "notes": [
+      "Memory changes are process-wide observations and cannot be assigned to an individual business.",
+      "The allocation profiler measures traced Python memory; native image buffers may not appear."
+    ]
+  },
+  "unavailable": {
+    "generated_at": "2026-10-20T08:12:00Z",
+    "process": {
+      "pid": 71,
+      "started_at": "2026-10-20T07:32:00Z",
+      "uptime_seconds": 2400,
+      "scope": "current_process",
+      "sample_interval_seconds": 30,
+      "current": {
+        "rss_mb": null,
+        "rss_peak_mb": null,
+        "container_memory_mb": null,
+        "container_limit_mb": null,
+        "threads": 6,
+        "cpu_percent": null,
+        "python_heap_mb": null,
+        "trace_overhead_mb": null
+      }
+    },
+    "summary": {
+      "requests": 482,
+      "status_2xx": 469,
+      "status_4xx": 11,
+      "status_5xx": 2,
+      "inflight": 2,
+      "peak_inflight": 9,
+      "avg_ms": 142.8,
+      "max_ms": 3261,
+      "response_bytes": 3624110
+    },
+    "samples": [
+      {
+        "rss_mb": null,
+        "rss_peak_mb": null,
+        "container_memory_mb": null,
+        "container_limit_mb": null,
+        "threads": 6,
+        "cpu_percent": null,
+        "python_heap_mb": null,
+        "trace_overhead_mb": null,
+        "ts": "2026-10-20T08:06:30Z",
+        "inflight": 0
+      },
+      {
+        "rss_mb": null,
+        "rss_peak_mb": null,
+        "container_memory_mb": null,
+        "container_limit_mb": null,
+        "threads": 6,
+        "cpu_percent": null,
+        "python_heap_mb": null,
+        "trace_overhead_mb": null,
+        "ts": "2026-10-20T08:07:00Z",
+        "inflight": 1
+      },
+      {
+        "rss_mb": null,
+        "rss_peak_mb": null,
+        "container_memory_mb": null,
+        "container_limit_mb": null,
+        "threads": 6,
+        "cpu_percent": null,
+        "python_heap_mb": null,
+        "trace_overhead_mb": null,
+        "ts": "2026-10-20T08:07:30Z",
+        "inflight": 2
+      },
+      {
+        "rss_mb": null,
+        "rss_peak_mb": null,
+        "container_memory_mb": null,
+        "container_limit_mb": null,
+        "threads": 6,
+        "cpu_percent": null,
+        "python_heap_mb": null,
+        "trace_overhead_mb": null,
+        "ts": "2026-10-20T08:08:00Z",
+        "inflight": 0
+      },
+      {
+        "rss_mb": null,
+        "rss_peak_mb": null,
+        "container_memory_mb": null,
+        "container_limit_mb": null,
+        "threads": 6,
+        "cpu_percent": null,
+        "python_heap_mb": null,
+        "trace_overhead_mb": null,
+        "ts": "2026-10-20T08:08:30Z",
+        "inflight": 1
+      },
+      {
+        "rss_mb": null,
+        "rss_peak_mb": null,
+        "container_memory_mb": null,
+        "container_limit_mb": null,
+        "threads": 6,
+        "cpu_percent": null,
+        "python_heap_mb": null,
+        "trace_overhead_mb": null,
+        "ts": "2026-10-20T08:09:00Z",
+        "inflight": 2
+      },
+      {
+        "rss_mb": null,
+        "rss_peak_mb": null,
+        "container_memory_mb": null,
+        "container_limit_mb": null,
+        "threads": 6,
+        "cpu_percent": null,
+        "python_heap_mb": null,
+        "trace_overhead_mb": null,
+        "ts": "2026-10-20T08:09:30Z",
+        "inflight": 0
+      },
+      {
+        "rss_mb": null,
+        "rss_peak_mb": null,
+        "container_memory_mb": null,
+        "container_limit_mb": null,
+        "threads": 6,
+        "cpu_percent": null,
+        "python_heap_mb": null,
+        "trace_overhead_mb": null,
+        "ts": "2026-10-20T08:10:00Z",
+        "inflight": 1
+      },
+      {
+        "rss_mb": null,
+        "rss_peak_mb": null,
+        "container_memory_mb": null,
+        "container_limit_mb": null,
+        "threads": 6,
+        "cpu_percent": null,
+        "python_heap_mb": null,
+        "trace_overhead_mb": null,
+        "ts": "2026-10-20T08:10:30Z",
+        "inflight": 2
+      },
+      {
+        "rss_mb": null,
+        "rss_peak_mb": null,
+        "container_memory_mb": null,
+        "container_limit_mb": null,
+        "threads": 6,
+        "cpu_percent": null,
+        "python_heap_mb": null,
+        "trace_overhead_mb": null,
+        "ts": "2026-10-20T08:11:00Z",
+        "inflight": 0
+      },
+      {
+        "rss_mb": null,
+        "rss_peak_mb": null,
+        "container_memory_mb": null,
+        "container_limit_mb": null,
+        "threads": 6,
+        "cpu_percent": null,
+        "python_heap_mb": null,
+        "trace_overhead_mb": null,
+        "ts": "2026-10-20T08:11:30Z",
+        "inflight": 1
+      },
+      {
+        "rss_mb": null,
+        "rss_peak_mb": null,
+        "container_memory_mb": null,
+        "container_limit_mb": null,
+        "threads": 6,
+        "cpu_percent": null,
+        "python_heap_mb": null,
+        "trace_overhead_mb": null,
+        "ts": "2026-10-20T08:12:00Z",
+        "inflight": 2
+      }
+    ],
+    "startup": [
+      {
+        "name": "profiler_initialized",
+        "ts": "2026-10-20T07:32:00Z",
+        "elapsed_ms": 0,
+        "rss_mb": 26.4,
+        "rss_peak_mb": 26.4,
+        "python_heap_mb": null,
+        "cpu_total_seconds": 0.1
+      },
+      {
+        "name": "core_imports_ready",
+        "ts": "2026-10-20T07:32:00Z",
+        "elapsed_ms": 1760,
+        "rss_mb": 158.2,
+        "rss_peak_mb": 158.2,
+        "python_heap_mb": null,
+        "cpu_total_seconds": 1.2
+      },
+      {
+        "name": "application_ready",
+        "ts": "2026-10-20T07:32:00Z",
+        "elapsed_ms": 2642,
+        "rss_mb": 244.1,
+        "rss_peak_mb": 244.1,
+        "python_heap_mb": null,
+        "cpu_total_seconds": 2.6
+      }
+    ],
+    "endpoints": [
+      {
+        "method": "GET",
+        "endpoint": "/api/v1/business/{slug}/stats",
+        "requests": 140,
+        "status_2xx": 140,
+        "status_4xx": 0,
+        "status_5xx": 0,
+        "avg_ms": 154.3,
+        "max_ms": 3261,
+        "avg_work_ms": 154.3,
+        "response_bytes": 514201,
+        "largest_response_bytes": 76408,
+        "observed_rss_max_rise_mb": 6.2,
+        "rss_observations": 140
+      },
+      {
+        "method": "GET",
+        "endpoint": "/api/v1/wallet/apple/pass/{customer_id}",
+        "requests": 18,
+        "status_2xx": 18,
+        "status_4xx": 0,
+        "status_5xx": 0,
+        "avg_ms": 623.7,
+        "max_ms": 3261,
+        "avg_work_ms": 623.7,
+        "response_bytes": 514201,
+        "largest_response_bytes": 76408,
+        "observed_rss_max_rise_mb": 14.8,
+        "rss_observations": 18
+      }
+    ],
+    "businesses": [
+      {
+        "business_slug": "sample-cafe",
+        "requests": 218,
+        "avg_ms": 161.2,
+        "max_ms": 3261,
+        "response_bytes": 1470800,
+        "status_5xx": 0
+      },
+      {
+        "business_slug": "sample-shop",
+        "requests": 140,
+        "avg_ms": 161.2,
+        "max_ms": 3261,
+        "response_bytes": 1470800,
+        "status_5xx": 0
+      }
+    ],
+    "wallet_jobs": [
+      {
+        "operation": "apple_pass_render",
+        "calls": 18,
+        "failed": 0,
+        "avg_ms": 458.2,
+        "max_ms": 1362.4,
+        "avg_wait_ms": 165.5,
+        "max_wait_ms": 1898.6,
+        "observed_rss_max_rise_mb": 14.8
+      }
+    ],
+    "recent_wallet_jobs": [
+      {
+        "ts": "2026-10-20T08:11:40Z",
+        "operation": "apple_pass_render",
+        "business_slug": "sample-cafe",
+        "duration_ms": 482.5,
+        "wait_ms": 114.2,
+        "outcome": "ok",
+        "rss_before_mb": 282,
+        "rss_after_mb": 281.5,
+        "observed_rss_change_mb": -0.5
+      }
+    ],
+    "caches": [
+      {
+        "name": "wallet_images",
+        "items": 8,
+        "bytes": 312342,
+        "max_bytes": 8388608
+      },
+      {
+        "name": "wallet_strips",
+        "items": 4,
+        "bytes": 4194304,
+        "max_bytes": 16777216
+      }
+    ],
+    "retained_maps": [
+      {
+        "name": "design_publish_locks",
+        "items": 3
+      },
+      {
+        "name": "background_wallet_jobs",
+        "items": 0
+      }
+    ],
+    "trace": {
+      "enabled": false,
+      "source": "off",
+      "running": false,
+      "deadline": null,
+      "started_at": null,
+      "last_capture": null,
+      "overhead_mb": null
+    },
+    "limits": {
+      "sample_capacity": 120,
+      "endpoint_capacity": 100,
+      "business_capacity": 100,
+      "endpoint_overflow_requests": 0,
+      "business_overflow_requests": 0
+    },
+    "notes": [
+      "Memory changes are process-wide observations and cannot be assigned to an individual business.",
+      "The allocation profiler measures traced Python memory; native image buffers may not appear."
+    ]
+  }
+}

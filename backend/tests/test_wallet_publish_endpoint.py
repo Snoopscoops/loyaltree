@@ -138,6 +138,7 @@ def endpoint_namespace(program, outcomes, events):
         supabase=db, generate_public_id=lambda: 'new-program',
         refresh_existing_member_wallets=AsyncMock(side_effect=refresh),
         print=lambda *args: None,
+        log_event=MagicMock(),
     )
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(SOURCE), 'exec'), env)
     return SimpleNamespace(env=env, db=db, threads=worker_ids, tasks=tasks,
@@ -168,6 +169,8 @@ class WalletPublishEndpointTests(unittest.IsolatedAsyncioTestCase):
         main_thread = threading.get_ident()
         result = await self.invoke(harness)
         self.assertTrue(result['success'])
+        harness.env['log_event'].assert_called_once_with('wallet_publish_success',
+            business_slug=BUSINESS['public_id'], program_id=PROGRAM['public_id'], class_count=1)
         self.assertEqual(result['class_id'], 'issuer.legacy-card')
         self.assertEqual(result['tier_class_ids'], [])
         self.assertEqual(events, [('upsert', 'issuer.legacy-card'),

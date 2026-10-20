@@ -6,6 +6,7 @@ https://developers.google.com/wallet/reference/rest/v1/loyaltyclass/update
 This recovery is limited to these class operations, never arbitrary HTTP writes.
 """
 import httpx
+import time
 
 CLASS_URL = 'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass'
 
@@ -22,12 +23,15 @@ def upsert_loyalty_class(client, loyalty_class, access_token):
     headers = {'Authorization': f'Bearer {access_token}'}
 
     def write_current_design():
-        response = client.put(target_url, headers=headers, json=loyalty_class)
+        response = client.put(target_url, headers=headers, json=loyalty_class,
+                              timeout=httpx.Timeout(45.0, connect=10.0, pool=10.0))
         if response.status_code == 404:
-            response = client.post(CLASS_URL, headers=headers, json=loyalty_class)
+            response = client.post(CLASS_URL, headers=headers, json=loyalty_class,
+                                   timeout=httpx.Timeout(45.0, connect=10.0, pool=10.0))
             if response.status_code == 409:
                 # A concurrent publish or delayed insert created this exact ID.
-                response = client.put(target_url, headers=headers, json=loyalty_class)
+                response = client.put(target_url, headers=headers, json=loyalty_class,
+                                      timeout=httpx.Timeout(45.0, connect=10.0, pool=10.0))
         return response
 
     for attempt in range(2):
@@ -38,6 +42,7 @@ def upsert_loyalty_class(client, loyalty_class, access_token):
         except httpx.TransportError:
             if attempt:
                 raise
+        time.sleep(0.3)
         # An insert/update may have committed even though its response was lost.
         # Check the exact ID; never allocate a new class or assume that an old
         # class already contains the latest editor settings.

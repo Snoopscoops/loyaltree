@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
+import { startVisibilityPolling } from './visibilityPolling'
 import { useLocation, useNavigate } from 'react-router-dom'
 import OwnerDashboardNavigation from './OwnerDashboardNavigation'
 import CustomerSegmentsChart from './CustomerSegmentsChart'
@@ -424,8 +425,7 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
 
   useEffect(() => {
     if (!selectedProgramId) return
-    const timer = setInterval(() => loadManagerDashboard(selectedProgramId), 30000)
-    return () => clearInterval(timer)
+    return startVisibilityPolling(() => loadManagerDashboard(selectedProgramId), { immediate: false })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.business_slug, selectedProgramId])
 
@@ -970,6 +970,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
   const loadDataVersion = useRef(0)
   const loadScopeEpoch = useRef(0)
   const lastAppliedLoadVersion = useRef(0)
+  const dashboardLoadsInFlight = useRef(0)
   const [program, setProgram] = useState(null)
   const [programs, setPrograms] = useState([])
   const [selectedProgramPublicId, setSelectedProgramPublicId] = useState('')
@@ -1223,20 +1224,14 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
 
   useEffect(() => {
     if (!user?.business_slug) return
-    loadData()
-
-    // Stamps and redemptions happen from the cashier's device, a separate
-    // session, so this dashboard has no way to know data changed unless it
-    // asks again. Poll periodically to keep reward activity current.
-    const interval = setInterval(loadData, 15000)
-    return () => clearInterval(interval)
+    // Edits still refresh immediately; passive polling waits for completion
+    // and pauses when the owner leaves this browser tab.
+    return startVisibilityPolling(() => loadData({ background: true }))
   }, [user?.business_slug, selectedProgramPublicId])
 
   useEffect(() => {
     if (activeTab !== 'orderahead' || !business?.order_ahead_enabled) return
-    loadOrderAheadOrders()
-    const interval = setInterval(loadOrderAheadOrders, 8000)
-    return () => clearInterval(interval)
+    return startVisibilityPolling(loadOrderAheadOrders, { intervalMs: 8000 })
   }, [activeTab, business?.order_ahead_enabled, user?.business_slug])
 
   // Automatically guide a newly signed-up business, and keep prompting on
@@ -1316,7 +1311,9 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
     }
   }
 
-  const loadData = async () => {
+  const loadData = async ({ background = false } = {}) => {
+    if (background && dashboardLoadsInFlight.current) return
+    dashboardLoadsInFlight.current += 1
     const version = ++loadDataVersion.current
     const scopeEpoch = loadScopeEpoch.current
     try {
@@ -1460,6 +1457,8 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
       }
     } catch (err) {
       console.error('Load error:', err)
+    } finally {
+      dashboardLoadsInFlight.current -= 1
     }
     if (scopeEpoch === loadScopeEpoch.current && version >= lastAppliedLoadVersion.current) setLoading(false)
   }

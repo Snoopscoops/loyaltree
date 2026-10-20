@@ -1,4 +1,10 @@
 try:
+    from .runtime_profiling import profiler, register_profiling_routes
+except ImportError:
+    from runtime_profiling import profiler, register_profiling_routes
+profiler.bootstrap()
+
+try:
     from .storehub_redemption_codes import RedemptionCodeService, RedemptionCodeError, build_options as redemption_code_options, quote as redemption_code_quote, public_code, periodic_redemption_codes
 except ImportError:
     from storehub_redemption_codes import RedemptionCodeService, RedemptionCodeError, build_options as redemption_code_options, quote as redemption_code_quote, public_code, periodic_redemption_codes
@@ -27,6 +33,11 @@ try:
     from .customer_demographics import register_customer_demographics_routes
 except ImportError:
     from customer_demographics import register_customer_demographics_routes
+
+try:
+    from .wallet_memory import BoundedTTLCache, decode_wallet_image, wallet_work, memory_sampler, MAX_IMAGE_BYTES, cache_stats
+except ImportError:
+    from wallet_memory import BoundedTTLCache, decode_wallet_image, wallet_work, memory_sampler, MAX_IMAGE_BYTES, cache_stats
 
 try:
     from .business_welcome_email import build_business_getting_started_email
@@ -76,6 +87,8 @@ from PIL import Image
 import zipfile
 import calendar
 import time
+
+profiler.checkpoint('dependencies_imported')
 
 # Environment
 SUPABASE_URL = os.getenv('SUPABASE_URL', '')
@@ -6334,9 +6347,9 @@ def _render_hero(primary_color: str) -> "Image.Image":
     return small.resize(HERO_SIZE, Image.LANCZOS)
 
 def _hero_to_png(img: "Image.Image") -> bytes:
-    buffer = BytesIO()
-    img.save(buffer, format='PNG')
-    return buffer.getvalue()
+    with BytesIO() as buffer:
+        img.save(buffer, format='PNG')
+        return buffer.getvalue()
 
 def normalize_stamp_display_style(program: Optional[dict]) -> str:
     value = str((program or {}).get('stamp_display_style') or 'number').strip().lower()
@@ -6548,7 +6561,7 @@ def wallet_progress_state(customer: Optional[dict], program: Optional[dict], bus
     }
 
 
-_STAMP_REMOTE_IMAGE_CACHE = {}
+_STAMP_REMOTE_IMAGE_CACHE = BoundedTTLCache('wallet_art', max_bytes=4 * 1024 * 1024, max_items=24, ttl=900)
 _STAMP_REMOTE_IMAGE_CACHE_MAX = 24
 
 
@@ -6564,20 +6577,19 @@ def _load_remote_wallet_image(url: Optional[str]) -> Optional["Image.Image"]:
     cached = _STAMP_REMOTE_IMAGE_CACHE.get(url)
     if cached is not None:
         try:
-            return cached.copy()
+            return decode_wallet_image(cached)
         except Exception:
             _STAMP_REMOTE_IMAGE_CACHE.pop(url, None)
     try:
         import httpx
         with pooled_client(timeout=3.5, follow_redirects=True) as client:
-            response = client.get(url)
+            response = client.get(url, extensions={'lt_max_response_bytes': MAX_IMAGE_BYTES})
         response.raise_for_status()
         if len(response.content) > 5 * 1024 * 1024:
             return None
-        image = Image.open(BytesIO(response.content)).convert('RGBA')
-        if len(_STAMP_REMOTE_IMAGE_CACHE) >= _STAMP_REMOTE_IMAGE_CACHE_MAX:
-            _STAMP_REMOTE_IMAGE_CACHE.pop(next(iter(_STAMP_REMOTE_IMAGE_CACHE)), None)
-        _STAMP_REMOTE_IMAGE_CACHE[url] = image.copy()
+        image = decode_wallet_image(response.content)
+        # Store compressed, Wallet-sized artwork; never retain source PIL rasters.
+        _STAMP_REMOTE_IMAGE_CACHE[url] = _hero_to_png(image)
         return image
     except Exception as exc:
         print(f"WALLET ART image fetch fallback: {exc}")
@@ -6585,28 +6597,27 @@ def _load_remote_wallet_image(url: Optional[str]) -> Optional["Image.Image"]:
 
 
 def _cover_image_to_size(image: "Image.Image", size: tuple[int, int]) -> "Image.Image":
-    image = image.convert('RGBA')
     target_w, target_h = size
     src_ratio = image.width / max(image.height, 1)
     dst_ratio = target_w / max(target_h, 1)
     if src_ratio > dst_ratio:
         new_w = max(1, int(image.height * dst_ratio))
         left = max(0, (image.width - new_w) // 2)
-        image = image.crop((left, 0, left + new_w, image.height))
+        box = (left, 0, left + new_w, image.height)
     else:
         new_h = max(1, int(image.width / dst_ratio))
         top = max(0, (image.height - new_h) // 2)
-        image = image.crop((0, top, image.width, top + new_h))
-    return image.resize(size, Image.LANCZOS)
+        box = (0, top, image.width, top + new_h)
+    with image.crop(box) as cropped:
+        return cropped.resize(size, Image.LANCZOS)
 
 
 def _render_wallet_hero_base(primary_color: str, background_image_url: Optional[str] = None) -> "Image.Image":
     remote = _load_remote_wallet_image(background_image_url)
     if remote is None:
         return _render_hero(primary_color).convert('RGBA')
-    base = _cover_image_to_size(remote, HERO_SIZE)
-    shade = Image.new('RGBA', HERO_SIZE, (0, 0, 0, 48))
-    return Image.alpha_composite(base, shade)
+    with remote, _cover_image_to_size(remote, HERO_SIZE) as base, Image.new('RGBA', HERO_SIZE, (0, 0, 0, 48)) as shade:
+        return Image.alpha_composite(base, shade)
 
 
 def _star_points(cx: float, cy: float, outer: float, inner: float) -> list[tuple[float, float]]:
@@ -6788,6 +6799,10 @@ def _draw_dynamic_progress_row(
     empty_remote = _load_remote_wallet_image(empty_icon_url)
     filled_tile = _fit_transparent_icon(filled_remote, size) if filled_remote is not None else None
     empty_tile = _fit_transparent_icon(empty_remote, size) if empty_remote is not None else None
+    if filled_remote is not None:
+        filled_remote.close()
+    if empty_remote is not None:
+        empty_remote.close()
     if filled_tile is not None and empty_tile is None:
         empty_tile = _faded_icon(filled_tile, .28)
 
@@ -6812,6 +6827,11 @@ def _draw_dynamic_progress_row(
             draw.ellipse((x0, y0, x1, y1), fill=(255,255,255,22), outline=(255,255,255,140), width=max(1, size//16))
 
     img.alpha_composite(draw_layer)
+    draw_layer.close()
+    if filled_tile is not None:
+        filled_tile.close()
+    if empty_tile is not None:
+        empty_tile.close()
     return True
 
 
@@ -6963,6 +6983,7 @@ def _wrap_text(draw, text: str, font, max_width: int, max_lines: int) -> List[st
         lines[-1] = last + '…' if last != lines[-1] else last
     return lines
 
+@wallet_work('wallet_hero_render')
 def generate_personalized_hero_image_bytes(
     primary_color: str,
     reward_name: str,
@@ -8720,7 +8741,7 @@ def sign_pkpass_manifest(manifest_bytes: bytes) -> Optional[bytes]:
 # Apple Wallet image cache.  Business branding changes rarely, while Wallet can
 # request the same pass several times during add/registration/update.  Keeping
 # fetched bytes in-process removes repeated network waits from the hot path.
-_APPLE_IMAGE_CACHE = {}
+_APPLE_IMAGE_CACHE = BoundedTTLCache('apple_images', max_bytes=8 * 1024 * 1024, max_items=64, ttl=900)
 _APPLE_IMAGE_CACHE_TTL_SECONDS = 900
 
 def _fetch_image_bytes(url: Optional[str], timeout: float = 1.5) -> Optional[bytes]:
@@ -8741,8 +8762,10 @@ def _fetch_image_bytes(url: Optional[str], timeout: float = 1.5) -> Optional[byt
         limits = httpx.Limits(max_keepalive_connections=5, max_connections=10)
         timeout_cfg = httpx.Timeout(timeout, connect=min(timeout, 1.0))
         with pooled_client(timeout=timeout_cfg, follow_redirects=True, limits=limits) as client:
-            resp = client.get(url)
+            resp = client.get(url, extensions={'lt_max_response_bytes': MAX_IMAGE_BYTES})
             content = resp.content if resp.status_code == 200 and resp.content else None
+            if content and len(content) > MAX_IMAGE_BYTES:
+                content = None
             _APPLE_IMAGE_CACHE[url] = (now, content)
             return content
     except Exception as e:
@@ -8756,14 +8779,9 @@ def apple_icon_from_logo_bytes(logo_bytes: bytes, size: int) -> Optional[bytes]:
     across devices) - used instead of generate_apple_icon_bytes's
     initial-letter placeholder whenever a real logo is available."""
     try:
-        img = Image.open(BytesIO(logo_bytes)).convert('RGBA')
-        w, h = img.size
-        side = min(w, h)
-        left, top = (w - side) // 2, (h - side) // 2
-        img = img.crop((left, top, left + side, top + side)).resize((size, size), Image.LANCZOS)
-        bg = Image.new('RGB', (size, size), (255, 255, 255))
-        bg.paste(img, (0, 0), img)
-        return _hero_to_png(bg)
+        with decode_wallet_image(logo_bytes) as source, _cover_image_to_size(source, (size, size)) as img, Image.new('RGB', (size, size), (255, 255, 255)) as bg:
+            bg.paste(img, (0, 0), img)
+            return _hero_to_png(bg)
     except Exception as e:
         print(f"APPLE ICON from logo error: {e}")
         return None
@@ -8774,26 +8792,15 @@ def apple_logo_from_image_bytes(logo_bytes: bytes, width: int, height: int) -> O
     generate_apple_logo_bytes's generated wordmark whenever a real logo is
     available."""
     try:
-        img = Image.open(BytesIO(logo_bytes)).convert('RGBA')
-        alpha = img.getchannel('A')
-        visible = alpha.point(lambda value: 255 if value >= 16 else 0)
-        bbox = visible.getbbox()
-        if bbox:
-            img = img.crop(bbox)
-        if img.width < 1 or img.height < 1:
-            return None
-        scale = min(width / img.width, height / img.height)
-        new_w = max(1, int(round(img.width * scale)))
-        new_h = max(1, int(round(img.height * scale)))
-        img = img.resize((new_w, new_h), Image.LANCZOS)
-        canvas = Image.new('RGBA', (width, height), (0, 0, 0, 0))
-        # PassKit positions the logo slot itself, so we cannot remove Apple's
-        # native outer margin. What we *can* remove is our own transparent
-        # left padding. Anchor the uploaded logo at x=0 instead of centering
-        # it inside the 160x50 / @2x / @3x logo canvas. This makes the visible
-        # artwork sit as close to Apple's top-left edge as PassKit permits.
-        canvas.alpha_composite(img, (0, (height - img.height) // 2))
-        return _hero_to_png(canvas)
+        with decode_wallet_image(logo_bytes) as source, source.getchannel('A') as alpha, alpha.point(lambda value: 255 if value >= 16 else 0) as visible:
+            bbox = visible.getbbox() or (0, 0, source.width, source.height)
+            with source.crop(bbox) as cropped:
+                scale = min(width / cropped.width, height / cropped.height)
+                size = (max(1, int(round(cropped.width * scale))), max(1, int(round(cropped.height * scale))))
+                with cropped.resize(size, Image.LANCZOS) as img, Image.new('RGBA', (width, height), (0, 0, 0, 0)) as canvas:
+                    # Preserve the existing left-aligned, transparent logo slot.
+                    canvas.alpha_composite(img, (0, (height - img.height) // 2))
+                    return _hero_to_png(canvas)
     except Exception as e:
         print(f"APPLE LOGO from image error: {e}")
         return None
@@ -8827,6 +8834,7 @@ def _knock_out_logo_plate(img: "Image.Image") -> "Image.Image":
     return img
 
 
+@wallet_work('google_logo_render')
 def google_wallet_logo_png_bytes(
     logo_bytes: Optional[bytes],
     fallback_label: str = 'L',
@@ -8850,7 +8858,8 @@ def google_wallet_logo_png_bytes(
     placed = False
     if logo_bytes:
         try:
-            img = _knock_out_logo_plate(Image.open(BytesIO(logo_bytes)))
+            with decode_wallet_image(logo_bytes) as source:
+                img = _knock_out_logo_plate(source)
             alpha = img.getchannel('A')
             visible = alpha.point(lambda value: 255 if value >= 16 else 0)
             bbox = visible.getbbox()
@@ -8928,20 +8937,8 @@ def apple_strip_from_image_bytes(image_bytes: bytes, width: int, height: int) ->
     banner's aspect ratio - used instead of generate_apple_strip_bytes's
     procedurally-drawn gradient whenever the business has uploaded one."""
     try:
-        img = Image.open(BytesIO(image_bytes)).convert('RGB')
-        src_ratio, dst_ratio = img.width / img.height, width / height
-        if src_ratio > dst_ratio:
-            new_w = int(img.height * dst_ratio)
-            left = (img.width - new_w) // 2
-            img = img.crop((left, 0, left + new_w, img.height))
-        else:
-            new_h = int(img.width / dst_ratio)
-            top = (img.height - new_h) // 2
-            img = img.crop((0, top, img.width, top + new_h))
-        img = img.resize((width, height), Image.LANCZOS)
-        buf = BytesIO()
-        img.save(buf, format='PNG')
-        return buf.getvalue()
+        with decode_wallet_image(image_bytes) as source, _cover_image_to_size(source, (width, height)) as resized, resized.convert('RGB') as image:
+            return _hero_to_png(image)
     except Exception as e:
         print(f"APPLE STRIP from image error: {e}")
         return None
@@ -9175,6 +9172,7 @@ def _push_apple_wallet_to_customer_public_ids(customer_public_ids: list[str]) ->
     return _send_apple_wallet_pushes(push_tokens)
 
 
+@wallet_work('announcement_push', business_arg=0, serialize=False)
 def _send_announcement_notification(business: dict, announcement: dict, resend: bool = False) -> dict:
     """Send a customer announcement and return explicit Wallet diagnostics.
 
@@ -11010,6 +11008,7 @@ def build_apple_order_ahead_event_pass_json(customer: dict, business: dict, prog
     return pass_json
 
 
+@wallet_work('apple_event_pass_build', business_arg=1)
 def build_apple_order_ahead_event_pkpass_bytes(customer: dict, business: dict, program: dict, announcement: Optional[dict] = None) -> Optional[bytes]:
     """TRIAL 6 — package the clean scratch Event Ticket.
 
@@ -11084,7 +11083,7 @@ def build_apple_order_ahead_event_pkpass_bytes(customer: dict, business: dict, p
 
         if source_logo:
             try:
-                mark = Image.open(BytesIO(source_logo)).convert('RGBA')
+                mark = decode_wallet_image(source_logo)
                 mark.thumbnail((int(width * .58), int(height * .16)), Image.Resampling.LANCZOS)
                 x = (width - mark.width) // 2
                 y = int(height * .22)
@@ -11225,21 +11224,10 @@ def generate_apple_strip_bytes(customer: dict, business: dict, program: dict, wi
         progress_offset=normalize_wallet_progress_offset(program),
         detail_font_scale=normalize_wallet_detail_font_scale(program),
     )
-    img = Image.open(BytesIO(raw)).convert('RGB')
-    src_ratio = img.width / img.height
-    dst_ratio = width / height
-    if src_ratio > dst_ratio:
-        new_w = int(img.height * dst_ratio)
-        left = (img.width - new_w) // 2
-        img = img.crop((left, 0, left + new_w, img.height))
-    else:
-        new_h = int(img.width / dst_ratio)
-        top = (img.height - new_h) // 2
-        img = img.crop((0, top, img.width, top + new_h))
-    img = img.resize((width, height), Image.LANCZOS)
-    buf = BytesIO()
-    img.save(buf, format='PNG')
-    return buf.getvalue()
+    strip = apple_strip_from_image_bytes(raw, width, height)
+    if strip is None:
+        raise ValueError('Could not resize generated Wallet artwork')
+    return strip
 
 
 def _resize_png_bytes(png_bytes: bytes, width: int, height: int) -> Optional[bytes]:
@@ -11247,16 +11235,15 @@ def _resize_png_bytes(png_bytes: bytes, width: int, height: int) -> Optional[byt
     if not png_bytes:
         return None
     try:
-        img = Image.open(BytesIO(png_bytes)).convert("RGBA")
-        img = img.resize((width, height), Image.LANCZOS)
-        buf = BytesIO()
-        img.save(buf, format="PNG", optimize=False)
-        return buf.getvalue()
+        with decode_wallet_image(png_bytes) as source, source.resize((width, height), Image.LANCZOS) as img, BytesIO() as buf:
+            img.save(buf, format="PNG", optimize=False)
+            return buf.getvalue()
     except Exception as e:
         print(f"APPLE PNG resize error: {e}")
         return None
 
 
+@wallet_work('apple_pass_build', business_arg=1)
 def build_pkpass_bytes(customer: dict, business: dict, program: dict, announcement: Optional[dict] = None) -> Optional[bytes]:
     """Assembles and signs the full .pkpass zip. Returns None if Apple
     Wallet credentials aren't configured or signing fails - callers treat
@@ -11352,22 +11339,22 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
     if signature is None:
         return None
 
-    buffer = BytesIO()
-    # PNG files are already compressed. ZIP_STORED avoids spending CPU trying to
-    # deflate them again and materially shortens pass assembly on Render.
-    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_STORED) as zf:
-        for name, content in files.items():
-            zf.writestr(name, content)
-        zf.writestr('manifest.json', manifest_bytes)
-        zf.writestr('signature', signature)
-    return buffer.getvalue()
+    with BytesIO() as buffer:
+        # PNG files are already compressed. ZIP_STORED avoids spending CPU trying to
+        # deflate them again and materially shortens pass assembly on Render.
+        with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_STORED) as zf:
+            for name, content in files.items():
+                zf.writestr(name, content)
+            zf.writestr('manifest.json', manifest_bytes)
+            zf.writestr('signature', signature)
+        return buffer.getvalue()
 
 
 # Short-lived cache for the *initial* Apple Wallet add flow.
 # CustomerJoin requests /wallet-pass immediately after signup, and customer_signup
 # prewarms this cache in the background. By the time the person taps "Add to Wallet"
 # the already-signed .pkpass can usually be returned without image rendering/signing.
-_APPLE_PKPASS_CACHE = {}
+_APPLE_PKPASS_CACHE = BoundedTTLCache('apple_passes', max_bytes=8 * 1024 * 1024, max_items=32, ttl=90)
 _APPLE_PKPASS_CACHE_TTL_SECONDS = 90
 
 # Order Ahead Event Tickets use a separate serial/renderer from the normal Store
@@ -11375,7 +11362,7 @@ _APPLE_PKPASS_CACHE_TTL_SECONDS = 90
 # join -> success screen -> Add to Wallet flow while normal fingerprint/dirty
 # invalidation keeps customer/program/order changes fresh. This cache is
 # intentionally process-local: a Render restart simply causes one cold rebuild.
-_APPLE_EVENT_PKPASS_CACHE = {}
+_APPLE_EVENT_PKPASS_CACHE = BoundedTTLCache('apple_event_passes', max_bytes=4 * 1024 * 1024, max_items=16, ttl=300)
 _APPLE_EVENT_PKPASS_CACHE_TTL_SECONDS = 5 * 60
 _APPLE_EVENT_PKPASS_BUILD_LOCKS = {}
 _APPLE_EVENT_PKPASS_BUILD_LOCKS_GUARD = Lock()
@@ -11631,6 +11618,7 @@ def get_apple_push_cert_files():
         print(f"APPLE WALLET: push cert setup error: {e}")
         return None, None
 
+@wallet_work('apple_push', serialize=False)
 def _send_apple_wallet_pushes(push_tokens: list) -> int:
     """Shared APNs-sending core used by both push_apple_wallet_update()
     (single customer, e.g. after a stamp/redeem) and
@@ -12350,6 +12338,7 @@ def build_cl_apple_pass_json(customer: dict, business: dict, contract: Optional[
         ],
     }
 
+@wallet_work('apple_contract_pass_build', business_arg=1)
 def build_cl_pkpass_bytes(customer: dict, business: dict, contract: Optional[dict],
                            announcement: Optional[dict] = None, reminder_text: Optional[str] = None) -> Optional[bytes]:
     if not APPLE_PASS_TYPE_IDENTIFIER or not APPLE_TEAM_IDENTIFIER:
@@ -12376,13 +12365,13 @@ def build_cl_pkpass_bytes(customer: dict, business: dict, contract: Optional[dic
     if signature is None:
         return None
 
-    buffer = BytesIO()
-    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for name, content in files.items():
-            zf.writestr(name, content)
-        zf.writestr('manifest.json', manifest_bytes)
-        zf.writestr('signature', signature)
-    return buffer.getvalue()
+    with BytesIO() as buffer:
+        with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for name, content in files.items():
+                zf.writestr(name, content)
+            zf.writestr('manifest.json', manifest_bytes)
+            zf.writestr('signature', signature)
+        return buffer.getvalue()
 
 def push_cl_apple_wallet_announcement(business_id: int) -> int:
     """Car-lending equivalent of push_apple_wallet_announcement() - fans a
@@ -13504,6 +13493,7 @@ def _api_limit_for_path(path: str, method: str):
 
 
 # FastAPI App
+profiler.checkpoint('helpers_and_models_ready')
 app = FastAPI(title='LoyaltyTree API')
 
 def business_for_access_check(public_id: str) -> dict:
@@ -13554,6 +13544,7 @@ app.add_middleware(
     allow_methods=['*'],
     allow_headers=['*'],
     expose_headers=['Retry-After'],
+    max_age=600,
 )
 
 @app.get("/health")
@@ -13584,9 +13575,12 @@ async def _keep_alive_loop():
 
 @app.on_event("startup")
 async def start_keep_alive():
+    profiler.checkpoint('startup_begin')
     await shared_http.start(get_apple_push_cert_files())
     await monitor.start()
+    profiler.checkpoint('http_and_monitor_ready')
     app.state.keepalive_task = asyncio.create_task(_keep_alive_loop())
+    app.state.memory_task = asyncio.create_task(memory_sampler(log_event))
 
 @app.on_event("shutdown")
 async def stop_monitoring():
@@ -13594,11 +13588,12 @@ async def stop_monitoring():
     if task:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-    for name in ('wallet_worker', 'apple_release_task', 'storehub_void_worker', 'storehub_offline_worker', 'redemption_code_worker'):
+    for name in ('memory_task', 'wallet_worker', 'apple_release_task', 'storehub_void_worker', 'storehub_offline_worker', 'redemption_code_worker'):
         worker = getattr(app.state, name, None)
         if worker:
             worker.cancel()
             await asyncio.gather(worker, return_exceptions=True)
+    await profiler.stop()
     await monitor.stop()
     await shared_http.stop()
 
@@ -32252,9 +32247,9 @@ async def get_wallet_logo(
         or business.get('logo_url')
         or ''
     )
-    logo_bytes = _fetch_image_bytes(source_logo_url, timeout=4.0) if source_logo_url else None
+    logo_bytes = await asyncio.to_thread(_fetch_image_bytes, source_logo_url, timeout=4.0) if source_logo_url else None
     wide = str(kind or '').lower() == 'wide'
-    png_bytes = google_wallet_logo_png_bytes(
+    png_bytes = await asyncio.to_thread(google_wallet_logo_png_bytes,
         logo_bytes,
         fallback_label=(business.get('name') or 'L'),
         background=None if wide else (f"#{str(c).strip().lstrip('#')}" if c else None),
@@ -32305,7 +32300,7 @@ async def get_customer_hero_image(customer_public_id: str, s: Optional[str] = No
     design = wallet_20_design(business, program)
     vip_tier = get_vip_tier(customer, program or {}) if program_has_tier(program) else None
     rendered_primary_color = (vip_tier or {}).get('color') or design['background']
-    png_bytes = generate_personalized_hero_image_bytes(
+    png_bytes = await asyncio.to_thread(generate_personalized_hero_image_bytes,
         rendered_primary_color, reward_name, stamps, stamp_goal, description,
         card_type=card_type, hybrid_loyalty_type=hybrid_loyalty_type(program),
         hybrid_points_enabled_flag=hybrid_points_enabled(program), hybrid_stamps_enabled_flag=hybrid_stamps_enabled(program), points_balance=points_balance,
@@ -32516,6 +32511,8 @@ async def create_or_update_wallet_class(public_id: str, program_id: Optional[str
             await asyncio.to_thread(lambda: supabase.table("loyalty_programs").insert(db_data).execute())
 
         # Refresh existing objects only after every required class exists.
+        log_event('wallet_publish_success', business_slug=business.get('public_id'),
+                  program_id=(program or {}).get('public_id'), class_count=len(published_ids))
         current_program = safe_get_loyalty_program(business.get('id'), program_public_id=(program or {}).get('public_id')) or program
         # Publish Card is the Google Wallet class operation. Apple already
         # refreshes when Apple-visible loyalty configuration is saved, so do
@@ -32708,7 +32705,7 @@ async def get_cl_apple_wallet_pass(customer_public_id: str):
     contract = get_active_contract_for_cl_customer(customer.get('id'))
     announcement = get_latest_cl_announcement(business.get('id'))
 
-    pkpass_bytes = build_cl_pkpass_bytes(customer, business, contract, announcement)
+    pkpass_bytes = await asyncio.to_thread(build_cl_pkpass_bytes, customer, business, contract, announcement)
     if pkpass_bytes is None:
         raise HTTPException(
             status_code=500,
@@ -38470,7 +38467,7 @@ async def get_apple_wallet_pass(customer_public_id: str, force_store_card: bool 
     pkpass_bytes = _get_cached_apple_pkpass(customer, business, program or {}, announcement)
     cache_hit = pkpass_bytes is not None
     if not cache_hit:
-        pkpass_bytes = build_pkpass_bytes(customer, business, program or {}, announcement)
+        pkpass_bytes = await asyncio.to_thread(build_pkpass_bytes, customer, business, program or {}, announcement)
         if pkpass_bytes:
             _cache_apple_pkpass(customer, business, program or {}, announcement, pkpass_bytes)
 
@@ -38910,7 +38907,7 @@ async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, 
             _APPLE_PASS_DIRTY_AT.pop(str(serial_number), None)
             return Response(status_code=304)
 
-        pkpass_bytes = build_gift_card_pkpass_bytes(gift, business)
+        pkpass_bytes = await asyncio.to_thread(build_gift_card_pkpass_bytes, gift, business)
         if pkpass_bytes is None:
             raise HTTPException(status_code=500, detail="Could not build gift card pass")
         return Response(
@@ -39014,7 +39011,7 @@ async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, 
                 last_modified_ts <= since_ts):
             return Response(status_code=304)
 
-        pkpass_bytes = build_cl_pkpass_bytes(customer, business, contract, announcement, reminder_text)
+        pkpass_bytes = await asyncio.to_thread(build_cl_pkpass_bytes, customer, business, contract, announcement, reminder_text)
         if pkpass_bytes is None:
             raise HTTPException(status_code=500, detail="Could not build pass")
         return Response(
@@ -39077,7 +39074,7 @@ async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, 
         f"ims={if_modified_since} newest={last_modified}"
     )
 
-    pkpass_bytes = build_pkpass_bytes(customer, business, program, announcement)
+    pkpass_bytes = await asyncio.to_thread(build_pkpass_bytes, customer, business, program, announcement)
     if pkpass_bytes is None:
         raise HTTPException(status_code=500, detail="Could not build pass")
     return Response(
@@ -40241,6 +40238,7 @@ async def start_wallet_queue_worker():
     # cards automatically. Supabase keeps a release marker, so this happens
     # once per layout version, not on every Render restart.
     app.state.apple_release_task = asyncio.create_task(_apple_layout_release_startup())
+    profiler.checkpoint('background_workers_scheduled')
 
 
 def _crm_dataset(business_id: int):
@@ -42044,11 +42042,12 @@ def build_gift_card_apple_pass_json(gift: dict, business: dict) -> dict:
     return pass_json
 
 
-_GIFT_APPLE_BRAND_ASSET_CACHE = {}
+_GIFT_APPLE_BRAND_ASSET_CACHE = BoundedTTLCache('apple_gift_art', max_bytes=2 * 1024 * 1024, max_items=24, ttl=1800)
 _GIFT_APPLE_BRAND_ASSET_CACHE_TTL_SECONDS = 30 * 60
 _GIFT_APPLE_BRAND_ASSET_LOCK = Lock()
 
 
+@wallet_work('apple_gift_art', business_arg=0)
 def _gift_apple_brand_assets(business: dict) -> dict:
     """Cache expensive logo fetch/resize work shared by every gift pass."""
     primary = _gift_brand_color(business)
@@ -42097,6 +42096,7 @@ def _warm_gift_apple_brand_assets(business: dict):
         print(f"GIFT APPLE WARM warning: {e}")
 
 
+@wallet_work('apple_gift_pass_build', business_arg=1)
 def build_gift_card_pkpass_bytes(gift: dict, business: dict) -> Optional[bytes]:
     if not APPLE_PASS_TYPE_IDENTIFIER or not APPLE_TEAM_IDENTIFIER:
         return None
@@ -42115,13 +42115,13 @@ def build_gift_card_pkpass_bytes(gift: dict, business: dict) -> Optional[bytes]:
     if signature is None:
         return None
 
-    buffer = BytesIO()
-    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_STORED) as zf:
-        for name, content in files.items():
-            zf.writestr(name, content)
-        zf.writestr('manifest.json', manifest_bytes)
-        zf.writestr('signature', signature)
-    return buffer.getvalue()
+    with BytesIO() as buffer:
+        with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_STORED) as zf:
+            for name, content in files.items():
+                zf.writestr(name, content)
+            zf.writestr('manifest.json', manifest_bytes)
+            zf.writestr('signature', signature)
+        return buffer.getvalue()
 
 
 def _sync_gift_wallets(gift: dict, business: dict):
@@ -42838,7 +42838,7 @@ async def gift_card_apple_wallet_pass(gift_public_id: str, claim_token: str = Qu
     # Build/sign the pkpass FIRST. A signing/configuration failure must not lock
     # the Gift Card to Apple before the claimant receives a usable pass.
     staged = _gift_staged_wallet_copy(gift, 'apple')
-    pkpass = build_gift_card_pkpass_bytes(staged, business)
+    pkpass = await asyncio.to_thread(build_gift_card_pkpass_bytes, staged, business)
     if pkpass is None:
         raise HTTPException(
             status_code=503,
@@ -43003,7 +43003,7 @@ async def public_gift_claim_and_wallet(
             return response
 
         staged = _gift_staged_wallet_copy(gift, 'apple')
-        pkpass = build_gift_card_pkpass_bytes(staged, business)
+        pkpass = await asyncio.to_thread(build_gift_card_pkpass_bytes, staged, business)
         if pkpass is None:
             return _gift_wallet_error_page(
                 'Apple Wallet could not be prepared. The Gift Card is still reserved to this browser and can be retried.',
@@ -49665,3 +49665,11 @@ register_qr_menu_routes(app, db=supabase, get_business=safe_get_business,
 
 register_customer_demographics_routes(app, db=supabase, require_admin=require_admin,
     on_warning=lambda error_type: log_event('customer_demographics_unavailable', level='warning', error_type=error_type))
+
+profiler.configure(caches=cache_stats, retained_maps=lambda: {
+    name: len(globals().get(name, {})) for name in (
+        '_RATE_BUCKETS', '_AUTH_FAILURES', '_ANALYTICS_GEO_CACHE',
+        '_APPLE_EVENT_PKPASS_BUILD_LOCKS', '_APPLE_PASS_DIRTY_AT',
+        '_POS_DEVICE_AUTH_CACHE', '_POS_DEVICE_HEARTBEAT_CACHE', '_GOOGLE_GIFT_CLASS_READY_CACHE')})
+register_profiling_routes(app, require_admin=require_admin)
+profiler.checkpoint('routes_registered')

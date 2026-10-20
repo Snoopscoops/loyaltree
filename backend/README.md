@@ -41,6 +41,9 @@ Python's `loyaltytree` logger to DEBUG emits source-only legacy diagnostics.
 | `event_persist_failed` | `error_type`; warning; never recursively persisted |
 | `health_report_failed` | `error_type`; warning; authenticated report returns 503 |
 | `legacy_diagnostic` | `source` (function), `line`; DEBUG only; no legacy argument values |
+| `wallet_memory` | `operation`, `stage` (`before`/`after`), `business_slug`, `request_id`, `pid`, current/peak RSS where available; after also includes `outcome`, `duration_ms` (including render-slot waiting), `work_ms`, `wait_ms`, bounded cache sizes |
+| `runtime_memory` | `pid`, `threads`, `worker_env`, current/peak RSS, container memory/limit where available, CPU seconds/percentage, optional Python heap/trace overhead, bounded cache sizes; emitted every 30 seconds |
+| `wallet_publish_success` | `business_slug`, `program_id`, `class_count`; emitted after provider success and metadata save |
 
 `error`, `push`, `wallet_sync`, and `hourly_summary` are asynchronously persisted
 through a bounded 1,000-event queue. Requests never await event inserts. Queue
@@ -209,5 +212,124 @@ a sanitized 503. Responses use `Cache-Control: private, no-store`. No new SQL
 migration or environment variable is required. Deploy the backend and frontend
 together. The local preview at `/dev/admin-demographics.html` uses fictional
 fixtures and blocks network requests; it is not a production route.
+
+## Wallet memory and Render OOM recovery
+
+The Wallet artwork loader previously retained up to 24 original RGBA images.
+One 4000×3000 photo requires about 46 MiB per retained raster, even if its JPEG
+download is only a few hundred KB. Several businesses' photos could therefore
+exhaust a 512 MiB process while traffic was idle. Apple image downloads had no
+hard cache budget, and pass-cache cleanup removed expired items only after
+500 entries, allowing a burst of fresh signed passes to exceed the limit.
+
+Wallet artwork is now decoded at at most 1200×1200, with JPEG draft downsampling
+before RGBA conversion. Downloads above 5 MiB, or images still above 12 million
+pixels after JPEG draft downsampling, use the existing generated-art fallback.
+Artwork downloads stop while streaming when the byte
+limit is reached. Image/buffer helpers explicitly close intermediates. Heavy
+rendering runs in worker threads under a shared render lock; provider pushes
+and the ASGI event loop remain independent of that rendering lock.
+
+Caches now have hard byte, item and TTL limits, including keys never read again:
+Wallet artwork 4 MiB, Apple downloads 8 MiB, signed loyalty passes 8 MiB, legacy
+Order Ahead passes 4 MiB, gift branding 2 MiB. Only compressed bytes are retained,
+never decoded PIL images. This is a 26 MiB cache-payload budget per process,
+not a cap on the application's total memory. Existing balance/dirty-marker
+fingerprint checks still invalidate signed passes. These small bounded local
+caches are a containment fix; no Render Key Value service is provisioned.
+
+`runtime_memory` samples Linux RSS, cgroup memory and cache bytes every 30 seconds.
+`wallet_memory` records before/after pass builds and pushes with business slug
+and request ID, without customer profiles, images, signed bytes or device tokens.
+Python tracing is optional and time limited as described below. Native Pillow
+allocations require RSS/cgroup measurements; tracemalloc alone will not show
+them. These diagnostics go to stdout, adding no event-table
+writes. Inspect all PIDs and the actual Render start command when checking workers;
+`worker_env` only reports `WEB_CONCURRENCY`, not the actual process count.
+
+Keep the Render command at one worker, for example from the backend root:
+`uvicorn main:app --host 0.0.0.0 --port "$PORT" --workers 1`.
+No SQL or new required environment variable is needed for this release. The
+deployment does not change the paid instance plan, DNS/SSL, or Render settings.
+After deployment, compare the same business's pass/push `before`/`after` events
+and several idle `runtime_memory` samples before declaring the OOM resolved.
+
+Owner/manager dashboards now poll every 60 seconds, pause in hidden tabs and
+wait for the prior refresh. Edits still refresh immediately. The active order
+queue retains its 8-second refresh while visible. CORS preflights cache for
+600 seconds. Balances/redemptions are not given a new data cache. The dashboard
+still uses its existing endpoints; combining them and adopting external caches
+are separate changes.
+
+Google class writes now have explicit 45-second timeouts and a 300 ms recovery
+backoff. The existing two-round, same-ID recovery remains bounded; other writes
+are not automatically retried. Successful publication is logged explicitly.
+
+## Admin system usage and allocation profiling
+
+Open **Admin → System Usage** to inspect the current backend process. The page
+refreshes every 30 seconds while visible and pauses when hidden. Its single
+report request reads local counters and OS measurements; it does not fetch
+business/customer records or query Supabase. Existing admin authentication is
+required for both diagnostic endpoints:
+
+- `GET /api/v1/admin/system-usage`: process RSS and lifetime peak, container
+  usage/limit, CPU, threads, startup checkpoints, recent memory samples,
+  request/status counts, route and business workload, Wallet jobs and caches.
+- `POST /api/v1/admin/system-usage/profile?seconds=30`: starts a Python
+  allocation capture and returns 202. The duration may be 10–60 seconds.
+  Results appear in subsequent GET reports. An overlapping capture or
+  insufficient known container headroom returns 409.
+
+Successful responses use `Cache-Control: private, no-store`. These endpoints use
+the normal admin session, not the separate health-report `MONITOR_TOKEN`.
+No SQL migration or new required environment variable is needed.
+
+All counters cover one PID since backend import began and reset on restart.
+They do not combine workers or persist across Render sleep/restarts. History
+retains at most 180 memory samples (about 90 minutes when sampled continuously),
+16 startup checkpoints, 128 endpoint groups, 100 business groups, 32 Wallet
+operation groups and 40 recent Wallet jobs. Overflow request groups are combined
+in an `<other>` bucket included in the group limit. Only aggregate map sizes and
+cache sizes are exposed, never their keys. Requests retain route templates and
+validated business slugs, without bodies, headers, customer records or tokens.
+
+Memory labels use binary MiB/KiB, even though API field names end in `_mb`.
+Current RSS is read at report time; peak RSS is the process lifetime high-water
+mark. Unavailable readings remain `null` rather than zero. Container memory
+includes allocations beyond the current process's RSS. CPU is averaged between
+periodic samples, with one CPU core equal to 100%; multicore work may exceed
+100%. The first startup checkpoint is main-module entry, after Python has
+compiled that module, rather than a pristine interpreter baseline.
+
+Endpoint response duration ends at the final response-body chunk. ASGI lifetime
+also includes background work. Wallet work duration excludes rendering-slot
+wait time, which is reported separately. RSS changes observed during requests
+or Wallet jobs include concurrent activity; they are not memory allocations
+attributable to an individual business and must not be added together. Business
+rows show request volume, status and time only. Use repeated idle readings and
+comparable Wallet jobs to assess improvements.
+
+Default collection uses bounded counters and OS readings, with Python allocation
+tracing off. The manual capture enables one-frame tracing temporarily, then
+collects up to 20 file/line allocation groups in a worker thread and stops
+tracing if the capture enabled it. A snapshot shows Python allocations still
+retained since tracing began, rather than an allocation difference or native
+image buffers. File paths are reduced to project/package/standard-library
+locations; source text and local variables are not collected.
+
+Manual capture requires at least the greater of 160 MiB or 30% of a known
+container limit to remain free. Headroom is checked again before snapshotting.
+The periodic sampler stops tracing when observed container usage reaches 80%
+of its limit. These checks reduce profiling overhead near a memory limit; the
+30-second sampler is not an instantaneous memory guard.
+
+For an optional startup profile, set `MEMORY_TRACE=1` before starting the
+backend. Tracing begins at main-module entry and automatically snapshots/stops
+after 120 seconds from that entry, subject to the same pressure checks.
+`PYTHONTRACEMALLOC=1` starts tracing in the interpreter before module compilation;
+the profiler detects that startup mode and also limits it to the startup window.
+Leave both unset for normal operation. On shutdown any active snapshot worker
+is drained before tracing is stopped. No profiler is required to serve requests.
 
 # points_prizes update

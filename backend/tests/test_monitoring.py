@@ -186,6 +186,8 @@ class AppleRevisionTests(unittest.TestCase):
         tree=ast.parse(source.read_text())
         names={'_mark_apple_pass_dirty','_apple_pass_dirty_at','_send_apple_wallet_pushes'}
         nodes=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in names]
+        # Instrumentation is exercised separately; retain this provider-free core test.
+        for node in nodes: node.decorator_list=[]
         db=MagicMock()
         q=db.table.return_value
         q.select.return_value.eq.return_value.execute.return_value.data=[{'pass_updated_at':'2026-10-13T01:02:03.456789'}]
@@ -239,6 +241,7 @@ class PassContentTests(unittest.TestCase):
         from typing import Optional
         source=Path(__file__).resolve().parents[1]/'main.py'
         node=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.FunctionDef) and n.name=='build_gift_card_pkpass_bytes')
+        node.decorator_list=[]
         revision=['2026-10-13T00:00:00.001']
         env=dict(Optional=Optional,APPLE_PASS_TYPE_IDENTIFIER='pass.example',APPLE_TEAM_IDENTIFIER='team',
                  get_apple_pass_credentials=lambda:True,

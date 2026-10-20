@@ -14,6 +14,7 @@ from fastapi import Header, HTTPException, Query
 from fastapi.responses import JSONResponse
 from starlette.routing import Match
 from shared_http import shared_http
+from runtime_profiling import profiler
 
 request_context = contextvars.ContextVar('monitor_request', default=None)
 PERSISTED = {'error', 'push', 'wallet_sync', 'hourly_summary'}
@@ -210,14 +211,20 @@ class MonitoringMiddleware:
         state = scope.setdefault('state', {})
         state['request_id'] = uuid.uuid4().hex
         token = request_context.set(scope)
+        try: usage = profiler.request_started()
+        except Exception: usage = None
+        response_bytes, response_finished = 0, None
         status, started = 500, False
         async def capture(message):
-            nonlocal status, started
+            nonlocal status, started, response_bytes, response_finished
             if message['type'] == 'http.response.start':
                 status, started = message['status'], True
                 message.setdefault('headers', []).append((b'x-request-id', state['request_id'].encode()))
                 if status >= 500:
                     log_error(self.root, scope, status)
+            elif message['type'] == 'http.response.body':
+                response_bytes += len(message.get('body', b''))
+                if not message.get('more_body', False): response_finished = profiler.clock()
             await send(message)
         try:
             await self.app(scope, receive, capture)
@@ -230,6 +237,12 @@ class MonitoringMiddleware:
         finally:
             endpoint, business = route_context(self.root, scope)
             monitor.record_request(endpoint, business, status)
+            if usage is not None:
+                try:
+                    profiler.request_finished(usage, method=scope['method'], endpoint=endpoint,
+                        business_slug=business, status=status, response_bytes=response_bytes,
+                        response_finished=response_finished)
+                except Exception: pass
             request_context.reset(token)
 
 

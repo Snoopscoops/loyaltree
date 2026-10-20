@@ -8,7 +8,7 @@ import zlib
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import httpx
-from shared_http import shared_http,create_pooled_supabase,pooled_client
+from shared_http import shared_http,create_pooled_supabase,pooled_client,ResponseTooLarge
 import jwt
 
 
@@ -51,6 +51,27 @@ class CompressedHTTPTests(unittest.IsolatedAsyncioTestCase):
         for table in ('businesses','staff','customers'):
             result=await asyncio.to_thread(lambda:db.table(table).select('id,public_id').execute())
             self.assertEqual(result.data[0]['public_id'],'test-business')
+
+    async def test_artwork_limit_stops_stream_closes_connection_and_does_not_retry(self):
+        chunks, calls, closed = [], [], []
+        class Body(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                for number in range(10):
+                    chunks.append(number)
+                    yield b'x' * 100
+            async def aclose(self): closed.append(True)
+        async def handler(request):
+            calls.append(request)
+            return httpx.Response(200, stream=Body())
+        async def replace():
+            await shared_http.client.aclose()
+            shared_http.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(replace(), shared_http.loop))
+        with self.assertRaises(ResponseTooLarge):
+            await asyncio.to_thread(lambda: pooled_client().get('https://example.invalid/photo', extensions={'lt_max_response_bytes': 250}))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(chunks, [0, 1, 2])
+        self.assertTrue(closed)
 
 if __name__=='__main__':
     unittest.main()

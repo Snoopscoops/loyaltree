@@ -10,6 +10,10 @@ import httpx
 READ_FAILURES = (httpx.ReadError, httpx.ConnectError, httpx.TimeoutException)
 
 
+class ResponseTooLarge(httpx.RequestError):
+    """A bounded artwork download is rejected without retrying its body."""
+
+
 class SharedHTTP:
     def __init__(self):
         self.loop = None
@@ -46,15 +50,27 @@ class SharedHTTP:
     async def _send(self, request):
         for attempt in range(2):
             try:
-                response = await self.client.send(request)
-                await response.aread()
+                response = await self.client.send(request, stream=True)
+                try:
+                    maximum = request.extensions.get('lt_max_response_bytes')
+                    if maximum:
+                        data = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            if len(data) + len(chunk) > maximum:
+                                raise ResponseTooLarge('Wallet image download exceeded its size limit', request=request)
+                            data.extend(chunk)
+                        content = bytes(data)
+                    else:
+                        content = await response.aread()
+                finally:
+                    await response.aclose()
                 # AsyncClient has already decoded gzip/deflate/br by aread().
                 # Do not forward wire-encoding headers with decoded bytes: the
                 # sync SDK would try to decompress the JSON a second time.
                 headers = [(name, value) for name, value in response.headers.raw
                            if name.lower() not in (b'content-encoding', b'content-length', b'transfer-encoding')]
                 return httpx.Response(response.status_code, headers=headers,
-                                      content=response.content, request=request,
+                                      content=content, request=request,
                                       extensions=response.extensions)
             except READ_FAILURES:
                 if attempt or request.method not in ('GET', 'HEAD', 'OPTIONS'):

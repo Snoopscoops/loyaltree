@@ -289,7 +289,8 @@ class WorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         sync_callback = Mock()
         logger_callback = Mock()
-        monitor_stop, http_stop = AsyncMock(), AsyncMock()
+        monitor_stop, http_stop, profiler_stop = AsyncMock(), AsyncMock(), AsyncMock()
+        profiler_checkpoint = Mock()
         env = load(['start_wallet_queue_worker', 'stop_monitoring'], {
             'app': app, 'asyncio': asyncio,
             'STOREHUB_VOID_SYNC_ENABLED': enabled, 'STOREHUB_VOID_SYNC_SECONDS': 60,
@@ -301,8 +302,10 @@ class WorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
             '_log_storehub_void_sync': logger_callback,
             'monitor': SimpleNamespace(stop=monitor_stop),
             'shared_http': SimpleNamespace(stop=http_stop),
+            'profiler': SimpleNamespace(stop=profiler_stop, checkpoint=profiler_checkpoint),
         })
         await env['start_wallet_queue_worker']()
+        profiler_checkpoint.assert_called_once_with('background_workers_scheduled')
         await asyncio.sleep(0)
         self.assertCountEqual(started, ['wallet', 'apple', 'void'] if enabled else ['wallet', 'apple'])
         self.assertEqual(hasattr(state, 'storehub_void_worker'), enabled)
@@ -316,6 +319,7 @@ class WorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(task.cancelled())
             monitor_stop.assert_awaited_once()
             http_stop.assert_awaited_once()
+            profiler_stop.assert_awaited_once()
             sync_callback.assert_not_called()
         finally:
             for name in ('wallet_worker', 'apple_release_task', 'storehub_void_worker'):

@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react'
 import PlatformAnnouncementsAdmin from './PlatformAnnouncementsAdmin'
 import GiftCardPrintRequestsAdmin from './GiftCardPrintRequestsAdmin'
 import CustomerDemographicsAdmin from './CustomerDemographicsAdmin'
+import SystemUsageAdmin from './SystemUsageAdmin'
 
 function BillingBranchEditor({ detail, onSave }) {
   const [count, setCount] = useState(String(detail.branch_count || 1))
@@ -974,6 +975,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
     { key:'special', label:'Special Businesses', icon:'₱', description:'Custom contracts, branch-based pricing and automated invoice delivery.' },
     { key:'performance', label:'Client Performance', icon:'↗', description:'CRM and retention movement across LoyaltyTree clients.' },
     { key:'demographics', label:'Customer Demographics', icon:'◎', description:'Age groups, gender and occupation of the customers registered with your businesses.' },
+    { key:'system-usage', label:'System Usage', icon:'◴', description:'Memory, startup profiling, request workload and Wallet rendering measurements for the current backend process.' },
     { key:'platform', label:'Platform Analytics', icon:'◫', description:'Website traffic, acquisition, join conversion and Wallet activity.' },
     { key:'help', label:'Help Questions', icon:'?', description:'See what owners and managers ask most, review unanswered questions, and grow the FAQ from real usage.' },
     { key:'operations', label:'Operations', icon:'⚙', description:'Announcements, print requests and QR / PR kit fulfillment.' },
@@ -1058,6 +1060,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
 
         {activeAdminTab === 'coupons' && <TrialCouponsAdmin API_BASE={API_BASE} token={token} />}
         {activeAdminTab === 'demographics' && <CustomerDemographicsAdmin authFetch={authedFetch} sessionKey={token} />}
+        {activeAdminTab === 'system-usage' && <SystemUsageAdmin authFetch={authedFetch} sessionKey={token} />}
 
         {activeAdminTab === 'platform' && (
         <section style={styles.analyticsSection}>
