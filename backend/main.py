@@ -9106,7 +9106,7 @@ def google_wallet_logo_png_bytes(
         fill = (255, 255, 255, 230)
         draw.text(((canvas_size[0] - tw) / 2 - bbox[0], (canvas_size[1] - th) / 2 - bbox[1]), letter, font=font, fill=fill)
     rendered = _hero_to_png(canvas)
-    return _lt_cobrand_logo(rendered) if wide and benefits else rendered
+    return rendered
 
 
 def google_wallet_program_logo_uri(
@@ -11508,7 +11508,7 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
     if not logo_480:
         logo_480 = generate_apple_logo_bytes(biz_name, 480, 150)
     if lt_wallet.card_enabled(customer, enabled=lt_benefits_enabled()):
-        logo_480 = _lt_cobrand_logo(logo_480)
+        logo_480 = logo_480
     logo_320 = _resize_png_bytes(logo_480, 320, 100)
     logo_160 = _resize_png_bytes(logo_480, 160, 50)
 
