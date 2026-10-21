@@ -39,7 +39,7 @@ def verify_card_token(customer_id, business_id, supplied, secret):
 
 
 def wallet_action(customer, business, frontend_url, secret, enabled=False):
-    if not card_enabled(customer, enabled=enabled):
+    if not enabled:
         return None
     customer_id = str((customer or {}).get('public_id') or '')
     token = card_token(customer_id, (business or {}).get('public_id'), secret)
@@ -89,6 +89,7 @@ def apply_apple(pass_dict, customer, action):
         'value': 'View points and partner coupons',
         'attributedValue': f'<a href="{html.escape(action["url"], quote=True)}">View points and partner coupons ›</a>',
     })
+    back.append({'key': 'lt_watermark', 'label': 'POWERED BY', 'value': 'Loyalty Tree'})
     back.insert(1, {'key': 'lt_points_detail', 'label': 'LOYALTY TREE POINTS',
                     'value': value if state['linked'] else 'Verify your account to connect your cards'})
     if state['coupon_count']:
