@@ -37227,7 +37227,6 @@ async def customer_wallet_page(customer_public_id: str):
 .top{{display:flex;justify-content:space-between;color:#8390a5;font-size:12px;margin-bottom:14px}}
 .top b{{color:#fff}}
 .card{{position:relative;overflow:hidden;isolation:isolate;aspect-ratio:1.72/1;min-height:320px;border-radius:28px;padding:clamp(22px,4vw,44px);background:linear-gradient(135deg,{design["background"]},{design["secondary"]});border:1px solid rgba(255,255,255,.14);box-shadow:0 28px 80px rgba(0,0,0,.46)}}
-.watermark{{position:absolute;right:14px;bottom:12px;width:36px;height:36px;opacity:.22;pointer-events:none;z-index:2}}
 .hero{{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:-3}}
 .card:before{{content:"";position:absolute;inset:0;background:linear-gradient(135deg,rgba(3,6,16,.72),rgba(3,6,16,.45) 60%,rgba(3,6,16,.2));z-index:-2}}
 .grid{{height:100%;display:grid;grid-template-columns:minmax(0,1fr) minmax(170px,29%);gap:clamp(18px,4vw,48px)}}
@@ -37258,7 +37257,7 @@ async def customer_wallet_page(customer_public_id: str):
 </style></head>
 <body><main class="wrap">
 <div class="top"><b>🌳 LoyaltyTree</b><span>{html_lib.escape(card_label)}</span></div>
-<section class="card">{hero_html}<img class="watermark banner-watermark" src="https://theloyaltytree.com/logo-64.png" alt="Loyalty Tree"><div class="grid">
+<section class="card">{hero_html}<div class="grid">
 <div class="left"><div class="brand">{logo_html}<div><div class="biz">{html_lib.escape(business_name)}</div><div class="type">{html_lib.escape(card_label)}</div></div></div>
 <div class="member"><div class="eyebrow">MEMBER</div><div class="name">{html_lib.escape(customer_name)}</div><div class="eyebrow">{html_lib.escape(metric_label)}</div><div class="metric{active_class}">{html_lib.escape(metric_value)}</div>{stamp_visual_html}<div class="sub">{html_lib.escape(metric_sub)}</div></div></div>
 <div class="right"><div class="qrbox"><img src="{qr_image}" alt="Member QR"></div><div class="scan">PRESENT TO CHECK IN</div></div>
