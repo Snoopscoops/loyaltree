@@ -82,7 +82,16 @@ function OwnerBenefitsContent({ API_BASE = '', businessSlug, ownerToken, authFet
           {input('title', 'Coupon title', { required: true, wide: true, placeholder: '₱20 off your next visit' })}
           <BenefitField label="Description" wide><textarea name="description" value={form.description} onChange={update} rows={2} maxLength={2000} disabled={saving} placeholder="Tell customers what makes this reward worth claiming."/></BenefitField>
           <BenefitField label="Category"><select name="category" value={form.category} onChange={update} disabled={saving}>{BENEFIT_CATEGORIES.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></BenefitField>
-          {input('image_url', 'Photo URL', { type: 'url', hint: 'Optional · HTTPS image URL', placeholder: 'https://…' })}
+          {input('image_url', 'Photo URL', { type: 'url', hint: 'Optional · HTTPS image URL or upload below', placeholder: 'https://…' })}
+          <label className="lt-benefit-upload">Upload photo
+            <input type="file" accept="image/*" onChange={event => {
+              const file = event.target.files?.[0]
+              if (!file) return
+              const reader = new FileReader()
+              reader.onload = () => setForm(current => ({ ...current, image_url: reader.result }))
+              reader.readAsDataURL(file)
+            }} />
+          </label>
           {input('discount_php', 'Discount (₱)', { type: 'number', min: '0.01', max: '1000000', step: '0.01', required: true })}
           {input('points_cost', 'LT Points to claim', { type: 'number', min: '1', max: '10000000', step: '1', required: true })}
           {input('total_quantity', 'Total coupons', { type: 'number', min: '1', max: '1000000', step: '1', required: true, hint: 'Includes any coupons already claimed.' })}
