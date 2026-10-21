@@ -17,7 +17,6 @@ export const benefitDate = value => value && Number.isFinite(Date.parse(value)) 
 
 export function benefitImage(value) {
   if (!value) return ''
-  if (String(value).startsWith('data:image/')) return value
   try { const url = new URL(value); return url.protocol === 'https:' && !url.username && !url.password ? url.href : '' } catch { return '' }
 }
 
@@ -30,9 +29,9 @@ export function benefitOfferPayload(form) {
   if (!integer(form.points_cost) || !integer(form.total_quantity) || !integer(form.per_member_limit) || !integer(form.coupon_valid_days)) return { error: 'Points cost, quantity, validity and member limit must be positive whole numbers.' }
   if (Number(form.points_cost) > 10000000 || Number(form.total_quantity) > 1000000 || Number(form.per_member_limit) > 100 || Number(form.coupon_valid_days) > 365) return { error: 'Use at most 10,000,000 points, 1,000,000 coupons, 100 claims per member and 365 valid days.' }
   if (Number(form.per_member_limit) > Number(form.total_quantity)) return { error: 'The member limit cannot exceed the total quantity.' }
-  const discount = benefitCentavos(form.discount_php), minimum = benefitCentavos(form.min_spend_php)
-  if (discount == null || discount < 1 || minimum == null) return { error: 'Enter a positive peso discount and a valid minimum spend, using up to two decimal places.' }
-  if (discount > 100000000 || minimum > 100000000) return { error: 'Coupon discount and minimum spend cannot exceed ₱1,000,000.' }
+  const discount = benefitCentavos(form.discount_php), minimum = benefitCentavos(form.min_spend_php) ?? 0
+  if (discount == null || discount < 1) return { error: 'Enter a positive peso discount, using up to two decimal places.' }
+  if (discount > 100000000) return { error: 'Coupon discount cannot exceed ₱1,000,000.' }
   if (String(form.description || '').trim().length > 2000 || String(form.terms || '').trim().length > 3000) return { error: 'Keep the description within 2,000 characters and terms within 3,000 characters.' }
   const startsAt = localDate(form.starts_at), endsAt = localDate(form.ends_at)
   if ((form.starts_at && !startsAt) || (form.ends_at && !endsAt)) return { error: 'Enter valid start and end dates.' }
