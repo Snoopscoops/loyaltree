@@ -11575,7 +11575,18 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
 # prewarms this cache in the background. By the time the person taps "Add to Wallet"
 # the already-signed .pkpass can usually be returned without image rendering/signing.
 _APPLE_PKPASS_CACHE = BoundedTTLCache('apple_passes', max_bytes=8 * 1024 * 1024, max_items=32, ttl=90)
-_APPLE_PKPASS_CACHE_TTL_SECONDS = 90
+_APPLE_PKPASS_CACHE_TTL_SECONDS = 3600
+
+# Memory-conscious pass build controls
+_PASS_BUILD_SEMAPHORE = asyncio.Semaphore(2)
+
+def _maybe_trim_memory():
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
+
 
 # Order Ahead Event Tickets use a separate serial/renderer from the normal Store
 # Card, so they need their own cache. Five minutes comfortably covers the normal
@@ -11680,6 +11691,7 @@ def _build_and_cache_apple_pkpass(customer: dict, business: dict, program: dict,
     pkpass_bytes = build_pkpass_bytes(customer, business, program or {}, announcement)
     if pkpass_bytes:
         _cache_apple_pkpass(customer, business, program or {}, announcement, pkpass_bytes)
+    _maybe_trim_memory()
     return pkpass_bytes, False
 
 
@@ -11895,20 +11907,25 @@ def _send_apple_wallet_pushes(push_tokens: list) -> int:
     try:
         import httpx
         with pooled_client(http2=True, cert=(cert_path, key_path), timeout=10) as client:
-            for token in tokens:
-                try:
-                    resp = client.post(
-                        f"https://api.push.apple.com/3/device/{token}",
-                        headers={"apns-topic": APPLE_PASS_TYPE_IDENTIFIER},
-                        json={},
-                    )
-                    if resp.status_code == 200:
-                        sent += 1
-                        pass  # Aggregate delivery counts are logged without device tokens.
-                    else:
-                        log_event("apple_push_failed", "warning", status=resp.status_code, reason=(resp.json().get("reason") if resp.content else None))
-                except Exception as e:
-                    log_event("apple_push_failed", "warning", error_type=type(e).__name__, error=str(e))
+            # Send in small batches with a short gap to avoid memory and connection spikes
+            batch_size = 20
+            for i in range(0, len(tokens), batch_size):
+                batch = tokens[i:i + batch_size]
+                for token in batch:
+                    try:
+                        resp = client.post(
+                            f"https://api.push.apple.com/3/device/{token}",
+                            headers={"apns-topic": APPLE_PASS_TYPE_IDENTIFIER},
+                            json={},
+                        )
+                        if resp.status_code == 200:
+                            sent += 1
+                        else:
+                            log_event("apple_push_failed", "warning", status=resp.status_code, reason=(resp.json().get("reason") if resp.content else None))
+                    except Exception as e:
+                        log_event("apple_push_failed", "warning", error_type=type(e).__name__, error=str(e))
+                if i + batch_size < len(tokens):
+                    time.sleep(1.5)
     except Exception as e:
         log_event("apple_push_failed", "warning", error_type=type(e).__name__, error=str(e))
     _record_apple_delivery(len(tokens), sent)
@@ -40520,19 +40537,33 @@ def _lt_retry_purchase_awards():
         _lt_award_pos_purchase(row)
 
 
+def _current_rss_mb() -> float:
+    try:
+        import resource
+        # Linux: maxrss is in KB
+        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
+    except Exception:
+        return 0.0
+
 async def _lt_benefits_worker():
     sweep = 0
     while True:
         try:
+            rss = _current_rss_mb()
+            if rss > 350:
+                log_event('lt_benefits_memory_pause', 'warning', rss_mb=round(rss, 1))
+                await asyncio.sleep(30)
+                continue
             await asyncio.to_thread(_lt_retry_purchase_awards)
             if sweep % 4 == 0:
                 await asyncio.to_thread(_lt_benefits.maintenance, limit=10)
-            await asyncio.to_thread(_lt_benefits.process_wallet_jobs, limit=3)
-            await asyncio.to_thread(_lt_card_upgrades.tick, limit=5)
+            await asyncio.to_thread(_lt_benefits.process_wallet_jobs, limit=2)
+            # Rate limit upgrades: max ~5 cards/min under normal conditions
+            await asyncio.to_thread(_lt_card_upgrades.tick, limit=2)
         except Exception as exc:
             log_event('lt_benefits_worker_retry', 'warning', error_type=type(exc).__name__)
         sweep += 1
-        await asyncio.sleep(15)
+        await asyncio.sleep(20)
 
 
 @app.on_event('startup')

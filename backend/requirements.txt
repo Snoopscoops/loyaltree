@@ -4,10 +4,9 @@ sqlalchemy
 pydantic[email]
 python-multipart
 qrcode
-pillow
+pillow>=10.1.0
 psycopg2-binary
 PyJWT
 cryptography
 supabase
 httpx[http2]
-pillow>=10.1.0
