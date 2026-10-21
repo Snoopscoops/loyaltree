@@ -8956,6 +8956,21 @@ def sign_pkpass_manifest(manifest_bytes: bytes) -> Optional[bytes]:
 _APPLE_IMAGE_CACHE = BoundedTTLCache('apple_images', max_bytes=2 * 1024 * 1024, max_items=16, ttl=300)
 _APPLE_IMAGE_CACHE_TTL_SECONDS = 900
 
+def _cloudinary_small(url: Optional[str], width: int, height: int) -> Optional[str]:
+    """Return a Cloudinary URL that serves a small PNG, or the original if not Cloudinary."""
+    if not url or "res.cloudinary.com" not in url:
+        return url
+    marker = "/upload/"
+    if marker not in url:
+        return url
+    # Already transformed
+    if "/upload/c_" in url or "/upload/w_" in url or "/upload/f_" in url:
+        return url
+    transform = f"c_fit,w_{width},h_{height},f_png,q_auto/"
+    return url.replace(marker, marker + transform, 1)
+
+
+
 def _fetch_image_bytes(url: Optional[str], timeout: float = 1.5) -> Optional[bytes]:
     """Fast best-effort download for Apple Wallet artwork.
 
@@ -11251,7 +11266,8 @@ def build_apple_order_ahead_event_pkpass_bytes(customer: dict, business: dict, p
 
     biz_name = str((business or {}).get('name') or 'LoyaltyTree').strip() or 'LoyaltyTree'
     logo_url = (program or {}).get('program_logo_url') or (business or {}).get('logo_url')
-    source_logo = _fetch_image_bytes(logo_url)
+    small_url = _cloudinary_small(logo_url, 480, 150)
+    source_logo = _fetch_image_bytes(small_url) or _fetch_image_bytes(logo_url)
 
     # Apple Wallet icon: 38pt.
     icon_3x = apple_icon_from_logo_bytes(source_logo, 114) if source_logo else None
@@ -11489,7 +11505,8 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
     # end up matching. Each falls back to the existing generated placeholder
     # on any missing URL, fetch failure, or unreadable image.
     logo_url = (program or {}).get('program_logo_url') or business.get('logo_url')
-    logo_bytes = _fetch_image_bytes(logo_url)
+    small_url = _cloudinary_small(logo_url, 480, 150)
+    logo_bytes = _fetch_image_bytes(small_url) or _fetch_image_bytes(logo_url)
     pass_json = build_apple_pass_json(customer, business, program, announcement)
 
     # Render each branding asset only once at the largest required size, then
