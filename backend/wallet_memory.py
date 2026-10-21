@@ -17,7 +17,7 @@ except ImportError:
     from runtime_profiling import profiler
 
 MIB = 1024 * 1024
-MAX_IMAGE_BYTES = 5 * MIB
+MAX_IMAGE_BYTES = 1 * MIB
 MAX_IMAGE_PIXELS = 12_000_000
 WALLET_IMAGE_SIZE = (1200, 1200)
 # RLock allows a pass renderer to call another decorated image helper.

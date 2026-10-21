@@ -8956,6 +8956,15 @@ def sign_pkpass_manifest(manifest_bytes: bytes) -> Optional[bytes]:
 _APPLE_IMAGE_CACHE = BoundedTTLCache('apple_images', max_bytes=2 * 1024 * 1024, max_items=16, ttl=300)
 _APPLE_IMAGE_CACHE_TTL_SECONDS = 900
 
+# Standard wallet image sizes — never process larger originals
+WALLET_LOGO_SIZE = (480, 150)
+WALLET_ICON_SIZES = ((87, 87), (58, 58), (29, 29))
+WALLET_HERO_SIZE = (1125, 432)
+WALLET_JPEG_QUALITY = 75
+WALLET_PNG_OPTIMIZE = True
+
+
+
 
 def _fetch_image_bytes(url: Optional[str], timeout: float = 1.5) -> Optional[bytes]:
     """Fast best-effort download for Apple Wallet artwork.
