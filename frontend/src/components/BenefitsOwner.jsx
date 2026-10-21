@@ -86,7 +86,9 @@ function OwnerBenefitsContent({ API_BASE = '', businessSlug, ownerToken, authFet
           {input('discount_php', 'Discount (₱)', { type: 'number', min: '0.01', max: '1000000', step: '0.01', required: true })}
           {input('points_cost', 'LT Points to claim', { type: 'number', min: '1', max: '10000000', step: '1', required: true })}
           {input('total_quantity', 'Total coupons', { type: 'number', min: '1', max: '1000000', step: '1', required: true, hint: 'Includes any coupons already claimed.' })}
+          {input('min_spend_php', 'Minimum bill (₱)', { type: 'number', min: '0', max: '1000000', step: '0.01', required: true })}
           {input('per_member_limit', 'Claims per member', { type: 'number', min: '1', max: '100', step: '1', required: true })}
+          {input('weekly_limit', 'Coupons per week', { type: 'number', min: '1', step: '1', placeholder: 'Unlimited', hint: 'How many times this coupon can be claimed per week' })}
           {input('coupon_valid_days', 'Valid days after claiming', { type: 'number', min: '1', max: '365', step: '1', required: true, hint: 'The offer end date can shorten this period.' })}
           {input('starts_at', 'Claims open', { type: 'datetime-local', hint: 'Optional · Your local time' })}
           {input('ends_at', 'Offer ends', { type: 'datetime-local', hint: 'Optional · Claiming and redemption cutoff, in your local time.' })}
