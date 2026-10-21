@@ -37258,7 +37258,7 @@ async def customer_wallet_page(customer_public_id: str):
 </style></head>
 <body><main class="wrap">
 <div class="top"><b>🌳 LoyaltyTree</b><span>{html_lib.escape(card_label)}</span></div>
-<section class="card">{hero_html}<img class="watermark" src="/logo-64.png" alt="Loyalty Tree"><div class="grid">
+<section class="card">{hero_html}<img class="watermark" src="https://theloyaltytree.com/logo-64.png" alt="Loyalty Tree"><div class="grid">
 <div class="left"><div class="brand">{logo_html}<div><div class="biz">{html_lib.escape(business_name)}</div><div class="type">{html_lib.escape(card_label)}</div></div></div>
 <div class="member"><div class="eyebrow">MEMBER</div><div class="name">{html_lib.escape(customer_name)}</div><div class="eyebrow">{html_lib.escape(metric_label)}</div><div class="metric{active_class}">{html_lib.escape(metric_value)}</div>{stamp_visual_html}<div class="sub">{html_lib.escape(metric_sub)}</div></div></div>
 <div class="right"><div class="qrbox"><img src="{qr_image}" alt="Member QR"></div><div class="scan">PRESENT TO CHECK IN</div></div>
