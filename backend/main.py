@@ -40548,7 +40548,7 @@ async def _lt_benefits_worker():
     while True:
         try:
             rss = _current_rss_mb()
-            if rss > 280:
+            if rss > 350:
                 log_event('lt_benefits_memory_pause', 'warning', rss_mb=round(rss, 1))
                 await asyncio.sleep(30)
                 continue
