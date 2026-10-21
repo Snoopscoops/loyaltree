@@ -8953,7 +8953,7 @@ def sign_pkpass_manifest(manifest_bytes: bytes) -> Optional[bytes]:
 # Apple Wallet image cache.  Business branding changes rarely, while Wallet can
 # request the same pass several times during add/registration/update.  Keeping
 # fetched bytes in-process removes repeated network waits from the hot path.
-_APPLE_IMAGE_CACHE = BoundedTTLCache('apple_images', max_bytes=8 * 1024 * 1024, max_items=64, ttl=900)
+_APPLE_IMAGE_CACHE = BoundedTTLCache('apple_images', max_bytes=2 * 1024 * 1024, max_items=16, ttl=300)
 _APPLE_IMAGE_CACHE_TTL_SECONDS = 900
 
 def _fetch_image_bytes(url: Optional[str], timeout: float = 1.5) -> Optional[bytes]:
@@ -11574,7 +11574,7 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
 # CustomerJoin requests /wallet-pass immediately after signup, and customer_signup
 # prewarms this cache in the background. By the time the person taps "Add to Wallet"
 # the already-signed .pkpass can usually be returned without image rendering/signing.
-_APPLE_PKPASS_CACHE = BoundedTTLCache('apple_passes', max_bytes=8 * 1024 * 1024, max_items=32, ttl=90)
+_APPLE_PKPASS_CACHE = BoundedTTLCache('apple_passes', max_bytes=2 * 1024 * 1024, max_items=8, ttl=300)
 _APPLE_PKPASS_CACHE_TTL_SECONDS = 3600
 
 # Memory-conscious pass build controls
@@ -32982,6 +32982,7 @@ async def get_cl_apple_wallet_pass(customer_public_id: str):
     announcement = get_latest_cl_announcement(business.get('id'))
 
     pkpass_bytes = await asyncio.to_thread(build_cl_pkpass_bytes, customer, business, contract, announcement)
+    _maybe_trim_memory()
     if pkpass_bytes is None:
         raise HTTPException(
             status_code=500,
@@ -38730,6 +38731,14 @@ async def get_apple_wallet_pass(customer_public_id: str, force_store_card: bool 
     The route logs phase timings so a slow client/network interaction is not
     mistaken for slow pass generation.
     """
+    # Refuse new builds when the process is already near the container limit.
+    rss = _current_rss_mb()
+    if rss > 420:
+        raise HTTPException(
+            status_code=503,
+            detail="Server is busy preparing cards. Please try again in a minute.",
+            headers={"Retry-After": "60"},
+        )
     t0 = time.perf_counter()
     print(f"APPLE PASS START: {customer_public_id}")
     customer = safe_get_customer(customer_public_id)
@@ -40548,7 +40557,7 @@ async def _lt_benefits_worker():
     while True:
         try:
             rss = _current_rss_mb()
-            if rss > 350:
+            if rss > 280:
                 log_event('lt_benefits_memory_pause', 'warning', rss_mb=round(rss, 1))
                 await asyncio.sleep(30)
                 continue
