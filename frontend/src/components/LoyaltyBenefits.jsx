@@ -5,7 +5,7 @@ import './loyalty-benefits.css'
 
 const PAGE_SIZE = 24
 const localDate = value => value ? new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : 'No expiry listed'
-const storage = { getItem: key => window.sessionStorage.getItem(key), setItem: (key, value) => window.sessionStorage.setItem(key, value), removeItem: key => window.sessionStorage.removeItem(key) }
+const storage = { getItem: key => window.localStorage.getItem(key), setItem: (key, value) => window.localStorage.setItem(key, value), removeItem: key => window.localStorage.removeItem(key) }
 
 function Icon({ name, ...props }) {
   const paths = {
