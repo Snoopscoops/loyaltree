@@ -353,7 +353,7 @@ class LTBenefitsService:
         self.ready()
         token = secrets.token_urlsafe(32)
         result = self._command("auth_verify", id=str(body.challenge_id), code_hash=self._code_hash(body.challenge_id, body.code), token_hash=_hash(token))
-        return dict(access_token=token, token_type="bearer", expires_in=604800,
+        return dict(access_token=token, token_type="bearer", expires_in=5184000,
                     member=dict(id=result["member_id"], email_masked=mask_email(result["email"])), linked=bool(result.get("linked")), customer_public_id=result.get("customer_public_id"))
 
     def member(self, authorization):
