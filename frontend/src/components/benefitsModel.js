@@ -11,10 +11,9 @@ export function benefitsDemoAllowed({ development = false, hostname = '', search
 }
 
 export function benefitsCardReference(search) {
-  const clean = String(search || '').replace(/&/g, '&')
-  const params = new URLSearchParams(clean)
-  const customer_public_id = params.get('card') || ''
-  const card_token = params.get('token') || ''
+  const clean = String(search || "").replace(/&amp;/g, "&"); const params = new URLSearchParams(clean)
+  const customer_public_id = params.get("card") || ""
+  const card_token = params.get("token") || ""
   return /^[A-Za-z0-9_-]{1,100}$/.test(customer_public_id) && /^[A-Za-z0-9._~-]{16,1024}$/.test(card_token) ? { customer_public_id, card_token } : null
 }
 
