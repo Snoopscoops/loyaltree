@@ -17,6 +17,7 @@ function formatDate(value){
 
 function WalletPass({API_BASE}){
   const {customerId}=useParams()
+  const appleWalletUrl=`${API_BASE}/api/v1/customer/${customerId}/apple-wallet-pass`
   const [data,setData]=useState(null)
   const [error,setError]=useState('')
   useEffect(()=>{
@@ -105,7 +106,7 @@ function WalletPass({API_BASE}){
   },[data])
 
   if(error)return <div style={S.state}>{error}</div>
-  if(!data||!view)return <div style={S.state}>Loading your card…</div>
+  if(!data||!view)return <div style={S.state}><p>Loading your card…</p><a style={{...S.btn,...S.apple}} href={appleWalletUrl}>Add to Apple Wallet</a></div>
   const p=data.pass_data
   const design=p.wallet_design||{}
   const vipTierColor=p.card_type==='vip' ? (p.vip_tier?.color || '#111827') : null
@@ -182,7 +183,7 @@ function WalletPass({API_BASE}){
 
     <section style={S.actions}>
       {data.save_url&&<button style={{...S.btn,...S.google}} onClick={()=>window.open(data.save_url,'_blank')}>Add to Google Wallet</button>}
-      <a style={{...S.btn,...S.apple}} href={data.apple_pass_url||`${API_BASE}/api/v1/customer/${customerId}/apple-wallet-pass`}>Add to Apple Wallet</a>
+      <a style={{...S.btn,...S.apple}} href={data.apple_pass_url||appleWalletUrl}>Add to Apple Wallet</a>
       <button style={{...S.btn,...S.share}} onClick={share}>Share Card</button>
     </section>
     <style>{`

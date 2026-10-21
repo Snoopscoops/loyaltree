@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { Html5QrcodeScanner } from 'html5-qrcode'
 import { useLocation, useNavigate } from 'react-router-dom'
+import BenefitsCashier from './BenefitsCashier'
+import { validBenefitCoupons } from './benefitsManagementModel'
+import { cashierAttemptKey, cashierBillAmount, cashierNewAttemptKey, cashierStampBill } from './cashierBenefitsModel'
 
 // Only shows the raw scan/debug panel in local dev - never in a production
 // build, since it prints internal API paths and response codes on-screen.
@@ -118,6 +121,10 @@ function CashierApp({ API_BASE }) {
   const lastScanRef = useRef({ id: null, time: 0 })
   const lastNfcRef = useRef({ token: null, time: 0 })
   const [customerData, setCustomerData] = useState(null)
+  const [networkScanId, setNetworkScanId] = useState(null)
+  const [ltPurchaseAmount, setLtPurchaseAmount] = useState('')
+  const [ltPurchaseConfirmed, setLtPurchaseConfirmed] = useState(false)
+  const purchaseAttempts = useRef({})
   const [giftCardData, setGiftCardData] = useState(null)
   const [giftRedeemAmount, setGiftRedeemAmount] = useState('')
   const [giftRedeemQuantity, setGiftRedeemQuantity] = useState('1')
@@ -135,7 +142,7 @@ function CashierApp({ API_BASE }) {
 
   useEffect(() => {
     if (!businessSlug || !staffName || (!isOwner && !staffPin && !sessionToken)) return
-    if (customerData || giftCardData) return // #reader isn't mounted while a customer/gift card is showing
+    if (customerData || giftCardData || networkScanId) return // #reader isn't mounted while a customer/gift card is showing
 
     const scanner = new Html5QrcodeScanner('reader', {
       qrbox: { width: 250, height: 250 },
@@ -201,7 +208,7 @@ function CashierApp({ API_BASE }) {
     return () => {
       scanner.clear().catch(() => {})
     }
-  }, [businessSlug, staffPin, sessionToken, staffName, customerData, giftCardData, isOwner])
+  }, [businessSlug, staffPin, sessionToken, staffName, customerData, giftCardData, networkScanId, isOwner])
 
   // External NFC reader/native bridge hand-off. If the customer taps before
   // the cashier has logged in, the query stays in the URL; after verify-pin
@@ -209,7 +216,7 @@ function CashierApp({ API_BASE }) {
   useEffect(() => {
     const params = new URLSearchParams(location.search)
     const nfcToken = params.get('nfc')
-    if (!nfcToken || customerData || loading) return
+    if (!nfcToken || customerData || networkScanId || loading) return
     if (!businessSlug || !staffName) return
 
     // The NFC resolve endpoint deliberately requires a real cashier session.
@@ -220,7 +227,7 @@ function CashierApp({ API_BASE }) {
     const source = params.get('nfc_source') || 'terminal'
     resolveNfcToken(nfcToken, source)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.search, businessSlug, staffName, sessionToken, customerData])
+  }, [location.search, businessSlug, staffName, sessionToken, customerData, networkScanId])
 
   // NFC itself is read by a Smart Tap/VAS terminal or native reader.
   // That reader can open /scanner?business=<business-slug>&nfc=<token>&nfc_source=google_wallet|apple_wallet.
@@ -281,10 +288,24 @@ function CashierApp({ API_BASE }) {
         // login/localStorage businessSlug must never turn a VIP, Membership,
         // or Multi-Pass customer back into Stamp.
         if (businessSlug && scannedBusinessSlug && businessSlug !== scannedBusinessSlug) {
-          throw new Error(
-            `This customer belongs to ${data.business?.name || 'another business'}. Please log in to the correct cashier account.`
-          )
+          // Only the signed, current-business lookup may expose LT coupons.
+          // Never open another merchant's customer identity or local rewards.
+          if (data.lt_benefits_enabled === true && sessionToken) {
+            const response = await fetch(`${API_BASE}/api/v1/business/${encodeURIComponent(businessSlug)}/lt-benefits/customer/${encodeURIComponent(customerId)}`, {
+              headers: { Authorization: `Bearer ${sessionToken}` }, cache: 'no-store',
+            })
+            const benefits = await response.json().catch(() => ({}))
+            if (response.ok && validBenefitCoupons(benefits) && benefits.linked) {
+              setCustomerData(null); setGiftCardData(null); setNetworkScanId(customerId)
+              setLtPurchaseAmount(''); setLtPurchaseConfirmed(false); purchaseAttempts.current = {}
+              setMessage('✅ Linked Benefits card found. Only coupons for this business are shown.')
+              setLoading(false)
+              return
+            }
+          }
+          throw new Error('This customer belongs to another business. Please use the correct cashier account, or ask the customer to link their card to Loyalty Tree Benefits.')
         }
+        setNetworkScanId(null)
 
         // Use the same program object returned with the scanned customer.
         // This is the exact source already used successfully by the Points flow.
@@ -357,6 +378,7 @@ function CashierApp({ API_BASE }) {
           points_per_amount: program.points_per_amount || 0,
           points_amount_pesos: program.points_amount_pesos || 1,
           points_cap_limit: program.points_cap_limit || null,
+          lt_benefits_enabled: data.lt_benefits_enabled === true,
           active_coupon: data.active_coupon || null,
           active_coupons: Array.isArray(data.active_coupons) ? data.active_coupons : (data.active_coupon ? [data.active_coupon] : []),
           // Multipass fields - sessions_remaining/total come off the customer
@@ -406,6 +428,11 @@ function CashierApp({ API_BASE }) {
       return
     }
     setLoading(true)
+    const bill = cashierStampBill({ enabled: customerData.lt_benefits_enabled && !!sessionToken, amount: ltPurchaseAmount, confirmed: ltPurchaseConfirmed })
+    if (bill.error) { setMessage(bill.error); setLoading(false); return }
+    const payload = { customer_public_id: customerData.public_id, stamp_kind: stampKind, ...(sessionToken ? {} : { staff_pin: staffPin }), as_owner: isOwner, ...bill.payload }
+    const operation = `stamp:${stampKind}`
+    const idempotencyKey = cashierAttemptKey(purchaseAttempts.current, operation, payload, cashierNewAttemptKey)
     setMessage(stampKind === 'tier' ? 'Adding Tier stamp...' : 'Adding reward stamp...')
 
     try {
@@ -413,22 +440,20 @@ function CashierApp({ API_BASE }) {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'X-Idempotency-Key': idempotencyKey,
           // Preferred: session token from verify-pin, so the PIN itself
           // never has to be resent. Falls back to sending the raw PIN in
           // the body only if the backend hasn't issued a token yet.
           ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
-        body: JSON.stringify({
-          customer_public_id: customerData.public_id,
-          stamp_kind: stampKind,
-          ...(sessionToken ? {} : { staff_pin: staffPin }),
-          as_owner: isOwner,
-        })
+        body: JSON.stringify(payload)
       })
 
       const data = await res.json()
 
       if (res.ok) {
+        delete purchaseAttempts.current[operation]
+        setLtPurchaseAmount(''); setLtPurchaseConfirmed(false)
         const tierStamp = stampKind === 'tier'
         const updatedTierStamps = Number(data.tier_stamp_count ?? data.stamp_count ?? customerData.tier_stamp_count ?? 0)
         let msg = tierStamp
@@ -456,7 +481,7 @@ function CashierApp({ API_BASE }) {
         setMessage(`❌ Failed: ${data.detail || 'Unknown error'}`)
       }
     } catch (err) {
-      setMessage('❌ Network error - stamp not added')
+      setMessage('❌ Connection interrupted. Check the result, or retry this same stamp to reuse its transaction reference.')
     }
     setLoading(false)
   }
@@ -466,12 +491,14 @@ function CashierApp({ API_BASE }) {
       setMessage('Missing info - scan again')
       return
     }
-    const amount = parseFloat(saleAmount)
+    const amount = cashierBillAmount(saleAmount)
     if (!amount || amount <= 0) {
       setMessage('Enter an amount spent first')
       return
     }
     setLoading(true)
+    const payload = { customer_public_id: customerData.public_id, amount_spent: amount, ...(sessionToken ? {} : { staff_pin: staffPin }), as_owner: isOwner }
+    const idempotencyKey = cashierAttemptKey(purchaseAttempts.current, 'points-sale', payload, cashierNewAttemptKey)
     setMessage('Adding points...')
 
     try {
@@ -479,14 +506,10 @@ function CashierApp({ API_BASE }) {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'X-Idempotency-Key': idempotencyKey,
           ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
-        body: JSON.stringify({
-          customer_public_id: customerData.public_id,
-          amount_spent: amount,
-          ...(sessionToken ? {} : { staff_pin: staffPin }),
-          as_owner: isOwner,
-        })
+        body: JSON.stringify(payload)
       })
 
       const data = await res.json()
@@ -512,11 +535,13 @@ function CashierApp({ API_BASE }) {
           active_coupon: data.active_coupon !== undefined ? data.active_coupon : prev.active_coupon,
         } : prev)
         setSaleAmount('')
+        setLtPurchaseAmount(''); setLtPurchaseConfirmed(false)
+        delete purchaseAttempts.current['points-sale']
       } else {
         setMessage(`❌ Failed: ${data.detail || 'Unknown error'}`)
       }
     } catch (err) {
-      setMessage('❌ Network error - points not added')
+      setMessage('❌ Connection interrupted. Check the result, or retry this purchase to reuse its transaction reference.')
     }
     setLoading(false)
   }
@@ -527,13 +552,15 @@ function CashierApp({ API_BASE }) {
       setMessage('Missing info - scan again')
       return
     }
-    const amount = parseFloat(vipSaleAmount)
+    const amount = cashierBillAmount(vipSaleAmount)
     if (!amount || amount <= 0) {
       setMessage('Enter a purchase amount first')
       return
     }
 
     setLoading(true)
+    const payload = { customer_public_id: customerData.public_id, amount_spent: amount, ...(sessionToken ? {} : { staff_pin: staffPin }), as_owner: isOwner }
+    const idempotencyKey = cashierAttemptKey(purchaseAttempts.current, 'vip-sale', payload, cashierNewAttemptKey)
     setMessage('Adding Tier points...')
 
     try {
@@ -541,14 +568,10 @@ function CashierApp({ API_BASE }) {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'X-Idempotency-Key': idempotencyKey,
           ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
         },
-        body: JSON.stringify({
-          customer_public_id: customerData.public_id,
-          amount_spent: amount,
-          ...(sessionToken ? {} : { staff_pin: staffPin }),
-          as_owner: isOwner,
-        }),
+        body: JSON.stringify(payload),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'Tier points sale failed')
@@ -565,6 +588,8 @@ function CashierApp({ API_BASE }) {
         active_coupons: Array.isArray(data.active_coupons) ? data.active_coupons : prev.active_coupons,
       } : prev)
       setVipSaleAmount('')
+      setLtPurchaseAmount(''); setLtPurchaseConfirmed(false)
+      delete purchaseAttempts.current['vip-sale']
 
       setMessage(
         data.upgraded
@@ -921,7 +946,7 @@ function CashierApp({ API_BASE }) {
   // the login form is pre-filled with the correct business and this effect
   // continues automatically after authentication.
   useEffect(() => {
-    if (!pendingGiftId || giftCardData || customerData || loading) return
+    if (!pendingGiftId || giftCardData || customerData || networkScanId || loading) return
     if (!businessSlug || !staffName || !sessionToken) return
 
     const dedupeKey = `gift-route:${pendingGiftId}`
@@ -933,13 +958,13 @@ function CashierApp({ API_BASE }) {
       navigate('/cashier', { replace: true })
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingGiftId, businessSlug, staffName, sessionToken, giftCardData, customerData])
+  }, [pendingGiftId, businessSlug, staffName, sessionToken, giftCardData, customerData, networkScanId])
 
   // USB/2D scanners usually operate as a HID keyboard: they type the QR value
   // very quickly and finish with Enter. Capture only fast bursts so normal
   // human typing in the cashier screen is not mistaken for a scan.
   useEffect(() => {
-    if (!businessSlug || !staffName || !sessionToken || customerData || giftCardData) return
+    if (!businessSlug || !staffName || !sessionToken || customerData || giftCardData || networkScanId) return
 
     let buffer = ''
     let startedAt = 0
@@ -1007,7 +1032,7 @@ function CashierApp({ API_BASE }) {
     window.addEventListener('keydown', handleUsbScannerKey, true)
     return () => window.removeEventListener('keydown', handleUsbScannerKey, true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [businessSlug, staffName, sessionToken, customerData, giftCardData])
+  }, [businessSlug, staffName, sessionToken, customerData, giftCardData, networkScanId])
 
 
   const markGiftCardSold = async () => {
@@ -1050,6 +1075,8 @@ function CashierApp({ API_BASE }) {
   }
 
   const resetScan = () => {
+    setNetworkScanId(null)
+    setLtPurchaseAmount(''); setLtPurchaseConfirmed(false); purchaseAttempts.current = {}
     setScanResult(null)
     setCustomerData(null)
     setGiftCardData(null)
@@ -1170,7 +1197,7 @@ function CashierApp({ API_BASE }) {
   // only finding out afterward.
   const previewPoints = (() => {
     if (!customerData || !(customerData.card_type === 'points' || (customerData.card_type === 'hybrid' && customerData.hybrid_loyalty_type === 'points'))) return 0
-    const amount = parseFloat(saleAmount)
+    const amount = cashierBillAmount(saleAmount)
     if (!amount || amount <= 0) return 0
     const rate = customerData.points_per_amount || 0
     const pesos = customerData.points_amount_pesos || 1
@@ -1186,7 +1213,7 @@ function CashierApp({ API_BASE }) {
     const tierEnabled = customerData.card_type === 'vip' || (customerData.card_type === 'hybrid' && customerData.hybrid_tier_enabled === true)
     const progression = customerData.tier_progression_type || (customerData.card_type === 'hybrid' ? customerData.hybrid_tier_progression_type : (customerData.vip_stamps_enabled ? 'stamps' : 'points'))
     if (!tierEnabled || progression === 'stamps') return 0
-    const amount = parseFloat(vipSaleAmount)
+    const amount = cashierBillAmount(vipSaleAmount)
     if (!amount || amount <= 0) return 0
     const rate = customerData.vip_points_per_amount || 0
     const pesos = customerData.vip_amount_pesos || 1
@@ -1357,6 +1384,13 @@ function CashierApp({ API_BASE }) {
             </div>
           ) : <div style={styles.giftClosed}>This Gift Card can no longer be redeemed.</div>}
           {!!giftCardData.redemptions?.length && <div style={styles.giftHistory}><b>Recent redemptions</b>{giftCardData.redemptions.slice(0,6).map((r,i)=><div key={r.id||i} style={styles.giftHistoryRow}><span>{r.redeemed_at ? new Date(r.redeemed_at).toLocaleString() : 'Redemption'}</span><b>{giftCardData.gift_type==='amount'?`-₱${Number(r.amount||0).toLocaleString()}`:`-${r.quantity||0}`}</b></div>)}</div>}
+          <button style={styles.scanAgainBtn} onClick={resetScan}>🔄 Scan Next</button>
+        </div>
+      ) : networkScanId ? (
+        <div style={styles.customerCard}>
+          <h2 style={{fontSize:21,color:'#174d3c'}}>Loyalty Tree Benefits</h2>
+          <p style={{fontSize:12,lineHeight:1.7,color:'#64748b'}}>This linked card identifies LT coupons for your business. Another business's customer details and loyalty program are not opened here.</p>
+          <BenefitsCashier API_BASE={API_BASE} businessSlug={businessSlug} customerPublicId={networkScanId} ownerToken={isOwner ? sessionToken : undefined} staffSessionToken={!isOwner ? sessionToken : undefined} onRedeemed={() => setMessage('✅ LT Benefits coupon used at this business.')} />
           <button style={styles.scanAgainBtn} onClick={resetScan}>🔄 Scan Next</button>
         </div>
       ) : !customerData ? (
@@ -1712,6 +1746,8 @@ function CashierApp({ API_BASE }) {
             </div>
           )}
 
+          {customerData.lt_benefits_enabled && <BenefitsCashier API_BASE={API_BASE} businessSlug={businessSlug} customerPublicId={customerData.public_id} ownerToken={isOwner ? sessionToken : undefined} staffSessionToken={!isOwner ? sessionToken : undefined} onRedeemed={() => setMessage('✅ LT Benefits coupon used at this business.')} />}
+
           {/* Active coupons */}
           {(customerData.active_coupons?.length || customerData.active_coupon) ? (
             <div style={{margin:'12px 0',display:'grid',gap:8}}>
@@ -1739,6 +1775,14 @@ function CashierApp({ API_BASE }) {
           }}>
             {cardExperience.actionTitle}
           </div>
+
+          {customerData.lt_benefits_enabled && (usesStamps || tierUsesStamps) && <section style={{...styles.pointsSaleSection,background:'#f1f7e9',border:'1px solid #d7e6c4'}} aria-label="Optional purchase for LT Points">
+            <label style={{display:'block',fontSize:12,fontWeight:800,color:'#426331'}}>Purchase total for LT Points (PHP)
+              <input type="number" min="0.01" max="1000000000" step="0.01" inputMode="decimal" style={{...styles.input,marginTop:8}} placeholder="Optional · actual bill amount" value={ltPurchaseAmount} disabled={loading || !sessionToken} onChange={event => { setLtPurchaseAmount(event.target.value); setLtPurchaseConfirmed(false) }}/>
+            </label>
+            <label style={{display:'flex',gap:8,fontSize:11,lineHeight:1.6,color:'#647759',marginTop:10}}><input type="checkbox" checked={ltPurchaseConfirmed} disabled={loading || !ltPurchaseAmount || !sessionToken} onChange={event => setLtPurchaseConfirmed(event.target.checked)}/>I confirm this is the actual purchase total for the next stamp transaction.</label>
+            <p style={{fontSize:10,color:'#7d8e70',lineHeight:1.6,margin:'8px 0 0'}}>Leave blank for a normal stamp. Scanning a card or adding a stamp without a confirmed bill does not earn LT Points.</p>
+          </section>}
 
           {/* Actions */}
           {isEmployeeExperience && customerData.employee_time_tracking_enabled && (

@@ -14,6 +14,7 @@ from unittest.mock import patch
 from fastapi import HTTPException, Query
 from fastapi.responses import Response
 from backend import wallet_memory as memory
+from backend import lt_benefits_wallet
 
 SOURCE = Path(__file__).resolve().parents[1] / 'main.py'
 NAMES = {'_apple_pkpass_fingerprint', '_get_cached_apple_pkpass', '_cache_apple_pkpass',
@@ -37,6 +38,7 @@ def fixture():
         builds.append(args)
         return f'signed-fixture-{len(builds)}'.encode()
     env = dict(Optional=Optional, hashlib=hashlib, json=json, time=time, asyncio=asyncio,
+               lt_wallet=lt_benefits_wallet, lt_benefits_enabled=lambda: False,
                Query=Query, HTTPException=HTTPException, Response=Response, wallet_work=memory.wallet_work,
                _APPLE_PKPASS_CACHE=cache, _APPLE_PKPASS_CACHE_TTL_SECONDS=90,
                _apple_pass_dirty_at=lambda serial: revision[0], APPLE_PASS_REGISTRATION_RELEASE='fixture',
@@ -86,7 +88,9 @@ class AppleAddCacheTests(unittest.TestCase):
             prewarm.result(2)
             results = [task.result(2) for task in adds]
         self.assertEqual(len(self.builds), 1)
-        self.assertEqual(results, [(b'signed-fixture-1', True)] * 5)
+        # Either prewarm or a real tap may acquire the render lock first.
+        self.assertTrue(all(data == b'signed-fixture-1' for data, _ in results))
+        self.assertLessEqual(sum(not cache_hit for _, cache_hit in results), 1)
 
     def test_order_ahead_signup_warms_store_card_and_following_add_is_cache_hit(self):
         self.env['_get_or_build_apple_event_pkpass'] = lambda *args: self.fail('Legacy event renderer must not run')

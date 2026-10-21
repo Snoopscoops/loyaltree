@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import { startVisibilityPolling } from './visibilityPolling'
 import { useLocation, useNavigate } from 'react-router-dom'
 import OwnerDashboardNavigation from './OwnerDashboardNavigation'
+import BenefitsOwner from './BenefitsOwner'
 import CustomerSegmentsChart from './CustomerSegmentsChart'
 import QRMenuSection from './QRMenuSection'
 import { customerMatchesFilter, overviewMetrics } from './ownerCustomerMetrics'
@@ -4180,6 +4181,8 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
 
           </div>
         )}
+
+        {activeTab === 'ltbenefits' && <BenefitsOwner API_BASE={API_BASE} businessSlug={user.business_slug} ownerToken={user.token} authFetch={authFetch} />}
 
         {activeTab === 'campaigns' && (
           <Campaigns

@@ -138,7 +138,7 @@ def endpoint_namespace(program, outcomes, events):
         supabase=db, generate_public_id=lambda: 'new-program',
         refresh_existing_member_wallets=AsyncMock(side_effect=refresh),
         print=lambda *args: None,
-        log_event=MagicMock(),
+        log_event=MagicMock(), lt_benefits_enabled=lambda: False,
     )
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(SOURCE), 'exec'), env)
     return SimpleNamespace(env=env, db=db, threads=worker_ids, tasks=tasks,

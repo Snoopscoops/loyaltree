@@ -18,6 +18,7 @@ const AdminDashboard = lazy(() => import('./components/AdminDashboard'))
 const PartnerDashboard = lazy(() => import('./components/PartnerDashboard'))
 const MotoliteApp = lazy(() => import('./components/MotoliteApp'))
 const CustomerJoin = lazy(() => import('./components/CustomerJoin'))
+const LoyaltyBenefits = lazy(() => import('./components/LoyaltyBenefits'))
 import { trackEvent } from './analytics'
 
 const API_BASE = (
@@ -92,7 +93,7 @@ function RouteBusinessAccess({ user, children, onLogout }) {
   const { pathname } = useLocation()
   // A public menu stays public even with an unrelated, expired owner session.
   // The menu API checks the menu business itself.
-  if (pathname.startsWith('/menu/') || !['owner','manager','cashier'].includes(user?.role)) return children
+  if (pathname.startsWith('/menu/') || pathname === '/benefits' || pathname.startsWith('/benefits/') || !['owner','manager','cashier'].includes(user?.role)) return children
   return <BusinessAccessGate API_BASE={API_BASE} user={user} onLogout={onLogout}>{children}</BusinessAccessGate>
 }
 
@@ -160,6 +161,7 @@ function App() {
   )
 
   function AppRoutes() { return <Routes>
+        <Route path="/benefits" element={<LoyaltyBenefits API_BASE={API_BASE} />} />
         <Route path="/menu/:businessId" element={<QRMenuPage API_BASE={API_BASE} />} />
         <Route path="/event-scan" element={<Navigate to="/" replace />} />
         <Route path="/join/event/:eventId" element={<Navigate to="/" replace />} />

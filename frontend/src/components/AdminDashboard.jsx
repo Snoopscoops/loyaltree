@@ -5,6 +5,8 @@ import PlatformAnnouncementsAdmin from './PlatformAnnouncementsAdmin'
 import GiftCardPrintRequestsAdmin from './GiftCardPrintRequestsAdmin'
 import CustomerDemographicsAdmin from './CustomerDemographicsAdmin'
 import SystemUsageAdmin from './SystemUsageAdmin'
+import BenefitsAdmin from './BenefitsAdmin'
+import { BenefitsAdminCardUpgrade } from './BenefitsCardUpgrade'
 
 function BillingBranchEditor({ detail, onSave }) {
   const [count, setCount] = useState(String(detail.branch_count || 1))
@@ -971,6 +973,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const adminTabs = [
     { key:'overview', label:'Overview', icon:'⌂', description:'Platform health, applications and the few numbers that need attention.' },
     { key:'coupons', label:'Trial Coupons', icon:'🎟', description:'Create business trial offers and track redemptions.' },
+    { key:'ltbenefits', label:'LT Rewards', icon:'✧', description:'Manage shared Loyalty Tree Points and the earning rate across participating businesses.' },
     { key:'businesses', label:'Businesses', icon:'▦', description:'Search, manage and open individual client accounts.' },
     { key:'special', label:'Special Businesses', icon:'₱', description:'Custom contracts, branch-based pricing and automated invoice delivery.' },
     { key:'performance', label:'Client Performance', icon:'↗', description:'CRM and retention movement across LoyaltyTree clients.' },
@@ -1061,6 +1064,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
         {activeAdminTab === 'coupons' && <TrialCouponsAdmin API_BASE={API_BASE} token={token} />}
         {activeAdminTab === 'demographics' && <CustomerDemographicsAdmin authFetch={authedFetch} sessionKey={token} />}
         {activeAdminTab === 'system-usage' && <SystemUsageAdmin authFetch={authedFetch} sessionKey={token} />}
+        {activeAdminTab === 'ltbenefits' && <BenefitsAdmin API_BASE={API_BASE} token={token} />}
 
         {activeAdminTab === 'platform' && (
         <section style={styles.analyticsSection}>
@@ -2135,6 +2139,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
         <div style={styles.modalOverlay} onClick={() => { setShowOrderAheadDesign(false); setSelected(null); setDetail(null); setOrderAheadAdmin(null) }}>
           <div style={styles.modal} onClick={e => e.stopPropagation()}>
             <div style={styles.businessDetailHero}>{detail?.logo_url?<img src={detail.logo_url} alt="Business logo" style={styles.businessDetailLogo}/>:<div style={styles.businessDetailLogoFallback}>🏪</div>}<div><h2 style={styles.modalTitle}>{detail?.name || selected.name}</h2><div style={styles.bizEmail}>{detail?.contact_person||'No contact person'} · {detail?.business_type?businessTypeLabel(detail.business_type):''}</div></div></div>
+            {detail?.public_id && <BenefitsAdminCardUpgrade API_BASE={API_BASE} token={token} businessSlug={detail.public_id} businessName={detail.name}/>}
             {!detail ? (
               <p>Loading…</p>
             ) : (

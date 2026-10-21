@@ -144,6 +144,7 @@ class WalletMemoryTests(unittest.TestCase):
         expected = {'serialNumber': 'synthetic-card', 'storeCard': {'secondaryFields': [{'key': 'stamps', 'value': '3'}]}}
         logo = image_bytes((600, 300), 'RGBA', 'PNG')
         env = dict(Optional=Optional, Image=Image, BytesIO=BytesIO, hashlib=hashlib, json=json, zipfile=zipfile,
+                   _lt_cobrand_logo=lambda data: data, lt_wallet=SimpleNamespace(card_enabled=lambda *args,**kwargs:False), lt_benefits_enabled=lambda:False,
                    decode_wallet_image=memory.decode_wallet_image, APPLE_PASS_TYPE_IDENTIFIER='test.pass', APPLE_TEAM_IDENTIFIER='TEST',
                    get_apple_pass_credentials=lambda: True, wallet_20_design=lambda *args: {'background': '#123456', 'show_background': True},
                    program_has_tier=lambda *args: False, _fetch_image_bytes=lambda *args: logo,

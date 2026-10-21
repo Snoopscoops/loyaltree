@@ -295,6 +295,7 @@ class WorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
             'app': app, 'asyncio': asyncio,
             'STOREHUB_VOID_SYNC_ENABLED': enabled, 'STOREHUB_VOID_SYNC_SECONDS': 60,
             'STOREHUB_OFFLINE_SALES_ENABLED': False,
+            'lt_benefits_enabled': lambda: False,
             '_env_bool': lambda *_:False,
             'wallet_queue_worker': lambda: worker('wallet'),
             '_apple_layout_release_startup': lambda: worker('apple'),

@@ -106,6 +106,17 @@ GOOGLE_WALLET_ISSUER_ID = os.getenv('GOOGLE_WALLET_ISSUER_ID', '')
 GOOGLE_WALLET_CLASS_SUFFIX = os.getenv('GOOGLE_WALLET_CLASS_SUFFIX', '')
 DEFAULT_LOGO_URL = os.getenv('DEFAULT_LOGO_URL', 'https://placehold.co/300x300/0d9488/ffffff.png?text=LoyaltyTree')
 
+try:
+    from . import lt_benefits_wallet as lt_wallet
+    from .lt_benefits import register_lt_benefits_routes
+    from .lt_benefits_upgrade import register_lt_benefits_upgrade_routes
+    from . import lt_benefits_transactions as lt_transactions
+except ImportError:
+    import lt_benefits_wallet as lt_wallet
+    from lt_benefits import register_lt_benefits_routes
+    from lt_benefits_upgrade import register_lt_benefits_upgrade_routes
+    import lt_benefits_transactions as lt_transactions
+
 
 # Contactless / NFC loyalty. These switches are intentionally opt-in so the
 # existing QR + Wallet passes keep working before Apple/Google approve the
@@ -2666,6 +2677,9 @@ class StampRequest(BaseModel):
     # Needed only when one Composite/Hybrid card uses stamps for both the
     # redeemable rewards engine and Tier progression. Old clients may omit it.
     stamp_kind: Optional[Literal['reward', 'tier']] = None
+    # Optional confirmed purchase total for the separate LT earning layer.
+    # A bare visit/stamp never awards spend-based LT Points.
+    amount_spent: Optional[float] = Field(default=None, gt=0, le=10000000, allow_inf_nan=False)
 
 class StampAdjustRequest(BaseModel):
     customer_public_id: str
@@ -7422,12 +7436,14 @@ def google_wallet_tier_class_id(business: dict, program: dict, tier: dict) -> st
 def google_wallet_class_id_for_customer(customer: dict, business: dict, program: dict) -> str:
     """Return the normal class, or the customer's current Tier-specific class."""
     if program_has_tier(program):
-        return google_wallet_tier_class_id(
+        legacy_id = google_wallet_tier_class_id(
             business,
             program or {},
             get_vip_tier(customer, program or {}),
         )
-    return _google_wallet_base_class_id(business, program)
+    else:
+        legacy_id = _google_wallet_base_class_id(business, program)
+    return lt_wallet.google_class_id(legacy_id, customer, enabled=lt_benefits_enabled())
 
 
 def ensure_google_wallet_tier_class(customer: dict, business: dict, program: dict) -> bool:
@@ -7437,7 +7453,7 @@ def ensure_google_wallet_tier_class(customer: dict, business: dict, program: dic
     configured tier. That lets the existing LoyaltyObject keep the same object ID
     while moving between classes/colors as the customer levels up.
     """
-    if not program_has_tier(program):
+    if not program_has_tier(program) and not lt_wallet.card_enabled(customer, enabled=lt_benefits_enabled()):
         return True
 
     access_token = get_google_access_token()
@@ -7445,15 +7461,15 @@ def ensure_google_wallet_tier_class(customer: dict, business: dict, program: dic
         print("GOOGLE TIER CLASS: no Google access token")
         return False
 
-    tier = get_vip_tier(customer, program or {})
-    class_id = google_wallet_tier_class_id(business, program or {}, tier)
-    tier_name = tier.get('name') or ('VIP' if (program or {}).get('card_type') == 'vip' else 'Tier')
+    tier = get_vip_tier(customer, program or {}) if program_has_tier(program) else {}
+    class_id = google_wallet_class_id_for_customer(customer, business, program or {})
+    tier_name = (tier.get('name') or ('VIP' if (program or {}).get('card_type') == 'vip' else 'Tier')) if tier else None
     loyalty_class = build_loyalty_class(
         business,
         program or {},
         review_status='UNDER_REVIEW',
         class_id_override=class_id,
-        background_color_override=tier.get('color') or '#111827',
+        background_color_override=(tier.get('color') or '#111827') if tier else None,
         vip_tier_name=tier_name,
     )
 
@@ -7553,8 +7569,9 @@ def build_loyalty_class(
     # programLogo is circular-masked by Google and ignores transparency, so
     # that slot is painted with the pass color after the white plate is removed.
     # wideProgramLogo is the transparent header and is not circular-masked.
+    lt_class = lt_benefits_enabled() and lt_wallet.is_google_class(class_id)
     logo_url = google_wallet_program_logo_uri(business, program, source_logo_url, primary_color, 'program')
-    wide_logo_url = google_wallet_program_logo_uri(business, program, source_logo_url, primary_color, 'wide')
+    wide_logo_url = google_wallet_program_logo_uri(business, program, source_logo_url, primary_color, 'wide', benefits=lt_class)
     loyalty_class['programLogo'] = {
         'sourceUri': {'uri': logo_url},
         'contentDescription': {
@@ -7599,7 +7616,7 @@ def build_loyalty_class(
         loyalty_class['enableSmartTap'] = True
         loyalty_class['redemptionIssuers'] = [str(GOOGLE_SMART_TAP_REDEMPTION_ISSUER_ID)]
 
-    return loyalty_class
+    return lt_wallet.apply_google_class(loyalty_class) if lt_class else loyalty_class
 
 
 def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
@@ -8048,7 +8065,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     if nfc_trial_active and GOOGLE_SMART_TAP_ENABLED and GOOGLE_SMART_TAP_REDEMPTION_ISSUER_ID and contactless_token:
         loyalty_object['smartTapRedemptionValue'] = contactless_token
 
-    return loyalty_object
+    return lt_wallet.apply_google(loyalty_object, customer, lt_benefits_wallet_action(customer, business))
 
 
 async def refresh_existing_member_wallets(business: dict, program: dict, refresh_apple: bool = True):
@@ -8176,22 +8193,39 @@ async def republish_wallet_class_and_refresh(business: dict, program: dict):
                         default_tier_name,
                     )]
 
-                with pooled_client() as client:
-                    for target_id, target_color, tier_name in class_specs:
-                        loyalty_class = build_loyalty_class(
-                            business,
-                            program,
-                            review_status='UNDER_REVIEW',
-                            class_id_override=target_id,
-                            background_color_override=target_color,
-                            vip_tier_name=tier_name,
-                        )
-                        resp = client.put(
-                            f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{target_id}',
-                            headers={"Authorization": f"Bearer {access_token}"},
-                            json=loyalty_class
-                        )
-                        print(f"WALLET SYNC: class PUT {target_id} -> {resp.status_code}")
+                if lt_benefits_enabled():
+                    # Existing LT cards use independent classes. Reapply edits to
+                    # those siblings too; checking that a class exists cannot
+                    # propagate a new logo, program name or background color.
+                    class_specs += [
+                        (target_id + lt_wallet.GOOGLE_CLASS_SUFFIX, color, name)
+                        for target_id, color, name in list(class_specs)
+                    ]
+
+                def publish_designs():
+                    with pooled_client() as client:
+                        for target_id, target_color, tier_name in class_specs:
+                            loyalty_class = build_loyalty_class(
+                                business,
+                                program,
+                                review_status='UNDER_REVIEW',
+                                class_id_override=target_id,
+                                background_color_override=target_color,
+                                vip_tier_name=tier_name,
+                            )
+                            if lt_wallet.is_google_class(target_id):
+                                resp, _ = upsert_loyalty_class(client, loyalty_class, access_token)
+                            else:
+                                resp = client.put(
+                                    f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{target_id}',
+                                    headers={"Authorization": f"Bearer {access_token}"},
+                                    json=loyalty_class
+                                )
+                            print(f"WALLET SYNC: class publish {target_id} -> {resp.status_code}")
+
+                # Class publication uses synchronous pooled HTTP. Keep it off
+                # the event loop while applying both native class layouts.
+                await asyncio.to_thread(publish_designs)
         except Exception as e:
             print(f"WALLET SYNC: class PUT error: {e}")
     await refresh_existing_member_wallets(business, program)
@@ -8324,8 +8358,9 @@ def sync_wallet_object(customer: dict, business: dict, program: dict,
 
             # Only customers with an actually-saved Google pass need the expensive
             # desired-object build and any tier-class preparation.
-            if program_has_tier(program):
-                ensure_google_wallet_tier_class(customer, business, program or {})
+            if program_has_tier(program) or lt_wallet.card_enabled(customer, enabled=lt_benefits_enabled()):
+                if not ensure_google_wallet_tier_class(customer, business, program or {}):
+                    return {'status': 'error', 'stage': 'class', 'detail': 'Google Wallet class is not ready'}
 
             desired = build_loyalty_object(customer, business, program)
             desired_class_id = desired.get('classId')
@@ -8432,6 +8467,18 @@ def sync_wallet_object(customer: dict, business: dict, program: dict,
                     message_sent = send_wallet_object_message(
                         object_id, notify_header, notify_body or '', notify_message_id
                     )
+                if (lt_wallet.is_google_class(current_class_id)
+                        or lt_wallet.is_google_class(desired_class_id)):
+                    # The balance update succeeded, but the LT layout did not
+                    # move. Leave this retryable so the durable worker retries
+                    # the class migration instead of marking it completed.
+                    return {
+                        "status": "error", "stage": "class_move", "retryable": True,
+                        "http_status": resp.status_code, "member_updated": True,
+                        "member_http_status": fallback.status_code, "object_id": object_id,
+                        "notification_sent": message_sent,
+                        "detail": "Member fields updated; Google Wallet class migration is pending",
+                    }
                 return {
                     "status": "updated",
                     "stage": "fallback_patch",
@@ -8676,6 +8723,171 @@ def order_ahead_wallet_action(customer: dict, business: dict) -> Optional[dict]:
     }
 
 
+def lt_benefits_enabled() -> bool:
+    return str(os.getenv('LT_BENEFITS_ENABLED', '')).strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def lt_benefits_wallet_action(customer: dict, business: dict):
+    return lt_wallet.wallet_action(
+        customer, business, FRONTEND_URL or 'https://theloyaltytree.com',
+        _order_ahead_signing_secret(), enabled=lt_benefits_enabled(),
+    )
+
+
+def _lt_card_context(customer_public_id: str, token: str):
+    customer = safe_get_customer(customer_public_id)
+    if not lt_wallet.card_enabled(customer, enabled=lt_benefits_enabled()):
+        raise HTTPException(status_code=409, detail='This business has not enabled LT Benefits on this card yet.')
+    business = safe_get_business_by_id((customer or {}).get('business_id')) if customer else None
+    if not customer or not business or not lt_wallet.verify_card_token(
+        customer_public_id, business.get('public_id'), token, _order_ahead_signing_secret()
+    ):
+        raise HTTPException(status_code=403, detail='Open Loyalty Tree Benefits from your own Wallet card.')
+    return {'customer': customer, 'business': business}
+
+
+def _lt_require_staff(public_id: str, authorization: str):
+    claims = get_staff_session_claims(public_id, authorization)
+    if not claims:
+        raise HTTPException(status_code=401, detail='Sign in as the owner or cashier to use LT coupons.')
+    if claims.get('role') == 'owner':
+        return require_owner_session(public_id, authorization)
+    if claims.get('role') == 'manager':
+        manager_claims, _, staff, _ = require_branch_manager_session(public_id, authorization)
+        return {**manager_claims, 'branch_id': staff.get('branch_id')}
+    staff_id = claims.get('staff_id')
+    business = safe_get_business(public_id)
+    if not staff_id or not business:
+        raise HTTPException(status_code=403, detail='Cashier access required')
+    rows = (supabase.table('staff').select('id,business_id,branch_id,is_active')
+            .eq('id', staff_id).eq('business_id', business['id']).limit(1).execute().data or [])
+    if not rows or rows[0].get('is_active') is False:
+        raise HTTPException(status_code=403, detail='This cashier account is inactive.')
+    return {**claims, 'branch_id': rows[0].get('branch_id')}
+
+
+def _lt_purchase_metadata(public_id: str, authorization: str, amount, business=None):
+    if not lt_benefits_enabled() or amount is None:
+        return {}
+    try:
+        _lt_require_staff(public_id, authorization)
+    except Exception:
+        # Preserve legacy local loyalty actions; only verified actors earn LT.
+        return {}
+    try:
+        amount_centavos = lt_transactions.centavos(amount)
+        if amount_centavos <= 0:
+            return {}
+    except ValueError:
+        return {}
+    return {'lt_purchase_authorized': True, 'lt_amount_centavos': amount_centavos,
+            'lt_purchase_currency': business_currency(business or {})}
+
+
+def _lt_award_audit_purchase(audit_row, metadata=None, customer=None, business=None):
+    if not lt_benefits_enabled() or not audit_row or audit_row.get('_duplicate_response'):
+        return
+    info = {**(audit_row.get('metadata') or {}), **(metadata or {})}
+    if info.get('lt_purchase_authorized') is not True:
+        return
+    try:
+        customer = customer or safe_get_customer_by_id(audit_row.get('customer_id'))
+        business = business or safe_get_business_by_id(audit_row.get('business_id'))
+        if not customer or not business:
+            return
+        source = info.get('lt_purchase_source') or lt_transactions.canonical_purchase_source(
+            audit_row.get('idempotency_key') or audit_row.get('transaction_id') or audit_row.get('id'))
+        info['lt_purchase_source'] = source
+        info['lt_purchase_currency'] = info.get('lt_purchase_currency') or business_currency(business)
+        result = _lt_benefits.earn(customer['public_id'], business['id'], 'purchase', source,
+                                    int(info['lt_amount_centavos']), currency=info['lt_purchase_currency'])
+        info['lt_points_status'] = result.get('status')
+        info['lt_points_reason'] = result.get('reason')
+        info['lt_points_processed'] = result.get('status') in ('earned', 'replay', 'unlinked', 'skipped_currency')
+        if result.get('status') == 'needs_review':
+            log_event('lt_points_review_required', 'warning', business_id=business['id'], audit_id=audit_row['id'])
+        supabase.table('transaction_audit').update({'metadata': info}).eq('id', audit_row['id']).execute()
+        return result
+    except Exception as exc:
+        log_event('lt_points_award_failed', 'warning', error_type=type(exc).__name__,
+                  business_id=audit_row.get('business_id'), audit_id=audit_row.get('id'))
+
+
+def _lt_prepare_pos_purchase(tx, customer, business, test_mode=False):
+    """Snapshot verified final spend separately from the merchant's earn rule.
+
+    Optional LT failures never fail an existing POS sale. A saved source is
+    immutable across retries and shared by the stamp/points engines.
+    """
+    info = dict(tx.get('processing_metadata') or {})
+    if 'lt_purchase_authorized' in info:
+        return tx
+    snapshot = {'lt_purchase_authorized': False}
+    if lt_benefits_enabled() and not test_mode:
+        try:
+            snapshot = lt_transactions.pos_purchase_metadata(
+                {**tx, 'currency': tx.get('currency') or business_currency(business)},
+                customer_public_id=customer['public_id'])
+        except Exception as exc:
+            log_event('lt_points_pos_review_required', 'warning',
+                      error_type=type(exc).__name__, transaction_id=str(tx.get('id')),
+                      business_id=business.get('id'))
+    tx = {**tx, 'processing_metadata': {**info, **snapshot}}
+    if snapshot.get('lt_purchase_authorized'):
+        try:
+            supabase.table('pos_transactions').update({
+                'processing_metadata': tx['processing_metadata']
+            }).eq('id', tx['id']).execute()
+        except Exception as exc:
+            log_event('lt_points_pos_snapshot_retry', 'warning',
+                      error_type=type(exc).__name__, transaction_id=str(tx.get('id')))
+    return tx
+
+
+def _lt_award_pos_purchase(tx):
+    if not lt_benefits_enabled() or not tx or tx.get('status') != 'loyalty_applied':
+        return
+    info = dict(tx.get('processing_metadata') or {})
+    if info.get('lt_purchase_authorized') is not True or info.get('lt_points_processed') is not None:
+        return
+    try:
+        result = ({'status': 'skipped_zero'} if info['lt_amount_centavos'] == 0 else
+            _lt_benefits.earn(info['lt_customer_public_id'], tx['business_id'],
+                'purchase', info['lt_purchase_source'], info['lt_amount_centavos'],
+                currency=info['lt_purchase_currency']))
+        info['lt_points_status'] = result.get('status')
+        info['lt_points_processed'] = result.get('status') in (
+            'earned', 'replay', 'unlinked', 'skipped_currency', 'skipped_zero')
+        if result.get('status') == 'needs_review':
+            log_event('lt_points_pos_review_required', 'warning',
+                      transaction_id=str(tx.get('id')), business_id=tx.get('business_id'))
+        supabase.table('pos_transactions').update({'processing_metadata': info}).eq(
+            'id', tx['id']).eq('status', 'loyalty_applied').execute()
+        return result
+    except Exception as exc:
+        log_event('lt_points_pos_award_failed', 'warning',
+                  error_type=type(exc).__name__, transaction_id=str(tx.get('id')),
+                  business_id=tx.get('business_id'))
+
+
+def _lt_cobrand_logo(png_bytes):
+    if not lt_benefits_enabled() or not png_bytes:
+        return png_bytes
+    key = 'lt-cobrand-v1:' + hashlib.sha256(png_bytes).hexdigest()
+    cached = _APPLE_IMAGE_CACHE.get(key)
+    if cached:
+        return cached
+    from pathlib import Path
+    try:
+        brand = (Path(__file__).resolve().parent / 'assets' / 'loyalty-tree-logo.png').read_bytes()
+        result = lt_wallet.co_brand_png(png_bytes, brand)
+    except Exception as exc:
+        log_event('lt_wallet_branding_unavailable', 'warning', error_type=type(exc).__name__)
+        return png_bytes
+    _APPLE_IMAGE_CACHE[key] = result
+    return result
+
+
 def _oa_latest_wallet_order(customer: dict, business: dict) -> Optional[dict]:
     """Latest confirmed Order Ahead order shown in Apple Pass Details.
 
@@ -8841,6 +9053,7 @@ def google_wallet_logo_png_bytes(
     size: int = 660,
     background: Optional[str] = None,
     wide: bool = False,
+    benefits: bool = False,
 ) -> bytes:
     """Google Wallet logo.
 
@@ -8890,7 +9103,8 @@ def google_wallet_logo_png_bytes(
         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
         fill = (255, 255, 255, 230)
         draw.text(((canvas_size[0] - tw) / 2 - bbox[0], (canvas_size[1] - th) / 2 - bbox[1]), letter, font=font, fill=fill)
-    return _hero_to_png(canvas)
+    rendered = _hero_to_png(canvas)
+    return _lt_cobrand_logo(rendered) if wide and benefits else rendered
 
 
 def google_wallet_program_logo_uri(
@@ -8899,15 +9113,19 @@ def google_wallet_program_logo_uri(
     source_logo_url: Optional[str] = None,
     background: Optional[str] = None,
     kind: str = 'program',
+    benefits: bool = False,
 ) -> str:
     """Cache-busted logo URL. kind=program is the circular slot; kind=wide is transparent."""
     public_id = str((business or {}).get('public_id') or '').strip()
     program_id = str((program or {}).get('public_id') or '').strip()
     color = str(background or '').lstrip('#')
-    digest = hashlib.sha1(f"{source_logo_url}|{color}|{kind}|plate-v2".encode()).hexdigest()[:12]
+    branded = bool(benefits and lt_benefits_enabled())
+    brand_release = lt_wallet.RELEASE if branded else 'plate-v2'
+    digest = hashlib.sha1(f"{source_logo_url}|{color}|{kind}|{brand_release}".encode()).hexdigest()[:12]
     return (
         f"{BASE_URL.rstrip('/')}/api/v1/business/{quote(public_id, safe='')}/wallet-logo.png"
         f"?p={quote(program_id, safe='')}&v={digest}&c={quote(color, safe='')}&kind={quote(kind, safe='')}"
+        + ('&benefits=true' if branded else '')
     )
 
 
@@ -10339,7 +10557,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     geofence_locations = apple_geofence_locations(business)
     if geofence_locations:
         pass_dict['locations'] = geofence_locations
-    return pass_dict
+    return lt_wallet.apply_apple(pass_dict, customer, lt_benefits_wallet_action(customer, business))
 
 
 def _apple_trial5_validate_pkpass_bytes(pkpass_bytes: bytes) -> dict:
@@ -11286,6 +11504,8 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
     logo_480 = apple_logo_from_image_bytes(logo_bytes, 480, 150) if logo_bytes else None
     if not logo_480:
         logo_480 = generate_apple_logo_bytes(biz_name, 480, 150)
+    if lt_wallet.card_enabled(customer, enabled=lt_benefits_enabled()):
+        logo_480 = _lt_cobrand_logo(logo_480)
     logo_320 = _resize_png_bytes(logo_480, 320, 100)
     logo_160 = _resize_png_bytes(logo_480, 160, 50)
 
@@ -11398,6 +11618,13 @@ def _apple_pkpass_fingerprint(customer: dict, business: dict, program: dict, ann
             "updated_at": (announcement or {}).get("updated_at") or (announcement or {}).get("created_at"),
         },
         "wallet_revision": str(_apple_pass_dirty_at(customer.get("public_id")) or ""),
+        "lt_points": {
+            "release": lt_wallet.RELEASE if lt_wallet.card_enabled(customer, enabled=lt_benefits_enabled()) else '',
+            "card_enabled": lt_wallet.card_enabled(customer, enabled=lt_benefits_enabled()),
+            "version": customer.get('lt_points_version'),
+            "balance": customer.get('lt_points_balance'),
+            "updated_at": customer.get('lt_points_updated_at'),
+        },
         "passkit_registration": {
             "release": APPLE_PASS_REGISTRATION_RELEASE,
             "web_service_url": APPLE_PASS_WEB_SERVICE_URL,
@@ -13601,7 +13828,7 @@ async def stop_monitoring():
     if task:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-    for name in ('memory_task', 'wallet_worker', 'apple_release_task', 'storehub_void_worker', 'storehub_offline_worker', 'redemption_code_worker'):
+    for name in ('memory_task', 'wallet_worker', 'apple_release_task', 'storehub_void_worker', 'storehub_offline_worker', 'redemption_code_worker', 'lt_benefits_worker'):
         worker = getattr(app.state, name, None)
         if worker:
             worker.cancel()
@@ -20631,7 +20858,8 @@ async def get_customer_api(public_id: str, response: Response):
 
     return {
         "current_card_type": current_card_type,
-        "customer": customer,
+        "customer": {key: value for key, value in customer.items() if key != 'lt_member_id'},
+        "lt_benefits_enabled": lt_wallet.card_enabled(customer, enabled=lt_benefits_enabled()),
         "business": {
             "id": business.get("id") if business else None,
             "public_id": business.get("public_id") if business else None,
@@ -27131,6 +27359,11 @@ def start_transaction_audit(*, business_id, customer_id=None, staff_id=None, bra
                             delta=None, balance_before=None, reason=None, metadata=None):
     """Reserve an idempotency key and create the immutable transaction envelope."""
     key = (idempotency_key or '').strip() or None
+    metadata = dict(metadata or {})
+    if metadata.get('lt_purchase_authorized') is True:
+        # Bind the rate's currency and source before any optional LT RPC/retry.
+        if key:
+            metadata.setdefault('lt_purchase_source', lt_transactions.canonical_purchase_source(key))
     row = {
         'business_id': business_id,
         'customer_id': customer_id,
@@ -27143,7 +27376,7 @@ def start_transaction_audit(*, business_id, customer_id=None, staff_id=None, bra
         'delta': delta,
         'balance_before': balance_before,
         'reason': reason,
-        'metadata': metadata or {},
+        'metadata': metadata,
     }
     try:
         res = supabase.table('transaction_audit').insert(row).execute()
@@ -27199,8 +27432,12 @@ def complete_transaction_audit(audit_row, *, balance_after=None, response_json=N
                 business, customer, branch_id=audit_row.get('branch_id'), gross_amount=amount,
                 source_transaction_id=audit_row.get('idempotency_key') or audit_row.get('transaction_id') or str(audit_id),
             )
+            _lt_award_audit_purchase(audit_row, merged_meta, customer=customer, business=business)
     except Exception as campaign_exc:
         print(f"CAMPAIGN post-transaction warning: {campaign_exc}")
+
+    if str(audit_row.get('action') or '') == 'tier_stamp':
+        _lt_award_audit_purchase(audit_row, metadata)
 
 
 def fail_transaction_audit(audit_row, error):
@@ -27585,6 +27822,7 @@ async def add_stamp(public_id: str, req: StampRequest, background_tasks: Backgro
                 'card_type': (program or {}).get('card_type'),
                 'tier_progression':'stamps',
                 'reward_engine': effective_loyalty_type(program),
+                **_lt_purchase_metadata(public_id, authorization, req.amount_spent, business=business),
             },
         )
         if audit_row and audit_row.get('_duplicate_response'):
@@ -27661,7 +27899,8 @@ async def add_stamp(public_id: str, req: StampRequest, background_tasks: Backgro
         idempotency_key=x_idempotency_key,
         delta=1,
         balance_before=old_count,
-        metadata={'card_type': 'stamp', 'goal': goal},
+        metadata={'card_type': 'stamp', 'goal': goal,
+                  **_lt_purchase_metadata(public_id, authorization, req.amount_spent, business=business)},
     )
     if audit_row and audit_row.get('_duplicate_response'):
         return audit_row['_duplicate_response']
@@ -28003,7 +28242,7 @@ async def add_vip_sale(public_id: str, req: VIPSaleRequest, background_tasks: Ba
     old_tier=get_vip_tier(customer, program)
     old_balance=int(customer.get('vip_points') or 0)
     balance=old_balance+earned
-    audit_row=start_transaction_audit(business_id=business.get('id'),customer_id=customer.get('id'),staff_id=staff_id,branch_id=branch_id,actor_type=_audit_actor(staff_id,req.as_owner),action='tier_points_sale',idempotency_key=x_idempotency_key,delta=earned,balance_before=old_balance,metadata={'card_type':program.get('card_type'),'tier_progression':'points','amount_spent':float(req.amount_spent)})
+    audit_row=start_transaction_audit(business_id=business.get('id'),customer_id=customer.get('id'),staff_id=staff_id,branch_id=branch_id,actor_type=_audit_actor(staff_id,req.as_owner),action='tier_points_sale',idempotency_key=x_idempotency_key,delta=earned,balance_before=old_balance,metadata={'card_type':program.get('card_type'),'tier_progression':'points','amount_spent':float(req.amount_spent),**_lt_purchase_metadata(public_id, authorization, req.amount_spent, business=business)})
     if audit_row and audit_row.get('_duplicate_response'): return audit_row['_duplicate_response']
     supabase.table('customers').update({'vip_points':balance,'updated_at':datetime.utcnow().isoformat()}).eq('id',customer.get('id')).execute()
     customer['vip_points']=balance
@@ -28172,6 +28411,7 @@ async def add_points_sale(public_id: str, req: PointsSaleRequest, background_tas
             'raw_points_earned':raw_points_earned,
             'points_cap_limit':points_cap_limit,
             'points_discarded_by_cap':points_discarded,
+            **_lt_purchase_metadata(public_id, authorization, req.amount_spent, business=business),
         }
     )
     if audit_row and audit_row.get('_duplicate_response'): return audit_row['_duplicate_response']
@@ -32242,6 +32482,7 @@ async def get_wallet_logo(
     v: Optional[str] = None,
     c: Optional[str] = None,
     kind: Optional[str] = None,
+    benefits: bool = False,
 ):
     """Google Wallet logo. kind=wide is a transparent PNG; kind=program matches the pass color.
 
@@ -32267,6 +32508,7 @@ async def get_wallet_logo(
         fallback_label=(business.get('name') or 'L'),
         background=None if wide else (f"#{str(c).strip().lstrip('#')}" if c else None),
         wide=wide,
+        benefits=bool(benefits and lt_benefits_enabled()),
     )
     return Response(
         content=png_bytes,
@@ -32453,6 +32695,12 @@ async def create_or_update_wallet_class(public_id: str, program_id: Optional[str
                 'color': None,
                 'tier_name': None,
             })
+
+        if lt_benefits_enabled():
+            # Publish the LT sibling layouts separately. Legacy class IDs retain
+            # their existing layout until each individual card opts in.
+            class_specs += [{**spec, 'class_id': spec['class_id'] + lt_wallet.GOOGLE_CLASS_SUFFIX}
+                            for spec in list(class_specs)]
 
         def publish_classes():
             published_ids = []
@@ -33383,6 +33631,11 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup, backg
             business,
             program or {},
         )
+
+    # Account setup is optional background work and sends no email. A later
+    # card can join an existing profile only after its own OTP confirmation.
+    if inserted_customer and lt_benefits_enabled():
+        background_tasks.add_task(_lt_benefits.provision_customer, inserted_customer, business)
 
     return {
         "public_id": customer_public_id,
@@ -38283,8 +38536,8 @@ async def get_wallet_pass(customer_public_id: str):
     loyalty_object = build_loyalty_object(customer, business, program)
 
     google_class_ready = True
-    if program_has_tier(program):
-        google_class_ready = ensure_google_wallet_tier_class(customer, business, program or {})
+    if program_has_tier(program) or lt_wallet.card_enabled(customer, enabled=lt_benefits_enabled()):
+        google_class_ready = await asyncio.to_thread(ensure_google_wallet_tier_class, customer, business, program or {})
         if not google_class_ready:
             print(
                 "WALLET-PASS: Tier Google class is not ready for "
@@ -38851,11 +39104,12 @@ async def apple_list_updated_serials(device_library_identifier: str, pass_type_i
                 if not customer:
                     continue
                 business = safe_get_business_by_id(customer.get('business_id'))
-                program = safe_get_loyalty_program(business.get('id')) if business else None
+                program = safe_get_customer_program(customer, business.get('id')) if business else None
                 announcement = get_latest_active_announcement_for_customer(business, customer) if business else None
                 raw_values = [
                     customer.get('updated_at'),
                     business.get('updated_at') if business else None,
+                    customer.get('lt_points_updated_at'),
                     (program or {}).get('updated_at') or (program or {}).get('created_at'),
                     (announcement or {}).get('updated_at') or (announcement or {}).get('created_at'),
                     _apple_pass_dirty_at(serial),
@@ -39053,9 +39307,10 @@ async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, 
     ann_ts_raw = (announcement or {}).get('updated_at') or (announcement or {}).get('created_at')
     ann_ts = _parse_ts(ann_ts_raw)
     dirty_ts = _apple_pass_dirty_at(serial_number)
+    lt_points_ts = _parse_ts(customer.get('lt_points_updated_at'))
 
     candidates = [
-        t for t in (customer_ts, business_ts, program_ts, ann_ts, dirty_ts)
+        t for t in (customer_ts, business_ts, program_ts, ann_ts, dirty_ts, lt_points_ts)
         if t
     ]
     last_modified_ts = max(candidates) if candidates else datetime.utcnow()
@@ -40199,7 +40454,7 @@ def process_wallet_sync_queue_once(limit: int = 10):
             customer=safe_get_customer_by_id(job.get('customer_id'))
             business=safe_get_business_by_id(job.get('business_id'))
             if not customer or not business: raise RuntimeError('Customer/business no longer exists')
-            program=safe_get_loyalty_program(business.get('id')) or {}
+            program=safe_get_customer_program(customer, business.get('id')) or {}
             # Apple first here too so retry jobs prioritize waking the phone.
             a=sync_apple_wallet_pass(customer)
             g=sync_wallet_object(customer,business,program)
@@ -40231,9 +40486,60 @@ async def wallet_queue_worker():
         await asyncio.sleep(WALLET_QUEUE_POLL_SECONDS)
 
 
+def _lt_queue_member_cards(member_id, cards):
+    """Queue small existing per-card jobs; never render/sign inside a claim."""
+    for card in cards:
+        customer = safe_get_customer(card.get('customer_public_id'))
+        if not customer:
+            continue
+        business = safe_get_business_by_id(customer.get('business_id'))
+        if not business:
+            continue
+        result = enqueue_wallet_sync(customer, business, 'lt_benefits')
+        if result.get('status') != 'queued':
+            raise RuntimeError('Wallet job could not be queued')
+    return True
+
+
+def _lt_retry_purchase_awards():
+    """Successful purchases remain durable if the LT database call fails."""
+    if not lt_benefits_enabled():
+        return
+    rows = (supabase.table('transaction_audit').select('*').eq('status', 'success')
+            .eq('metadata->>lt_purchase_authorized', 'true')
+            .is_('metadata->lt_points_processed', 'null')
+            .order('id').limit(10).execute().data or [])
+    for row in rows:
+        _lt_award_audit_purchase(row)
+    pos_rows = (supabase.table('pos_transactions').select(
+            'id,business_id,status,processing_metadata').eq('status', 'loyalty_applied')
+            .eq('processing_metadata->>lt_purchase_authorized', 'true')
+            .is_('processing_metadata->lt_points_processed', 'null')
+            .order('id').limit(10).execute().data or [])
+    for row in pos_rows:
+        _lt_award_pos_purchase(row)
+
+
+async def _lt_benefits_worker():
+    sweep = 0
+    while True:
+        try:
+            await asyncio.to_thread(_lt_retry_purchase_awards)
+            if sweep % 4 == 0:
+                await asyncio.to_thread(_lt_benefits.maintenance, limit=10)
+            await asyncio.to_thread(_lt_benefits.process_wallet_jobs, limit=3)
+            await asyncio.to_thread(_lt_card_upgrades.tick, limit=5)
+        except Exception as exc:
+            log_event('lt_benefits_worker_retry', 'warning', error_type=type(exc).__name__)
+        sweep += 1
+        await asyncio.sleep(15)
+
+
 @app.on_event('startup')
 async def start_wallet_queue_worker():
     app.state.wallet_worker = asyncio.create_task(wallet_queue_worker())
+    if lt_benefits_enabled():
+        app.state.lt_benefits_worker = asyncio.create_task(_lt_benefits_worker())
     if _env_bool('STOREHUB_REDEMPTION_CODES_ENABLED', True):
         app.state.redemption_code_worker = asyncio.create_task(periodic_redemption_codes(
             _manual_redemption_service, 30, _log_storehub_void_sync))
@@ -46198,6 +46504,7 @@ def _storehub_void_sync_service() -> StoreHubVoidSync:
             and business_has_plan_feature(business, 'pos_integration')
         ),
         enqueue_wallet=enqueue_wallet_sync, log=_log_storehub_void_sync,
+        on_void=_lt_transaction_reconciler.refund_pos,
         interval_seconds=STOREHUB_VOID_SYNC_SECONDS,
     )
 
@@ -46914,6 +47221,8 @@ async def _companion_process_transaction(
             earning_amount=earning_amount,
             earn_on_net_amount=(bool(_pos_redemption_config(integration).get('earn_on_net_amount')) if committed_redemption else None),
         )
+        tx = _lt_prepare_pos_purchase(tx, customer, business,
+            test_mode=bool(allow_test_mode or integration.get('mode') != 'live'))
         if points_active and earning_amount > 0:
             points_result = await add_points_sale(
                 business.get('public_id'),
@@ -47030,7 +47339,8 @@ async def _companion_process_transaction(
             .execute()
             .data or []
         )
-        tx = updated[0] if updated else {**tx, 'status': 'loyalty_applied', 'customer_id': customer.get('id')}
+        tx = updated[0] if updated else {**tx, **transaction_patch}
+        _lt_award_pos_purchase(tx)
 
         patch = {
             'status': 'completed', 'matched_pos_transaction_id': tx.get('id'),
@@ -49676,6 +49986,22 @@ register_qr_menu_routes(app, db=supabase, get_business=safe_get_business,
 
 register_customer_demographics_routes(app, db=supabase, require_admin=require_admin,
     on_warning=lambda error_type: log_event('customer_demographics_unavailable', level='warning', error_type=error_type))
+
+_lt_benefits = register_lt_benefits_routes(app, db=supabase, get_business=safe_get_business,
+    get_card_context=_lt_card_context, require_owner=require_owner_session,
+    require_staff=_lt_require_staff, require_admin=require_admin, send_email=send_email,
+    sync_member=_lt_queue_member_cards,
+    log=lambda event, **fields: log_event(event, 'warning', **fields), enabled=lt_benefits_enabled)
+
+_lt_transaction_reconciler = lt_transactions.LTTransactionReconciler(
+    db=supabase, benefits=_lt_benefits, enabled=lt_benefits_enabled,
+    log=lambda event, **fields: log_event(event, 'info', **fields))
+
+_lt_card_upgrades = register_lt_benefits_upgrade_routes(app, db=supabase,
+    get_business=safe_get_business, require_admin=require_admin,
+    enabled=lt_benefits_enabled, ready=_lt_benefits.ready,
+    enqueue=enqueue_wallet_sync,
+    log=lambda event, **fields: log_event(event, 'warning' if 'retry' in event or 'unavailable' in event else 'info', **fields))
 
 profiler.configure(caches=cache_stats, retained_maps=lambda: {
     name: len(globals().get(name, {})) for name in (

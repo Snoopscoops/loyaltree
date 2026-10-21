@@ -38,7 +38,7 @@ function Icon({ name, className = '' }) {
 }
 const tabTitles = {
   tree: 'Overview', customers: 'Customers', program: 'Loyalty card', analytics: 'Analytics', announcements: 'Announcements', staff: 'Team & locations',
-  qrmenu: 'QR Menu', orderahead: 'Order Ahead', giftcards: 'Gift cards', pos: 'Integrations', campaigns: 'Campaigns',
+  qrmenu: 'QR Menu', orderahead: 'Order Ahead', giftcards: 'Gift cards', ltbenefits: 'LT Rewards', pos: 'Integrations', campaigns: 'Campaigns',
   satisfaction: 'Satisfaction', billing: 'Billing', referrals: 'Referrals', security: 'Transactions & security',
   walletqueue: 'Wallet queue', crm: 'Customer segments', retention: 'Retention', operations: 'Branch operations',
 }
@@ -112,6 +112,7 @@ export default function OwnerDashboardNavigation({
         {item('analytics', 'Analytics', 'chart', () => act(onAnalytics))}
         <div className="lt-owner-nav-section">GROW</div>
         {item('announcements', 'Announcements', 'announcement', () => act(onAnnouncements))}
+        {item('ltbenefits', 'LT Rewards', 'gift')}
         {item('campaigns', 'Campaigns', 'campaign')}{item('satisfaction', 'Satisfaction', 'star')}
         <div className="lt-owner-nav-section">OPERATE</div>
         {item('staff', 'Team & locations', 'team')}{item('qrmenu', 'QR Menu', 'scan')}{orderAheadEnabled && item('orderahead', 'Order Ahead', 'bag')}

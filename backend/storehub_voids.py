@@ -33,7 +33,7 @@ def wallet_pending(transaction):
 class StoreHubVoidSync:
     def __init__(self, *, db, rpc, fetch_rows, get_integration, get_mapping,
                  get_business, access_allowed, enqueue_wallet, log,
-                 interval_seconds=60, active_device_minutes=15, now=None):
+                 interval_seconds=60, active_device_minutes=15, now=None, on_void=None):
         self.db = db
         self.rpc = rpc
         self.fetch_rows = fetch_rows
@@ -42,6 +42,7 @@ class StoreHubVoidSync:
         self.get_business = get_business
         self.access_allowed = access_allowed
         self.enqueue_wallet = enqueue_wallet
+        self.on_void = on_void
         self.log = log
         self.interval = max(60, int(interval_seconds))
         self.active_device_minutes = max(10, int(active_device_minutes))
@@ -51,6 +52,10 @@ class StoreHubVoidSync:
         if not wallet_pending(transaction):
             return False
         try:
+            # Run optional cross-program corrections before clearing the durable
+            # void marker. Failure leaves it pending for the next sweep.
+            if self.on_void and self.on_void(transaction) is False:
+                raise RuntimeError('Void reconciliation is not complete')
             customers = (self.db.table('customers').select('*')
                          .eq('id', transaction.get('customer_id'))
                          .eq('business_id', transaction.get('business_id'))
