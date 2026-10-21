@@ -10372,6 +10372,14 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                 'primaryFields': [],
                 'secondaryFields': [
                     {
+                        'key': 'points',
+                        'label': 'POINTS',
+                        'value': str(int(points_balance or 0)),
+                        'changeMessage': 'Points updated: %@',
+                    },
+                ],
+                'auxiliaryFields': [
+                    {
                         'key': 'next_reward',
                         'label': 'NEXT REWARD',
                         'value': (
@@ -10385,14 +10393,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                         ),
                         'changeMessage': 'Next reward: %@',
                     },
-                    {
-                        'key': 'points',
-                        'label': 'POINTS',
-                        'value': str(int(points_balance or 0)),
-                        'textAlignment': 'PKTextAlignmentRight',
-                        'changeMessage': 'Points updated: %@',
-                    },
-                ],
+                ] + cycle_auxiliary_fields,
                 'auxiliaryFields': cycle_auxiliary_fields,
                 'backFields': back_fields,
             }
@@ -37226,10 +37227,9 @@ async def customer_wallet_page(customer_public_id: str):
 .top{{display:flex;justify-content:space-between;color:#8390a5;font-size:12px;margin-bottom:14px}}
 .top b{{color:#fff}}
 .card{{position:relative;overflow:hidden;isolation:isolate;aspect-ratio:1.72/1;min-height:320px;border-radius:28px;padding:clamp(22px,4vw,44px);background:linear-gradient(135deg,{design["background"]},{design["secondary"]});border:1px solid rgba(255,255,255,.14);box-shadow:0 28px 80px rgba(0,0,0,.46)}}
-.watermark{{position:absolute;right:12px;bottom:10px;width:48px;height:48px;opacity:.15;pointer-events:none;z-index:1}}
-.watermark{{position:absolute;right:16px;bottom:14px;opacity:.18;font-size:11px;font-weight:700;letter-spacing:.4px;pointer-events:none;z-index:1}}
+.watermark{{position:absolute;right:14px;bottom:12px;width:36px;height:36px;opacity:.22;pointer-events:none;z-index:2}}
 .hero{{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:-3}}
-.card:before{{content:"";position:absolute;inset:0;background:linear-gradient(90deg,rgba(3,6,16,.86),rgba(3,6,16,.63) 52%,rgba(3,6,16,.26));z-index:-2}}
+.card:before{{content:"";position:absolute;inset:0;background:linear-gradient(135deg,rgba(3,6,16,.72),rgba(3,6,16,.45) 60%,rgba(3,6,16,.2));z-index:-2}}
 .grid{{height:100%;display:grid;grid-template-columns:minmax(0,1fr) minmax(170px,29%);gap:clamp(18px,4vw,48px)}}
 .left{{display:flex;flex-direction:column;min-width:0}}.brand{{display:flex;align-items:center;gap:13px}}
 .logo{{width:58px;height:58px;border-radius:16px;object-fit:cover;background:#fff;border:1px solid rgba(255,255,255,.3)}}.fallback{{display:grid;place-items:center;font-size:27px;background:rgba(255,255,255,.12)}}
@@ -37258,7 +37258,7 @@ async def customer_wallet_page(customer_public_id: str):
 </style></head>
 <body><main class="wrap">
 <div class="top"><b>🌳 LoyaltyTree</b><span>{html_lib.escape(card_label)}</span></div>
-<section class="card">{hero_html}<img class="watermark" src="https://theloyaltytree.com/logo-64.png" alt="Loyalty Tree"><div class="grid">
+<section class="card">{hero_html}<img class="watermark banner-watermark" src="https://theloyaltytree.com/logo-64.png" alt="Loyalty Tree"><div class="grid">
 <div class="left"><div class="brand">{logo_html}<div><div class="biz">{html_lib.escape(business_name)}</div><div class="type">{html_lib.escape(card_label)}</div></div></div>
 <div class="member"><div class="eyebrow">MEMBER</div><div class="name">{html_lib.escape(customer_name)}</div><div class="eyebrow">{html_lib.escape(metric_label)}</div><div class="metric{active_class}">{html_lib.escape(metric_value)}</div>{stamp_visual_html}<div class="sub">{html_lib.escape(metric_sub)}</div></div></div>
 <div class="right"><div class="qrbox"><img src="{qr_image}" alt="Member QR"></div><div class="scan">PRESENT TO CHECK IN</div></div>
