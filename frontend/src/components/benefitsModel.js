@@ -11,9 +11,9 @@ export function benefitsDemoAllowed({ development = false, hostname = '', search
 }
 
 export function benefitsCardReference(search) {
-  const clean = String(search || "").replace(/&amp;/g, "&"); const params = new URLSearchParams(clean)
-  const customer_public_id = params.get("card") || ""
-  const card_token = params.get("token") || ""
+  const params = new URLSearchParams(search)
+  const customer_public_id = params.get('card') || ''
+  const card_token = params.get('token') || ''
   return /^[A-Za-z0-9_-]{1,100}$/.test(customer_public_id) && /^[A-Za-z0-9._~-]{16,1024}$/.test(card_token) ? { customer_public_id, card_token } : null
 }
 
@@ -96,7 +96,8 @@ export function benefitsFailure(status, detail = '') {
     if (/insufficient|not enough|balance/i.test(detail)) return 'You need more LT Points for this benefit. Your balance has been refreshed.'
     if (/stock|quantity|sold out/i.test(detail)) return 'This benefit has just sold out. Your points have not been spent.'
     if (/limit|already claimed/i.test(detail)) return 'You have reached the claim limit for this benefit.'
-    return 'This benefit is no longer available to claim. Refresh to see the latest availability.'
+    if (/email|phone/i.test(detail)) return 'Add a valid email and phone number to this card before connecting Benefits. Ask the business to update your details.'
+    return detail || 'This benefit is no longer available to claim. Refresh to see the latest availability.'
   }
   if (status === 400) return 'Please check your details or verification code and try again.'
   return 'We could not complete that request. Please try again. If you were claiming a benefit, retrying uses the same claim reference.'
