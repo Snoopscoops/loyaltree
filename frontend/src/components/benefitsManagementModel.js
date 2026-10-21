@@ -40,7 +40,7 @@ export function benefitOfferPayload(form) {
   if (image && !benefitImage(image)) return { error: 'Use a valid HTTPS photo URL without embedded sign-in details.' }
   if (!['draft', 'active', 'paused'].includes(form.status)) return { error: 'Choose a valid offer status.' }
   if (!BENEFIT_CATEGORIES.some(item => item.value === form.category)) return { error: 'Choose a valid coupon category.' }
-  return { payload: { title, description: String(form.description || '').trim(), terms: String(form.terms || '').trim(), image_url: image || null, category: form.category, discount_centavos: discount, reward_type: form.reward_type || 'peso', item_name: isItem ? String(form.item_name || '').trim() : null, points_cost: Number(form.points_cost), total_quantity: Number(form.total_quantity), min_spend_centavos: minimum, per_member_limit: Number(form.per_member_limit), coupon_valid_days: Number(form.coupon_valid_days), starts_at: startsAt, ends_at: endsAt, status: form.status } }
+  return { payload: { title, description: String(form.description || '').trim(), terms: String(form.terms || '').trim(), image_url: image || null, category: form.category, discount_centavos: discount, reward_type: form.reward_type || 'peso', item_name: form.reward_type === 'item' ? String(form.item_name || '').trim() : null, points_cost: Number(form.points_cost), total_quantity: Number(form.total_quantity), min_spend_centavos: minimum, per_member_limit: Number(form.per_member_limit), coupon_valid_days: Number(form.coupon_valid_days), starts_at: startsAt, ends_at: endsAt, status: form.status } }
 }
 
 function dateInput(value) {

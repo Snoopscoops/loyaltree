@@ -17,6 +17,7 @@ import zipfile
 from PIL import Image
 from fastapi import Response
 from backend import wallet_memory as memory
+from backend import wallet_cloudinary as artwork
 
 
 def image_bytes(size=(4000, 3000), mode='RGB', format='JPEG'):
@@ -80,6 +81,7 @@ class WalletMemoryTests(unittest.TestCase):
             def get(self, url, **kwargs): calls.append(kwargs); return response
         cache = memory.BoundedTTLCache('test_loader', max_bytes=4 * 1024 * 1024, max_items=24, ttl=900)
         env = dict(Optional=Optional, BytesIO=BytesIO, Image=Image, MAX_IMAGE_BYTES=memory.MAX_IMAGE_BYTES,
+                   wallet_artwork=artwork,
                    decode_wallet_image=memory.decode_wallet_image, _STAMP_REMOTE_IMAGE_CACHE=cache,
                    _STAMP_REMOTE_IMAGE_CACHE_MAX=24, pooled_client=lambda **kwargs: Client())
         exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), 'exec'), env)
@@ -138,16 +140,18 @@ class WalletMemoryTests(unittest.TestCase):
     def test_actual_store_card_packaging_preserves_pass_json_manifest_and_asset_sizes(self):
         source = Path(__file__).resolve().parents[1] / 'main.py'
         names = {'_hero_to_png', '_cover_image_to_size', 'apple_icon_from_logo_bytes',
-                 'apple_logo_from_image_bytes', 'apple_strip_from_image_bytes', '_resize_png_bytes', 'build_pkpass_bytes'}
+                 'apple_logo_from_image_bytes', 'apple_strip_from_image_bytes', '_resize_png_bytes',
+                 '_apple_loyalty_brand_assets', '_apple_static_strip_assets', 'build_pkpass_bytes'}
         nodes = [n for n in ast.parse(source.read_text()).body if isinstance(n, ast.FunctionDef) and n.name in names]
         for node in nodes: node.decorator_list = []
         expected = {'serialNumber': 'synthetic-card', 'storeCard': {'secondaryFields': [{'key': 'stamps', 'value': '3'}]}}
         logo = image_bytes((600, 300), 'RGBA', 'PNG')
         env = dict(Optional=Optional, Image=Image, BytesIO=BytesIO, hashlib=hashlib, json=json, zipfile=zipfile,
-                   _lt_cobrand_logo=lambda data: data, lt_wallet=SimpleNamespace(card_enabled=lambda *args,**kwargs:False), lt_benefits_enabled=lambda:False,
+                   _lt_cobrand_logo=lambda data: data, lt_wallet=SimpleNamespace(card_enabled=lambda *args,**kwargs:False, RELEASE='fixture'), lt_benefits_enabled=lambda:False,
+                   wallet_artwork=artwork, _APPLE_IMAGE_CACHE={},
                    decode_wallet_image=memory.decode_wallet_image, APPLE_PASS_TYPE_IDENTIFIER='test.pass', APPLE_TEAM_IDENTIFIER='TEST',
                    get_apple_pass_credentials=lambda: True, wallet_20_design=lambda *args: {'background': '#123456', 'show_background': True},
-                   program_has_tier=lambda *args: False, _fetch_image_bytes=lambda *args: logo,
+                   program_has_tier=lambda *args: False, _fetch_image_bytes=lambda *args,**kwargs: logo,
                    build_apple_pass_json=lambda *args: json.loads(json.dumps(expected)), _apple_pass_dirty_at=lambda *args: None,
                    wallet_progress_state=lambda *args: None, _strip_bottom_rgb=lambda *args: None,
                    sign_pkpass_manifest=lambda content: hashlib.sha256(content).digest())

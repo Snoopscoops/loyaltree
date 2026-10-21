@@ -95,7 +95,15 @@ CREATE TABLE IF NOT EXISTS public.ltb_pending_refunds (
 CREATE TABLE IF NOT EXISTS public.ltb_wallet_jobs (
  member_id uuid PRIMARY KEY REFERENCES public.ltb_members(id),version bigint NOT NULL,
  status text NOT NULL DEFAULT 'pending' CHECK(status IN('pending','processing')),lease_token uuid,lease_until timestamptz,
- attempts integer NOT NULL DEFAULT 0,next_attempt_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now());
+ attempts integer NOT NULL DEFAULT 0,next_attempt_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now(),
+ dirty_cards jsonb NOT NULL DEFAULT '{}',claimed_cards jsonb NOT NULL DEFAULT '{}');
+-- Per-card tokens coalesce only visible changes. A leased snapshot cannot
+-- acknowledge a later update to the same card or a newly linked card.
+ALTER TABLE public.ltb_wallet_jobs ADD COLUMN IF NOT EXISTS dirty_cards jsonb NOT NULL DEFAULT '{}';
+ALTER TABLE public.ltb_wallet_jobs ADD COLUMN IF NOT EXISTS claimed_cards jsonb NOT NULL DEFAULT '{}';
+-- Retain all work queued by older releases, including cleared revoked cards.
+UPDATE public.ltb_wallet_jobs j SET dirty_cards=COALESCE((SELECT jsonb_object_agg(k.customer_public_id,gen_random_uuid()::text)
+ FROM public.ltb_cards k WHERE k.member_id=j.member_id),'{}') WHERE dirty_cards='{}';
 
 -- Apple Add sees these columns in its existing select('*'): no extra round trip.
 ALTER TABLE public.customers ADD COLUMN IF NOT EXISTS lt_member_id uuid;
@@ -106,15 +114,35 @@ ALTER TABLE public.customers ADD COLUMN IF NOT EXISTS lt_coupon_count integer;
 
 CREATE OR REPLACE FUNCTION public.ltb_touch(p_member uuid) RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=public AS $$
-DECLARE m ltb_members%ROWTYPE;
+DECLARE m ltb_members%ROWTYPE;changed_cards jsonb;
 BEGIN
- UPDATE ltb_members SET version=version+1,updated_at=clock_timestamp() WHERE id=p_member RETURNING * INTO m;
- UPDATE customers c SET lt_member_id=m.id,lt_points_balance=m.balance_points,lt_points_version=m.version,
-  lt_points_updated_at=m.updated_at,lt_coupon_count=(SELECT count(*) FROM ltb_coupons q
-   WHERE q.member_id=m.id AND q.business_id=c.business_id::text AND q.status='claimed' AND q.expires_at>now())
- WHERE EXISTS(SELECT 1 FROM ltb_cards k WHERE k.member_id=m.id AND k.revoked_at IS NULL AND k.customer_public_id=c.public_id::text);
- INSERT INTO ltb_wallet_jobs(member_id,version) VALUES(m.id,m.version) ON CONFLICT(member_id) DO UPDATE
- SET version=GREATEST(ltb_wallet_jobs.version+1,EXCLUDED.version),updated_at=now(),next_attempt_at=CASE WHEN ltb_wallet_jobs.status='pending' THEN now() ELSE ltb_wallet_jobs.next_attempt_at END;
+ -- Activity remains current even for a purchase that changes only carry/debt.
+ UPDATE ltb_members SET updated_at=clock_timestamp() WHERE id=p_member RETURNING * INTO m;
+ IF NOT FOUND THEN RETURN;END IF;
+ -- Compare and write in the same UPDATE. Contact predicates are rechecked if
+ -- a concurrent contact edit wins the customer row lock, so stale membership
+ -- data cannot restore a projection that the revocation trigger just cleared.
+ WITH coupon_counts AS(SELECT business_id,count(*)::integer coupons FROM ltb_coupons
+  WHERE member_id=m.id AND status='claimed' AND expires_at>now() GROUP BY business_id),changed AS(
+  UPDATE customers c SET lt_member_id=m.id,lt_points_balance=GREATEST(m.balance_points,0),lt_points_version=m.version+1,
+   lt_points_updated_at=m.updated_at,lt_coupon_count=COALESCE(q.coupons,0)
+  FROM ltb_cards k LEFT JOIN coupon_counts q ON q.business_id=k.business_id
+  WHERE k.member_id=m.id AND k.revoked_at IS NULL AND k.customer_public_id=c.public_id::text
+   AND k.customer_id=c.id::text AND k.business_id=c.business_id::text
+   AND lower(btrim(c.email))=m.email AND ltb_phone(to_jsonb(c)->>'phone')=m.phone_key
+   AND (c.lt_member_id IS DISTINCT FROM m.id OR c.lt_points_balance IS NULL
+    OR GREATEST(c.lt_points_balance,0) IS DISTINCT FROM GREATEST(m.balance_points,0)
+    OR GREATEST(COALESCE(c.lt_coupon_count,0),0) IS DISTINCT FROM COALESCE(q.coupons,0))
+  RETURNING c.public_id)
+ SELECT COALESCE(jsonb_object_agg(public_id::text,gen_random_uuid()::text),'{}') INTO changed_cards FROM changed;
+ IF changed_cards='{}' THEN RETURN;END IF;
+ -- Native projections hold the rendered balance; signed debt remains in the
+ -- member/ledger. Invisible debt/carry changes never alter pass fingerprints.
+ UPDATE ltb_members SET version=version+1 WHERE id=m.id RETURNING * INTO m;
+ INSERT INTO ltb_wallet_jobs(member_id,version,dirty_cards) VALUES(m.id,m.version,changed_cards)
+ ON CONFLICT(member_id) DO UPDATE SET version=GREATEST(ltb_wallet_jobs.version+1,EXCLUDED.version),
+  dirty_cards=ltb_wallet_jobs.dirty_cards||EXCLUDED.dirty_cards,updated_at=now(),
+  next_attempt_at=CASE WHEN ltb_wallet_jobs.status='pending' THEN now() ELSE ltb_wallet_jobs.next_attempt_at END;
 END $$;
 
 CREATE OR REPLACE FUNCTION public.ltb_link_card(p_member uuid,p_card jsonb) RETURNS boolean
@@ -217,7 +245,7 @@ BEGIN
    IF NOT ltb_link_card(m.id,ch.card_context) THEN RETURN jsonb_build_object('error','card_link_conflict');END IF;
   END IF;
   UPDATE ltb_auth_challenges SET consumed_at=now() WHERE id=ch.id;
-  INSERT INTO ltb_sessions(token_hash,member_id,expires_at,customer_public_id) VALUES(p_data->>'token_hash',m.id,now()+interval '7 days',ch.card_context->>'customer_public_id');
+  INSERT INTO ltb_sessions(token_hash,member_id,expires_at,customer_public_id) VALUES(p_data->>'token_hash',m.id,now()+interval '60 days',ch.card_context->>'customer_public_id');
   RETURN jsonb_build_object('member_id',m.id,'email',m.email,'linked',true,'customer_public_id',ch.card_context->>'customer_public_id');
  ELSIF p_action='session' THEN
   SELECT mm.* INTO m FROM ltb_sessions ss JOIN ltb_members mm ON mm.id=ss.member_id
@@ -433,20 +461,29 @@ BEGIN
  ELSIF p_action='wallet_jobs_claim' THEN
   WITH selected AS(SELECT member_id FROM ltb_wallet_jobs WHERE next_attempt_at<=now() AND (status='pending' OR lease_until<=now())
    ORDER BY updated_at LIMIT LEAST(lim,10) FOR UPDATE SKIP LOCKED),claimed AS(
-   UPDATE ltb_wallet_jobs j SET status='processing',lease_token=gen_random_uuid(),lease_until=now()+interval '120 seconds',attempts=attempts+1
-    FROM selected x WHERE j.member_id=x.member_id RETURNING j.*)
-  SELECT COALESCE(jsonb_agg(to_jsonb(c)||jsonb_build_object('cards',COALESCE((SELECT jsonb_agg(jsonb_build_object(
-   'customer_public_id',cc.customer_public_id,'business_id',cc.business_id,'business_slug',cc.business_slug)) FROM ltb_cards cc WHERE cc.member_id=c.member_id),'[]'))),'[]')
+   UPDATE ltb_wallet_jobs j SET status='processing',lease_token=gen_random_uuid(),lease_until=now()+interval '120 seconds',
+    attempts=attempts+1,claimed_cards=dirty_cards FROM selected x WHERE j.member_id=x.member_id RETURNING j.*)
+  SELECT COALESCE(jsonb_agg((to_jsonb(c)-'dirty_cards'-'claimed_cards')||jsonb_build_object('cards',COALESCE((SELECT jsonb_agg(jsonb_build_object(
+   'customer_public_id',cc.customer_public_id,'business_id',cc.business_id,'business_slug',cc.business_slug)) FROM ltb_cards cc
+    WHERE cc.member_id=c.member_id AND c.claimed_cards ? cc.customer_public_id),'[]'))),'[]')
    INTO rows_json FROM claimed c;RETURN rows_json;
  ELSIF p_action='wallet_jobs_finish' THEN
+  -- Finish is one row-locked transaction. Remove only the exact card tokens
+  -- captured by this lease; newer changes remain dirty even for the same card.
+  PERFORM 1 FROM ltb_wallet_jobs WHERE member_id=(p_data->>'member_id')::uuid
+   AND lease_token=(p_data->>'lease_token')::uuid AND status='processing' FOR UPDATE;
+  IF NOT FOUND THEN RETURN '{}';END IF;
   IF (p_data->>'success')::boolean THEN
-   DELETE FROM ltb_wallet_jobs WHERE member_id=(p_data->>'member_id')::uuid AND lease_token=(p_data->>'lease_token')::uuid AND version<=(p_data->>'version')::bigint;
+   UPDATE ltb_wallet_jobs j SET dirty_cards=COALESCE((SELECT jsonb_object_agg(d.key,d.value)
+    FROM jsonb_each(j.dirty_cards) d WHERE j.claimed_cards->d.key IS DISTINCT FROM d.value),'{}'),
+    claimed_cards='{}' WHERE j.member_id=(p_data->>'member_id')::uuid;
+   DELETE FROM ltb_wallet_jobs WHERE member_id=(p_data->>'member_id')::uuid AND dirty_cards='{}';
    UPDATE ltb_wallet_jobs SET status='pending',lease_token=NULL,lease_until=NULL,next_attempt_at=now()
-    WHERE member_id=(p_data->>'member_id')::uuid AND lease_token=(p_data->>'lease_token')::uuid;
+    WHERE member_id=(p_data->>'member_id')::uuid;
   ELSE
-   UPDATE ltb_wallet_jobs SET status='pending',lease_token=NULL,lease_until=NULL,
+   UPDATE ltb_wallet_jobs SET status='pending',lease_token=NULL,lease_until=NULL,claimed_cards='{}',
     next_attempt_at=now()+make_interval(secs=>LEAST(3600,30*power(2,LEAST(attempts,7)))::integer)
-    WHERE member_id=(p_data->>'member_id')::uuid AND lease_token=(p_data->>'lease_token')::uuid;
+    WHERE member_id=(p_data->>'member_id')::uuid;
   END IF;RETURN '{}';
  END IF;
  RAISE EXCEPTION 'Unknown LT Benefits command';
@@ -465,8 +502,10 @@ BEGIN
   prior_version:=COALESCE(OLD.lt_points_version,1)+1;
   NEW.lt_member_id:=NULL;NEW.lt_points_balance:=NULL;NEW.lt_points_version:=NULL;
   NEW.lt_points_updated_at:=NULL;NEW.lt_coupon_count:=NULL;
-  INSERT INTO ltb_wallet_jobs(member_id,version) VALUES(prior_member,prior_version) ON CONFLICT(member_id) DO UPDATE
-   SET version=GREATEST(ltb_wallet_jobs.version+1,EXCLUDED.version),updated_at=now(),
+  INSERT INTO ltb_wallet_jobs(member_id,version,dirty_cards)
+   VALUES(prior_member,prior_version,jsonb_build_object(OLD.public_id::text,gen_random_uuid()::text)) ON CONFLICT(member_id) DO UPDATE
+   SET version=GREATEST(ltb_wallet_jobs.version+1,EXCLUDED.version),
+    dirty_cards=ltb_wallet_jobs.dirty_cards||EXCLUDED.dirty_cards,updated_at=now(),
     next_attempt_at=CASE WHEN ltb_wallet_jobs.status='pending' THEN now() ELSE ltb_wallet_jobs.next_attempt_at END;
  END IF;
  RETURN NEW;

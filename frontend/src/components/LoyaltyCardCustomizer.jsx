@@ -853,8 +853,10 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     }
     setImageUpload(u => ({ ...u, [field]: { uploading: true, error: '' } }))
     try {
-      const sigRes = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/cloudinary-signature?purpose=branding`, {
+      const role = field === 'hero_image_url' ? 'hero' : field === 'program_logo_url' ? 'logo' : 'progress_icon'
+      const sigRes = await fetch(`${API_BASE}/api/v1/business/${user.business_slug}/cloudinary-signature?purpose=branding&asset_role=${role}`, {
         method: 'POST',
+        headers: { Authorization: `Bearer ${user.token}` },
       })
       const sig = await sigRes.json()
       if (!sigRes.ok) throw new Error(sig.detail || 'Could not start upload')
@@ -866,6 +868,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
       body.append('signature', sig.signature)
       body.append('upload_preset', sig.upload_preset)
       body.append('folder', sig.folder)
+      if (sig.eager) body.append('eager', sig.eager)
 
       const uploadRes = await fetch(`https://api.cloudinary.com/v1_1/${sig.cloud_name}/image/upload`, {
         method: 'POST',

@@ -164,7 +164,7 @@ class BenefitsRouteTests(unittest.TestCase):
     def test_verify_returns_only_new_opaque_token_and_masked_member(self):
         response = self.client.post("/api/v1/benefits/auth/verify", json=dict(challenge_id=OFFER_ID, code="123456"))
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["expires_in"], 604800)
+        self.assertEqual(response.json()["expires_in"], 5184000)
         self.assertNotIn("synthetic@example.invalid", response.text)
         data = next(data for action, data in self.db.calls if action == "auth_verify")
         self.assertEqual(data["token_hash"], benefits._hash(response.json()["access_token"]))
@@ -300,6 +300,8 @@ assert.notEqual((await db.query("SELECT lt_member_id FROM customers WHERE public
 assert.equal((await command('auth_request',{id:challenge,email:'one@example.invalid',code_hash:'codehash',client_hash:'ip',card_context:card('card-a',1,10)})).accepted,true);
 for(let i=0;i<4;i++)await expectError('auth_verify',{id:challenge,code_hash:'wrong',token_hash:'unused'},'invalid_code');
 const auth=await command('auth_verify',{id:challenge,code_hash:'codehash',token_hash:'session'});
+const sessionLifetime=(await db.query("SELECT extract(epoch FROM expires_at-now()) seconds FROM ltb_sessions WHERE token_hash='session'")).rows[0].seconds;
+assert(Number(sessionLifetime)>59*86400 && Number(sessionLifetime)<=60*86400);
 assert.equal(auth.member_id,automatic.id);await expectError('auth_verify',{id:challenge,code_hash:'codehash',token_hash:'twice'},'invalid_code');
 assert.equal((await command('auth_request',{id:'10000000-0000-4000-8000-000000000003',email:'one@example.invalid',code_hash:'x',client_hash:'ip'})).accepted,false);
 const attemptsChallenge='10000000-0000-4000-8000-000000000004';

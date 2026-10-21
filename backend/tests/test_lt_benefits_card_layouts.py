@@ -22,7 +22,7 @@ NAMES = {'_google_wallet_base_class_id', '_google_wallet_safe_fragment',
          'google_wallet_vip_class_id', 'google_wallet_hybrid_tier_class_id',
          'google_wallet_tier_class_id', 'google_wallet_class_id_for_customer',
          'build_loyalty_class', 'lt_benefits_wallet_action',
-         'build_apple_pass_json', 'build_pkpass_bytes'}
+         'build_apple_pass_json', '_apple_loyalty_brand_assets', 'build_pkpass_bytes'}
 
 
 def builder_code():
@@ -79,7 +79,7 @@ def fixture(enabled=True, order=True):
         APPLE_TEAM_IDENTIFIER='SYNTHETIC', APPLE_PASS_WEB_SERVICE_URL='https://example.invalid/apple',
         apple_pass_auth_token=lambda p: 'synthetic-pass-token', APPLE_NFC_ENABLED=False,
         APPLE_NFC_ENCRYPTION_PUBLIC_KEY='', APPLE_NFC_REQUIRES_AUTHENTICATION=False,
-        get_apple_pass_credentials=lambda: True, _fetch_image_bytes=lambda url: b'merchant-image',
+        get_apple_pass_credentials=lambda: True, _fetch_image_bytes=lambda url: b'merchant-image', _APPLE_IMAGE_CACHE={},
         apple_icon_from_logo_bytes=lambda data, size: b'merchant-icon',
         apple_logo_from_image_bytes=lambda data, width, height: b'merchant-logo',
         _resize_png_bytes=lambda data, width, height: data + f':{width}x{height}'.encode(),

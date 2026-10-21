@@ -25,6 +25,11 @@ except ImportError:
     from wallet_class_publish import upsert_loyalty_class
 
 try:
+    from . import wallet_cloudinary as wallet_artwork
+except ImportError:
+    import wallet_cloudinary as wallet_artwork
+
+try:
     from .qr_menu import register_qr_menu_routes
 except ImportError:
     from qr_menu import register_qr_menu_routes
@@ -6579,7 +6584,7 @@ _STAMP_REMOTE_IMAGE_CACHE = BoundedTTLCache('wallet_art', max_bytes=4 * 1024 * 1
 _STAMP_REMOTE_IMAGE_CACHE_MAX = 24
 
 
-def _load_remote_wallet_image(url: Optional[str]) -> Optional["Image.Image"]:
+def _load_remote_wallet_image(url: Optional[str], *, profile: str = 'google_hero_source') -> Optional["Image.Image"]:
     """Best-effort fetch/cache for owner-uploaded Wallet artwork.
 
     Failures always fall back to the generated gradient/simple stamp so a
@@ -6588,6 +6593,7 @@ def _load_remote_wallet_image(url: Optional[str]) -> Optional["Image.Image"]:
     url = str(url or '').strip()
     if not url or not url.startswith(('https://', 'http://')):
         return None
+    url = wallet_artwork.delivery_url(url, profile)
     cached = _STAMP_REMOTE_IMAGE_CACHE.get(url)
     if cached is not None:
         try:
@@ -6809,8 +6815,8 @@ def _draw_dynamic_progress_row(
     # high-to-low difference while denser 15-20 slot banners stay readable.
     wave_offset = max(16, min(52, int(round(size * 0.25))))
 
-    filled_remote = _load_remote_wallet_image(filled_icon_url)
-    empty_remote = _load_remote_wallet_image(empty_icon_url)
+    filled_remote = _load_remote_wallet_image(filled_icon_url, profile='progress_icon_source')
+    empty_remote = _load_remote_wallet_image(empty_icon_url, profile='progress_icon_source')
     filled_tile = _fit_transparent_icon(filled_remote, size) if filled_remote is not None else None
     empty_tile = _fit_transparent_icon(empty_remote, size) if empty_remote is not None else None
     if filled_remote is not None:
@@ -7062,13 +7068,14 @@ def generate_personalized_hero_image_bytes(
     from PIL import ImageDraw, ImageFont
 
     if secondary_color and normalized_wallet_style != 'minimal':
-        overlay = Image.new('RGBA', HERO_SIZE, (*_hex_to_rgb(secondary_color), 0))
+        secondary_rgb = _hex_to_rgb(secondary_color)
+        overlay = Image.new('RGBA', HERO_SIZE, (*secondary_rgb, 0))
         overlay_px = overlay.load()
         for y in range(HERO_SIZE[1]):
             for x in range(HERO_SIZE[0]):
                 # Soft accent glow from top-right.
                 strength = max(0.0, 1.0 - (((HERO_SIZE[0]-x) + y) / (HERO_SIZE[0] + HERO_SIZE[1])))
-                overlay_px[x, y] = (*_hex_to_rgb(secondary_color), int(95 * strength))
+                overlay_px[x, y] = (*secondary_rgb, int(95 * strength))
         img = Image.alpha_composite(img, overlay)
 
     # Subtle premium framing + a single soft rectangular accent in the top
@@ -8958,7 +8965,7 @@ _APPLE_IMAGE_CACHE_TTL_SECONDS = 900
 
 
 
-def _fetch_image_bytes(url: Optional[str], timeout: float = 1.5) -> Optional[bytes]:
+def _fetch_image_bytes(url: Optional[str], timeout: float = 1.5, *, profile: str = 'apple_logo_source') -> Optional[bytes]:
     """Fast best-effort download for Apple Wallet artwork.
 
     A slow or broken image URL must never make the Add to Apple Wallet sheet
@@ -8967,6 +8974,7 @@ def _fetch_image_bytes(url: Optional[str], timeout: float = 1.5) -> Optional[byt
     """
     if not url:
         return None
+    url = wallet_artwork.delivery_url(url, profile)
     now = time.monotonic()
     cached = _APPLE_IMAGE_CACHE.get(url)
     if cached and now - cached[0] < _APPLE_IMAGE_CACHE_TTL_SECONDS:
@@ -8983,7 +8991,7 @@ def _fetch_image_bytes(url: Optional[str], timeout: float = 1.5) -> Optional[byt
             _APPLE_IMAGE_CACHE[url] = (now, content)
             return content
     except Exception as e:
-        print(f"IMAGE FETCH fast-fallback ({url}): {e}")
+        log_event('wallet_asset_fetch_failed', 'warning', profile=profile, error_type=type(e).__name__)
         _APPLE_IMAGE_CACHE[url] = (now, None)
         return None
 
@@ -11455,12 +11463,99 @@ def _resize_png_bytes(png_bytes: bytes, width: int, height: int) -> Optional[byt
     if not png_bytes:
         return None
     try:
+        if (png_bytes[:16] == b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR'
+                and len(png_bytes) >= 24
+                and (int.from_bytes(png_bytes[16:20], 'big'), int.from_bytes(png_bytes[20:24], 'big')) == (width, height)):
+            return png_bytes
         with decode_wallet_image(png_bytes) as source, source.resize((width, height), Image.LANCZOS) as img, BytesIO() as buf:
             img.save(buf, format="PNG", optimize=False)
             return buf.getvalue()
     except Exception as e:
         print(f"APPLE PNG resize error: {e}")
         return None
+
+
+def _apple_loyalty_brand_assets(customer: dict, business: dict, program: dict, primary_color: str) -> dict:
+    """Reuse compressed branding across members; no decoded PIL objects retained."""
+    logo_url = (program or {}).get('program_logo_url') or business.get('logo_url')
+    branded = lt_wallet.card_enabled(customer, enabled=lt_benefits_enabled())
+    key = 'apple-brand-png-v1:' + hashlib.sha256(json.dumps(
+        [logo_url, primary_color, business.get('name'), branded, lt_wallet.RELEASE],
+        separators=(',', ':'), default=str).encode()).hexdigest()
+    cached = _APPLE_IMAGE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    # Cloudinary supplies a bounded PNG source. Keep the established alpha trim,
+    # center crop and LT composite, and run them only once per branding version.
+    logo_bytes = _fetch_image_bytes(logo_url)
+    icon_87 = apple_icon_from_logo_bytes(logo_bytes, 87) if logo_bytes else None
+    if not icon_87:
+        icon_87 = generate_apple_icon_bytes(primary_color, business.get('name') or 'Loyalty', 87)
+    logo_480 = apple_logo_from_image_bytes(logo_bytes, 480, 150) if logo_bytes else None
+    if not logo_480:
+        logo_480 = generate_apple_logo_bytes(business.get('name') or 'Loyalty', 480, 150)
+    if branded:
+        logo_480 = _lt_cobrand_logo(logo_480)
+    assets = {'icon.png': _resize_png_bytes(icon_87, 29, 29),
+              'icon@2x.png': _resize_png_bytes(icon_87, 58, 58), 'icon@3x.png': icon_87,
+              'logo.png': _resize_png_bytes(logo_480, 160, 50),
+              'logo@2x.png': _resize_png_bytes(logo_480, 320, 100), 'logo@3x.png': logo_480}
+    # Never keep generated fallback branding after a temporary CDN failure.
+    if logo_bytes:
+        _APPLE_IMAGE_CACHE[key] = assets
+    return assets
+
+
+def _prepare_wallet_artwork(business: dict, program: dict):
+    """Prepare public CDN derivatives on design save, never on Apple Add."""
+    if not CLOUDINARY_API_KEY or not CLOUDINARY_API_SECRET:
+        return
+    sources = [{'url': (program or {}).get('program_logo_url') or business.get('logo_url'), 'role': 'logo'},
+               {'url': (program or {}).get('hero_image_url'), 'role': 'hero'},
+               {'url': (program or {}).get('wallet_progress_filled_icon_url'), 'role': 'progress_icon'},
+               {'url': (program or {}).get('wallet_progress_empty_icon_url'), 'role': 'progress_icon'}]
+    try:
+        plans = wallet_artwork.plan_sources([source for source in sources if source['url']])['plans']
+        with pooled_client() as client:
+            for plan in plans:
+                cache_key = 'cloudinary-prepared-v1:' + plan['id']
+                if _APPLE_IMAGE_CACHE.get(cache_key):
+                    continue
+                result = wallet_artwork.send_eager_plan(plan, cloud_name=CLOUDINARY_CLOUD_NAME,
+                    api_key=CLOUDINARY_API_KEY, api_secret=CLOUDINARY_API_SECRET, client=client)
+                prepared = result.get('status') == 'prepared'
+                if prepared:
+                    _APPLE_IMAGE_CACHE[cache_key] = True
+                log_event('wallet_assets_prepared' if prepared else 'wallet_assets_prepare_failed',
+                    'info' if prepared else 'warning', business_slug=business.get('public_id'),
+                    prepared_count=result.get('prepared_count', 0), status=result.get('status'))
+    except Exception as exc:
+        log_event('wallet_assets_prepare_failed', 'warning', business_slug=business.get('public_id'),
+                  error_type=type(exc).__name__)
+
+
+def _apple_static_strip_assets(hero_url: Optional[str]) -> dict:
+    """Cache reusable public strip sizes, never customer balances or signed passes."""
+    if not hero_url:
+        return {}
+    key = 'apple-static-strip-v1:' + hashlib.sha256(str(hero_url).encode()).hexdigest()
+    cached = _APPLE_IMAGE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    raw = _fetch_image_bytes(hero_url, profile='apple_strip_3x')
+    if not raw:
+        return {}
+    cloud_url = wallet_artwork.delivery_url(hero_url, 'apple_strip_3x')
+    exact_cloud_png = (cloud_url != hero_url and len(raw) >= 24
+                       and raw[:16] == b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR'
+                       and (int.from_bytes(raw[16:20], 'big'), int.from_bytes(raw[20:24], 'big')) == (1125, 369))
+    strip_3x = raw if exact_cloud_png else apple_strip_from_image_bytes(raw, 1125, 369)
+    if not strip_3x:
+        return {}
+    assets = {'strip.png': _resize_png_bytes(strip_3x, 375, 123),
+              'strip@2x.png': _resize_png_bytes(strip_3x, 750, 246), 'strip@3x.png': strip_3x}
+    _APPLE_IMAGE_CACHE[key] = assets
+    return assets
 
 
 @wallet_work('apple_pass_build', business_arg=1)
@@ -11484,42 +11579,18 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
         if program_has_tier(program)
         else design['background']
     )
-    biz_name = business.get('name', 'Loyalty')
 
     # Real branding when the business has uploaded it - same source URLs
     # Google Wallet already uses (see build_loyalty_class) - so both wallets
     # end up matching. Each falls back to the existing generated placeholder
     # on any missing URL, fetch failure, or unreadable image.
-    logo_url = (program or {}).get('program_logo_url') or business.get('logo_url')
-    logo_bytes = _fetch_image_bytes(logo_url)
     pass_json = build_apple_pass_json(customer, business, program, announcement)
-
-    # Render each branding asset only once at the largest required size, then
-    # downscale it. Re-opening/resampling the same Cloudinary image six times
-    # was unnecessary CPU work on every Add-to-Wallet request.
-    icon_87 = apple_icon_from_logo_bytes(logo_bytes, 87) if logo_bytes else None
-    if not icon_87:
-        icon_87 = generate_apple_icon_bytes(primary_color, biz_name, 87)
-    icon_58 = _resize_png_bytes(icon_87, 58, 58)
-    icon_29 = _resize_png_bytes(icon_87, 29, 29)
-
-    logo_480 = apple_logo_from_image_bytes(logo_bytes, 480, 150) if logo_bytes else None
-    if not logo_480:
-        logo_480 = generate_apple_logo_bytes(biz_name, 480, 150)
-    if lt_wallet.card_enabled(customer, enabled=lt_benefits_enabled()):
-        logo_480 = _lt_cobrand_logo(logo_480)
-    logo_320 = _resize_png_bytes(logo_480, 320, 100)
-    logo_160 = _resize_png_bytes(logo_480, 160, 50)
+    brand_assets = _apple_loyalty_brand_assets(customer, business, program, primary_color)
 
     pass_json.setdefault("userInfo", {})["loyaltytreeRevision"] = str(_apple_pass_dirty_at(pass_json.get("serialNumber")) or "")
     files = {
         'pass.json': json.dumps(pass_json).encode('utf-8'),
-        'icon.png': icon_29,
-        'icon@2x.png': icon_58,
-        'icon@3x.png': icon_87,
-        'logo.png': logo_160,
-        'logo@2x.png': logo_320,
-        'logo@3x.png': logo_480,
+        **brand_assets,
     }
     progress_state = wallet_progress_state(customer, program, business)
     if design['show_background'] or progress_state is not None:
@@ -11527,15 +11598,12 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
         # mode always renders a per-member composite so the same two source
         # icons can represent every balance without storing N prebuilt banners.
         hero_url = (program or {}).get('hero_image_url')
-        hero_bytes = _fetch_image_bytes(hero_url)
-
-        strip_3x = None
-        if progress_state is None and hero_bytes:
-            strip_3x = apple_strip_from_image_bytes(hero_bytes, 1125, 369)
+        static_strips = _apple_static_strip_assets(hero_url) if progress_state is None else {}
+        strip_3x = static_strips.get('strip@3x.png')
         if not strip_3x:
             strip_3x = generate_apple_strip_bytes(customer, business, program, 1125, 369)
-        strip_2x = _resize_png_bytes(strip_3x, 750, 246)
-        strip_1x = _resize_png_bytes(strip_3x, 375, 123)
+        strip_2x = static_strips.get('strip@2x.png') or _resize_png_bytes(strip_3x, 750, 246)
+        strip_1x = static_strips.get('strip.png') or _resize_png_bytes(strip_3x, 375, 123)
 
         files.update({
             'strip.png': strip_1x,
@@ -24842,6 +24910,7 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
         # saved configuration is durable, wake only this business's installed
         # Apple passes in the background. Google keeps its explicit Publish flow,
         # avoiding the old duplicate Google/Apple fan-out problem.
+        background_tasks.add_task(_prepare_wallet_artwork, dict(business), dict(persisted or {}))
         background_tasks.add_task(
             refresh_business_apple_wallet_passes,
             business.get("id"),
@@ -25269,7 +25338,8 @@ async def get_signup_cloudinary_signature():
 
 
 @app.post("/api/v1/business/{public_id}/cloudinary-signature")
-async def get_cloudinary_signature(public_id: str, purpose: Optional[str] = None):
+async def get_cloudinary_signature(public_id: str, purpose: Optional[str] = None,
+                                   asset_role: Optional[str] = None, authorization: str = Header(default='')):
     """Signs a Cloudinary upload. Used by AddVehicleModal (vehicle photos)
     and by LoyaltyCardCustomizer (program logo / hero banner photos) - both
     follow the same flow. The preset (LoyaltyTree_Images) is a SIGNED
@@ -25291,6 +25361,10 @@ async def get_cloudinary_signature(public_id: str, purpose: Optional[str] = None
     `purpose=agent_kyc` (sent by the showroom's Agent Sign Up popup) signs
     into a business-scoped agent-kyc/ folder for the camera-captured selfie
     + ID photo - also private, never shown on the public showroom."""
+    if asset_role is not None:
+        require_owner_session(public_id, authorization)
+        if purpose != 'branding' or asset_role not in ('logo', 'hero', 'progress_icon'):
+            raise HTTPException(status_code=422, detail='Choose a supported branding image role')
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -25315,10 +25389,14 @@ async def get_cloudinary_signature(public_id: str, purpose: Optional[str] = None
         'timestamp': timestamp,
         'upload_preset': CLOUDINARY_UPLOAD_PRESET,
     }
+    if asset_role is not None:
+        transforms = wallet_artwork.profile_transforms()
+        params_to_sign['eager'] = '|'.join(transforms[name] for name in wallet_artwork.profiles_for_role(asset_role))
     to_sign = '&'.join(f'{k}={v}' for k, v in sorted(params_to_sign.items()))
     signature = hashlib.sha1((to_sign + CLOUDINARY_API_SECRET).encode('utf-8')).hexdigest()
 
     return {
+        **params_to_sign,
         "signature": signature,
         "timestamp": timestamp,
         "api_key": CLOUDINARY_API_KEY,
@@ -32518,7 +32596,7 @@ async def get_wallet_logo(
         or business.get('logo_url')
         or ''
     )
-    logo_bytes = await asyncio.to_thread(_fetch_image_bytes, source_logo_url, timeout=4.0) if source_logo_url else None
+    logo_bytes = await asyncio.to_thread(_fetch_image_bytes, source_logo_url, timeout=4.0, profile='google_logo_source') if source_logo_url else None
     wide = str(kind or '').lower() == 'wide'
     png_bytes = await asyncio.to_thread(google_wallet_logo_png_bytes,
         logo_bytes,
@@ -40537,20 +40615,23 @@ def _lt_retry_purchase_awards():
         _lt_award_pos_purchase(row)
 
 
-def _current_rss_mb() -> float:
+def _current_rss_mb() -> Optional[float]:
+    """Current resident memory; an unavailable reading must not stall work."""
     try:
-        import resource
-        # Linux: maxrss is in KB
-        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
+        try:
+            from .runtime_metrics import current_rss_mb
+        except ImportError:
+            from runtime_metrics import current_rss_mb
+        return current_rss_mb()
     except Exception:
-        return 0.0
+        return None
 
 async def _lt_benefits_worker():
     sweep = 0
     while True:
         try:
             rss = _current_rss_mb()
-            if rss > 350:
+            if rss is not None and rss > 350:
                 log_event('lt_benefits_memory_pause', 'warning', rss_mb=round(rss, 1))
                 await asyncio.sleep(30)
                 continue
