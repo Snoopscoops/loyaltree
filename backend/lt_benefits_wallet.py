@@ -87,7 +87,7 @@ def apply_apple(pass_dict, customer, action):
     back.insert(0, {
         'key': 'lt_benefits', 'label': LABEL.upper(),
         'value': 'View points and partner coupons',
-        'attributedValue': f'<a href="{action["url"]}">View points and partner coupons ›</a>',
+        'attributedValue': f'<a href="{html.escape(action["url"], quote=True)}">View points and partner coupons ›</a>',
     })
     back.insert(1, {'key': 'lt_points_detail', 'label': 'LOYALTY TREE POINTS',
                     'value': value if state['linked'] else 'Verify your account to connect your cards'})
