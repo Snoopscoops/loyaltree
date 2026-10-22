@@ -9,6 +9,13 @@ class RollingBudget:
         self.count, self.seconds, self.clock = count, seconds, clock
         self.used, self.lock = deque(), Lock()
 
+    def available(self):
+        with self.lock:
+            now = self.clock()
+            while self.used and self.used[0] <= now-self.seconds:
+                self.used.popleft()
+            return max(0, self.count-len(self.used))
+
     def take(self):
         with self.lock:
             now = self.clock()

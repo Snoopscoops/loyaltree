@@ -151,7 +151,9 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(self.service.tick(2)['queued'], 2)
         now[0] = 40
         self.assertEqual(self.service.tick(2)['queued'], 1)
+        claims = sum(c[1]['p_action'] == 'claim' for c in self.db.calls)
         self.assertEqual(self.service.tick(2)['queued'], 0)
+        self.assertEqual(sum(c[1]['p_action'] == 'claim' for c in self.db.calls), claims)
         now[0] = 60
         self.assertEqual(self.service.tick(2)['queued'], 2)
 

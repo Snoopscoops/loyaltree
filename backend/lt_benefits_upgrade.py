@@ -104,6 +104,11 @@ class LTBenefitsUpgradeService:
             return {"available": False, "queued": 0}
         if memory_pressure.paused():
             return {"available": True, "queued": 0, "paused": True}
+        # The SQL claim enables its cards. Never claim a fresh batch larger
+        # than the remaining budget, even if no APNs job would be sent yet.
+        limit = min(limit, self.rate.available())
+        if not limit:
+            return {"available": True, "queued": 0, "paused": True}
         lease = str(uuid.uuid4())
         work = self._command("claim", lease=lease, limit=limit)
         job = work.get("job")
