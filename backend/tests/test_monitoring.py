@@ -193,6 +193,7 @@ class AppleRevisionTests(unittest.TestCase):
         q.select.return_value.eq.return_value.execute.return_value.data=[{'pass_updated_at':'2026-10-13T01:02:03.456789'}]
         events=[]
         env=dict(datetime=datetime,timedelta=timedelta,supabase=db,_APPLE_PASS_DIRTY_AT={},
+                 memory_pressure=__import__('types').SimpleNamespace(paused=lambda:False), _APPLE_DEFERRED_PUSHES={},
                  _APPLE_PASS_DIRTY_TTL_SECONDS=21600,_parse_ts=lambda x: datetime.fromisoformat(x),
                  APPLE_PASS_TYPE_IDENTIFIER='pass.example',get_apple_push_cert_files=lambda:('cert','key'),
                  log_event=lambda *a,**k: None,print=lambda *a,**k: None,

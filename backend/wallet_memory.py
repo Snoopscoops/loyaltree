@@ -162,6 +162,12 @@ def wallet_work(operation, *, business_arg=None, serialize=True):
                     waiting = time.monotonic()
                     with RENDER_LOCK:
                         span['wait_ms'] = (time.monotonic() - waiting) * 1000
+                        if operation.startswith('apple_') and operation.endswith('pass_build'):
+                            try: from .apple_memory import memory_pressure
+                            except ImportError: from apple_memory import memory_pressure
+                            if memory_pressure.paused():
+                                from fastapi import HTTPException
+                                raise HTTPException(503, 'Apple Wallet is temporarily busy.', headers={'Retry-After': '30'})
                         return fn(*args, **kwargs)
                 return fn(*args, **kwargs)
         return wrapped

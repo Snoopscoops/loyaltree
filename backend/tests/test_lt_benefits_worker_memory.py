@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from backend import runtime_metrics
+from backend.apple_memory import MemoryPressure
 
 
 SOURCE = Path(os.environ.get('LT_MEMORY_MAIN_SOURCE', Path(__file__).resolve().parents[1] / 'main.py'))
@@ -38,6 +39,7 @@ def fixture(stop_after=1):
         _lt_card_upgrades=SimpleNamespace(tick=operation('card_upgrades')),
         log_event=lambda *args, **fields: logs.append((args, fields)))
     exec(CODE, env)
+    env['memory_pressure'] = MemoryPressure(lambda: runtime_metrics.current_rss_mb(), env['log_event'])
     return env, sleeps, calls, logs
 
 
@@ -68,8 +70,8 @@ class BenefitsWorkerMemoryTests(unittest.TestCase):
         self.assertEqual(reader.call_count, 3)
         self.assertEqual(sleeps, [30, 30, 20])
         self.assert_normal_work(calls)
-        self.assertEqual([event[0][0] for event in logs], ['lt_benefits_memory_pause', 'lt_benefits_memory_pause'])
-        self.assertEqual([event[1]['rss_mb'] for event in logs], [410.0, 365.0])
+        self.assertEqual([event[0][0] for event in logs], ['lt_benefits_memory_pause', 'wallet_memory_resumed'])
+        self.assertEqual([event[1]['rss_mb'] for event in logs], [410.0, 245.0])
 
     def test_unknown_or_failed_measurement_does_not_throw_skip_work_or_trigger_pause(self):
         for outcome in (None, OSError('Synthetic unavailable reading')):

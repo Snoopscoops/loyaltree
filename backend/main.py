@@ -74,8 +74,10 @@ from typing import Optional, List, Literal
 
 try:
     from .apple_builds import apple_builds
+    from .apple_memory import memory_pressure
 except ImportError:
     from apple_builds import apple_builds
+    from apple_memory import memory_pressure
 
 from fastapi import FastAPI, HTTPException, Request, Depends, Header, BackgroundTasks, Query
 from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResponse
@@ -11587,6 +11589,7 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
 # the already-signed .pkpass can usually be returned without image rendering/signing.
 _APPLE_PKPASS_CACHE = BoundedTTLCache('apple_passes', max_bytes=8 * 1024 * 1024, max_items=32, ttl=90)
 _APPLE_PKPASS_CACHE_TTL_SECONDS = 3600
+_APPLE_DEFERRED_PUSHES = BoundedTTLCache('apple_deferred_pushes', max_bytes=256 * 1024, max_items=2000, ttl=3600)
 
 # Memory-conscious pass build controls
 
@@ -11905,6 +11908,12 @@ def _send_apple_wallet_pushes(push_tokens: list) -> int:
     tokens = list(dict.fromkeys(t for t in push_tokens if t))
     if not tokens:
         return 0
+    if memory_pressure.paused():
+        for token in tokens:
+            _APPLE_DEFERRED_PUSHES[token] = True
+        log_event('apple_push_deferred', 'warning', targets=len(tokens))
+        _record_apple_delivery(len(tokens), 0)
+        return 0
     # Callers mark their exact authorized serial audience before this call.
     # A token belongs to a device, not a business. Reverse-looking up serials
     # by token dirties unrelated businesses' passes on the same phone.
@@ -11919,6 +11928,10 @@ def _send_apple_wallet_pushes(push_tokens: list) -> int:
             # Send in small batches with a short gap to avoid memory and connection spikes
             batch_size = 20
             for i in range(0, len(tokens), batch_size):
+                if memory_pressure.paused():
+                    for token in tokens[i:]:
+                        _APPLE_DEFERRED_PUSHES[token] = True
+                    break
                 batch = tokens[i:i + batch_size]
                 for token in batch:
                     try:
@@ -11939,6 +11952,15 @@ def _send_apple_wallet_pushes(push_tokens: list) -> int:
         log_event("apple_push_failed", "warning", error_type=type(e).__name__, error=str(e))
     _record_apple_delivery(len(tokens), sent)
     return sent
+
+
+def _drain_deferred_apple_pushes():
+    if not memory_pressure.paused():
+        tokens = list(_APPLE_DEFERRED_PUSHES)[:20]
+        for token in tokens:
+            _APPLE_DEFERRED_PUSHES.pop(token, None)
+        if tokens:
+            _send_apple_wallet_pushes(tokens)
 
 def push_apple_wallet_update(serial_number: str):
     """Wake Apple Wallet so it refetches this member's newly-built pass.
@@ -40513,7 +40535,9 @@ def process_wallet_sync_queue_once(limit: int = 10):
 
 async def wallet_queue_worker():
     while True:
-        try: await asyncio.to_thread(process_wallet_sync_queue_once, WALLET_QUEUE_BATCH_SIZE)
+        try:
+            await asyncio.to_thread(process_wallet_sync_queue_once, WALLET_QUEUE_BATCH_SIZE)
+            await asyncio.to_thread(_drain_deferred_apple_pushes)
         except Exception as e: print(f'WALLET QUEUE worker error: {e}')
         await asyncio.sleep(WALLET_QUEUE_POLL_SECONDS)
 
@@ -40552,21 +40576,19 @@ def _lt_retry_purchase_awards():
         _lt_award_pos_purchase(row)
 
 
-def _current_rss_mb() -> float:
+def _current_rss_mb() -> Optional[float]:
     try:
-        import resource
-        # Linux: maxrss is in KB
-        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
+        try: from .runtime_metrics import current_rss_mb
+        except ImportError: from runtime_metrics import current_rss_mb
+        return current_rss_mb()
     except Exception:
-        return 0.0
+        return None
 
 async def _lt_benefits_worker():
     sweep = 0
     while True:
         try:
-            rss = _current_rss_mb()
-            if rss > 350:
-                log_event('lt_benefits_memory_pause', 'warning', rss_mb=round(rss, 1))
+            if memory_pressure.paused():
                 await asyncio.sleep(30)
                 continue
             await asyncio.to_thread(_lt_retry_purchase_awards)
