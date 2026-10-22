@@ -7,6 +7,7 @@ import CustomerDemographicsAdmin from './CustomerDemographicsAdmin'
 import SystemUsageAdmin from './SystemUsageAdmin'
 import BenefitsAdmin from './BenefitsAdmin'
 import { BenefitsAdminCardUpgrade } from './BenefitsCardUpgrade'
+import { filterAdminBusinesses, loadAdminResources, readAdminJson } from './adminData'
 
 function BillingBranchEditor({ detail, onSave }) {
   const [count, setCount] = useState(String(detail.branch_count || 1))
@@ -94,6 +95,8 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const [businesses, setBusinesses] = useState([])
   const [pendingApps, setPendingApps] = useState([])
   const [loading, setLoading] = useState(true)
+  const [sectionLoading, setSectionLoading] = useState(false)
+  const [loadError, setLoadError] = useState('')
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [planFilter, setPlanFilter] = useState('')
@@ -317,57 +320,59 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
     }
   }
 
-  const loadData = async () => {
-    try {
-      const params = new URLSearchParams()
-      if (search) params.set('search', search)
-      if (statusFilter) params.set('status', statusFilter)
-      if (planFilter) params.set('plan', planFilter)
+  const readData = path => readAdminJson(authedFetch, path)
+  const rowsSetter = setter => data => {
+    if (!Array.isArray(data)) throw new Error('Could not read admin data. Please retry.')
+    setter(data)
+  }
+  const sectionResources = tab => ({
+    partners: [
+      ['/api/v1/admin/partners', rowsSetter(setPartners)],
+      ['/api/v1/admin/network-partners', rowsSetter(setNetworkPartners)],
+      ['/api/v1/admin/partner-operational-expenses', rowsSetter(setPartnerExpenses)],
+    ],
+    operations: [['/api/v1/admin/setup-kit-orders', rowsSetter(setSetupKitOrders)]],
+    special: [
+      ['/api/v1/admin/special-businesses', rowsSetter(setSpecialBusinesses)],
+      ['/api/v1/admin/special-invoices', rowsSetter(setSpecialInvoices)],
+    ],
+  }[tab] || [])
+  const reportLoadError = error => setLoadError(error.message || 'Could not load admin data. Please retry.')
 
-      const [ovRes, plansRes, bizRes, pendingRes, partnersRes, kitRes, networkPartnersRes, partnerExpensesRes, specialBusinessesRes, specialInvoicesRes] = await Promise.all([
-        authedFetch('/api/v1/admin/overview'),
-        authedFetch('/api/v1/admin/plans'),
-        authedFetch(`/api/v1/admin/businesses?${params.toString()}`),
-        authedFetch('/api/v1/admin/businesses?status=PENDING'),
-        authedFetch('/api/v1/admin/partners'),
-        authedFetch('/api/v1/admin/setup-kit-orders'),
-        authedFetch('/api/v1/admin/network-partners'),
-        authedFetch('/api/v1/admin/partner-operational-expenses'),
-        authedFetch('/api/v1/admin/special-businesses'),
-        authedFetch('/api/v1/admin/special-invoices'),
-      ])
-      if (ovRes.status === 401 || bizRes.status === 401) { onLogout(); return }
-      setOverview(await ovRes.json().catch(() => null))
-      setPlans(await plansRes.json().catch(() => ({})))
-      setBusinesses(await bizRes.json().catch(() => []))
-      setPendingApps(await pendingRes.json().catch(() => []))
-      setPartners(await partnersRes.json().catch(() => []))
-      setSetupKitOrders(await kitRes.json().catch(() => []))
-      setNetworkPartners(await networkPartnersRes.json().catch(() => []))
-      const expensePayload=await partnerExpensesRes.json().catch(() => [])
-      setPartnerExpenses(partnerExpensesRes.ok&&Array.isArray(expensePayload)?expensePayload:[])
-      const specialBusinessPayload=await specialBusinessesRes.json().catch(() => [])
-      setSpecialBusinesses(specialBusinessesRes.ok&&Array.isArray(specialBusinessPayload)?specialBusinessPayload:[])
-      const specialInvoicePayload=await specialInvoicesRes.json().catch(() => [])
-      setSpecialInvoices(specialInvoicesRes.ok&&Array.isArray(specialInvoicePayload)?specialInvoicePayload:[])
-    } catch (err) {
-      console.error('Admin load error:', err)
+  const loadData = async () => {
+    setLoading(true)
+    setLoadError('')
+    try {
+      await loadAdminResources(readData, [
+        ['/api/v1/admin/overview', setOverview],
+        ['/api/v1/admin/plans', setPlans],
+        ['/api/v1/admin/businesses', data => {
+          rowsSetter(setBusinesses)(data)
+          setPendingApps(data.filter(b => String(b.status || '').toUpperCase() === 'PENDING'))
+        }],
+        ...sectionResources(activeAdminTab),
+      ], reportLoadError)
+    } finally {
+      setLoading(false)
     }
-    setLoading(false)
   }
 
   useEffect(() => {
-    if (!token) return
-    setLoading(true)
-    loadData()
-  }, [token, statusFilter, planFilter])
+    if (token) loadData()
+  }, [token])
 
-  // Debounce search so we're not firing a request per keystroke
   useEffect(() => {
     if (!token) return
-    const t = setTimeout(loadData, 350)
-    return () => clearTimeout(t)
-  }, [search])
+    const resources = sectionResources(activeAdminTab)
+    if (!resources.length) { setSectionLoading(false); return }
+    let current = true
+    setSectionLoading(true)
+    setLoadError('')
+    loadAdminResources(readData, resources, reportLoadError).finally(() => {
+      if (current) setSectionLoading(false)
+    })
+    return () => { current = false }
+  }, [token, activeAdminTab])
 
   useEffect(() => {
     if (!token || activeAdminTab !== 'platform') return
@@ -668,10 +673,6 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
     } catch (err) { setMessage(err.message) }
   }
 
-  if (loading) {
-    return <div style={styles.loadingScreen}>Loading platform data…</div>
-  }
-
   const networkPartnerErrorMessage=(detail)=>{
     if(Array.isArray(detail)){
       return detail.map(item=>{
@@ -936,12 +937,13 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
     setSpecialInvoiceBusy('')
   }
 
-  const filteredCount = businessTypeFilter ? businesses.filter(b => b.business_type === businessTypeFilter).length : businesses.length
+  const filteredBusinesses = filterAdminBusinesses(businesses, { search, status: statusFilter, plan: planFilter, type: businessTypeFilter })
+  const filteredCount = filteredBusinesses.length
   const latestKitByBusiness=setupKitOrders.reduce((m,o)=>{if(o.business_public_id&&!m[o.business_public_id])m[o.business_public_id]=o;return m},{})
   const businessKitStatus=b=>latestKitByBusiness[b.public_id]?.fulfillment_status||b.setup_kit_status||(b.setup_kit_requested?(b.setup_kit_paid?'paid':'requested'):'')
   const onboardingLabel=b=>b.onboarding_completed?'Live':(String(b.status||'').toUpperCase()!=='ACTIVE'?'Awaiting payment':b.onboarding_step>=8?'Ready to launch':b.onboarding_step>=7?'Dashboard intro':b.onboarding_step>=6?'Adding team':'Configuring card')
   const joinUrl=b=>b.join_url||`${window.location.origin}/join/${b.public_id}`
-  const categoryBusinesses=businessTypeFilter?businesses.filter(b=>b.business_type===businessTypeFilter):businesses
+  const categoryBusinesses = filteredBusinesses
   const displayBusinesses = sortByAddress
     ? [...categoryBusinesses].sort((a, b) => (a.address || '\uffff').localeCompare(b.address || '\uffff'))
     : categoryBusinesses
@@ -1016,6 +1018,10 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
       </header>
 
       {message && <div style={styles.toast}>{message}</div>}
+      {(loading || sectionLoading) && <div role="status" style={{ padding:'12px 24px', color:'#475569' }}>Loading dashboard data…</div>}
+      {loadError && <div role="alert" style={{ padding:'12px 24px', background:'#fff7ed', color:'#9a3412' }}>
+        {loadError} <button type="button" onClick={loadData} style={styles.viewBtn}>Retry loading data</button>
+      </div>}
 
       <div className="admin-shell-body" style={styles.body}>
         <div style={styles.adminTopActions}>

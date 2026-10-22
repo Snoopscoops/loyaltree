@@ -6167,7 +6167,7 @@ def _partner_expense_public(row: dict, partner: Optional[dict] = None) -> dict:
         item['city'] = partner.get('city')
     return item
 
-def business_summary(biz: dict) -> dict:
+def business_summary(biz: dict, metrics: Optional[dict] = None) -> dict:
     """Lightweight per-business row for the admin businesses list - counts
     only, no raw customer/staff records."""
     biz_id = biz.get('id')
@@ -6175,68 +6175,77 @@ def business_summary(biz: dict) -> dict:
     staff_count = 0
     activity_30d = 0
     points_balance_outstanding = 0
-    program = safe_get_loyalty_program(biz_id)
+    program = metrics.get("program") if metrics is not None else safe_get_loyalty_program(biz_id)
     card_type = program.get('card_type', 'stamp') if program else 'stamp'
     loyalty_type = effective_loyalty_type(program)
     sessions_outstanding = 0
-    try:
-        cust_res = supabase.table("customers").select("id", count="exact").eq("business_id", biz_id).execute()
-        customer_count = cust_res.count or 0
-    except Exception:
-        pass
-    try:
-        staff_res = supabase.table("staff").select("id", count="exact").eq("business_id", biz_id).execute()
-        staff_count = staff_res.count or 0
-    except Exception:
-        pass
-    try:
-        # Points-card businesses log sales to points_events and multipass
-        # businesses log issues/uses to multipass_events, not stamp_events
-        # (see the card_type guard around /stamp vs /points-sale vs
-        # /multipass) - read from whichever table actually holds this
-        # business's activity so it doesn't show a false 0.
-        since = (datetime.utcnow() - timedelta(days=30)).isoformat()
+    if metrics is None:
+        try:
+            cust_res = supabase.table("customers").select("id", count="exact").eq("business_id", biz_id).execute()
+            customer_count = cust_res.count or 0
+        except Exception:
+            pass
+        try:
+            staff_res = supabase.table("staff").select("id", count="exact").eq("business_id", biz_id).execute()
+            staff_count = staff_res.count or 0
+        except Exception:
+            pass
+        try:
+            # Points-card businesses log sales to points_events and multipass
+            # businesses log issues/uses to multipass_events, not stamp_events
+            # (see the card_type guard around /stamp vs /points-sale vs
+            # /multipass) - read from whichever table actually holds this
+            # business's activity so it doesn't show a false 0.
+            since = (datetime.utcnow() - timedelta(days=30)).isoformat()
+            if loyalty_type == 'points':
+                activity_table = "points_events"
+            elif card_type == 'multipass':
+                activity_table = "multipass_events"
+            elif card_type == 'employee':
+                activity_table = "employee_attendance_events"
+            else:
+                activity_table = "stamp_events"
+            activity_q = supabase.table(activity_table).select("id", count="exact").eq("business_id", biz_id).gte("created_at", since)
+            if card_type == 'multipass':
+                # "activity" here means sessions actually used, not passes issued.
+                activity_q = activity_q.eq("action", "used")
+            activity_res = activity_q.execute()
+            activity_30d = activity_res.count or 0
+        except Exception:
+            pass
         if loyalty_type == 'points':
-            activity_table = "points_events"
+            try:
+                # Outstanding points liability across all customers - lets
+                # admin monitor how many unredeemed points a points-card
+                # business is carrying.
+                bal_res = supabase.table("customers").select("points_balance").eq("business_id", biz_id).execute()
+                points_balance_outstanding = sum((c.get('points_balance') or 0) for c in (bal_res.data or []))
+            except Exception:
+                pass
         elif card_type == 'multipass':
-            activity_table = "multipass_events"
-        elif card_type == 'employee':
-            activity_table = "employee_attendance_events"
-        else:
-            activity_table = "stamp_events"
-        activity_q = supabase.table(activity_table).select("id", count="exact").eq("business_id", biz_id).gte("created_at", since)
-        if card_type == 'multipass':
-            # "activity" here means sessions actually used, not passes issued.
-            activity_q = activity_q.eq("action", "used")
-        activity_res = activity_q.execute()
-        activity_30d = activity_res.count or 0
-    except Exception:
-        pass
-    if loyalty_type == 'points':
-        try:
-            # Outstanding points liability across all customers - lets
-            # admin monitor how many unredeemed points a points-card
-            # business is carrying.
-            bal_res = supabase.table("customers").select("points_balance").eq("business_id", biz_id).execute()
-            points_balance_outstanding = sum((c.get('points_balance') or 0) for c in (bal_res.data or []))
-        except Exception:
-            pass
-    elif card_type == 'multipass':
-        try:
-            # Outstanding session liability - unused sessions still owed on
-            # unexpired passes, same idea as points_balance_outstanding.
-            bal_res = supabase.table("customers").select("multipass_sessions_remaining").eq("business_id", biz_id).execute()
-            sessions_outstanding = sum((c.get('multipass_sessions_remaining') or 0) for c in (bal_res.data or []))
-        except Exception:
-            pass
-    plan = biz.get('plan', 'starter')
+            try:
+                # Outstanding session liability - unused sessions still owed on
+                # unexpired passes, same idea as points_balance_outstanding.
+                bal_res = supabase.table("customers").select("multipass_sessions_remaining").eq("business_id", biz_id).execute()
+                sessions_outstanding = sum((c.get('multipass_sessions_remaining') or 0) for c in (bal_res.data or []))
+            except Exception:
+                pass
 
-    branch_count = 1
-    try:
-        branch_res = supabase.table("branches").select("id", count="exact").eq("business_id", biz_id).execute()
-        branch_count = branch_res.count or 1
-    except Exception:
-        pass
+        branch_count = 1
+        try:
+            branch_res = supabase.table("branches").select("id", count="exact").eq("business_id", biz_id).execute()
+            branch_count = branch_res.count or 1
+        except Exception:
+            pass
+
+    else:
+        customer_count = metrics["customer_count"]
+        staff_count = metrics["staff_count"]
+        activity_30d = metrics["activity_30d"]
+        points_balance_outstanding = metrics["points_balance_outstanding"]
+        sessions_outstanding = metrics["sessions_outstanding"]
+        branch_count = metrics["branch_count"] or 1
+    plan = biz.get("plan", "starter")
 
     configured_branch_count = branch_count
     branch_count = billing_branch_count(biz, configured_branch_count)
@@ -15020,7 +15029,7 @@ async def update_setup_kit(public_id: str, item: SetupKitOwnerUpdate):
     return setup_kit_payload(updated,business)
 
 @app.get("/api/v1/admin/setup-kit-orders")
-async def admin_setup_kit_orders(_: bool = Depends(require_admin)):
+def admin_setup_kit_orders(_: bool = Depends(require_admin)):
     orders = supabase.table('setup_kit_orders').select('*').order('created_at', desc=True).execute().data or []
     ids = list({o['business_id'] for o in orders})
     businesses = supabase.table('businesses').select('*').in_('id',ids).execute().data or [] if ids else []
@@ -15556,16 +15565,16 @@ async def admin_platform_analytics(
 
 
 @app.get("/api/v1/admin/overview")
-async def admin_overview(_: bool = Depends(require_admin)):
+def admin_overview(_: bool = Depends(require_admin)):
     if not supabase:
         raise HTTPException(status_code=503, detail="Database not connected")
     try:
         businesses = supabase.table("businesses").select("*").execute().data or []
-        customers_res = supabase.table("customers").select("id", count="exact").execute()
-        staff_res = supabase.table("staff").select("id", count="exact").execute()
+        customers_res = supabase.table("customers").select("id", count="exact", head=True).execute()
+        staff_res = supabase.table("staff").select("id", count="exact", head=True).execute()
         since = (datetime.utcnow() - timedelta(days=30)).isoformat()
-        stamps_30d_res = supabase.table("stamp_events").select("id", count="exact").gte("created_at", since).execute()
-        redemptions_30d_res = supabase.table("redemption_events").select("id", count="exact").gte("created_at", since).execute()
+        stamps_30d_res = supabase.table("stamp_events").select("id", count="exact", head=True).gte("created_at", since).execute()
+        redemptions_30d_res = supabase.table("redemption_events").select("id", count="exact", head=True).gte("created_at", since).execute()
         points_sales_30d_res = supabase.table("points_events").select("points_earned").gte("created_at", since).execute()
         points_sales_30d = len(points_sales_30d_res.data or [])
         points_issued_30d = sum((e.get('points_earned') or 0) for e in (points_sales_30d_res.data or []))
@@ -15654,7 +15663,7 @@ async def admin_overview(_: bool = Depends(require_admin)):
         raise HTTPException(status_code=500, detail=f"Failed to load overview: {str(e)}")
 
 @app.get("/api/v1/admin/businesses")
-async def admin_list_businesses(status: Optional[str] = None, plan: Optional[str] = None, search: Optional[str] = None, _: bool = Depends(require_admin)):
+def admin_list_businesses(status: Optional[str] = None, plan: Optional[str] = None, search: Optional[str] = None, _: bool = Depends(require_admin)):
     if not supabase:
         raise HTTPException(status_code=503, detail="Database not connected")
     try:
@@ -15672,7 +15681,11 @@ async def admin_list_businesses(status: Optional[str] = None, plan: Optional[str
                 or needle in (b.get('email') or '').lower()
                 or needle in (b.get('address') or '').lower()
             ]
-        return [business_summary(b) for b in businesses]
+        from admin_metrics import business_metrics
+        metrics = business_metrics(supabase, [b['id'] for b in businesses],
+                                   (datetime.utcnow() - timedelta(days=30)).isoformat(),
+                                   effective_loyalty_type, log_event)
+        return [business_summary(b, metrics[b['id']]) for b in businesses]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load businesses: {str(e)}")
 
@@ -15757,7 +15770,7 @@ async def admin_create_business(biz: AdminBusinessCreate, _: bool = Depends(requ
     }
 
 @app.get("/api/v1/admin/businesses/{public_id}")
-async def admin_get_business(public_id: str, _: bool = Depends(require_admin)):
+def admin_get_business(public_id: str, _: bool = Depends(require_admin)):
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -19093,7 +19106,7 @@ def _generate_special_invoice(profile: dict, period_start: Optional[date] = None
     return _send_special_invoice(row, {**profile, **profile_patch}, business) if send_now else row
 
 @app.get("/api/v1/admin/special-businesses")
-async def admin_special_businesses(_: bool = Depends(require_admin)):
+def admin_special_businesses(_: bool = Depends(require_admin)):
     try:
         profiles = supabase.table('special_business_billing').select('*').order('created_at', desc=True).execute().data or []
     except Exception as exc:
@@ -19263,7 +19276,7 @@ async def admin_generate_special_invoice(profile_public_id: str, _: bool = Depen
     return _special_invoice_public(invoice, business)
 
 @app.get("/api/v1/admin/special-invoices")
-async def admin_special_invoices(_: bool = Depends(require_admin)):
+def admin_special_invoices(_: bool = Depends(require_admin)):
     try:
         rows = supabase.table('special_business_invoices').select('*').order('issue_date', desc=True).order('created_at', desc=True).limit(2000).execute().data or []
     except Exception as exc:
@@ -19622,7 +19635,7 @@ async def public_network_partner(partner_code: str):
     return {k:row.get(k) for k in ('name','partner_type','region','province','city','partner_code')}
 
 @app.get("/api/v1/admin/network-partners")
-async def admin_network_partners(_: bool = Depends(require_admin)):
+def admin_network_partners(_: bool = Depends(require_admin)):
     rows = supabase.table('network_partners').select('*').order('created_at', desc=True).execute().data or []
     out=[]
     for row in rows:
@@ -19729,7 +19742,7 @@ async def admin_update_network_partner(public_id:str, req:NetworkPartnerUpdate, 
         raise HTTPException(status_code=400,detail=friendly_db_error(e))
 
 @app.get("/api/v1/admin/partner-operational-expenses")
-async def admin_partner_operational_expenses(_: bool = Depends(require_admin)):
+def admin_partner_operational_expenses(_: bool = Depends(require_admin)):
     try:
         rows=(
             supabase.table('partner_operational_expenses').select('*')
@@ -20208,7 +20221,7 @@ async def public_list_partners(response: Response):
             )
 
 @app.get("/api/v1/admin/partners")
-async def admin_list_partners(_: bool = Depends(require_admin)):
+def admin_list_partners(_: bool = Depends(require_admin)):
     try:
         res = supabase.table("platform_partners").select("*").order(
             "plan_segment"
