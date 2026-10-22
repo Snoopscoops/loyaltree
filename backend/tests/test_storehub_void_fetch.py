@@ -298,6 +298,7 @@ class WorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
             'lt_benefits_enabled': lambda: False,
             '_env_bool': lambda *_:False,
             'wallet_queue_worker': lambda: worker('wallet'),
+            'wallet_bursts': SimpleNamespace(run=lambda:worker('burst')),
             '_apple_layout_release_startup': lambda: worker('apple'),
             'periodic_void_sync': periodic, '_sync_storehub_voids_once': sync_callback,
             '_log_storehub_void_sync': logger_callback,
@@ -308,12 +309,12 @@ class WorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
         await env['start_wallet_queue_worker']()
         profiler_checkpoint.assert_called_once_with('background_workers_scheduled')
         await asyncio.sleep(0)
-        self.assertCountEqual(started, ['wallet', 'apple', 'void'] if enabled else ['wallet', 'apple'])
+        self.assertCountEqual(started, ['wallet', 'burst', 'apple', 'void'] if enabled else ['wallet', 'burst', 'apple'])
         self.assertEqual(hasattr(state, 'storehub_void_worker'), enabled)
         try:
             await env['stop_monitoring']()
             self.assertCountEqual(cancelled, started)
-            for name in ('wallet_worker', 'apple_release_task', 'storehub_void_worker'):
+            for name in ('wallet_worker', 'wallet_burst_sampler', 'apple_release_task', 'storehub_void_worker'):
                 task = getattr(state, name, None)
                 if task is not None:
                     self.assertTrue(task.done())
@@ -323,7 +324,7 @@ class WorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
             profiler_stop.assert_awaited_once()
             sync_callback.assert_not_called()
         finally:
-            for name in ('wallet_worker', 'apple_release_task', 'storehub_void_worker'):
+            for name in ('wallet_worker', 'wallet_burst_sampler', 'apple_release_task', 'storehub_void_worker'):
                 task = getattr(state, name, None)
                 if task is not None and not task.done():
                     task.cancel()

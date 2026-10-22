@@ -25428,7 +25428,8 @@ async def get_signup_cloudinary_signature():
 
 
 @app.post("/api/v1/business/{public_id}/cloudinary-signature")
-async def get_cloudinary_signature(public_id: str, purpose: Optional[str] = None):
+async def get_cloudinary_signature(public_id: str, purpose: Optional[str] = None,
+                                   asset_role: Optional[str] = None, authorization: str = Header(default='')):
     """Signs a Cloudinary upload. Used by AddVehicleModal (vehicle photos)
     and by LoyaltyCardCustomizer (program logo / hero banner photos) - both
     follow the same flow. The preset (LoyaltyTree_Images) is a SIGNED
@@ -25450,6 +25451,10 @@ async def get_cloudinary_signature(public_id: str, purpose: Optional[str] = None
     `purpose=agent_kyc` (sent by the showroom's Agent Sign Up popup) signs
     into a business-scoped agent-kyc/ folder for the camera-captured selfie
     + ID photo - also private, never shown on the public showroom."""
+    if asset_role is not None:
+        require_owner_session(public_id, authorization)
+        if purpose != 'branding' or asset_role not in ('logo', 'hero', 'progress_icon'):
+            raise HTTPException(status_code=422, detail='Choose a supported branding image role')
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -25474,10 +25479,14 @@ async def get_cloudinary_signature(public_id: str, purpose: Optional[str] = None
         'timestamp': timestamp,
         'upload_preset': CLOUDINARY_UPLOAD_PRESET,
     }
+    if asset_role is not None:
+        transforms = wallet_artwork.profile_transforms()
+        params_to_sign['eager'] = '|'.join(transforms[name] for name in wallet_artwork.profiles_for_role(asset_role))
     to_sign = '&'.join(f'{k}={v}' for k, v in sorted(params_to_sign.items()))
     signature = hashlib.sha1((to_sign + CLOUDINARY_API_SECRET).encode('utf-8')).hexdigest()
 
     return {
+        **params_to_sign,
         "signature": signature,
         "timestamp": timestamp,
         "api_key": CLOUDINARY_API_KEY,
