@@ -14,6 +14,10 @@ except ImportError:
     from lazy_imports import LazyModule
 Image = LazyModule('PIL.Image')
 try:
+    from .wallet_bursts import wallet_bursts
+except ImportError:
+    from wallet_bursts import wallet_bursts
+try:
     from .runtime_metrics import memory_usage
     from .runtime_profiling import profiler
 except ImportError:
@@ -161,6 +165,9 @@ def wallet_work(operation, *, business_arg=None, serialize=True):
         @wraps(fn)
         def wrapped(*args, **kwargs):
             business = kwargs.get('business') or (args[business_arg] if business_arg is not None and len(args) > business_arg else {})
+            slug = business.get('public_id') if isinstance(business, dict) else None
+            apple_build = operation.startswith('apple_') and operation.endswith('pass_build')
+            if apple_build or operation == 'announcement_push': wallet_bursts.record(slug)
             with memory_span(operation, business.get('public_id') if isinstance(business, dict) else None) as span:
                 if serialize:
                     waiting = time.monotonic()
@@ -173,7 +180,9 @@ def wallet_work(operation, *, business_arg=None, serialize=True):
                                 from fastapi import HTTPException
                                 raise HTTPException(503, 'Apple Wallet is temporarily busy.', headers={'Retry-After': '30'})
                         try:
-                            return fn(*args, **kwargs)
+                            result = fn(*args, **kwargs)
+                            if apple_build: wallet_bursts.record(slug, 'passes_built' if result else 'failed')
+                            return result
                         finally:
                             if operation.startswith('apple_') and operation.endswith('pass_build'):
                                 try: from .native_memory import trim_memory

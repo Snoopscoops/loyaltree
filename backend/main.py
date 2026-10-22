@@ -78,12 +78,14 @@ try:
     from .apple_builds import apple_builds
     from .apple_memory import memory_pressure
     from .wallet_rate import upgrade_delivery_budget
+    from .wallet_bursts import wallet_bursts
 except ImportError:
     import wallet_cloudinary as wallet_artwork
     from google_wallet_assets import publish_png as publish_google_png, validate_image as validate_google_image
     from apple_builds import apple_builds
     from apple_memory import memory_pressure
     from wallet_rate import upgrade_delivery_budget
+    from wallet_bursts import wallet_bursts
 
 from fastapi import FastAPI, HTTPException, Request, Depends, Header, BackgroundTasks, Query
 from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResponse
@@ -11765,6 +11767,7 @@ def _get_cached_apple_pkpass(customer: dict, business: dict, program: dict, anno
     if fingerprint != _apple_pkpass_fingerprint(customer, business, program or {}, announcement):
         _APPLE_PKPASS_CACHE.pop(serial, None)
         return None
+    wallet_bursts.record(business.get('public_id'), 'cache_hits')
     return pkpass_bytes
 
 
@@ -13984,7 +13987,7 @@ async def stop_monitoring():
     if task:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-    for name in ('memory_task', 'wallet_worker', 'apple_release_task', 'storehub_void_worker', 'storehub_offline_worker', 'redemption_code_worker', 'lt_benefits_worker'):
+    for name in ('memory_task', 'wallet_worker', 'wallet_burst_sampler', 'apple_release_task', 'storehub_void_worker', 'storehub_offline_worker', 'redemption_code_worker', 'lt_benefits_worker'):
         worker = getattr(app.state, name, None)
         if worker:
             worker.cancel()
@@ -40734,6 +40737,7 @@ async def _lt_benefits_worker():
 @app.on_event('startup')
 async def start_wallet_queue_worker():
     app.state.wallet_worker = asyncio.create_task(wallet_queue_worker())
+    app.state.wallet_burst_sampler = asyncio.create_task(wallet_bursts.run())
     if lt_benefits_enabled():
         app.state.lt_benefits_worker = asyncio.create_task(_lt_benefits_worker())
     if _env_bool('STOREHUB_REDEMPTION_CODES_ENABLED', True):

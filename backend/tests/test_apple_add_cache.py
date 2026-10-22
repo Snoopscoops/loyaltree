@@ -40,6 +40,7 @@ def fixture():
         return f'signed-fixture-{len(builds)}'.encode()
     env = dict(Optional=Optional, hashlib=hashlib, json=json, time=time, asyncio=asyncio,
                apple_builds=SimpleNamespace(run=asyncio.to_thread),
+               wallet_bursts=SimpleNamespace(record=lambda *args:None),
                lt_wallet=lt_benefits_wallet, lt_benefits_enabled=lambda: False,
                Query=Query, HTTPException=HTTPException, Response=Response, wallet_work=memory.wallet_work,
                _APPLE_PKPASS_CACHE=cache, _APPLE_PKPASS_CACHE_TTL_SECONDS=3600,
