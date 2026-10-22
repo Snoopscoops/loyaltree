@@ -194,6 +194,7 @@ class AppleRevisionTests(unittest.TestCase):
         events=[]
         env=dict(datetime=datetime,timedelta=timedelta,supabase=db,_APPLE_PASS_DIRTY_AT={},
                  memory_pressure=__import__('types').SimpleNamespace(paused=lambda:False), _APPLE_DEFERRED_PUSHES={},
+                 APPLE_PUSH_BATCH_SIZE=20, APPLE_PUSH_BATCH_DELAY_SECONDS=.25,
                  _APPLE_PASS_DIRTY_TTL_SECONDS=21600,_parse_ts=lambda x: datetime.fromisoformat(x),
                  APPLE_PASS_TYPE_IDENTIFIER='pass.example',get_apple_push_cert_files=lambda:('cert','key'),
                  log_event=lambda *a,**k: None,print=lambda *a,**k: None,

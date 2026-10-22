@@ -11634,6 +11634,8 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
 _APPLE_PKPASS_CACHE = BoundedTTLCache('apple_passes', max_bytes=16 * 1024 * 1024, max_items=128, ttl=3600)
 _APPLE_PKPASS_CACHE_TTL_SECONDS = 3600
 _APPLE_DEFERRED_PUSHES = BoundedTTLCache('apple_deferred_pushes', max_bytes=256 * 1024, max_items=2000, ttl=3600)
+APPLE_PUSH_BATCH_SIZE = 20
+APPLE_PUSH_BATCH_DELAY_SECONDS = 0.25
 
 # Memory-conscious pass build controls
 
@@ -11987,7 +11989,7 @@ def _send_apple_wallet_pushes(push_tokens: list) -> int:
         import httpx
         with pooled_client(http2=True, cert=(cert_path, key_path), timeout=10) as client:
             # Send in small batches with a short gap to avoid memory and connection spikes
-            batch_size = 20
+            batch_size = APPLE_PUSH_BATCH_SIZE
             for i in range(0, len(tokens), batch_size):
                 if memory_pressure.paused():
                     for token in tokens[i:]:
@@ -12008,7 +12010,7 @@ def _send_apple_wallet_pushes(push_tokens: list) -> int:
                     except Exception as e:
                         log_event("apple_push_failed", "warning", error_type=type(e).__name__, error=str(e))
                 if i + batch_size < len(tokens):
-                    time.sleep(1.5)
+                    time.sleep(APPLE_PUSH_BATCH_DELAY_SECONDS)
     except Exception as e:
         log_event("apple_push_failed", "warning", error_type=type(e).__name__, error=str(e))
     _record_apple_delivery(len(tokens), sent)
