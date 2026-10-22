@@ -89,14 +89,16 @@ from fastapi import FastAPI, HTTPException, Request, Depends, Header, Background
 from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from supabase import Client
 from shared_http import shared_http, pooled_client, create_pooled_supabase
 from monitoring import legacy_diagnostic as print
 from monitoring import log_event, monitor, install_monitoring, log_push, log_wallet_sync, resilient_read, _record_apple_delivery, begin_apple_delivery
-import qrcode
-from qrcode.image.svg import SvgImage
+try:
+    from .lazy_imports import LazyModule
+except ImportError:
+    from lazy_imports import LazyModule
+qrcode = LazyModule('qrcode')
+Image = LazyModule('PIL.Image')
 from io import BytesIO
-from PIL import Image
 import zipfile
 import calendar
 import time
@@ -1723,7 +1725,7 @@ else:
         supabase = None
     else:
         try:
-            supabase: Client = create_pooled_supabase(SUPABASE_URL, SUPABASE_KEY)
+            supabase = create_pooled_supabase(SUPABASE_URL, SUPABASE_KEY)
         except Exception as e:
             ENV_ERROR = str(e)
             supabase = None
@@ -6313,6 +6315,7 @@ def business_summary(biz: dict) -> dict:
     }
 
 def generate_qr_svg(data: str) -> str:
+    from qrcode.image.svg import SvgImage
     qr = qrcode.make(data, image_factory=SvgImage)
     buffer = BytesIO()
     qr.save(buffer)

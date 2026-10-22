@@ -154,7 +154,7 @@ def _sdk_facade(**kwargs):
     return httpx.Client(transport=BridgeTransport(), **kwargs)
 
 
-def create_pooled_supabase(url, key):
+def _create_supabase_client(url, key):
     """Support both older and newer Supabase SDK transport injection APIs."""
     import inspect
     from supabase import create_client, ClientOptions
@@ -168,3 +168,21 @@ def create_pooled_supabase(url, key):
                                      timeout=timeout, follow_redirects=True)
     original.close()
     return db
+
+
+class LazySupabase:
+    def __init__(self, url, key):
+        self._url, self._key = url, key
+        self._client, self._lock = None, threading.RLock()
+
+    def __getattr__(self, name):
+        with self._lock:
+            if self._client is None:
+                self._client = _create_supabase_client(self._url, self._key)
+                self._key = None
+            client = self._client
+        return getattr(client, name)
+
+
+def create_pooled_supabase(url, key):
+    return LazySupabase(url, key)

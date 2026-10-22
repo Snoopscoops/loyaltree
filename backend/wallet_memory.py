@@ -8,7 +8,11 @@ import sys
 from threading import RLock
 import time
 
-from PIL import Image
+try:
+    from .lazy_imports import LazyModule
+except ImportError:
+    from lazy_imports import LazyModule
+Image = LazyModule('PIL.Image')
 try:
     from .runtime_metrics import memory_usage
     from .runtime_profiling import profiler
