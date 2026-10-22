@@ -14124,16 +14124,32 @@ async def confirm_business_password_reset(req: PasswordResetConfirm):
     _password_reset_audit(business, 'password_changed', 'owner_self_service')
     return {'success': True, 'message': 'Password updated. You can now sign in with your new password.'}
 
-def _login_lookup_one(query):
+def _login_lookup_one(query, password=None, *, email=None, password_field='password_hash'):
     """Use list responses so a missing account cannot become a None.data error."""
-    response = query.limit(2).execute()
+    if email is not None:
+        normalized = str(email).strip().lower()
+        escaped = normalized.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_').replace('*', '\\*')
+        query = query.ilike('email', escaped)
+    limit = 21 if password is not None else 2
+    response = query.limit(limit).execute()
     rows = getattr(response, 'data', None)
     if not isinstance(rows, list):
         raise RuntimeError('Login account lookup returned an invalid database response.')
-    if len(rows) > 1:
-        raise RuntimeError('Login account lookup returned multiple matching accounts.')
-    if rows and not isinstance(rows[0], dict):
+    if any(not isinstance(row, dict) for row in rows):
         raise RuntimeError('Login account lookup returned an invalid account record.')
+    if password is not None:
+        if len(rows) >= limit:
+            raise HTTPException(409, 'Multiple accounts need owner review. Please contact support.')
+        import hmac
+        password_hash = hash_password(password)
+        rows = [row for row in rows if
+            (email is None or str(row.get('email') or '').strip().lower() == normalized) and
+            isinstance(row.get(password_field), str) and
+            (hmac.compare_digest(row[password_field].encode(), password.encode()) or
+             hmac.compare_digest(row[password_field].encode(), password_hash.encode()))]
+    if len(rows) > 1:
+        # Never select an arbitrary tenant or delete financial/customer records.
+        raise HTTPException(409, 'Multiple accounts match these credentials. Please contact support to select the correct business.')
     return rows[0] if rows else None
 
 
@@ -14175,7 +14191,9 @@ async def login(req: LoginRequest, request: Request):
     # Region/province/city partner accounts are platform-scoped and intentionally
     # separate from businesses and homepage-logo partners.
     try:
-        partner = _login_lookup_one(supabase.table("network_partners").select("*").ilike("email", req.email.strip()))
+        partner = _login_lookup_one(supabase.table("network_partners").select("*"), req.password, email=req.email)
+    except HTTPException:
+        raise
     except Exception:
         partner = None
     if partner:
@@ -14207,7 +14225,7 @@ async def login(req: LoginRequest, request: Request):
             raise HTTPException(status_code=403, detail='Partner account is inactive')
 
     try:
-        business = _login_lookup_one(supabase.table("businesses").select("*").eq("email", req.email))
+        business = _login_lookup_one(supabase.table("businesses").select("*"), req.password, email=req.email)
         if business:
             stored_pw = business.get('password_hash', '')
             input_hash = hash_password(req.password)
@@ -14254,7 +14272,7 @@ async def login(req: LoginRequest, request: Request):
         print(f"Business login error: {e}")
 
     try:
-        staff = _login_lookup_one(supabase.table("staff").select("*,businesses(public_id,name,logo_url,status,subscription_expires_at,trial_ends_at,last_paid_at)").eq("email", req.email))
+        staff = _login_lookup_one(supabase.table("staff").select("*,businesses(public_id,name,logo_url,status,subscription_expires_at,trial_ends_at,last_paid_at)"), req.password, email=req.email, password_field='pin')
         if staff:
             stored_pin = staff.get('pin', '')
             if stored_pin == req.password or stored_pin == hash_password(req.password):
@@ -14332,8 +14350,7 @@ async def login(req: LoginRequest, request: Request):
     # provisioned only after the dealership owner approves the original
     # application, so existence here means the agent is approved.
     try:
-        agent = _login_lookup_one(supabase.table("cl_agents").select("*,businesses(public_id,name,logo_url,status,business_type,subscription_expires_at,trial_ends_at,last_paid_at)")
-            .eq("email", req.email.strip().lower()))
+        agent = _login_lookup_one(supabase.table("cl_agents").select("*,businesses(public_id,name,logo_url,status,business_type,subscription_expires_at,trial_ends_at,last_paid_at)"), req.password, email=req.email)
         if agent:
             stored_pw = agent.get('password_hash', '')
             input_hash = hash_password(req.password)

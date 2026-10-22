@@ -31,7 +31,11 @@ class DB:
                 value=db.tables.get(name,[])
                 if isinstance(value,Exception): raise value
                 if value is None: return None
-                return SimpleNamespace(data=deepcopy(value))
+                rows=deepcopy(value)
+                if isinstance(rows,list):
+                    for row in rows:
+                        if isinstance(row,dict):row.setdefault('email','test@example.invalid')
+                return SimpleNamespace(data=rows)
         return Query()
 
 class LoginLookupTests(unittest.TestCase):
@@ -62,7 +66,7 @@ class LoginLookupTests(unittest.TestCase):
     def test_empty_result_returns_401_without_attribute_error(self):
         db=DB(); self.assert_status(db,401)
         self.record.assert_called_once()
-        self.assertEqual(db.queries,[('network_partners',2),('businesses',2),('staff',2),('cl_agents',2)])
+        self.assertEqual(db.queries,[('network_partners',21),('businesses',21),('staff',21),('cl_agents',21)])
     def test_wrong_owner_password_with_no_staff_row_returns_401(self):
         self.assert_status(DB(businesses=[self.business()]),401,'wrong')
         self.record.assert_called_once()
@@ -89,8 +93,19 @@ class LoginLookupTests(unittest.TestCase):
     def test_missing_response_is_not_treated_as_an_empty_account_list(self):
         self.assert_status(DB(businesses=None),503);self.record.assert_not_called()
     def test_duplicate_email_rows_are_not_arbitrarily_authenticated(self):
-        self.assert_status(DB(businesses=[self.business(),self.business()]),503)
+        self.assert_status(DB(businesses=[self.business(),self.business()]),409)
         self.record.assert_not_called()
+
+    def test_duplicate_email_authenticates_only_one_credential_match(self):
+        other=self.business();other['password_hash']='hash:other'
+        result=self.run_login(DB(businesses=[other,self.business()]))
+        self.assertEqual(result['token'],'owner-session')
+        self.record.assert_not_called()
+
+    def test_duplicate_email_wrong_password_is_401_and_exact_email_is_required(self):
+        self.assert_status(DB(businesses=[self.business(),self.business()]),401,'wrong')
+        wrong=self.business();wrong['email']='different@example.invalid'
+        self.assert_status(DB(businesses=[wrong]),401)
     def test_malformed_data_is_not_authenticated(self):
         for data in ({'public_id':'unexpected'},'unexpected',[None]):
             with self.subTest(data=data): self.assert_status(DB(businesses=data),503)
@@ -110,7 +125,7 @@ class LoginLookupTests(unittest.TestCase):
         self.assertEqual(result['role'],'super_admin');self.record.assert_not_called()
     def test_single_lookup_returns_the_only_row(self):
         db=DB(businesses=[{'id':1}])
-        self.assertEqual(self.env['_login_lookup_one'](db.table('businesses')),{'id':1})
+        self.assertEqual(self.env['_login_lookup_one'](db.table('businesses')),{'id':1,'email':'test@example.invalid'})
         self.assertEqual(db.queries,[('businesses',2)])
 
 if __name__=='__main__':unittest.main()
