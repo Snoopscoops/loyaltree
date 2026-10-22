@@ -9375,17 +9375,20 @@ def _push_apple_wallet_to_customer_public_ids(customer_public_ids: list[str]) ->
     if not serial_numbers:
         return 0
     push_tokens = []
+    registered_serials = []
     CHUNK_SIZE = 200
     try:
         for i in range(0, len(serial_numbers), CHUNK_SIZE):
             chunk = serial_numbers[i:i + CHUNK_SIZE]
             rows = (
-                supabase.table('apple_wallet_registrations').select('push_token')
+                supabase.table('apple_wallet_registrations').select('serial_number,push_token')
                 .in_('serial_number', chunk)
                 .eq('pass_type_identifier', APPLE_PASS_TYPE_IDENTIFIER)
                 .execute().data or []
             )
             push_tokens.extend(r.get('push_token') for r in rows if r.get('push_token'))
+            registered_serials.extend(r.get('serial_number') for r in rows if r.get('serial_number') in chunk)
+        _mark_apple_pass_dirty(registered_serials)
     except Exception as e:
         print(f"APPLE WALLET targeted announcement lookup error: {e}")
         return 0
@@ -11889,17 +11892,9 @@ def _send_apple_wallet_pushes(push_tokens: list) -> int:
     tokens = list(dict.fromkeys(t for t in push_tokens if t))
     if not tokens:
         return 0
-    try:
-        for start in range(0, len(tokens), 100):
-            rows = (supabase.table('apple_wallet_registrations').select('serial_number')
-                    .in_('push_token', tokens[start:start + 100]).execute().data or [])
-            if not rows:
-                raise RuntimeError('No registered serials for APNs audience')
-            _mark_apple_pass_dirty([r['serial_number'] for r in rows])
-    except Exception as exc:
-        log_event('apple_push_failed', 'warning', error_type=type(exc).__name__, error=str(exc), stage='pass_revision')
-        _record_apple_delivery(len(tokens), 0)
-        return 0
+    # Callers mark their exact authorized serial audience before this call.
+    # A token belongs to a device, not a business. Reverse-looking up serials
+    # by token dirties unrelated businesses' passes on the same phone.
     cert_path, key_path = get_apple_push_cert_files()
     if not cert_path:
         _record_apple_delivery(len(tokens), 0)
@@ -12184,6 +12179,7 @@ def push_apple_wallet_announcement(business_id: int) -> int:
         return 0
     serial_numbers = serial_numbers + [f'{APPLE_ORDER_AHEAD_EVENT_BETA_PREFIX}{s}' for s in serial_numbers]
     push_tokens = []
+    registered_serials = []
     try:
         # Chunked to stay well under PostgREST's URL length limit for large
         # customer bases - an .in_() filter with thousands of UUIDs in one
@@ -12193,12 +12189,14 @@ def push_apple_wallet_announcement(business_id: int) -> int:
             chunk = serial_numbers[i:i + CHUNK_SIZE]
             rows = (
                 supabase.table("apple_wallet_registrations")
-                .select("push_token")
+                .select("serial_number,push_token")
                 .in_("serial_number", chunk)
                 .eq("pass_type_identifier", APPLE_PASS_TYPE_IDENTIFIER)
                 .execute()
             ).data or []
             push_tokens.extend(row.get('push_token') for row in rows)
+            registered_serials.extend(row.get('serial_number') for row in rows if row.get('serial_number') in chunk)
+        _mark_apple_pass_dirty(registered_serials)
     except Exception as e:
         print(f"APPLE WALLET announcement lookup error: {e}")
         return 0
@@ -12652,18 +12650,21 @@ def push_cl_apple_wallet_announcement(business_id: int) -> int:
     if not serial_numbers:
         return 0
     push_tokens = []
+    registered_serials = []
     try:
         CHUNK_SIZE = 200
         for i in range(0, len(serial_numbers), CHUNK_SIZE):
             chunk = serial_numbers[i:i + CHUNK_SIZE]
             rows = (
                 supabase.table("apple_wallet_registrations")
-                .select("push_token")
+                .select("serial_number,push_token")
                 .in_("serial_number", chunk)
                 .eq("pass_type_identifier", APPLE_PASS_TYPE_IDENTIFIER)
                 .execute()
             ).data or []
             push_tokens.extend(row.get('push_token') for row in rows)
+            registered_serials.extend(row.get('serial_number') for row in rows if row.get('serial_number') in chunk)
+        _mark_apple_pass_dirty(registered_serials)
     except Exception as e:
         print(f"CL APPLE WALLET announcement lookup error: {e}")
         return 0
