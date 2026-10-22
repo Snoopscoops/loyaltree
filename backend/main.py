@@ -74,11 +74,13 @@ from typing import Optional, List, Literal
 
 try:
     from . import wallet_cloudinary as wallet_artwork
+    from .google_wallet_assets import publish_png as publish_google_png, validate_image as validate_google_image
     from .apple_builds import apple_builds
     from .apple_memory import memory_pressure
     from .wallet_rate import upgrade_delivery_budget
 except ImportError:
     import wallet_cloudinary as wallet_artwork
+    from google_wallet_assets import publish_png as publish_google_png, validate_image as validate_google_image
     from apple_builds import apple_builds
     from apple_memory import memory_pressure
     from wallet_rate import upgrade_delivery_budget
@@ -7620,6 +7622,7 @@ def build_loyalty_class(
             f'?c={color_key}&p={program_key}&ws={style_key}'
         )
     if hero_url:
+        hero_url = _google_wallet_public_hero_uri(business, program or {}, primary_color, design)
         loyalty_class['heroImage'] = {'sourceUri': {'uri': hero_url}}
 
     # NFC trial safety gate: Smart Tap is exposed only on MEMBERSHIP cards
@@ -9139,11 +9142,54 @@ def google_wallet_program_logo_uri(
     branded = bool(benefits and lt_benefits_enabled())
     brand_release = lt_wallet.RELEASE if branded else 'plate-v2'
     digest = hashlib.sha1(f"{source_logo_url}|{color}|{kind}|{brand_release}".encode()).hexdigest()[:12]
-    return (
-        f"{BASE_URL.rstrip('/')}/api/v1/business/{quote(public_id, safe='')}/wallet-logo.png"
-        f"?p={quote(program_id, safe='')}&v={digest}&c={quote(color, safe='')}&kind={quote(kind, safe='')}"
-        + ('&benefits=true' if branded else '')
-    )
+    cache_key = f'google-logo-public-v1:{public_id}:{program_id}:{digest}'
+    cached = _APPLE_IMAGE_CACHE.get(cache_key)
+    if cached:
+        return cached
+    source = _fetch_image_bytes(source_logo_url, timeout=4, profile='google_logo_source')
+    if source_logo_url and not source:
+        raise HTTPException(503, 'Could not load the card logo. Please retry publishing.')
+    png = google_wallet_logo_png_bytes(source, fallback_label=business.get('name') or 'L',
+        background=background, wide=kind == 'wide', benefits=branded)
+    url = _publish_google_wallet_png(png)
+    _APPLE_IMAGE_CACHE[cache_key] = url
+    return url
+
+
+def _publish_google_wallet_png(png):
+    try:
+        with pooled_client() as client:
+            return publish_google_png(client, png, cloud=CLOUDINARY_CLOUD_NAME,
+                api_key=CLOUDINARY_API_KEY, api_secret=CLOUDINARY_API_SECRET)
+    except ValueError as exc:
+        raise HTTPException(503, str(exc), headers={'Retry-After': '15'}) from None
+
+
+def _google_wallet_public_hero_uri(business, program, color, design):
+    source = program.get('hero_image_url')
+    if wallet_artwork.parse_public_asset(source):
+        url = wallet_artwork.delivery_url(source, 'google_hero_source')
+        try:
+            with pooled_client() as client:
+                validate_google_image(client, url)
+        except ValueError as exc:
+            raise HTTPException(503, str(exc), headers={'Retry-After': '15'}) from None
+        return url
+    key = 'google-hero-public-v1:' + hashlib.sha256(json.dumps(
+        [business.get('public_id'), source, color, design.get('style')], default=str).encode()).hexdigest()
+    cached = _APPLE_IMAGE_CACHE.get(key)
+    if cached:
+        return cached
+    if source:
+        raw = _fetch_image_bytes(source, timeout=4, profile='google_hero_source')
+        png = apple_strip_from_image_bytes(raw, 1032, 336) if raw else None
+        if not png:
+            raise HTTPException(503, 'Could not load the card banner. Please retry publishing.')
+    else:
+        png = generate_hero_image_bytes(color, wallet_style=design.get('style'))
+    url = _publish_google_wallet_png(png)
+    _APPLE_IMAGE_CACHE[key] = url
+    return url
 
 
 def _strip_bottom_rgb(png_bytes: bytes) -> Optional[tuple]:
