@@ -168,7 +168,13 @@ def wallet_work(operation, *, business_arg=None, serialize=True):
                             if memory_pressure.paused():
                                 from fastapi import HTTPException
                                 raise HTTPException(503, 'Apple Wallet is temporarily busy.', headers={'Retry-After': '30'})
-                        return fn(*args, **kwargs)
+                        try:
+                            return fn(*args, **kwargs)
+                        finally:
+                            if operation.startswith('apple_') and operation.endswith('pass_build'):
+                                try: from .native_memory import trim_memory
+                                except ImportError: from native_memory import trim_memory
+                                trim_memory()
                 return fn(*args, **kwargs)
         return wrapped
     return decorate

@@ -33,6 +33,7 @@ class BusinessIsolationTests(unittest.TestCase):
         env = dict(supabase=SimpleNamespace(table=Query), APPLE_PASS_TYPE_IDENTIFIER='pass.test',
             memory_pressure=SimpleNamespace(paused=lambda: False), _APPLE_DEFERRED_PUSHES={},
             APPLE_PUSH_BATCH_SIZE=20, APPLE_PUSH_BATCH_DELAY_SECONDS=.25,
+            _maybe_trim_memory=Mock(),
             APPLE_ORDER_AHEAD_EVENT_BETA_PREFIX='oa-', Optional=__import__('typing').Optional,
             _mark_apple_pass_dirty=lambda serials: marked.extend(serials),
             _APPLE_PKPASS_CACHE={}, get_apple_push_cert_files=lambda: ('cert', 'key'),

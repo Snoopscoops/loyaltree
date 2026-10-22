@@ -257,8 +257,12 @@ them. These diagnostics go to stdout, adding no event-table
 writes. Inspect all PIDs and the actual Render start command when checking workers;
 `worker_env` only reports `WEB_CONCURRENCY`, not the actual process count.
 
-Keep the Render command at one worker, for example from the backend root:
-`uvicorn main:app --host 0.0.0.0 --port "$PORT" --workers 1`.
+Set the Render start command to `sh start.sh` from the backend root (or
+`sh backend/start.sh` from the repository root). This exports `MALLOC_ARENA_MAX=2`
+before Python starts and runs one Gunicorn-managed Uvicorn worker, recycled
+after 500 requests plus 0–50 jitter. Do not use preload or increase workers on
+the 512 MiB plan. Native buffers are closed and glibc `malloc_trim(0)` runs
+after Apple builds and APNs batches; other platforms safely skip trimming.
 No SQL or new required environment variable is needed for this release. The
 deployment does not change the paid instance plan, DNS/SSL, or Render settings.
 After deployment, compare the same business's pass/push `before`/`after` events

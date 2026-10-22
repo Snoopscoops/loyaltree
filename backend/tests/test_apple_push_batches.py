@@ -19,6 +19,7 @@ class PushBatchTests(unittest.TestCase):
             APPLE_PASS_TYPE_IDENTIFIER='pass.test', pooled_client=lambda **kw:client,
             get_apple_push_cert_files=lambda:('cert','key'), log_event=Mock(),
             _record_apple_delivery=Mock(), time=SimpleNamespace(sleep=sleep))
+        env['_maybe_trim_memory'] = Mock()
         exec(compile(ast.Module(body=[node],type_ignores=[]),str(SOURCE),'exec'),env)
         return env,client,sleep
 

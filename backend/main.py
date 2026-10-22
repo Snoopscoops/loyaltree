@@ -11640,11 +11640,9 @@ APPLE_PUSH_BATCH_DELAY_SECONDS = 0.25
 # Memory-conscious pass build controls
 
 def _maybe_trim_memory():
-    try:
-        import ctypes
-        ctypes.CDLL("libc.so.6").malloc_trim(0)
-    except Exception:
-        pass
+    try: from .native_memory import trim_memory
+    except ImportError: from native_memory import trim_memory
+    trim_memory()
 
 
 # Order Ahead Event Tickets use a separate serial/renderer from the normal Store
@@ -12010,10 +12008,12 @@ def _send_apple_wallet_pushes(push_tokens: list) -> int:
                     except Exception as e:
                         log_event("apple_push_failed", "warning", error_type=type(e).__name__, error=str(e))
                 if i + batch_size < len(tokens):
+                    _maybe_trim_memory()
                     time.sleep(APPLE_PUSH_BATCH_DELAY_SECONDS)
     except Exception as e:
         log_event("apple_push_failed", "warning", error_type=type(e).__name__, error=str(e))
     _record_apple_delivery(len(tokens), sent)
+    _maybe_trim_memory()
     return sent
 
 
