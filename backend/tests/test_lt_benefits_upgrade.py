@@ -141,6 +141,20 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(len(self.enqueued), 3)
         self.assertEqual([call[1]["p_action"] for call in self.db.calls], ["claim", "ack", "ack", "ack", "release"])
 
+    def test_repeated_ticks_never_queue_more_than_five_in_sixty_seconds(self):
+        now = [0]
+        self.service.rate.clock = lambda: now[0]
+        self.db.claim = {"job": {"id": "job-1", "business_id": "10", "business_slug": "cafe"},
+                         "cards": [{"id": identifier} for identifier in range(1, 6)]}
+        self.assertEqual(self.service.tick(2)['queued'], 2)
+        now[0] = 20
+        self.assertEqual(self.service.tick(2)['queued'], 2)
+        now[0] = 40
+        self.assertEqual(self.service.tick(2)['queued'], 1)
+        self.assertEqual(self.service.tick(2)['queued'], 0)
+        now[0] = 60
+        self.assertEqual(self.service.tick(2)['queued'], 2)
+
     def test_db_error_never_returns_exception_text(self):
         self.db.failure = OSError("credential=secret")
         with self.assertRaises(HTTPException) as failure: self.service.status("cafe", self.admin_request)

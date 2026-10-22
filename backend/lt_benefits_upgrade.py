@@ -9,6 +9,12 @@ leased service-role worker command.
 from __future__ import annotations
 
 import uuid
+try:
+    from .wallet_rate import RollingBudget
+    from .apple_memory import memory_pressure
+except ImportError:
+    from wallet_rate import RollingBudget
+    from apple_memory import memory_pressure
 
 from fastapi import HTTPException, Request
 from pydantic import BaseModel, ConfigDict, StrictBool
@@ -26,6 +32,7 @@ class LTBenefitsUpgradeService:
     def __init__(self, *, db, get_business, require_admin, enabled, ready, enqueue, log=None):
         self.db, self.get_business, self.require_admin = db, get_business, require_admin
         self.enabled, self.ready, self.enqueue, self.log = enabled, ready, enqueue, log
+        self.rate = RollingBudget()
 
     def _log(self, event, **fields):
         try:
@@ -95,6 +102,8 @@ class LTBenefitsUpgradeService:
             raise ValueError("limit must be an integer from 1 to 5")
         if not self._available():
             return {"available": False, "queued": 0}
+        if memory_pressure.paused():
+            return {"available": True, "queued": 0, "paused": True}
         lease = str(uuid.uuid4())
         work = self._command("claim", lease=lease, limit=limit)
         job = work.get("job")
@@ -107,6 +116,9 @@ class LTBenefitsUpgradeService:
                 raise RuntimeError("BusinessUnavailable")
             cards = work.get("cards", [])
             for card in cards[:limit]:
+                if memory_pressure.paused() or not self.rate.take():
+                    self._command("release", job_id=job["id"], lease=lease)
+                    return {"available": True, "queued": queued, "rollout_id": job["id"], "paused": True}
                 result = self.enqueue(card, business, reason=ROLLOUT_REASON)
                 if not isinstance(result, dict) or result.get("status") != "queued" or not result.get("job_id"):
                     raise RuntimeError("WalletQueueRejected")

@@ -76,10 +76,12 @@ try:
     from . import wallet_cloudinary as wallet_artwork
     from .apple_builds import apple_builds
     from .apple_memory import memory_pressure
+    from .wallet_rate import upgrade_delivery_budget
 except ImportError:
     import wallet_cloudinary as wallet_artwork
     from apple_builds import apple_builds
     from apple_memory import memory_pressure
+    from wallet_rate import upgrade_delivery_budget
 
 from fastapi import FastAPI, HTTPException, Request, Depends, Header, BackgroundTasks, Query
 from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResponse
@@ -40558,6 +40560,14 @@ def process_wallet_sync_queue_once(limit: int = 10):
     for job in jobs:
         jid=job.get('id'); attempts=int(job.get('attempts') or 0)
         try:
+            if job.get('reason') == 'lt_benefits_admin_upgrade_v1' and (
+                    memory_pressure.paused() or not upgrade_delivery_budget.take()):
+                # Deferrals are not provider failures and must not exhaust retries.
+                supabase.table('wallet_sync_jobs').update({'status': 'pending',
+                    'attempts': max(0, attempts-1) if job.get('status') == 'processing' else attempts,
+                    'next_attempt_at': (datetime.utcnow()+timedelta(seconds=15)).isoformat(),
+                    'updated_at': datetime.utcnow().isoformat()}).eq('id', jid).execute()
+                continue
             # RPC-claimed rows are already processing and have attempts bumped.
             # The fallback path may still return pending rows, so claim those here.
             if job.get('status') != 'processing':
@@ -40566,6 +40576,8 @@ def process_wallet_sync_queue_once(limit: int = 10):
             customer=safe_get_customer_by_id(job.get('customer_id'))
             business=safe_get_business_by_id(job.get('business_id'))
             if not customer or not business: raise RuntimeError('Customer/business no longer exists')
+            if str(customer.get('business_id')) != str(business.get('id')):
+                raise RuntimeError('Customer/business mismatch')
             program=safe_get_customer_program(customer, business.get('id')) or {}
             # Apple first here too so retry jobs prioritize waking the phone.
             a=sync_apple_wallet_pass(customer)
