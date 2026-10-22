@@ -11646,18 +11646,8 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
             'strip@2x.png': strip_2x,
             'strip@3x.png': strip_3x,
         })
-        edge = _strip_bottom_rgb(strip_3x)
-        if edge:
-            er, eg, eb = edge
-            pass_json['backgroundColor'] = f'rgb({er}, {eg}, {eb})'
-            luma = (0.2126 * er) + (0.7152 * eg) + (0.0722 * eb)
-            if luma > 170:
-                pass_json['foregroundColor'] = 'rgb(15, 23, 42)'
-                pass_json['labelColor'] = 'rgba(15, 23, 42, 0.72)'
-            else:
-                pass_json['foregroundColor'] = 'rgb(255, 255, 255)'
-                pass_json['labelColor'] = 'rgba(255, 255, 255, 0.75)'
-            files['pass.json'] = json.dumps(pass_json).encode('utf-8')
+        # Keep the owner's configured background and native text colors.
+        # A photo's bottom edge is not the business's selected card color.
 
     manifest = {name: hashlib.sha1(content).hexdigest() for name, content in files.items()}
     manifest_bytes = json.dumps(manifest).encode('utf-8')
