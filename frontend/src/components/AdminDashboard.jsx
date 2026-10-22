@@ -368,7 +368,9 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
     let current = true
     setSectionLoading(true)
     setLoadError('')
-    loadAdminResources(readData, resources, reportLoadError).finally(() => {
+    loadAdminResources(readData, resources, error => {
+      if (current) reportLoadError(error)
+    }).finally(() => {
       if (current) setSectionLoading(false)
     })
     return () => { current = false }
