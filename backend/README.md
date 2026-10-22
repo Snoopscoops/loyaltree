@@ -215,6 +215,24 @@ fixtures and blocks network requests; it is not a production route.
 
 ## Wallet memory and Render OOM recovery
 
+Admin startup loads overview, plans and the business list once. Partners,
+operations and special billing load when their tabs open. A slow/failed section
+keeps navigation usable and shows a retry message after a 20-second read deadline.
+Business filters run on the already loaded list. Admin reads with synchronous
+database work run in FastAPI's thread pool, so they do not block health/login.
+The business list aggregates paginated, request-local metrics across businesses;
+it no longer runs program/customer/staff/activity/branch queries for every row.
+No new cache, environment variable or SQL is required. Partial optional metrics
+log `admin_data_partial` with `table` and `error_type`, without customer data.
+
+For frontend regression checks run `node --test tests/admin-data.test.mjs` from
+`frontend`. The provider-free `dev/admin-loading.html?scenario=slow-partners`
+fixture exercises tab isolation; `?scenario=error` exercises retry UI.
+
+Google branding uploads use Cloudinary's returned versioned `secure_url` after
+checking its public account/asset identity. This avoids reusing an unversioned
+URL whose pre-upload existence probe may have cached a missing-image response.
+
 The Wallet artwork loader previously retained up to 24 original RGBA images.
 One 4000×3000 photo requires about 46 MiB per retained raster, even if its JPEG
 download is only a few hundred KB. Several businesses' photos could therefore

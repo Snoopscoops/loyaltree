@@ -53,8 +53,12 @@ def publish_png(client, content, *, cloud, api_key, api_secret):
     if response.status_code != 200:
         raise ValueError('Could not publish public Wallet branding to Cloudinary.')
     result = response.json()
-    asset = parse_public_asset(result.get('secure_url'))
+    published_url = result.get('secure_url')
+    asset = parse_public_asset(published_url)
     if not asset or asset.cloud_name != cloud or asset.public_id != public_id:
         raise ValueError('Cloudinary returned an unexpected Wallet branding image.')
-    validate_image(client, url)
-    return url
+    # The existence probe may have cached a 404 at the unversioned CDN URL.
+    # Cloudinary returns the uploaded asset's versioned URL; validate and send
+    # that exact URL to Google instead of immediately reusing the missing one.
+    validate_image(client, published_url)
+    return published_url
