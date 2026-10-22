@@ -11587,7 +11587,7 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
 # CustomerJoin requests /wallet-pass immediately after signup, and customer_signup
 # prewarms this cache in the background. By the time the person taps "Add to Wallet"
 # the already-signed .pkpass can usually be returned without image rendering/signing.
-_APPLE_PKPASS_CACHE = BoundedTTLCache('apple_passes', max_bytes=8 * 1024 * 1024, max_items=32, ttl=90)
+_APPLE_PKPASS_CACHE = BoundedTTLCache('apple_passes', max_bytes=16 * 1024 * 1024, max_items=128, ttl=3600)
 _APPLE_PKPASS_CACHE_TTL_SECONDS = 3600
 _APPLE_DEFERRED_PUSHES = BoundedTTLCache('apple_deferred_pushes', max_bytes=256 * 1024, max_items=2000, ttl=3600)
 
@@ -11614,6 +11614,11 @@ _APPLE_EVENT_PKPASS_BUILD_LOCKS_GUARD = Lock()
 
 def _apple_pkpass_fingerprint(customer: dict, business: dict, program: dict, announcement: Optional[dict]) -> str:
     payload = {
+        # Include all card source fields: names, reward state, dynamic artwork,
+        # coupons, LT balance and design edits must not serve a stale pass.
+        'card_content': customer,
+        'program_content': program or {},
+        'announcement_content': announcement or {},
         "customer": {
             "id": customer.get("public_id"),
             "updated_at": customer.get("updated_at"),
@@ -11628,6 +11633,10 @@ def _apple_pkpass_fingerprint(customer: dict, business: dict, program: dict, ann
             "updated_at": business.get("updated_at"),
             "logo_url": business.get("logo_url"),
             "name": business.get("name"),
+            "primary_color": business.get("primary_color"),
+            "secondary_color": business.get("secondary_color"),
+            "order_ahead_enabled": business.get("order_ahead_enabled"),
+            "order_ahead_button_label": business.get("order_ahead_button_label"),
         },
         "program": {
             "updated_at": (program or {}).get("updated_at"),
@@ -11713,6 +11722,14 @@ def _get_or_build_apple_pkpass(customer: dict, business: dict, program: dict, an
     if cached is not None:
         return cached, True
     return _build_and_cache_apple_pkpass(customer, business, program or {}, announcement)
+
+
+async def _prepare_apple_pkpass(customer: dict, business: dict, program: dict, announcement: Optional[dict]):
+    # Cached bytes need no native allocation and bypass a full build queue.
+    cached = await asyncio.to_thread(_get_cached_apple_pkpass, customer, business, program or {}, announcement)
+    if cached is not None:
+        return cached, True
+    return await apple_builds.run(_get_or_build_apple_pkpass, customer, business, program or {}, announcement)
 
 
 def _apple_event_pkpass_fingerprint(customer: dict, business: dict, program: dict, announcement: Optional[dict]) -> str:
@@ -11845,7 +11862,7 @@ def _prewarm_apple_pkpass(customer: dict, business: dict, program: dict):
 async def _prewarm_apple_pkpass_async(customer: dict, business: dict, program: dict):
     try:
         announcement = await asyncio.to_thread(get_latest_active_announcement_for_customer, business, customer)
-        await apple_builds.run(_get_or_build_apple_pkpass, customer, business, program or {}, announcement)
+        await _prepare_apple_pkpass(customer, business, program or {}, announcement)
     except Exception as exc:
         log_event('apple_prewarm_deferred', 'warning', business_slug=business.get('public_id'), error_type=type(exc).__name__)
 
@@ -38784,9 +38801,7 @@ async def get_apple_wallet_pass(customer_public_id: str, force_store_card: bool 
     # Order Ahead uses the normal Store Card path again.
     # Keep /apple-wallet-event-beta available only as an isolated research route;
     # never auto-route customer Add-to-Wallet traffic into it.
-    pkpass_bytes, cache_hit = await apple_builds.run(
-        _get_or_build_apple_pkpass, customer, business, program or {}, announcement
-    )
+    pkpass_bytes, cache_hit = await _prepare_apple_pkpass(customer, business, program or {}, announcement)
 
     t_build = time.perf_counter()
     print(
@@ -39394,7 +39409,7 @@ async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, 
         f"ims={if_modified_since} newest={last_modified}"
     )
 
-    pkpass_bytes = await apple_builds.run(build_pkpass_bytes, customer, business, program, announcement)
+    pkpass_bytes, cache_hit = await _prepare_apple_pkpass(customer, business, program or {}, announcement)
     if pkpass_bytes is None:
         raise HTTPException(status_code=500, detail="Could not build pass")
     return Response(
@@ -39404,6 +39419,7 @@ async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, 
             "Last-Modified": _http_date(last_modified),
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "Content-Length": str(len(pkpass_bytes)),
+            "X-LoyaltyTree-Apple-Cache": "HIT" if cache_hit else "MISS",
         },
     )
 

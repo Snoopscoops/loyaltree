@@ -20,7 +20,7 @@ from backend import lt_benefits_wallet
 SOURCE = Path(__file__).resolve().parents[1] / 'main.py'
 NAMES = {'_apple_pkpass_fingerprint', '_get_cached_apple_pkpass', '_cache_apple_pkpass',
          '_build_and_cache_apple_pkpass', '_get_or_build_apple_pkpass', '_prewarm_apple_pkpass',
-         'get_apple_wallet_pass'}
+         'get_apple_wallet_pass', '_prepare_apple_pkpass'}
 NODES = [node for node in ast.parse(SOURCE.read_text()).body
          if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in NAMES]
 # Keep the real synchronization decorator; only remove FastAPI route registration.
@@ -34,7 +34,7 @@ def fixture():
     business = {'public_id': 'synthetic-cafe', 'id': 1, 'order_ahead_enabled': True}
     program = {'card_type': 'stamp', 'updated_at': '2026-10-20T00:00:00'}
     clock, revision, builds = [0], [None], []
-    cache = memory.BoundedTTLCache('apple_add_test', max_bytes=4096, max_items=8, ttl=90, clock=lambda: clock[0])
+    cache = memory.BoundedTTLCache('apple_add_test', max_bytes=4096, max_items=8, ttl=3600, clock=lambda: clock[0])
     def build(*args):
         builds.append(args)
         return f'signed-fixture-{len(builds)}'.encode()
@@ -42,7 +42,7 @@ def fixture():
                apple_builds=SimpleNamespace(run=asyncio.to_thread),
                lt_wallet=lt_benefits_wallet, lt_benefits_enabled=lambda: False,
                Query=Query, HTTPException=HTTPException, Response=Response, wallet_work=memory.wallet_work,
-               _APPLE_PKPASS_CACHE=cache, _APPLE_PKPASS_CACHE_TTL_SECONDS=90,
+               _APPLE_PKPASS_CACHE=cache, _APPLE_PKPASS_CACHE_TTL_SECONDS=3600,
                _apple_pass_dirty_at=lambda serial: revision[0], APPLE_PASS_REGISTRATION_RELEASE='fixture',
                APPLE_PASS_WEB_SERVICE_URL='https://example.invalid', APPLE_PASS_TYPE_IDENTIFIER='pass.fixture',
                APPLE_PASS_AUTH_SECRET='fixture', APPLE_TEAM_IDENTIFIER='FIXTURE',
@@ -130,7 +130,7 @@ class AppleAddCacheTests(unittest.TestCase):
 
     def test_cache_expiry_and_failed_build_allow_fresh_retry(self):
         self.get()
-        self.clock[0] = 91
+        self.clock[0] = 3601
         self.assertEqual(self.get(), (b'signed-fixture-2', False))
         self.env['_APPLE_PKPASS_CACHE'].clear()
         original = self.env['build_pkpass_bytes']
@@ -139,6 +139,23 @@ class AppleAddCacheTests(unittest.TestCase):
         self.assertEqual(len(self.env['_APPLE_PKPASS_CACHE']), 0)
         self.env['build_pkpass_bytes'] = original
         self.assertEqual(self.get(), (b'signed-fixture-3', False))
+
+    def test_hour_cache_and_only_edited_cards_content_is_invalidated(self):
+        other = {**self.customer, 'public_id': 'other-member'}
+        first = self.get()[0]
+        second = self.get(customer=other)[0]
+        self.clock[0] = 3599
+        self.assertEqual(self.get(), (first, True))
+        self.assertEqual(self.get(customer=other), (second, True))
+        self.assertFalse(self.get(customer={**self.customer, 'name': 'Changed name'})[1])
+        self.assertEqual(self.get(customer=other), (second, True))
+        self.assertFalse(self.get(customer={**self.customer, 'lt_coupon_count': 1})[1])
+
+    def test_passkit_update_uses_the_same_finished_pass_cache_as_add(self):
+        route = next(n for n in ast.parse(SOURCE.read_text()).body if isinstance(n, ast.AsyncFunctionDef) and n.name == 'apple_get_updated_pass')
+        calls = [n for n in ast.walk(route) if isinstance(n, ast.Call)]
+        self.assertTrue(any(isinstance(c.func, ast.Name) and c.func.id == '_prepare_apple_pkpass' for c in calls))
+        self.assertFalse(any(isinstance(a, ast.Name) and a.id == 'build_pkpass_bytes' for c in calls for a in c.args))
 
     def test_prewarm_failures_do_not_escape_or_poison_following_add(self):
         original = self.env['build_pkpass_bytes']
