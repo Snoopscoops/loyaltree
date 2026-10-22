@@ -73,9 +73,11 @@ from email.utils import format_datetime, parsedate_to_datetime
 from typing import Optional, List, Literal
 
 try:
+    from . import wallet_cloudinary as wallet_artwork
     from .apple_builds import apple_builds
     from .apple_memory import memory_pressure
 except ImportError:
+    import wallet_cloudinary as wallet_artwork
     from apple_builds import apple_builds
     from apple_memory import memory_pressure
 
@@ -6586,7 +6588,7 @@ _STAMP_REMOTE_IMAGE_CACHE = BoundedTTLCache('wallet_art', max_bytes=4 * 1024 * 1
 _STAMP_REMOTE_IMAGE_CACHE_MAX = 24
 
 
-def _load_remote_wallet_image(url: Optional[str]) -> Optional["Image.Image"]:
+def _load_remote_wallet_image(url: Optional[str], *, profile: str = 'google_hero_source') -> Optional["Image.Image"]:
     """Best-effort fetch/cache for owner-uploaded Wallet artwork.
 
     Failures always fall back to the generated gradient/simple stamp so a
@@ -6595,6 +6597,7 @@ def _load_remote_wallet_image(url: Optional[str]) -> Optional["Image.Image"]:
     url = str(url or '').strip()
     if not url or not url.startswith(('https://', 'http://')):
         return None
+    url = wallet_artwork.delivery_url(url, profile)
     cached = _STAMP_REMOTE_IMAGE_CACHE.get(url)
     if cached is not None:
         try:
@@ -6816,8 +6819,8 @@ def _draw_dynamic_progress_row(
     # high-to-low difference while denser 15-20 slot banners stay readable.
     wave_offset = max(16, min(52, int(round(size * 0.25))))
 
-    filled_remote = _load_remote_wallet_image(filled_icon_url)
-    empty_remote = _load_remote_wallet_image(empty_icon_url)
+    filled_remote = _load_remote_wallet_image(filled_icon_url, profile='progress_icon_source')
+    empty_remote = _load_remote_wallet_image(empty_icon_url, profile='progress_icon_source')
     filled_tile = _fit_transparent_icon(filled_remote, size) if filled_remote is not None else None
     empty_tile = _fit_transparent_icon(empty_remote, size) if empty_remote is not None else None
     if filled_remote is not None:
@@ -7055,171 +7058,173 @@ def generate_personalized_hero_image_bytes(
     # Wallet 2.0 branded hero. Keep the image static (Google requirement).
     # Classic/minimal means one clean exact brand color unless the owner
     # explicitly uploaded a photo banner.
-    normalized_wallet_style = str(wallet_style or 'modern').strip().lower()
-    if normalized_wallet_style == 'classic':
-        normalized_wallet_style = 'minimal'
-    elif normalized_wallet_style == 'gradient':
-        normalized_wallet_style = 'modern'
+    from contextlib import ExitStack
+    with ExitStack() as image_stack:
+        normalized_wallet_style = str(wallet_style or 'modern').strip().lower()
+        if normalized_wallet_style == 'classic':
+            normalized_wallet_style = 'minimal'
+        elif normalized_wallet_style == 'gradient':
+            normalized_wallet_style = 'modern'
 
-    if normalized_wallet_style == 'minimal' and not background_image_url:
-        img = Image.new('RGBA', HERO_SIZE, (*_hex_to_rgb(primary_color), 255))
-    else:
-        img = _render_wallet_hero_base(primary_color, background_image_url)
-
-    from PIL import ImageDraw, ImageFont
-
-    if secondary_color and normalized_wallet_style != 'minimal':
-        overlay = Image.new('RGBA', HERO_SIZE, (*_hex_to_rgb(secondary_color), 0))
-        overlay_px = overlay.load()
-        for y in range(HERO_SIZE[1]):
-            for x in range(HERO_SIZE[0]):
-                # Soft accent glow from top-right.
-                strength = max(0.0, 1.0 - (((HERO_SIZE[0]-x) + y) / (HERO_SIZE[0] + HERO_SIZE[1])))
-                overlay_px[x, y] = (*_hex_to_rgb(secondary_color), int(95 * strength))
-        img = Image.alpha_composite(img, overlay)
-
-    # Subtle premium framing + a single soft rectangular accent in the top
-    # right corner. Drawn on their own transparent layer and alpha_composite'd
-    # in - drawing translucent fills straight onto `img` with ImageDraw looks
-    # right in-memory, but this function ends with img.convert('RGB'), which
-    # DROPS the alpha channel instead of blending it, so any "translucent"
-    # shape drawn directly renders fully opaque instead. (This is also why
-    # the old three-circle version showed up as a solid white blob instead of
-    # a soft accent - same bug, not just the wrong shape.)
-    deco = Image.new('RGBA', HERO_SIZE, (0, 0, 0, 0))
-    deco_draw = ImageDraw.Draw(deco)
-    if normalized_wallet_style in ('premium', 'dark'):
-        deco_draw.rounded_rectangle((18,18,HERO_SIZE[0]-18,HERO_SIZE[1]-18), radius=34, outline=(255,255,255,45), width=2)
-    if normalized_wallet_style != 'minimal':
-        deco_draw.rounded_rectangle((HERO_SIZE[0]-300, -60, HERO_SIZE[0]+40, 150), radius=36, fill=(255,255,255,22))
-    img = Image.alpha_composite(img, deco)
-    draw = ImageDraw.Draw(img)
-
-    if include_text_overlay and business_name:
-        font_brand = ImageFont.load_default(size=max(14, int(round(20 * detail_font_scale))))
-        draw.text((40, 28), str(business_name)[:38], font=font_brand, fill=(255,255,255,225))
-    if include_text_overlay and card_label:
-        font_label = ImageFont.load_default(size=max(12, int(round(16 * detail_font_scale))))
-        label = str(card_label).upper()
-        bbox = draw.textbbox((0,0), label, font=font_label)
-        draw.text((HERO_SIZE[0]-40-(bbox[2]-bbox[0]), 30), label, font=font_label, fill=(255,255,255,185))
-
-    dynamic_progress_active = bool(dynamic_progress_state)
-    stamp_visual_active = (
-        not dynamic_progress_active
-        and stamp_display_style == 'icon'
-        and (
-            card_type == 'stamp'
-            or (card_type == 'hybrid' and (hybrid_stamps_enabled_flag or hybrid_loyalty_type == 'stamp'))
-        )
-    )
-    if dynamic_progress_active:
-        _draw_dynamic_progress_row(
-            img,
-            progress_state=dynamic_progress_state,
-            center_y=168 if include_text_overlay else 170,
-            primary_color=primary_color,
-            fallback_icon=stamp_icon,
-            filled_icon_url=progress_filled_icon_url,
-            empty_icon_url=progress_empty_icon_url,
-            progress_scale=progress_scale,
-            progress_density=progress_density,
-            progress_align=progress_align,
-            progress_offset=progress_offset,
-        )
-    elif stamp_visual_active:
-        _draw_stamp_progress_row(
-            img,
-            stamps=stamps,
-            stamp_goal=stamp_goal,
-            display_style=stamp_display_style,
-            icon=stamp_icon,
-            logo_url=stamp_logo_url,
-            center_y=168 if include_text_overlay else 170,
-            primary_color=primary_color,
-        )
-
-    if not include_text_overlay:
-        # Apple's storeCard already overlays organization name (logoText),
-        # MEMBER/status headerFields+primaryFields, and the reward/progress
-        # detail on backFields - baking the same text into the strip image
-        # AGAIN (as done for Google's hero image below) just produces
-        # doubled, overlapping text on top of Apple's own chrome. Return the
-        # plain branded gradient background only; let native fields do the
-        # talking.
-        return _hero_to_png(img.convert('RGB'))
-
-    scrim_height = 150
-    scrim = Image.new('RGBA', (HERO_SIZE[0], scrim_height), (0, 0, 0, 0))
-    scrim_px = scrim.load()
-    for y in range(scrim_height):
-        alpha = int(150 * (y / scrim_height))  # fades in from transparent to dark
-        for x in range(HERO_SIZE[0]):
-            scrim_px[x, y] = (0, 0, 0, alpha)
-    img.alpha_composite(scrim, (0, HERO_SIZE[1] - scrim_height))
-
-    draw = ImageDraw.Draw(img)
-    pad = 40
-    max_w = HERO_SIZE[0] - pad * 2
-    try:
-        detail_scale = max(0.75, min(1.5, float(detail_font_scale or 1)))
-    except (TypeError, ValueError):
-        detail_scale = 1.0
-    font_reward = ImageFont.load_default(size=max(18, int(round(34 * detail_scale))))
-    font_progress = ImageFont.load_default(size=max(14, int(round(24 * detail_scale))))
-    font_desc = ImageFont.load_default(size=max(12, int(round(19 * detail_scale))))
-
-    if card_type == 'hybrid':
-        reward_line = f'Membership · {membership_status.upper() if membership_status else "INACTIVE"}'
-        if hybrid_points_enabled_flag and hybrid_stamps_enabled_flag:
-            progress_line = f'{points_balance} points · {stamps}/{stamp_goal} stamps'
-        elif hybrid_points_enabled_flag or hybrid_loyalty_type == 'points':
-            progress_line = f'{points_balance} points'
+        if normalized_wallet_style == 'minimal' and not background_image_url:
+            img = image_stack.enter_context(Image.new('RGBA', HERO_SIZE, (*_hex_to_rgb(primary_color), 255)))
         else:
+            img = image_stack.enter_context(_render_wallet_hero_base(primary_color, background_image_url))
+
+        from PIL import ImageDraw, ImageFont
+
+        if secondary_color and normalized_wallet_style != 'minimal':
+            overlay = image_stack.enter_context(Image.new('RGBA', HERO_SIZE, (*_hex_to_rgb(secondary_color), 0)))
+            overlay_px = overlay.load()
+            for y in range(HERO_SIZE[1]):
+                for x in range(HERO_SIZE[0]):
+                    # Soft accent glow from top-right.
+                    strength = max(0.0, 1.0 - (((HERO_SIZE[0]-x) + y) / (HERO_SIZE[0] + HERO_SIZE[1])))
+                    overlay_px[x, y] = (*_hex_to_rgb(secondary_color), int(95 * strength))
+            img = image_stack.enter_context(Image.alpha_composite(img, overlay))
+
+        # Subtle premium framing + a single soft rectangular accent in the top
+        # right corner. Drawn on their own transparent layer and alpha_composite'd
+        # in - drawing translucent fills straight onto `img` with ImageDraw looks
+        # right in-memory, but this function ends with img.convert('RGB'), which
+        # DROPS the alpha channel instead of blending it, so any "translucent"
+        # shape drawn directly renders fully opaque instead. (This is also why
+        # the old three-circle version showed up as a solid white blob instead of
+        # a soft accent - same bug, not just the wrong shape.)
+        deco = image_stack.enter_context(Image.new('RGBA', HERO_SIZE, (0, 0, 0, 0)))
+        deco_draw = ImageDraw.Draw(deco)
+        if normalized_wallet_style in ('premium', 'dark'):
+            deco_draw.rounded_rectangle((18,18,HERO_SIZE[0]-18,HERO_SIZE[1]-18), radius=34, outline=(255,255,255,45), width=2)
+        if normalized_wallet_style != 'minimal':
+            deco_draw.rounded_rectangle((HERO_SIZE[0]-300, -60, HERO_SIZE[0]+40, 150), radius=36, fill=(255,255,255,22))
+        img = image_stack.enter_context(Image.alpha_composite(img, deco))
+        draw = ImageDraw.Draw(img)
+
+        if include_text_overlay and business_name:
+            font_brand = ImageFont.load_default(size=max(14, int(round(20 * detail_font_scale))))
+            draw.text((40, 28), str(business_name)[:38], font=font_brand, fill=(255,255,255,225))
+        if include_text_overlay and card_label:
+            font_label = ImageFont.load_default(size=max(12, int(round(16 * detail_font_scale))))
+            label = str(card_label).upper()
+            bbox = draw.textbbox((0,0), label, font=font_label)
+            draw.text((HERO_SIZE[0]-40-(bbox[2]-bbox[0]), 30), label, font=font_label, fill=(255,255,255,185))
+
+        dynamic_progress_active = bool(dynamic_progress_state)
+        stamp_visual_active = (
+            not dynamic_progress_active
+            and stamp_display_style == 'icon'
+            and (
+                card_type == 'stamp'
+                or (card_type == 'hybrid' and (hybrid_stamps_enabled_flag or hybrid_loyalty_type == 'stamp'))
+            )
+        )
+        if dynamic_progress_active:
+            _draw_dynamic_progress_row(
+                img,
+                progress_state=dynamic_progress_state,
+                center_y=168 if include_text_overlay else 170,
+                primary_color=primary_color,
+                fallback_icon=stamp_icon,
+                filled_icon_url=progress_filled_icon_url,
+                empty_icon_url=progress_empty_icon_url,
+                progress_scale=progress_scale,
+                progress_density=progress_density,
+                progress_align=progress_align,
+                progress_offset=progress_offset,
+            )
+        elif stamp_visual_active:
+            _draw_stamp_progress_row(
+                img,
+                stamps=stamps,
+                stamp_goal=stamp_goal,
+                display_style=stamp_display_style,
+                icon=stamp_icon,
+                logo_url=stamp_logo_url,
+                center_y=168 if include_text_overlay else 170,
+                primary_color=primary_color,
+            )
+
+        if not include_text_overlay:
+            # Apple's storeCard already overlays organization name (logoText),
+            # MEMBER/status headerFields+primaryFields, and the reward/progress
+            # detail on backFields - baking the same text into the strip image
+            # AGAIN (as done for Google's hero image below) just produces
+            # doubled, overlapping text on top of Apple's own chrome. Return the
+            # plain branded gradient background only; let native fields do the
+            # talking.
+            return _hero_to_png(image_stack.enter_context(img.convert('RGB')))
+
+        scrim_height = 150
+        scrim = image_stack.enter_context(Image.new('RGBA', (HERO_SIZE[0], scrim_height), (0, 0, 0, 0)))
+        scrim_px = scrim.load()
+        for y in range(scrim_height):
+            alpha = int(150 * (y / scrim_height))  # fades in from transparent to dark
+            for x in range(HERO_SIZE[0]):
+                scrim_px[x, y] = (0, 0, 0, alpha)
+        img.alpha_composite(scrim, (0, HERO_SIZE[1] - scrim_height))
+
+        draw = ImageDraw.Draw(img)
+        pad = 40
+        max_w = HERO_SIZE[0] - pad * 2
+        try:
+            detail_scale = max(0.75, min(1.5, float(detail_font_scale or 1)))
+        except (TypeError, ValueError):
+            detail_scale = 1.0
+        font_reward = ImageFont.load_default(size=max(18, int(round(34 * detail_scale))))
+        font_progress = ImageFont.load_default(size=max(14, int(round(24 * detail_scale))))
+        font_desc = ImageFont.load_default(size=max(12, int(round(19 * detail_scale))))
+
+        if card_type == 'hybrid':
+            reward_line = f'Membership · {membership_status.upper() if membership_status else "INACTIVE"}'
+            if hybrid_points_enabled_flag and hybrid_stamps_enabled_flag:
+                progress_line = f'{points_balance} points · {stamps}/{stamp_goal} stamps'
+            elif hybrid_points_enabled_flag or hybrid_loyalty_type == 'points':
+                progress_line = f'{points_balance} points'
+            else:
+                progress_line = f'{stamps} of {stamp_goal} stamps'
+        elif card_type == 'points':
+            reward_line = f'{points_balance} points'
+            progress_line = 'Redeem prizes in-store'
+        elif card_type == 'multipass':
+            reward_line = 'Session Pass'
+            progress_line = (f'{sessions_remaining} of {sessions_total} sessions left' if sessions_remaining > 0
+                             else 'All sessions used')
+        elif card_type == 'vip':
+            reward_line = str(vip_tier_name or 'VIP')
+            progress_line = (
+                f'{stamps} tier stamps'
+                if vip_has_stamps else
+                f'{vip_points} VIP points'
+            )
+        elif card_type == 'membership':
+            reward_line = f'Membership · {membership_status.upper() if membership_status else "INACTIVE"}'
+            progress_line = (
+                'Lifetime membership'
+                if membership_status == 'lifetime'
+                else f'Active until {membership_expires_at}'
+                if membership_expires_at
+                else 'Not activated'
+            )
+        else:
+            reward_line = (reward_name or 'Reward')[:60]
             progress_line = f'{stamps} of {stamp_goal} stamps'
-    elif card_type == 'points':
-        reward_line = f'{points_balance} points'
-        progress_line = 'Redeem prizes in-store'
-    elif card_type == 'multipass':
-        reward_line = 'Session Pass'
-        progress_line = (f'{sessions_remaining} of {sessions_total} sessions left' if sessions_remaining > 0
-                         else 'All sessions used')
-    elif card_type == 'vip':
-        reward_line = str(vip_tier_name or 'VIP')
-        progress_line = (
-            f'{stamps} tier stamps'
-            if vip_has_stamps else
-            f'{vip_points} VIP points'
-        )
-    elif card_type == 'membership':
-        reward_line = f'Membership · {membership_status.upper() if membership_status else "INACTIVE"}'
-        progress_line = (
-            'Lifetime membership'
-            if membership_status == 'lifetime'
-            else f'Active until {membership_expires_at}'
-            if membership_expires_at
-            else 'Not activated'
-        )
-    else:
-        reward_line = (reward_name or 'Reward')[:60]
-        progress_line = f'{stamps} of {stamp_goal} stamps'
-    desc_lines = _wrap_text(draw, description or '', font_desc, max_w, max_lines=2) if description else []
+        desc_lines = _wrap_text(draw, description or '', font_desc, max_w, max_lines=2) if description else []
 
-    y = HERO_SIZE[1] - 24
-    for line in reversed(desc_lines):
-        h = draw.textbbox((0, 0), line, font=font_desc)[3]
-        y -= h + 4
-        draw.text((pad, y), line, font=font_desc, fill=(255, 255, 255, 235))
-    y -= 8
-    h = draw.textbbox((0, 0), progress_line, font=font_progress)[3]
-    y -= h
-    draw.text((pad, y), progress_line, font=font_progress, fill=(255, 255, 255, 255))
-    y -= 6
-    h = draw.textbbox((0, 0), reward_line, font=font_reward)[3]
-    y -= h
-    draw.text((pad, y), reward_line, font=font_reward, fill=(255, 255, 255, 255))
+        y = HERO_SIZE[1] - 24
+        for line in reversed(desc_lines):
+            h = draw.textbbox((0, 0), line, font=font_desc)[3]
+            y -= h + 4
+            draw.text((pad, y), line, font=font_desc, fill=(255, 255, 255, 235))
+        y -= 8
+        h = draw.textbbox((0, 0), progress_line, font=font_progress)[3]
+        y -= h
+        draw.text((pad, y), progress_line, font=font_progress, fill=(255, 255, 255, 255))
+        y -= 6
+        h = draw.textbbox((0, 0), reward_line, font=font_reward)[3]
+        y -= h
+        draw.text((pad, y), reward_line, font=font_reward, fill=(255, 255, 255, 255))
 
-    return _hero_to_png(img.convert('RGB'))
+        return _hero_to_png(image_stack.enter_context(img.convert('RGB')))
 
 # Google Wallet Helpers
 WALLET_CARD_LABELS = {
@@ -8965,7 +8970,7 @@ _APPLE_IMAGE_CACHE_TTL_SECONDS = 900
 
 
 
-def _fetch_image_bytes(url: Optional[str], timeout: float = 1.5) -> Optional[bytes]:
+def _fetch_image_bytes(url: Optional[str], timeout: float = 1.5, *, profile: str = 'apple_logo_source') -> Optional[bytes]:
     """Fast best-effort download for Apple Wallet artwork.
 
     A slow or broken image URL must never make the Add to Apple Wallet sheet
@@ -8974,6 +8979,7 @@ def _fetch_image_bytes(url: Optional[str], timeout: float = 1.5) -> Optional[byt
     """
     if not url:
         return None
+    url = wallet_artwork.delivery_url(url, profile)
     now = time.monotonic()
     cached = _APPLE_IMAGE_CACHE.get(url)
     if cached and now - cached[0] < _APPLE_IMAGE_CACHE_TTL_SECONDS:
@@ -8990,7 +8996,7 @@ def _fetch_image_bytes(url: Optional[str], timeout: float = 1.5) -> Optional[byt
             _APPLE_IMAGE_CACHE[url] = (now, content)
             return content
     except Exception as e:
-        print(f"IMAGE FETCH fast-fallback ({url}): {e}")
+        log_event('wallet_asset_fetch_failed', 'warning', profile=profile, error_type=type(e).__name__)
         _APPLE_IMAGE_CACHE[url] = (now, None)
         return None
 
@@ -9174,38 +9180,42 @@ def generate_apple_icon_bytes(primary_color: str, business_name: str, size: int)
     """Solid primary_color square with the business's first initial - the
     same 'colored circle + initial' look used for customer avatars in the
     dashboard, just square (Apple rounds the corners itself)."""
-    from PIL import ImageDraw, ImageFont
-    r, g, b = _hex_to_rgb(primary_color)
-    img = Image.new('RGB', (size, size), (r, g, b))
-    draw = ImageDraw.Draw(img)
-    letter = (business_name or '?').strip()[:1].upper() or '?'
-    font = ImageFont.load_default(size=int(size * 0.55))
-    bbox = draw.textbbox((0, 0), letter, font=font)
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    draw.text(((size - tw) / 2 - bbox[0], (size - th) / 2 - bbox[1]), letter, font=font, fill=(255, 255, 255))
-    return _hero_to_png(img)
+    from contextlib import ExitStack
+    with ExitStack() as image_stack:
+        from PIL import ImageDraw, ImageFont
+        r, g, b = _hex_to_rgb(primary_color)
+        img = image_stack.enter_context(Image.new('RGB', (size, size), (r, g, b)))
+        draw = ImageDraw.Draw(img)
+        letter = (business_name or '?').strip()[:1].upper() or '?'
+        font = ImageFont.load_default(size=int(size * 0.55))
+        bbox = draw.textbbox((0, 0), letter, font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        draw.text(((size - tw) / 2 - bbox[0], (size - th) / 2 - bbox[1]), letter, font=font, fill=(255, 255, 255))
+        return _hero_to_png(img)
 
 def generate_apple_logo_bytes(business_name: str, width: int, height: int) -> bytes:
     """Transparent-background wordmark shown in the pass header, next to
     logoText. Shrinks the font until the business name fits on one line."""
-    from PIL import ImageDraw, ImageFont
-    img = Image.new('RGBA', (width, height), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    text = (business_name or 'Loyalty').strip()[:24]
-    font_size = int(height * 0.55)
-    font = ImageFont.load_default(size=font_size)
-    bbox = draw.textbbox((0, 0), text, font=font)
-    tw = bbox[2] - bbox[0]
-    while tw > width - 16 and font_size > 8:
-        font_size -= 2
+    from contextlib import ExitStack
+    with ExitStack() as image_stack:
+        from PIL import ImageDraw, ImageFont
+        img = image_stack.enter_context(Image.new('RGBA', (width, height), (0, 0, 0, 0)))
+        draw = ImageDraw.Draw(img)
+        text = (business_name or 'Loyalty').strip()[:24]
+        font_size = int(height * 0.55)
         font = ImageFont.load_default(size=font_size)
         bbox = draw.textbbox((0, 0), text, font=font)
         tw = bbox[2] - bbox[0]
-    th = bbox[3] - bbox[1]
-    # Left-anchor the generated fallback too, matching uploaded logos and
-    # avoiding extra transparent padding before Apple's own native margin.
-    draw.text((max(0, -bbox[0]), (height - th) / 2 - bbox[1]), text, font=font, fill=(255, 255, 255, 255))
-    return _hero_to_png(img)
+        while tw > width - 16 and font_size > 8:
+            font_size -= 2
+            font = ImageFont.load_default(size=font_size)
+            bbox = draw.textbbox((0, 0), text, font=font)
+            tw = bbox[2] - bbox[0]
+        th = bbox[3] - bbox[1]
+        # Left-anchor the generated fallback too, matching uploaded logos and
+        # avoiding extra transparent padding before Apple's own native margin.
+        draw.text((max(0, -bbox[0]), (height - th) / 2 - bbox[1]), text, font=font, fill=(255, 255, 255, 255))
+        return _hero_to_png(img)
 
 
 ANNOUNCEMENT_BRANCH_ACTIVITY_TABLES = (
@@ -11466,12 +11476,71 @@ def _resize_png_bytes(png_bytes: bytes, width: int, height: int) -> Optional[byt
     if not png_bytes:
         return None
     try:
+        if (png_bytes[:16] == b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR'
+                and len(png_bytes) >= 24
+                and (int.from_bytes(png_bytes[16:20], 'big'), int.from_bytes(png_bytes[20:24], 'big')) == (width, height)):
+            return png_bytes
         with decode_wallet_image(png_bytes) as source, source.resize((width, height), Image.LANCZOS) as img, BytesIO() as buf:
             img.save(buf, format="PNG", optimize=False)
             return buf.getvalue()
     except Exception as e:
         print(f"APPLE PNG resize error: {e}")
         return None
+
+
+def _apple_loyalty_brand_assets(customer: dict, business: dict, program: dict, primary_color: str) -> dict:
+    """Reuse compressed branding across members; no decoded PIL objects retained."""
+    logo_url = (program or {}).get('program_logo_url') or business.get('logo_url')
+    branded = lt_wallet.card_enabled(customer, enabled=lt_benefits_enabled())
+    key = 'apple-brand-png-v1:' + hashlib.sha256(json.dumps(
+        [logo_url, primary_color, business.get('name'), branded, lt_wallet.RELEASE],
+        separators=(',', ':'), default=str).encode()).hexdigest()
+    cached = _APPLE_IMAGE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    # Cloudinary supplies a bounded PNG source. Keep the established alpha trim,
+    # center crop and LT composite, and run them only once per branding version.
+    logo_bytes = _fetch_image_bytes(logo_url)
+    icon_87 = apple_icon_from_logo_bytes(logo_bytes, 87) if logo_bytes else None
+    if not icon_87:
+        icon_87 = generate_apple_icon_bytes(primary_color, business.get('name') or 'Loyalty', 87)
+    logo_480 = apple_logo_from_image_bytes(logo_bytes, 480, 150) if logo_bytes else None
+    if not logo_480:
+        logo_480 = generate_apple_logo_bytes(business.get('name') or 'Loyalty', 480, 150)
+    if branded:
+        logo_480 = _lt_cobrand_logo(logo_480)
+    assets = {'icon.png': _resize_png_bytes(icon_87, 29, 29),
+              'icon@2x.png': _resize_png_bytes(icon_87, 58, 58), 'icon@3x.png': icon_87,
+              'logo.png': _resize_png_bytes(logo_480, 160, 50),
+              'logo@2x.png': _resize_png_bytes(logo_480, 320, 100), 'logo@3x.png': logo_480}
+    # Never keep generated fallback branding after a temporary CDN failure.
+    if logo_bytes:
+        _APPLE_IMAGE_CACHE[key] = assets
+    return assets
+
+
+def _apple_static_strip_assets(hero_url: Optional[str]) -> dict:
+    """Cache reusable public strip sizes, never customer balances or signed passes."""
+    if not hero_url:
+        return {}
+    key = 'apple-static-strip-v1:' + hashlib.sha256(str(hero_url).encode()).hexdigest()
+    cached = _APPLE_IMAGE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    raw = _fetch_image_bytes(hero_url, profile='apple_strip_3x')
+    if not raw:
+        return {}
+    cloud_url = wallet_artwork.delivery_url(hero_url, 'apple_strip_3x')
+    exact_cloud_png = (cloud_url != hero_url and len(raw) >= 24
+                       and raw[:16] == b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR'
+                       and (int.from_bytes(raw[16:20], 'big'), int.from_bytes(raw[20:24], 'big')) == (1125, 369))
+    strip_3x = raw if exact_cloud_png else apple_strip_from_image_bytes(raw, 1125, 369)
+    if not strip_3x:
+        return {}
+    assets = {'strip.png': _resize_png_bytes(strip_3x, 375, 123),
+              'strip@2x.png': _resize_png_bytes(strip_3x, 750, 246), 'strip@3x.png': strip_3x}
+    _APPLE_IMAGE_CACHE[key] = assets
+    return assets
 
 
 @wallet_work('apple_pass_build', business_arg=1)
@@ -11495,42 +11564,18 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
         if program_has_tier(program)
         else design['background']
     )
-    biz_name = business.get('name', 'Loyalty')
 
     # Real branding when the business has uploaded it - same source URLs
     # Google Wallet already uses (see build_loyalty_class) - so both wallets
     # end up matching. Each falls back to the existing generated placeholder
     # on any missing URL, fetch failure, or unreadable image.
-    logo_url = (program or {}).get('program_logo_url') or business.get('logo_url')
-    logo_bytes = _fetch_image_bytes(logo_url)
     pass_json = build_apple_pass_json(customer, business, program, announcement)
-
-    # Render each branding asset only once at the largest required size, then
-    # downscale it. Re-opening/resampling the same Cloudinary image six times
-    # was unnecessary CPU work on every Add-to-Wallet request.
-    icon_87 = apple_icon_from_logo_bytes(logo_bytes, 87) if logo_bytes else None
-    if not icon_87:
-        icon_87 = generate_apple_icon_bytes(primary_color, biz_name, 87)
-    icon_58 = _resize_png_bytes(icon_87, 58, 58)
-    icon_29 = _resize_png_bytes(icon_87, 29, 29)
-
-    logo_480 = apple_logo_from_image_bytes(logo_bytes, 480, 150) if logo_bytes else None
-    if not logo_480:
-        logo_480 = generate_apple_logo_bytes(biz_name, 480, 150)
-    if lt_wallet.card_enabled(customer, enabled=lt_benefits_enabled()):
-        logo_480 = logo_480
-    logo_320 = _resize_png_bytes(logo_480, 320, 100)
-    logo_160 = _resize_png_bytes(logo_480, 160, 50)
+    brand_assets = _apple_loyalty_brand_assets(customer, business, program, primary_color)
 
     pass_json.setdefault("userInfo", {})["loyaltytreeRevision"] = str(_apple_pass_dirty_at(pass_json.get("serialNumber")) or "")
     files = {
         'pass.json': json.dumps(pass_json).encode('utf-8'),
-        'icon.png': icon_29,
-        'icon@2x.png': icon_58,
-        'icon@3x.png': icon_87,
-        'logo.png': logo_160,
-        'logo@2x.png': logo_320,
-        'logo@3x.png': logo_480,
+        **brand_assets,
     }
     progress_state = wallet_progress_state(customer, program, business)
     if design['show_background'] or progress_state is not None:
@@ -11538,15 +11583,12 @@ def build_pkpass_bytes(customer: dict, business: dict, program: dict, announceme
         # mode always renders a per-member composite so the same two source
         # icons can represent every balance without storing N prebuilt banners.
         hero_url = (program or {}).get('hero_image_url')
-        hero_bytes = _fetch_image_bytes(hero_url)
-
-        strip_3x = None
-        if progress_state is None and hero_bytes:
-            strip_3x = apple_strip_from_image_bytes(hero_bytes, 1125, 369)
+        static_strips = _apple_static_strip_assets(hero_url) if progress_state is None else {}
+        strip_3x = static_strips.get('strip@3x.png')
         if not strip_3x:
             strip_3x = generate_apple_strip_bytes(customer, business, program, 1125, 369)
-        strip_2x = _resize_png_bytes(strip_3x, 750, 246)
-        strip_1x = _resize_png_bytes(strip_3x, 375, 123)
+        strip_2x = static_strips.get('strip@2x.png') or _resize_png_bytes(strip_3x, 750, 246)
+        strip_1x = static_strips.get('strip.png') or _resize_png_bytes(strip_3x, 375, 123)
 
         files.update({
             'strip.png': strip_1x,
