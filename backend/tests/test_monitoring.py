@@ -155,8 +155,17 @@ if __name__ == '__main__':
 
 class SDKBridgeTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_supabase_uses_shared_pool(self):
-        from shared_http import shared_http, create_pooled_supabase
         import jwt
+        key=jwt.encode({'role':'service_role'},'testing-only-signing-key-32-bytes-long',algorithm='HS256')
+        await self.assert_shared_pool(key)
+
+    async def test_secret_key_uses_shared_pool_for_customer_and_login_reads(self):
+        # Modern production keys are opaque, not three-part JWTs. Older SDKs
+        # reject these locally before any database request is sent.
+        await self.assert_shared_pool('sb_secret_fixture_not_a_real_key')
+
+    async def assert_shared_pool(self, key):
+        from shared_http import shared_http, create_pooled_supabase
         await shared_http.start()
         seen=[]
         async def handle(request):
@@ -167,12 +176,13 @@ class SDKBridgeTests(unittest.IsolatedAsyncioTestCase):
             shared_http.client=httpx.AsyncClient(transport=httpx.MockTransport(handle))
         try:
             await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(replace(),shared_http.loop))
-            key=jwt.encode({'role':'service_role'},'testing-only-signing-key-32-bytes-long',algorithm='HS256')
             db=create_pooled_supabase('https://example.supabase.co',key)
-            result=await asyncio.to_thread(lambda: db.table('customers').select('id').execute())
-            self.assertEqual(result.data,[{'id':7}])
-            self.assertEqual(seen[0].url.path,'/rest/v1/customers')
-            self.assertEqual(seen[0].headers['apikey'],key)
+            for table in ('customers', 'businesses', 'staff'):
+                result=await asyncio.to_thread(lambda: db.table(table).select('id').execute())
+                self.assertEqual(result.data,[{'id':7}])
+                self.assertEqual(seen[-1].url.path,f'/rest/v1/{table}')
+                self.assertEqual(seen[-1].headers['apikey'],key)
+            self.assertEqual(len(seen),3)
         finally:
             await shared_http.stop()
 

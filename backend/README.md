@@ -269,6 +269,9 @@ Wallet memory fixes need no SQL. The separate `login_email_uniqueness.sql`
 migration prevents new normalized-email collisions. It deliberately fails
 without changing account records if existing duplicates require owner review.
 The existing Cloudinary server credentials are used for public Google branding.
+Keep Supabase pinned to the tested modern SDK (`2.33.0`), which accepts both
+opaque `sb_secret_` server keys and legacy service-role JWTs. SDK `2.15.3`
+rejects opaque keys locally; do not downgrade to it.
 Deployment does not change the paid instance plan, DNS/SSL, or Render settings.
 After deployment, compare the same business's pass/push `before`/`after` events
 and several idle `runtime_memory` samples before declaring the OOM resolved.
