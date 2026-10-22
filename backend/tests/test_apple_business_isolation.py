@@ -39,17 +39,18 @@ class BusinessIsolationTests(unittest.TestCase):
             _APPLE_PKPASS_CACHE={}, get_apple_push_cert_files=lambda: ('cert', 'key'),
             pooled_client=lambda **kw: client, _record_apple_delivery=Mock(), log_event=Mock(),
             print=Mock(), time=SimpleNamespace(sleep=Mock()), build_pkpass_bytes=Mock())
-        names = {'_send_apple_wallet_pushes', 'push_apple_wallet_announcement', 'refresh_business_apple_wallet_passes'}
+        names = {'_send_apple_wallet_pushes', 'push_apple_wallet_announcement', 'refresh_business_apple_wallet_passes', '_push_apple_wallet_to_customer_public_ids'}
         nodes = [deepcopy(n) for n in ast.parse(SOURCE.read_text()).body if isinstance(n, ast.FunctionDef) and n.name in names]
         for n in nodes: n.decorator_list = []
         exec(compile(ast.Module(body=nodes, type_ignores=[]), str(SOURCE), 'exec'), env)
         for send in (lambda: env['push_apple_wallet_announcement'](1),
-                     lambda: env['refresh_business_apple_wallet_passes'](1)):
+                     lambda: env['refresh_business_apple_wallet_passes'](1),
+                     lambda: env['_push_apple_wallet_to_customer_public_ids'](['swoosh-1'])):
             marked.clear()
             send()
             self.assertEqual(marked, ['swoosh-1'])
         env['build_pkpass_bytes'].assert_not_called()
-        self.assertEqual(client.post.call_count, 2)
+        self.assertEqual(client.post.call_count, 3)
         self.assertTrue(queries)
 
 
