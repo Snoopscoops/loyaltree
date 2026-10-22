@@ -7,6 +7,10 @@ This recovery is limited to these class operations, never arbitrary HTTP writes.
 """
 import httpx
 import time
+try:
+    from .google_wallet_assets import validate_class_images
+except ImportError:
+    from google_wallet_assets import validate_class_images
 
 CLASS_URL = 'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass'
 
@@ -19,6 +23,9 @@ def parse_google_response(response):
 
 
 def upsert_loyalty_class(client, loyalty_class, access_token):
+    # Validate without authorization headers before Google is allowed to fetch
+    # the image. Render-hosted dynamic logo endpoints caused cold-start 502s.
+    validate_class_images(client, loyalty_class)
     target_url = f"{CLASS_URL}/{loyalty_class['id']}"
     headers = {'Authorization': f'Bearer {access_token}'}
 

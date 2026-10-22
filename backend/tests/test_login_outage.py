@@ -18,7 +18,7 @@ class FakeDB:
             def execute(self):
                 if table=='businesses' and db.fail:
                     raise httpx.DecodingError('Error -3 while decompressing data: incorrect header check')
-                return SimpleNamespace(data=[db.business] if table=='businesses' and db.business else [])
+                return SimpleNamespace(data=[{'email':'test@example.invalid',**db.business}] if table=='businesses' and db.business else [])
         return Query()
 
 class LoginOutageTests(unittest.TestCase):

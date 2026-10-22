@@ -231,9 +231,10 @@ rendering runs in worker threads under a shared render lock; provider pushes
 and the ASGI event loop remain independent of that rendering lock.
 
 Caches now have hard byte, item and TTL limits, including keys never read again:
-Wallet artwork 4 MiB, Apple downloads 8 MiB, signed loyalty passes 8 MiB, legacy
+Wallet artwork 4 MiB, Apple downloads 8 MiB, signed loyalty passes 16 MiB, legacy
 Order Ahead passes 4 MiB, gift branding 2 MiB. Only compressed bytes are retained,
-never decoded PIL images. This is a 26 MiB cache-payload budget per process,
+never decoded PIL images. Google image validation adds 128 KiB and deferred
+Apple push tokens add 256 KiB. This is about 34.4 MiB of bounded cache payload per process,
 not a cap on the application's total memory. Existing balance/dirty-marker
 fingerprint checks still invalidate signed passes. These small bounded local
 caches are a containment fix; no Render Key Value service is provisioned.
@@ -244,8 +245,9 @@ fingerprint inside the existing rendering lock and reuse the first successful
 build; valid cache hits bypass that lock. Failed builds remain retryable, and
 stamp/design/announcement/revision changes still invalidate the cached bytes.
 The download response includes `X-LoyaltyTree-Apple-Cache: HIT|MISS`.
-Authenticated installed-pass updates retain their existing rebuild/conditional
-GET behavior. This reduces duplicate work; transient native image allocations
+Authenticated installed-pass updates share that finished-pass cache and retain
+conditional GET/304 behavior. The signed cache lasts one hour, with a 128-item
+and 16 MiB LRU limit. This reduces duplicate work; transient native image allocations
 and retained allocator memory can still raise RSS during/after a genuine build.
 
 `runtime_memory` samples Linux RSS, cgroup memory and cache bytes every 30 seconds.
@@ -257,12 +259,87 @@ them. These diagnostics go to stdout, adding no event-table
 writes. Inspect all PIDs and the actual Render start command when checking workers;
 `worker_env` only reports `WEB_CONCURRENCY`, not the actual process count.
 
-Keep the Render command at one worker, for example from the backend root:
-`uvicorn main:app --host 0.0.0.0 --port "$PORT" --workers 1`.
-No SQL or new required environment variable is needed for this release. The
-deployment does not change the paid instance plan, DNS/SSL, or Render settings.
+Set the Render start command to `sh start.sh` from the backend root (or
+`sh backend/start.sh` from the repository root). This exports `MALLOC_ARENA_MAX=2`
+before Python starts and runs one Gunicorn-managed Uvicorn worker, recycled
+after 500 requests plus 0–50 jitter. Do not use preload or increase workers on
+the 512 MiB plan. Native buffers are closed and glibc `malloc_trim(0)` runs
+after Apple builds and APNs batches; other platforms safely skip trimming.
+Wallet memory fixes need no SQL. The separate `login_email_uniqueness.sql`
+migration prevents new normalized-email collisions. It deliberately fails
+without changing account records if existing duplicates require owner review.
+The existing Cloudinary server credentials are used for public Google branding.
+Deployment does not change the paid instance plan, DNS/SSL, or Render settings.
 After deployment, compare the same business's pass/push `before`/`after` events
 and several idle `runtime_memory` samples before declaring the OOM resolved.
+
+### Apple burst controls and verification
+
+Apple requests enter a two-slot `asyncio.Semaphore` before native work is
+submitted to the thread pool. At most 16 additional distinct builds wait;
+duplicates of the same serial/content share a task, even if the first phone
+disconnects. A full queue responds 503 with `Retry-After: 15`. A valid finished
+pass bypasses the queue. The existing native render lock remains conservative.
+
+All cold Apple renderers, APNs batches and LT card upgrades use the same
+**current** RSS gate: pause above 350 MiB, resume below 300 MiB. Unknown current
+RSS is never replaced by the process's lifetime peak. Already paused work stays
+paused if a sample is unavailable. APNs tokens deferred by memory pressure are
+bounded, deduplicated and retried by the existing worker after recovery; this
+best-effort in-process set expires after one hour and does not survive a recycle.
+Pass revisions remain durable in Supabase. LT upgrades are limited to five
+enqueue attempts and five upgrade deliveries per rolling minute per process;
+rate/memory deferrals preserve durable jobs without consuming failure attempts.
+
+APNs sends at most 20 tokens per batch with a 250 ms gap. Device tokens are
+never reverse-mapped into a pass audience: the business-scoped caller marks
+only its selected installed serials dirty before sending. A shared phone with
+several merchants' cards therefore does not dirty all its merchants' passes.
+
+Cloudinary supplies bounded PNG inputs. Branding is rendered once per design
+and cached as compressed final icon sizes 29/58/87 and logo sizes 160/320/480.
+Static strips reuse Cloudinary's 1125×369 derivative plus 750×246 and 375×123
+sizes. Dynamic progress remains per member. Native PNG renderers close owned
+images on normal and exception paths. The Apple body keeps the configured
+color instead of sampling a banner photo's bottom edge.
+
+Google class logos and generated banners are immutable public Cloudinary PNGs.
+Their public availability and image content type are checked before publishing;
+no Google authorization header is sent to the CDN. Failed validation does not
+publish a broken class. Originals and customer/member data are not uploaded.
+
+Additional stdout diagnostics (no event-table writes):
+
+| Event | Fields |
+| --- | --- |
+| `wallet_burst_summary` | `business_slug`, `passes_built`, `cache_hits`, `failed`, `peak_rss_mb` |
+| `lt_benefits_memory_pause` | `rss_mb` on transition above the threshold |
+| `wallet_memory_resumed` | `rss_mb` on recovery |
+| `apple_push_deferred` | `targets` |
+| `apple_prewarm_deferred` | `business_slug`, `error_type` |
+
+The burst sampler observes process RSS every second and emits after 30 seconds
+of inactivity, or on graceful shutdown. Peak RSS is a sampled **process** peak
+during that burst, not an isolated per-business allocation measurement.
+
+Run `python -m unittest discover -s backend/tests` for regressions. Run
+`python backend/tools/probe_apple_burst.py` from the repository root for a
+provider-free allocation probe. It removes inherited provider credentials,
+blocks network calls, uses synthetic pass JSON/signatures and exercises the
+real build scheduler, PNG/ZIP rendering and caches. It does not prove production
+Render memory, Linux allocator release, real APNs delivery or signing overhead.
+
+Before marking production acceptance complete, deploy the branch with the new
+start command and observe a controlled 130-card audience (about 68 Apple), the
+burst summary, and several idle samples. Confirm only the sending business's
+serials change, sampled/container memory stays near/below 350 MiB, native
+transients settle to baseline plus the bounded cache, and Render has no OOM
+restart. Repeated add/update requests should show cache hits. The one-to-three
+MiB warm-build target is an optimization target, not a measured promise for
+every uploaded image or dynamic card.
+
+Worker options follow the [Uvicorn worker deployment example](https://pypi.org/project/uvicorn-worker/)
+and [Gunicorn request-recycling settings](https://gunicorn.org/reference/settings/#max-requests).
 
 Owner/manager dashboards now poll every 60 seconds, pause in hidden tabs and
 wait for the prior refresh. Edits still refresh immediately. The active order

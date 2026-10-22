@@ -84,6 +84,23 @@ STRIP_SIZES = {'strip.png': (375, 123), 'strip@2x.png': (750, 246), 'strip@3x.pn
 
 
 class WalletAssetDeliveryTests(unittest.TestCase):
+    def test_hero_photo_does_not_override_selected_apple_card_color(self):
+        env, _, _, _ = fixture()
+        env.update(APPLE_PASS_TYPE_IDENTIFIER='pass.fixture', APPLE_TEAM_IDENTIFIER='TEST',
+            get_apple_pass_credentials=lambda:True, wallet_20_design=lambda *args:{'background':'#123456','show_background':True},
+            program_has_tier=lambda *args:False, wallet_progress_state=lambda *args:None,
+            _apple_pass_dirty_at=lambda *args:None, _strip_bottom_rgb=Mock(return_value=(250,150,0)),
+            build_apple_pass_json=lambda *args:{'serialNumber':'card','backgroundColor':'rgb(18, 52, 86)',
+                'foregroundColor':'rgb(255, 255, 255)','labelColor':'rgb(220, 220, 220)'},
+            sign_pkpass_manifest=lambda raw:b'signature')
+        raw=env['build_pkpass_bytes']({}, {'name':'Cafe','logo_url':LOGO_URL}, {'hero_image_url':HERO_URL})
+        with zipfile.ZipFile(BytesIO(raw)) as archive:
+            data=json.loads(archive.read('pass.json'))
+        self.assertEqual(data['backgroundColor'],'rgb(18, 52, 86)')
+        self.assertEqual(data['foregroundColor'],'rgb(255, 255, 255)')
+        self.assertEqual(data['labelColor'],'rgb(220, 220, 220)')
+        env['_strip_bottom_rgb'].assert_not_called()
+
     def test_native_fetch_derives_cloudinary_source_before_caching_and_leaves_external_unchanged(self):
         env, calls, cache, _ = fixture()
         first = env['_fetch_image_bytes'](LOGO_URL)

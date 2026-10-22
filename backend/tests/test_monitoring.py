@@ -193,6 +193,9 @@ class AppleRevisionTests(unittest.TestCase):
         q.select.return_value.eq.return_value.execute.return_value.data=[{'pass_updated_at':'2026-10-13T01:02:03.456789'}]
         events=[]
         env=dict(datetime=datetime,timedelta=timedelta,supabase=db,_APPLE_PASS_DIRTY_AT={},
+                 memory_pressure=__import__('types').SimpleNamespace(paused=lambda:False), _APPLE_DEFERRED_PUSHES={},
+                 APPLE_PUSH_BATCH_SIZE=20, APPLE_PUSH_BATCH_DELAY_SECONDS=.25,
+                 _maybe_trim_memory=lambda:None,
                  _APPLE_PASS_DIRTY_TTL_SECONDS=21600,_parse_ts=lambda x: datetime.fromisoformat(x),
                  APPLE_PASS_TYPE_IDENTIFIER='pass.example',get_apple_push_cert_files=lambda:('cert','key'),
                  log_event=lambda *a,**k: None,print=lambda *a,**k: None,
@@ -209,13 +212,14 @@ class AppleRevisionTests(unittest.TestCase):
         client.post.side_effect=lambda *a,**k:(events.append(('apns',)),httpx.Response(200))[1]
         env['pooled_client']=lambda **kw:client
         self.assertEqual(env['_send_apple_wallet_pushes'](['device','device']),1)
-        self.assertEqual(events[0],('revision',['member']))
-        self.assertEqual(events[1],('apns',))
-        self.assertEqual(events[2],('counts',1,1))
+        self.assertEqual(events[0],('apns',))
+        self.assertEqual(events[1],('counts',1,1))
         events.clear()
         env['_mark_apple_pass_dirty']=MagicMock(side_effect=RuntimeError('revision storage unavailable'))
-        self.assertEqual(env['_send_apple_wallet_pushes'](['device']),0)
-        self.assertNotIn(('apns',),events)
+        # Revision belongs to the scoped caller. The token sender never
+        # re-discovers another business's serials from a shared phone token.
+        self.assertEqual(env['_send_apple_wallet_pushes'](['device']),1)
+        env['_mark_apple_pass_dirty'].assert_not_called()
 
 class PersistenceTests(unittest.IsolatedAsyncioTestCase):
     async def test_failed_persistence_never_escapes_or_recurses(self):

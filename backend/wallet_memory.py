@@ -8,7 +8,15 @@ import sys
 from threading import RLock
 import time
 
-from PIL import Image
+try:
+    from .lazy_imports import LazyModule
+except ImportError:
+    from lazy_imports import LazyModule
+Image = LazyModule('PIL.Image')
+try:
+    from .wallet_bursts import wallet_bursts
+except ImportError:
+    from wallet_bursts import wallet_bursts
 try:
     from .runtime_metrics import memory_usage
     from .runtime_profiling import profiler
@@ -157,12 +165,29 @@ def wallet_work(operation, *, business_arg=None, serialize=True):
         @wraps(fn)
         def wrapped(*args, **kwargs):
             business = kwargs.get('business') or (args[business_arg] if business_arg is not None and len(args) > business_arg else {})
+            slug = business.get('public_id') if isinstance(business, dict) else None
+            apple_build = operation.startswith('apple_') and operation.endswith('pass_build')
+            if apple_build or operation == 'announcement_push': wallet_bursts.record(slug)
             with memory_span(operation, business.get('public_id') if isinstance(business, dict) else None) as span:
                 if serialize:
                     waiting = time.monotonic()
                     with RENDER_LOCK:
                         span['wait_ms'] = (time.monotonic() - waiting) * 1000
-                        return fn(*args, **kwargs)
+                        if operation.startswith('apple_') and operation.endswith('pass_build'):
+                            try: from .apple_memory import memory_pressure
+                            except ImportError: from apple_memory import memory_pressure
+                            if memory_pressure.paused():
+                                from fastapi import HTTPException
+                                raise HTTPException(503, 'Apple Wallet is temporarily busy.', headers={'Retry-After': '30'})
+                        try:
+                            result = fn(*args, **kwargs)
+                            if apple_build: wallet_bursts.record(slug, 'passes_built' if result else 'failed')
+                            return result
+                        finally:
+                            if operation.startswith('apple_') and operation.endswith('pass_build'):
+                                try: from .native_memory import trim_memory
+                                except ImportError: from native_memory import trim_memory
+                                trim_memory()
                 return fn(*args, **kwargs)
         return wrapped
     return decorate

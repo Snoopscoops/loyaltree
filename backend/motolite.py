@@ -16,7 +16,6 @@ from typing import Optional, Literal, List
 from fastapi import APIRouter, HTTPException, Header, Depends, Request, BackgroundTasks
 from fastapi.responses import Response, RedirectResponse, HTMLResponse
 from pydantic import BaseModel, Field
-from supabase import Client
 from shared_http import pooled_client, create_pooled_supabase
 
 motolite_router = APIRouter(prefix="/api/v1/motolite", tags=["Motolite"])
@@ -59,7 +58,7 @@ WARRANTY_REPLACED = "replaced"
 from functools import lru_cache
 
 @lru_cache(maxsize=1)
-def _supabase() -> Client:
+def _supabase():
     if not SUPABASE_URL or not SUPABASE_KEY:
         raise HTTPException(status_code=503, detail="Supabase is not configured on this server.")
     return create_pooled_supabase(SUPABASE_URL, SUPABASE_KEY)
