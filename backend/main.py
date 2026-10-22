@@ -72,6 +72,11 @@ from zoneinfo import ZoneInfo
 from email.utils import format_datetime, parsedate_to_datetime
 from typing import Optional, List, Literal
 
+try:
+    from .apple_builds import apple_builds
+except ImportError:
+    from apple_builds import apple_builds
+
 from fastapi import FastAPI, HTTPException, Request, Depends, Header, BackgroundTasks, Query
 from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -11832,6 +11837,14 @@ def _prewarm_apple_pkpass(customer: dict, business: dict, program: dict):
             )
     except Exception as e:
         print(f"APPLE PASS PREWARM error: {e}")
+
+
+async def _prewarm_apple_pkpass_async(customer: dict, business: dict, program: dict):
+    try:
+        announcement = await asyncio.to_thread(get_latest_active_announcement_for_customer, business, customer)
+        await apple_builds.run(_get_or_build_apple_pkpass, customer, business, program or {}, announcement)
+    except Exception as exc:
+        log_event('apple_prewarm_deferred', 'warning', business_slug=business.get('public_id'), error_type=type(exc).__name__)
 
 
 def get_apple_push_cert_files():
@@ -32985,7 +32998,7 @@ async def get_cl_apple_wallet_pass(customer_public_id: str):
     contract = get_active_contract_for_cl_customer(customer.get('id'))
     announcement = get_latest_cl_announcement(business.get('id'))
 
-    pkpass_bytes = await asyncio.to_thread(build_cl_pkpass_bytes, customer, business, contract, announcement)
+    pkpass_bytes = await apple_builds.run(build_cl_pkpass_bytes, customer, business, contract, announcement)
     if pkpass_bytes is None:
         raise HTTPException(
             status_code=500,
@@ -33645,7 +33658,7 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup, backg
     # customer taps Add to Wallet, turning that tap into a cache hit.
     if inserted_customer:
         background_tasks.add_task(
-            _prewarm_apple_pkpass,
+            _prewarm_apple_pkpass_async,
             inserted_customer,
             business,
             program or {},
@@ -38692,7 +38705,7 @@ async def get_apple_order_ahead_event_beta_pass(customer_public_id: str):
     program = safe_get_customer_program(customer, business.get('id')) or {}
     announcement = get_latest_active_announcement_for_customer(business, customer)
     t0 = time.perf_counter()
-    pkpass_bytes, cache_hit = await asyncio.to_thread(
+    pkpass_bytes, cache_hit = await apple_builds.run(
         _get_or_build_apple_event_pkpass,
         customer, business, program, announcement
     )
@@ -38749,7 +38762,7 @@ async def get_apple_wallet_pass(customer_public_id: str, force_store_card: bool 
     # Order Ahead uses the normal Store Card path again.
     # Keep /apple-wallet-event-beta available only as an isolated research route;
     # never auto-route customer Add-to-Wallet traffic into it.
-    pkpass_bytes, cache_hit = await asyncio.to_thread(
+    pkpass_bytes, cache_hit = await apple_builds.run(
         _get_or_build_apple_pkpass, customer, business, program or {}, announcement
     )
 
@@ -39191,7 +39204,7 @@ async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, 
             _APPLE_PASS_DIRTY_AT.pop(str(serial_number), None)
             return Response(status_code=304)
 
-        pkpass_bytes = await asyncio.to_thread(build_gift_card_pkpass_bytes, gift, business)
+        pkpass_bytes = await apple_builds.run(build_gift_card_pkpass_bytes, gift, business)
         if pkpass_bytes is None:
             raise HTTPException(status_code=500, detail="Could not build gift card pass")
         return Response(
@@ -39231,7 +39244,7 @@ async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, 
             _APPLE_PASS_DIRTY_AT.pop(str(serial_number), None)
             return Response(status_code=304)
 
-        pkpass_bytes, event_cache_hit = await asyncio.to_thread(
+        pkpass_bytes, event_cache_hit = await apple_builds.run(
             _get_or_build_apple_event_pkpass,
             customer, business, program, announcement
         )
@@ -39295,7 +39308,7 @@ async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, 
                 last_modified_ts <= since_ts):
             return Response(status_code=304)
 
-        pkpass_bytes = await asyncio.to_thread(build_cl_pkpass_bytes, customer, business, contract, announcement, reminder_text)
+        pkpass_bytes = await apple_builds.run(build_cl_pkpass_bytes, customer, business, contract, announcement, reminder_text)
         if pkpass_bytes is None:
             raise HTTPException(status_code=500, detail="Could not build pass")
         return Response(
@@ -39359,7 +39372,7 @@ async def apple_get_updated_pass(pass_type_identifier: str, serial_number: str, 
         f"ims={if_modified_since} newest={last_modified}"
     )
 
-    pkpass_bytes = await asyncio.to_thread(build_pkpass_bytes, customer, business, program, announcement)
+    pkpass_bytes = await apple_builds.run(build_pkpass_bytes, customer, business, program, announcement)
     if pkpass_bytes is None:
         raise HTTPException(status_code=500, detail="Could not build pass")
     return Response(
@@ -43188,7 +43201,7 @@ async def gift_card_apple_wallet_pass(gift_public_id: str, claim_token: str = Qu
     # Build/sign the pkpass FIRST. A signing/configuration failure must not lock
     # the Gift Card to Apple before the claimant receives a usable pass.
     staged = _gift_staged_wallet_copy(gift, 'apple')
-    pkpass = await asyncio.to_thread(build_gift_card_pkpass_bytes, staged, business)
+    pkpass = await apple_builds.run(build_gift_card_pkpass_bytes, staged, business)
     if pkpass is None:
         raise HTTPException(
             status_code=503,
@@ -43353,7 +43366,7 @@ async def public_gift_claim_and_wallet(
             return response
 
         staged = _gift_staged_wallet_copy(gift, 'apple')
-        pkpass = await asyncio.to_thread(build_gift_card_pkpass_bytes, staged, business)
+        pkpass = await apple_builds.run(build_gift_card_pkpass_bytes, staged, business)
         if pkpass is None:
             return _gift_wallet_error_page(
                 'Apple Wallet could not be prepared. The Gift Card is still reserved to this browser and can be retried.',

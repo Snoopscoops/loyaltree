@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import threading
 import time
+from types import SimpleNamespace
 from typing import Optional
 import unittest
 from unittest.mock import patch
@@ -38,6 +39,7 @@ def fixture():
         builds.append(args)
         return f'signed-fixture-{len(builds)}'.encode()
     env = dict(Optional=Optional, hashlib=hashlib, json=json, time=time, asyncio=asyncio,
+               apple_builds=SimpleNamespace(run=asyncio.to_thread),
                lt_wallet=lt_benefits_wallet, lt_benefits_enabled=lambda: False,
                Query=Query, HTTPException=HTTPException, Response=Response, wallet_work=memory.wallet_work,
                _APPLE_PKPASS_CACHE=cache, _APPLE_PKPASS_CACHE_TTL_SECONDS=90,
