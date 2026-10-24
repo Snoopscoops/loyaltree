@@ -20638,7 +20638,15 @@ async def create_subscription_checkout(public_id: str, req: Optional[Subscriptio
         except Exception as exc:
             print(f"SETUP KIT ORDER amount sync warning: {exc}")
 
+    try:
+        from backend.subscription_fulfillment import checkout_context, ensure_checkout_ready, record_checkout_attempt
+    except ImportError:
+        from subscription_fulfillment import checkout_context, ensure_checkout_ready, record_checkout_attempt
+    fulfillment_context = checkout_context(PAYMONGO_SECRET_KEY, setup_kit_included=kit_due, setup_kit_amount=setup_kit_price)
+    ensure_checkout_ready(supabase)
+
     metadata = {
+        'payment_context': 'subscription',
         'business_public_id': public_id,
         'plan': plan,
         'billing_cycle': billing_cycle,
@@ -20673,8 +20681,7 @@ async def create_subscription_checkout(public_id: str, req: Optional[Subscriptio
         )
 
     payment_public_id = generate_public_id()
-    try:
-        supabase.table("subscription_payments").insert({
+    record_checkout_attempt(supabase, {
             'public_id': payment_public_id,
             'business_id': business.get('id'),
             'billing_session_id': billing_claims.get('jti') if billing_claims.get('role') == 'billing' else None,
@@ -20693,9 +20700,7 @@ async def create_subscription_checkout(public_id: str, req: Optional[Subscriptio
             'billing_cycle': billing_cycle,
             'status': 'pending',
             'created_at': datetime.utcnow().isoformat(),
-        }).execute()
-    except Exception as exc:
-        print(f"SUBSCRIPTION PAYMENT LOG error: {exc}")
+    }, fulfillment_context)
 
     payload = {
         'payment_provider': 'paymongo',
@@ -20911,10 +20916,9 @@ async def paymongo_webhook(request: Request):
     raw_body = await request.body()
     signature_header = request.headers.get("paymongo-signature", "")
 
-    if not (
-        verify_paymongo_signature(raw_body, signature_header)
-        or verify_order_ahead_paymongo_signature(raw_body, signature_header)
-    ):
+    subscription_signature = verify_paymongo_signature(raw_body, signature_header)
+    order_signature = verify_order_ahead_paymongo_signature(raw_body, signature_header)
+    if not (subscription_signature or order_signature):
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
     try:
@@ -20935,7 +20939,7 @@ async def paymongo_webhook(request: Request):
     print(f"PAYMONGO WEBHOOK: {event_type} intent={payment_intent_id} metadata={metadata}")
 
     if not supabase:
-        return {"received": True}
+        raise HTTPException(status_code=503, detail="Payment database is temporarily unavailable; please retry.")
 
     # Order Ahead PayMongo TEST payments are separate from business
     # subscription payments. Match by the stored intent id first so webhook
@@ -20963,6 +20967,8 @@ async def paymongo_webhook(request: Request):
             oa_order = None
 
     if oa_order and str(oa_order.get('payment_mode') or '') == 'paymongo':
+        if not order_signature:
+            raise HTTPException(status_code=401, detail='Invalid Order Ahead webhook signature')
         # Order Ahead beta accepts TEST webhook events only. A live PayMongo
         # event must never be able to confirm a beta order.
         if event_livemode:
@@ -21046,147 +21052,76 @@ async def paymongo_webhook(request: Request):
         _oa_finish_webhook_event(paymongo_event_id, 'ignored')
         return {"received": True, "context": "order_ahead"}
 
-    business = None
+    # A valid beta/order signature must never authorize subscription access.
+    if not subscription_signature:
+        raise HTTPException(status_code=401, detail='Invalid subscription webhook signature')
+    try:
+        from backend.subscription_fulfillment import process_subscription_event
+    except ImportError:
+        from subscription_fulfillment import process_subscription_event
+    result = await asyncio.to_thread(process_subscription_event, supabase,
+        event_type=event_type, intent_id=payment_intent_id, payment_id=resource.get('id'),
+        amount_centavos=resource_attrs.get('amount'), currency=resource_attrs.get('currency'),
+        livemode=envelope.get('livemode'), business_slug=metadata.get('business_public_id'),
+        payment_context=metadata.get('payment_context'))
+    outcome = result['outcome']
+    if outcome in ('legacy_review', 'rejected'):
+        log_event('subscription_fulfillment_review', 'warning', reason=result.get('reason') or outcome)
+    if outcome != 'fulfilled':
+        return {'received': True, 'duplicate': outcome == 'replay', 'fulfillment': outcome}
+    log_event('subscription_fulfilled', business_slug=result.get('business_slug'),
+              billing_cycle=result.get('billing_cycle'), referral_rewarded=bool(result.get('referral_rewarded')))
+
+    # Only the first committed fulfillment emits optional notifications.
+    # These effects cannot turn a completed payment into a provider retry.
+    business = safe_get_business_by_id(result['business_id'])
     payment_row = None
-    business_public_id = metadata.get("business_public_id")
-    if business_public_id:
-        business = safe_get_business(business_public_id)
-    if payment_intent_id:
+    if business:
+        now = datetime.utcnow()
+        billing_cycle = result['billing_cycle']
         try:
-            payment_row = (
-                supabase.table("subscription_payments")
-                .select("*")
-                .eq("paymongo_payment_intent_id", payment_intent_id)
-                .maybe_single()
-                .execute()
-                .data
-            )
-            if not business and payment_row:
-                business = safe_get_business_by_id(payment_row.get("business_id"))
+            rows = (supabase.table('subscription_payments').select('display_amount,display_currency,payment_method')
+                    .eq('paymongo_payment_intent_id', payment_intent_id).limit(1).execute().data or [])
+            payment_row = rows[0] if rows else None
         except Exception:
-            payment_row = None
+            pass
+        # Partner commission ledger: idempotent per PayMongo payment intent.
+        # Partners never receive customer data; this ledger only references
+        # the business and subscription payment.
+        if business.get('partner_id') and payment_intent_id and not business.get('is_demo'):
+            try:
+                partner = supabase.table('network_partners').select('*').eq('id', business.get('partner_id')).maybe_single().execute().data
+                if partner and partner.get('is_active', True):
+                    amount_centavos = resource_attrs.get('amount') or 0
+                    gross_php = float(amount_centavos) / 100.0
+                    if partner.get('commission_type') == 'fixed':
+                        commission_php = float(partner.get('commission_value') or 0)
+                    else:
+                        commission_php = gross_php * float(partner.get('commission_value') or 0) / 100.0
+                    supabase.table('partner_commissions').upsert({
+                        'public_id': 'pc_' + hashlib.sha256(str(payment_intent_id).encode()).hexdigest()[:24],
+                        'partner_id': partner.get('id'), 'business_id': business.get('id'),
+                        'paymongo_payment_intent_id': payment_intent_id,
+                        'gross_amount': round(gross_php,2), 'commission_amount': round(commission_php,2),
+                        'status': 'earned', 'earned_at': now.isoformat(),
+                    }, on_conflict='paymongo_payment_intent_id').execute()
+            except Exception as e:
+                print(f"PARTNER COMMISSION ledger error: {e}")
 
-    if event_type == "payment.paid":
-        # PayMongo can retry an already-delivered webhook. Treat the payment
-        # row as the idempotency record so one real payment can only start one
-        # new subscription/announcement cycle.
-        if payment_row and str(payment_row.get('status') or '').lower() == 'paid':
-            return {"received": True, "duplicate": True}
-
-        # Never extend access for a PayMongo event whose settled processor
-        # amount does not match the server-side payment attempt. This matters
-        # especially for international renewals because the displayed SGD/GBP/etc
-        # price is converted to a disclosed PHP processor amount.
-        if payment_row:
-            expected_currency = str(payment_row.get('processor_currency') or 'PHP').upper()
-            expected_centavos = int(round(float(payment_row.get('processor_amount') or 0) * 100))
-            received_centavos = int(resource_attrs.get('amount') or 0)
-            received_currency = str(resource_attrs.get('currency') or expected_currency).upper()
-            if expected_centavos <= 0 or received_centavos != expected_centavos or received_currency != expected_currency:
-                print(
-                    f"SUBSCRIPTION PAYMONGO mismatch intent={payment_intent_id} "
-                    f"expected={expected_centavos} {expected_currency} received={received_centavos} {received_currency}"
-                )
-                try:
-                    supabase.table('subscription_payments').update({
-                        'status': 'failed',
-                    }).eq('paymongo_payment_intent_id', payment_intent_id).execute()
-                except Exception:
-                    pass
-                return {"received": True, "amount_mismatch": True}
-
-        if business:
-            now = datetime.utcnow()
-            billing_cycle = normalize_billing_cycle(
-                (payment_row or {}).get('billing_cycle') or metadata.get('billing_cycle') or business.get('billing_cycle')
+        # Best-effort heads-up to the platform admin - never blocks the
+        # webhook if it fails. amount_php comes off PayMongo's own
+        # amount field (centavos) rather than the local payments table,
+        # so this still fires correctly even if that DB write above failed.
+        if SUPER_ADMIN_EMAIL:
+            amount_centavos = resource_attrs.get("amount")
+            amount_php = f"{amount_centavos / 100:.2f}" if amount_centavos else "unknown"
+            display_amount = (payment_row or {}).get('display_amount')
+            display_currency = (payment_row or {}).get('display_currency') or subscription_currency(business)
+            display_line = (
+                f"<li><b>Customer-facing price:</b> {html_lib.escape(money_text(display_amount, display_currency))}</li>"
+                if display_amount is not None else ''
             )
-
-            # Renew from the later of "now" or the current paid-through date.
-            # This prevents an early renewal from throwing away already-paid days.
-            current_expiry = _parse_ts(subscription_access_expiry(business))
-            expiry_base = current_expiry if current_expiry and current_expiry > now else now
-            new_expiry = subscription_expiry_from(expiry_base, billing_cycle).date().isoformat()
-            business_update = {
-                "last_paid_at": now.date().isoformat(),
-                "subscription_expires_at": new_expiry,
-                "billing_cycle": billing_cycle,
-            }
-            if str(metadata.get('setup_kit_included', '')).lower() == 'true':
-                business_update.update({
-                    'setup_kit_paid': True,
-                    'setup_kit_status': 'paid',
-                })
-                try:
-                    supabase.table('setup_kit_orders').update({
-                        'payment_status': 'paid',
-                        'fulfillment_status': 'paid',
-                        'paid_at': now.isoformat(),
-                        'updated_at': now.isoformat(),
-                    }).eq('business_id', business.get('id')).neq('fulfillment_status', 'cancelled').execute()
-                except Exception as e:
-                    print(f"WEBHOOK setup kit order update error: {e}")
-            # First payment activates the account automatically - no manual
-            # admin approval needed. Only PENDING is auto-promoted; if an
-            # admin has REJECTED or SUSPENDED this business, a stray/late
-            # payment should not silently reactivate it - that stays a
-            # manual admin decision.
-            if (business.get('status') or '').upper() == 'PENDING':
-                business_update['status'] = 'ACTIVE'
             try:
-                supabase.table("businesses").update(business_update).eq("id", business.get("id")).execute()
-            except Exception as e:
-                print(f"WEBHOOK business update error: {e}")
-            try:
-                supabase.table("subscription_payments").update({
-                    "status": "paid",
-                    "paymongo_payment_id": resource.get("id"),
-                    "billing_cycle": billing_cycle,
-                    "paid_at": now.isoformat(),
-                }).eq("paymongo_payment_intent_id", payment_intent_id).execute()
-            except Exception as e:
-                print(f"WEBHOOK payment log update error: {e}")
-
-            try:
-                grant_business_referral_month(business, payment_intent_id)
-            except Exception as e:
-                print(f"REFERRAL reward hook error: {e}")
-
-            # Partner commission ledger: idempotent per PayMongo payment intent.
-            # Partners never receive customer data; this ledger only references
-            # the business and subscription payment.
-            if business.get('partner_id') and payment_intent_id and not business.get('is_demo'):
-                try:
-                    partner = supabase.table('network_partners').select('*').eq('id', business.get('partner_id')).maybe_single().execute().data
-                    if partner and partner.get('is_active', True):
-                        amount_centavos = resource_attrs.get('amount') or 0
-                        gross_php = float(amount_centavos) / 100.0
-                        if partner.get('commission_type') == 'fixed':
-                            commission_php = float(partner.get('commission_value') or 0)
-                        else:
-                            commission_php = gross_php * float(partner.get('commission_value') or 0) / 100.0
-                        supabase.table('partner_commissions').upsert({
-                            'public_id': 'pc_' + hashlib.sha256(str(payment_intent_id).encode()).hexdigest()[:24],
-                            'partner_id': partner.get('id'), 'business_id': business.get('id'),
-                            'paymongo_payment_intent_id': payment_intent_id,
-                            'gross_amount': round(gross_php,2), 'commission_amount': round(commission_php,2),
-                            'status': 'earned', 'earned_at': now.isoformat(),
-                        }, on_conflict='paymongo_payment_intent_id').execute()
-                except Exception as e:
-                    print(f"PARTNER COMMISSION ledger error: {e}")
-
-            # Best-effort heads-up to the platform admin - never blocks the
-            # webhook if it fails. amount_php comes off PayMongo's own
-            # amount field (centavos) rather than the local payments table,
-            # so this still fires correctly even if that DB write above failed.
-            if SUPER_ADMIN_EMAIL:
-                amount_centavos = resource_attrs.get("amount")
-                amount_php = f"{amount_centavos / 100:.2f}" if amount_centavos else "unknown"
-                display_amount = (payment_row or {}).get('display_amount')
-                display_currency = (payment_row or {}).get('display_currency') or subscription_currency(business)
-                display_line = (
-                    f"<li><b>Customer-facing price:</b> {html_lib.escape(money_text(display_amount, display_currency))}</li>"
-                    if display_amount is not None else ''
-                )
                 send_email(
                     SUPER_ADMIN_EMAIL,
                     subject=f"Payment received: {business.get('name', '')}",
@@ -21202,18 +21137,9 @@ async def paymongo_webhook(request: Request):
                         f"</ul>"
                     ),
                 )
-        else:
-            print(f"WEBHOOK payment.paid - could not match a business for intent {payment_intent_id}")
-
-    elif event_type in ("payment.failed", "qrph.expired"):
-        try:
-            supabase.table("subscription_payments").update({
-                "status": "failed" if event_type == "payment.failed" else "expired",
-            }).eq("paymongo_payment_intent_id", payment_intent_id).execute()
-        except Exception as e:
-            print(f"WEBHOOK failure log update error: {e}")
-
-    return {"received": True}
+            except Exception as exc:
+                log_event('subscription_payment_email_failed', 'warning', error_type=type(exc).__name__)
+    return {"received": True, "fulfillment": "fulfilled"}
 
 @app.get("/api/v1/customer/{public_id}")
 async def get_customer_api(public_id: str, response: Response):
