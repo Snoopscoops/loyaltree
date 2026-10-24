@@ -67,6 +67,10 @@ import hashlib
 import hmac
 import html as html_lib
 from datetime import datetime, timedelta, timezone, date
+try:
+    from . import password_security as owner_password_security
+except ImportError:
+    import password_security as owner_password_security
 from decimal import Decimal, ROUND_HALF_UP
 from zoneinfo import ZoneInfo
 from email.utils import format_datetime, parsedate_to_datetime
@@ -1549,6 +1553,17 @@ def create_staff_session_token(
     branch_id=None,
 ) -> str:
     import jwt as pyjwt
+    if not STAFF_SESSION_SECRET:
+        raise HTTPException(status_code=503, detail='STAFF_SESSION_SECRET is not configured')
+    if role == 'owner':
+        if staff_id is not None:
+            raise HTTPException(403, 'A staff account cannot issue an owner session')
+        # An owner scan session needs the current reset-revocation version too.
+        business = owner_password_security._read_auth_business(
+            supabase, {'business_public_id': business_public_id})
+        return create_owner_session_token({**business, 'name': name})
+    if role not in ('manager', 'cashier'):
+        raise HTTPException(403, 'Unsupported staff role')
     payload = {
         'business_public_id': business_public_id,
         'staff_id': staff_id,  # None when the owner is the one scanning
@@ -1561,6 +1576,8 @@ def create_staff_session_token(
 
 def verify_staff_session_token(token: str):
     import jwt as pyjwt
+    if not STAFF_SESSION_SECRET:
+        return None
     try:
         return pyjwt.decode(token, STAFF_SESSION_SECRET, algorithms=['HS256'])
     except Exception:
@@ -1577,10 +1594,14 @@ def get_staff_session_claims(public_id: str, authorization: str):
         raise HTTPException(status_code=401, detail="Session expired - please log in again")
     if claims.get('business_public_id') != public_id:
         raise HTTPException(status_code=403, detail="Session does not match this business")
+    if claims.get('role') not in ('owner', 'manager', 'cashier'):
+        raise HTTPException(status_code=403, detail='Business staff access required')
+    if claims.get('role') == 'owner':
+        validate_owner_auth_version(claims)
     return claims
 
 
-def create_owner_session_token(business: dict) -> str:
+def create_owner_session_token(business: dict, *, ttl_seconds=None) -> str:
     """Signed, expiring owner token. Replaces the old predictable owner-token-<slug>."""
     import jwt as pyjwt
     if not STAFF_SESSION_SECRET:
@@ -1590,11 +1611,17 @@ def create_owner_session_token(business: dict) -> str:
         'business_public_id': business.get('public_id'),
         'business_id': business.get('id'),
         'role': 'owner',
+        'auth_version': business.get('auth_version', 0),
         'name': business.get('name', ''),
         'iat': now,
-        'exp': now + timedelta(hours=OWNER_SESSION_TTL_HOURS),
+        'exp': now + (timedelta(seconds=ttl_seconds) if ttl_seconds is not None else timedelta(hours=OWNER_SESSION_TTL_HOURS)),
     }
     return pyjwt.encode(payload, STAFF_SESSION_SECRET, algorithm='HS256')
+
+
+def validate_owner_auth_version(claims: dict, business=None):
+    """Fresh reset-revocation check shared by owner-protected API paths."""
+    return owner_password_security.validate_business_auth_version(supabase, claims, business)
 
 
 def require_owner_session(public_id: str, authorization: str):
@@ -1608,6 +1635,7 @@ def require_owner_session(public_id: str, authorization: str):
         raise HTTPException(status_code=403, detail='Owner access required')
     if claims.get('business_public_id') != public_id:
         raise HTTPException(status_code=403, detail='Session does not match this business')
+    validate_owner_auth_version(claims)
     return claims
 
 
@@ -13904,6 +13932,17 @@ def _api_limit_for_path(path: str, method: str):
 profiler.checkpoint('helpers_and_models_ready')
 app = FastAPI(title='LoyaltyTree API')
 
+@app.middleware('http')
+async def prefetch_owner_auth_version(request: Request, call_next):
+    """Fresh owner reset-revocation reads never block the async request loop."""
+    authorization = request.headers.get('authorization', '')
+    claims = verify_staff_session_token(authorization.split(' ', 1)[1]) if authorization.startswith('Bearer ') else None
+    if claims and claims.get('role') in ('owner', 'billing') and claims.get('business_public_id'):
+        async with owner_password_security.owner_auth_request(supabase, claims):
+            return await call_next(request)
+    return await call_next(request)
+
+
 def business_for_access_check(public_id: str) -> dict:
     """Unlike optional page reads, a failed billing lookup cannot grant access."""
     if not supabase:
@@ -14091,7 +14130,7 @@ async def confirm_business_password_reset(req: PasswordResetConfirm):
         raise HTTPException(status_code=503, detail='Password reset is temporarily unavailable')
     token_hash = _password_reset_token_hash(req.token)
     try:
-        rows = supabase.table('businesses').select('*').eq('password_reset_token_hash', token_hash).limit(1).execute().data or []
+        rows = await asyncio.to_thread(lambda: supabase.table('businesses').select('*').eq('password_reset_token_hash', token_hash).limit(1).execute().data or [])
         business = rows[0] if rows else None
     except Exception:
         business = None
@@ -14105,7 +14144,7 @@ async def confirm_business_password_reset(req: PasswordResetConfirm):
                 'password_reset_token_hash': None,
                 'password_reset_expires_at': None,
                 'updated_at': datetime.utcnow().isoformat(),
-            }).eq('id', business.get('id')).execute()
+            }).eq('id', business.get('id')).eq('password_reset_token_hash', token_hash).execute()
         except Exception:
             pass
         _password_reset_audit(business, 'reset_link_expired', 'owner_self_service')
@@ -14114,22 +14153,22 @@ async def confirm_business_password_reset(req: PasswordResetConfirm):
     new_password = req.new_password.strip()
     if len(new_password) < 8:
         raise HTTPException(status_code=400, detail='Password must be at least 8 characters.')
-    now = datetime.utcnow().isoformat()
+    new_hash = await owner_password_security.hash_owner_password(new_password)
     try:
-        supabase.table('businesses').update({
-            'password_hash': hash_password(new_password),
-            'password_reset_token_hash': None,
-            'password_reset_expires_at': None,
-            'password_changed_at': now,
-            'updated_at': now,
-        }).eq('id', business.get('id')).execute()
+        result = await asyncio.to_thread(lambda: supabase.rpc('reset_owner_password', {
+            'p_public_id': business['public_id'],
+            'p_token_hash': token_hash,
+            'p_password_hash': new_hash,
+        }).execute())
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f'Could not update password: {friendly_db_error(exc)}')
+        raise HTTPException(status_code=503, detail='Password reset is temporarily unavailable. Please try again shortly.') from exc
+    if not isinstance(getattr(result, 'data', None), list) or len(result.data) != 1:
+        raise HTTPException(status_code=400, detail='This reset link is invalid or has already been used.')
 
-    _password_reset_audit(business, 'password_changed', 'owner_self_service')
+    await asyncio.to_thread(_password_reset_audit, business, 'password_changed', 'owner_self_service')
     return {'success': True, 'message': 'Password updated. You can now sign in with your new password.'}
 
-def _login_lookup_one(query, password=None, *, email=None, password_field='password_hash'):
+def _login_lookup_one(query, password=None, *, email=None, password_field='password_hash', owner_password=False):
     """Use list responses so a missing account cannot become a None.data error."""
     if email is not None:
         normalized = str(email).strip().lower()
@@ -14147,11 +14186,15 @@ def _login_lookup_one(query, password=None, *, email=None, password_field='passw
             raise HTTPException(409, 'Multiple accounts need owner review. Please contact support.')
         import hmac
         password_hash = hash_password(password)
+        password_matches = (
+            (lambda stored: owner_password_security.verify_owner_password(password, stored, legacy_hasher=hash_password))
+            if owner_password else
+            (lambda stored: hmac.compare_digest(stored.encode(), password.encode()) or hmac.compare_digest(stored.encode(), password_hash.encode()))
+        )
         rows = [row for row in rows if
             (email is None or str(row.get('email') or '').strip().lower() == normalized) and
             isinstance(row.get(password_field), str) and
-            (hmac.compare_digest(row[password_field].encode(), password.encode()) or
-             hmac.compare_digest(row[password_field].encode(), password_hash.encode()))]
+            password_matches(row[password_field])]
     if len(rows) > 1:
         # Never select an arbitrary tenant or delete financial/customer records.
         raise HTTPException(409, 'Multiple accounts match these credentials. Please contact support to select the correct business.')
@@ -14230,46 +14273,49 @@ async def login(req: LoginRequest, request: Request):
             raise HTTPException(status_code=403, detail='Partner account is inactive')
 
     try:
-        business = _login_lookup_one(supabase.table("businesses").select("*"), req.password, email=req.email)
+        business = await asyncio.to_thread(_login_lookup_one, supabase.table("businesses").select("*"), req.password, email=req.email, owner_password=True)
         if business:
-            stored_pw = business.get('password_hash', '')
-            input_hash = hash_password(req.password)
-            matched = (stored_pw == req.password) or (stored_pw == input_hash)
-            if matched:
-                status = (business.get('status') or 'PENDING').upper()
-                if status == 'PENDING':
-                    raise HTTPException(
-                        status_code=403,
-                        detail="Your business application is still pending approval. We'll email you as soon as it's reviewed."
-                    )
-                if status != 'ACTIVE':
-                    raise HTTPException(
-                        status_code=403,
-                        detail="Your account is not active. Please contact support for details."
-                    )
-                _clear_auth_failures('owner', request, req.email)
-                owner_session_token = create_owner_session_token(business)
-                return {
-                    "success": True,
-                    "token": owner_session_token,
-                    "billing_hold": billing_hold(business),
+            # The list lookup verifies each candidate before resolving duplicate
+            # email rows. Upgrade only the uniquely authenticated active owner.
+            status = (business.get('status') or 'PENDING').upper()
+            if status == 'PENDING':
+                raise HTTPException(
+                    status_code=403,
+                    detail="Your business application is still pending approval. We'll email you as soon as it's reviewed."
+                )
+            if status != 'ACTIVE':
+                raise HTTPException(
+                    status_code=403,
+                    detail="Your account is not active. Please contact support for details."
+                )
+            business = await asyncio.to_thread(owner_password_security.migrate_owner_password, supabase, business, req.password)
+            _clear_auth_failures('owner', request, req.email)
+            owner_session_token = create_owner_session_token(business)
+            return {
+                "success": True,
+                "token": owner_session_token,
+                "billing_hold": billing_hold(business),
+                "business_slug": business.get("public_id", ""),
+                "business_name": business.get("name", ""),
+                "name": business.get("name", ""),
+                "role": "owner",
+                "logo_url": business.get("logo_url"),
+                "business_type": business.get("business_type", "other"),
+                "user": {
                     "business_slug": business.get("public_id", ""),
                     "business_name": business.get("name", ""),
                     "name": business.get("name", ""),
+                    "email": business.get("email", ""),
                     "role": "owner",
                     "logo_url": business.get("logo_url"),
                     "business_type": business.get("business_type", "other"),
-                    "user": {
-                        "business_slug": business.get("public_id", ""),
-                        "business_name": business.get("name", ""),
-                        "name": business.get("name", ""),
-                        "email": business.get("email", ""),
-                        "role": "owner",
-                        "logo_url": business.get("logo_url"),
-                        "business_type": business.get("business_type", "other"),
-                        "token": owner_session_token,
-                    }
+                    "token": owner_session_token,
                 }
+            }
+    except owner_password_security.PasswordWorkBusy as exc:
+        raise HTTPException(503, str(exc), headers={'Retry-After': '1'}) from exc
+    except owner_password_security.OwnerCredentialsChanged as exc:
+        raise HTTPException(401, str(exc)) from exc
     except HTTPException:
         raise
     except Exception as e:
@@ -14304,20 +14350,11 @@ async def login(req: LoginRequest, request: Request):
                     except Exception:
                         branch = None
 
-                # Branch managers use the normal dashboard, so they need a real
-                # signed session token that the manager-only APIs can validate.
-                # Cashier web-login behavior stays backwards-compatible here;
-                # CashierApp still performs its own shift/PIN verification flow.
-                staff_token = (
-                    create_staff_session_token(
-                        biz.get("public_id", ""),
-                        staff.get('id'),
-                        'manager',
-                        staff.get("name", ""),
-                        staff.get('branch_id'),
-                    )
-                    if staff_role == 'manager'
-                    else "staff-token-" + staff.get("public_id", "")
+                # Web-login identity is signed for both roles. The scanner can
+                # still perform its normal shift/PIN verification separately.
+                staff_token = create_staff_session_token(
+                    biz.get("public_id", ""), staff.get('id'), staff_role,
+                    staff.get("name", ""), staff.get('branch_id'),
                 )
                 return {
                     "success": True,
@@ -14443,6 +14480,8 @@ async def signup_agreement_preview(req: SignupAgreementPreviewRequest):
 async def register(biz: BusinessCreate, request: Request, background_tasks: BackgroundTasks):
     if not supabase:
         raise HTTPException(status_code=503, detail="Database not connected")
+    if not STAFF_SESSION_SECRET:
+        raise HTTPException(503, 'Account authentication is temporarily unavailable')
 
     acceptance = biz.agreement
     if not acceptance:
@@ -14522,7 +14561,7 @@ async def register(biz: BusinessCreate, request: Request, background_tasks: Back
         'email': biz.email,
         'phone': biz.phone,
         'contact_person': (biz.contact_person or '').strip() or None,
-        'password_hash': hash_password(biz.password),
+        'password_hash': await owner_password_security.hash_owner_password(biz.password),
         'logo_url': biz.logo_url,
         'business_type': biz.business_type,
         'address': biz.address,
@@ -14756,38 +14795,40 @@ async def get_current_user(request: Request):
     if not supabase:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    if token.startswith("owner-token-"):
-        public_id = token.replace("owner-token-", "")
-        business = safe_get_business(public_id)
-        if business:
-            return {
-                "business_slug": business.get("public_id", ""),
-                "business_name": business.get("name", ""),
-                "name": business.get("name", ""),
-                "email": business.get("email", ""),
-                "role": "owner",
-                "logo_url": business.get("logo_url"),
-            }
-
-    if token.startswith("staff-token-"):
-        public_id = token.replace("staff-token-", "")
+    claims = verify_staff_session_token(token)
+    if not claims or claims.get('role') not in ('owner', 'manager', 'cashier'):
+        raise HTTPException(status_code=401, detail='Invalid token')
+    try:
+        rows = await asyncio.to_thread(lambda: supabase.table('businesses').select('*').eq('public_id', claims.get('business_public_id')).limit(2).execute().data)
+    except Exception as exc:
+        raise HTTPException(503, 'Account authentication is temporarily unavailable') from exc
+    if not isinstance(rows, list) or len(rows) != 1:
+        raise HTTPException(401, 'Account is no longer available')
+    business = rows[0]
+    if str(business.get('status') or '').upper() != 'ACTIVE':
+        raise HTTPException(403, 'Business account is not active')
+    identity = business
+    if claims['role'] == 'owner':
+        validate_owner_auth_version(claims, business)
+    else:
         try:
-            res = supabase.table("staff").select("*,businesses(public_id,name,logo_url)").eq("public_id", public_id).maybe_single().execute()
-            staff_data = res.data
-            if staff_data:
-                biz = staff_data.get('businesses', {}) or {}
-                return {
-                    "business_slug": biz.get("public_id", ""),
-                    "business_name": biz.get("name", ""),
-                    "name": staff_data.get("name", ""),
-                    "email": staff_data.get("email", ""),
-                    "role": staff_data.get("role", "cashier"),
-                    "logo_url": biz.get("logo_url"),
-                }
-        except Exception:
-            pass
-
-    raise HTTPException(status_code=401, detail="Invalid token")
+            staff_rows = await asyncio.to_thread(lambda: supabase.table('staff').select('*').eq('id', claims.get('staff_id')).eq('business_id', business['id']).limit(2).execute().data)
+        except Exception as exc:
+            raise HTTPException(503, 'Account authentication is temporarily unavailable') from exc
+        if (not isinstance(staff_rows, list) or len(staff_rows) != 1 or
+                staff_rows[0].get('is_active') is False or
+                staff_rows[0].get('business_id') != business['id'] or
+                str(staff_rows[0].get('role') or 'cashier').lower() != claims['role']):
+            raise HTTPException(401, 'Staff access has changed. Please sign in again')
+        identity = staff_rows[0]
+    return {
+        'business_slug': business.get('public_id', ''),
+        'business_name': business.get('name', ''),
+        'name': identity.get('name', ''),
+        'email': identity.get('email', ''),
+        'role': claims['role'],
+        'logo_url': business.get('logo_url'),
+    }
 
 # ADMIN ROUTES (platform owner only - not exposed to businesses)
 
@@ -16616,7 +16657,7 @@ def _oa_require_order_operator(public_id: str, authorization: str) -> tuple[dict
     if not authorization or not authorization.startswith('Bearer '):
         raise HTTPException(status_code=401, detail='Order operator authentication required')
 
-    claims = verify_staff_session_token(authorization.split(' ', 1)[1])
+    claims = get_staff_session_claims(public_id, authorization)
     if not claims:
         raise HTTPException(status_code=401, detail='Order operator session expired - please log in again')
     if claims.get('business_public_id') != public_id:
@@ -31702,12 +31743,27 @@ async def cashier_session_status(public_id: str, request: Request, authorization
         token = authorization.split(" ", 1)[1].strip()
     if not token:
         token = request.cookies.get("lt_cashier_session") or ""
-    claims = verify_staff_session_token(token) if token else None
+    claims = await asyncio.to_thread(get_staff_session_claims, public_id, f'Bearer {token}') if token else None
     if not claims or claims.get("business_public_id") != public_id:
         raise HTTPException(status_code=401, detail="Cashier session expired")
+    name = claims.get('name') or ''
+    if claims.get('role') != 'owner':
+        if not claims.get('staff_id'):
+            raise HTTPException(401, 'Cashier session expired')
+        try:
+            rows = await asyncio.to_thread(lambda: supabase.table('staff')
+                .select('id,name,role,is_active,businesses(public_id)')
+                .eq('id', claims['staff_id']).limit(2).execute().data)
+        except Exception as exc:
+            raise HTTPException(503, 'Cashier authentication is temporarily unavailable') from exc
+        if (not isinstance(rows, list) or len(rows) != 1 or rows[0].get('is_active') is False
+                or (rows[0].get('businesses') or {}).get('public_id') != public_id
+                or str(rows[0].get('role') or 'cashier').lower() != claims['role']):
+            raise HTTPException(401, 'Cashier access has changed. Please sign in again')
+        name = rows[0].get('name') or name
     return {
         "success": True,
-        "name": claims.get("name") or "",
+        "name": name,
         "role": claims.get("role") or "cashier",
         "session_token": token,
         "expires_in_hours": STAFF_SESSION_TTL_HOURS,
