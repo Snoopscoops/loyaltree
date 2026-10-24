@@ -16,6 +16,7 @@ from fastapi import HTTPException, Query
 from fastapi.responses import Response
 from backend import wallet_memory as memory
 from backend import lt_benefits_wallet
+from backend.apple_memory import MemoryPressure
 
 SOURCE = Path(__file__).resolve().parents[1] / 'main.py'
 NAMES = {'_apple_pkpass_fingerprint', '_get_cached_apple_pkpass', '_cache_apple_pkpass',
@@ -114,6 +115,21 @@ class AppleAddCacheTests(unittest.TestCase):
                 self.assertEqual(pool.submit(self.get).result(.5), (b'signed-fixture-1', True))
             finally: release.set()
             busy.result(1)
+
+    def test_container_pressure_keeps_cached_add_fast_and_rejects_only_a_cold_build(self):
+        self.env['build_pkpass_bytes'] = memory.wallet_work('apple_pass_build')(self.env['build_pkpass_bytes'])
+        self.get()
+        gate = MemoryPressure(lambda: 174, lambda *args, **kwargs: None, read_container=lambda: {
+            'container_memory_mb': 420, 'container_limit_mb': 512})
+        self.assertTrue(gate.paused())
+        with patch('backend.apple_memory.memory_pressure', gate):
+            result = asyncio.run(self.env['_prepare_apple_pkpass'](
+                self.customer, self.business, self.program, None))
+            self.assertEqual(result, (b'signed-fixture-1', True))
+            with self.assertRaises(HTTPException) as error:
+                self.get(customer={**self.customer, 'stamp_count': 2})
+        self.assertEqual(error.exception.status_code, 503)
+        self.assertEqual(len(self.builds), 1)
 
     def test_stamps_design_announcement_and_push_revision_invalidate_cached_pass(self):
         self.get()
