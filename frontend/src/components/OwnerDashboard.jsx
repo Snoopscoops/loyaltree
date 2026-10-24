@@ -2181,7 +2181,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
           customer_public_id: customerPublicId,
           service_name: memberVisitService.trim() || null,
           note: memberVisitNote.trim() || null,
-          as_owner: true,
+          as_owner: user.role === 'owner',
         }),
       })
       const data = await res.json().catch(() => ({}))
@@ -2362,7 +2362,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
           duration_days: Number(program?.membership_duration_days || 30),
           price_paid: pricePaid,
           payment_method: paymentMethod,
-          as_owner: true,
+          as_owner: user.role === 'owner',
         }),
       })
       const data = await res.json().catch(() => ({}))
@@ -2867,7 +2867,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
   // Reuse the existing scanner navigation, including program scope and token.
   const scanCustomer = () => viewingAllPrograms
     ? setMessage('Select one program first, then scan the card for that program.')
-    : navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name, ownerToken: user.token, programPublicId: selectedProgramPublicId } })
+    : navigate('/scanner', { state: { ownerMode: true, sessionRole: user.role, businessSlug: user.business_slug, ownerName: user.business_name, ownerToken: user.token, programPublicId: selectedProgramPublicId } })
 
   useEffect(() => {
     if (loading || !refreshEnabled) return
@@ -3187,7 +3187,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
 
           <div className="lt-owner-hero-actions" style={{...styles.heroQuickActions,...(isTablet?styles.heroQuickActionsTablet:{}),...(isMobile?styles.heroQuickActionsMobile:{})}}>
             <button
-              onClick={() => viewingAllPrograms ? setMessage('Select one program first, then scan the card for that program.') : navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name, ownerToken: user.token, programPublicId: selectedProgramPublicId } })}
+              onClick={() => viewingAllPrograms ? setMessage('Select one program first, then scan the card for that program.') : navigate('/scanner', { state: { ownerMode: true, sessionRole: user.role, businessSlug: user.business_slug, ownerName: user.business_name, ownerToken: user.token, programPublicId: selectedProgramPublicId } })}
               style={{...styles.primaryActionBtn, background: '#0d9488'}}
             >
               📷 {cardExperience.scanTitle}
@@ -3333,7 +3333,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
                 <h3>View {cardExperience.customerLabel}</h3>
                 <p>{customers.length} connected</p>
               </div>
-              <div className="lt-owner-action" role={refreshEnabled ? 'button' : undefined} tabIndex={refreshEnabled ? 0 : undefined} style={{...styles.actionCard,...(isTablet?styles.actionCardTablet:{}), borderColor: cardExperience.border}} onClick={() => viewingAllPrograms ? setMessage('Select one program first, then scan the card for that program.') : navigate('/scanner', { state: { ownerMode: true, businessSlug: user.business_slug, ownerName: user.business_name, ownerToken: user.token, programPublicId: selectedProgramPublicId } })}>
+              <div className="lt-owner-action" role={refreshEnabled ? 'button' : undefined} tabIndex={refreshEnabled ? 0 : undefined} style={{...styles.actionCard,...(isTablet?styles.actionCardTablet:{}), borderColor: cardExperience.border}} onClick={() => viewingAllPrograms ? setMessage('Select one program first, then scan the card for that program.') : navigate('/scanner', { state: { ownerMode: true, sessionRole: user.role, businessSlug: user.business_slug, ownerName: user.business_name, ownerToken: user.token, programPublicId: selectedProgramPublicId } })}>
                 <div style={styles.actionIcon}>📷</div>
                 <h3>{cardExperience.scanTitle}</h3>
                 <p>{cardExperience.scanDescription}</p>
@@ -4217,7 +4217,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
         )}
 
         {activeTab === 'billing' && (
-          <SubscriptionPayment API_BASE={API_BASE} businessSlug={user.business_slug} onPaid={loadData} />
+          <SubscriptionPayment API_BASE={API_BASE} businessSlug={user.business_slug} sessionToken={user.token} onSessionExpired={onLogout} onPaid={loadData} />
         )}
 
         {activeTab === 'referrals' && (

@@ -124,7 +124,10 @@ class WalletMemoryTests(unittest.TestCase):
         usage = memory.memory_usage()
         self.assertGreater(usage['rss_peak_mb'], 0)
         self.assertGreater(usage['pid'], 0)
-        self.assertTrue(set(usage) <= {'pid', 'rss_peak_mb', 'rss_mb', 'threads', 'container_memory_mb', 'container_limit_mb', 'python_heap_mb', 'python_heap_peak_mb', 'cpu_total_seconds', 'trace_overhead_mb'})
+        self.assertTrue(set(usage) <= {'pid', 'rss_peak_mb', 'rss_mb', 'threads', 'container_memory_mb',
+            'container_limit_mb', 'container_headroom_mb', 'container_anon_mb', 'container_file_mb',
+            'container_kernel_mb', 'parent_pid', 'parent_rss_mb', 'python_heap_mb', 'python_heap_peak_mb',
+            'cpu_total_seconds', 'trace_overhead_mb'})
 
     def test_measurement_failure_cannot_fail_a_pass_or_replace_its_exception(self):
         @memory.wallet_work('safe_diagnostics')

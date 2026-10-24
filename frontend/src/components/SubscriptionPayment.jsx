@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { formatMoney } from './currency'
 import { BILLING_TERMS, normalizeBillingCycle, billingSavings, billingSummary } from './billingPricing'
+import { requestBilling, requestBillingHistory, requestPaymentStatus,
+  readPendingPayment, savePendingPayment, clearPendingPayment, paymentNeedsReview,
+  pendingPaymentForReturn, clearPaymentReturnUrl } from './billingSession'
 
 // Owner billing + post-signup activation.
 // PH: QR Ph by default, with an optional card path.
@@ -11,7 +14,6 @@ import { BILLING_TERMS, normalizeBillingCycle, billingSavings, billingSummary } 
 
 const QR_TTL_SECONDS = 600
 const POLL_INTERVAL_MS = 4000
-const PENDING_CARD_KEY = 'loyaltree_paymongo_pending_card'
 
 function formatDate(iso) {
   if (!iso) return '—'
@@ -38,6 +40,9 @@ function paymongoError(payload, fallback) {
 function SubscriptionPayment({
   API_BASE,
   businessSlug,
+  sessionToken,
+  onboarding = false,
+  onSessionExpired,
   title = 'Billing',
   subtitle = 'Keep your subscription active with secure billing.',
   successMessage = '🎉 Payment received — your subscription has been extended.',
@@ -50,6 +55,7 @@ function SubscriptionPayment({
   const [checkingOut, setCheckingOut] = useState(false)
   const [cardPaying, setCardPaying] = useState(false)
   const [error, setError] = useState('')
+  const [sessionExpired, setSessionExpired] = useState(false)
   const [checkout, setCheckout] = useState(null)
   const [secondsLeft, setSecondsLeft] = useState(0)
   const [paidJustNow, setPaidJustNow] = useState(false)
@@ -58,68 +64,90 @@ function SubscriptionPayment({
   const [card, setCard] = useState({ number: '', expMonth: '', expYear: '', cvc: '' })
   const pollRef = useRef(null)
   const countdownRef = useRef(null)
-
-  const loadSubscription = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/subscription`)
-      if (res.ok) {
-        const data = await res.json()
-        setSubscription(data)
-        if (!initialBillingCycle && data?.billing_cycle) {
-          setBillingCycle(normalizeBillingCycle(data.billing_cycle, data.pricing_region))
-        }
-        if (data?.pricing_region && data.pricing_region !== 'PH') setPaymentMethod('card')
-      }
-    } catch (e) {
-      // Keep the page usable; checkout will surface a useful error if needed.
-    }
-  }, [API_BASE, businessSlug, initialBillingCycle])
-
-  const loadHistory = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/subscription/payments`)
-      if (res.ok) setHistory(await res.json())
-    } catch (e) {
-      // silent
-    }
-  }, [API_BASE, businessSlug])
+  const callbacks = useRef({ onPaid, onSessionExpired })
+  callbacks.current = { onPaid, onSessionExpired }
+  const request = useCallback((path = '', options = {}) => requestBilling(fetch, {
+    API_BASE, businessSlug, sessionToken, path, ...options,
+  }), [API_BASE, businessSlug, sessionToken])
 
   const stopPolling = useCallback(() => {
     clearInterval(pollRef.current)
     clearInterval(countdownRef.current)
   }, [])
 
-  const clearPendingCard = () => {
-    try { sessionStorage.removeItem(PENDING_CARD_KEY) } catch (e) { /* ignore */ }
-  }
+  const clearPaymentAttempt = useCallback(() => {
+    clearPendingPayment()
+    try {
+      const cleaned = clearPaymentReturnUrl(window.location.href, businessSlug)
+      if (cleaned !== window.location.href) window.history.replaceState(window.history.state, '', cleaned)
+    } catch { /* URL cleanup cannot prevent confirming an already paid receipt. */ }
+  }, [businessSlug])
+
+  const showFailure = useCallback(failure => {
+    if (failure.status === 401) {
+      stopPolling()
+      setSessionExpired(true)
+      setError(onboarding
+        ? 'Your payment session has expired. Verify your business account below to continue.'
+        : 'Your session has expired. Please sign in again to manage billing.')
+      callbacks.current.onSessionExpired?.()
+    } else {
+      setError(failure.message || 'Billing is temporarily unavailable. Please try again.')
+    }
+  }, [onboarding, stopPolling])
+
+  const loadSubscription = useCallback(async () => {
+    const data = await request()
+    setSubscription(data)
+    if (!initialBillingCycle && data?.billing_cycle) {
+      setBillingCycle(normalizeBillingCycle(data.billing_cycle, data.pricing_region))
+    }
+    if (data?.pricing_region && data.pricing_region !== 'PH') setPaymentMethod('card')
+    return data
+  }, [request, initialBillingCycle])
+
+  const loadHistory = useCallback(async () => {
+    const rows = await requestBillingHistory(fetch, { API_BASE, businessSlug, sessionToken }, onboarding)
+    setHistory(Array.isArray(rows) ? rows : [])
+  }, [API_BASE, businessSlug, sessionToken, onboarding])
 
   const startPolling = useCallback((intentId, options = {}) => {
     const { qrCountdown = false } = options
     stopPolling()
+    let polling = false
     pollRef.current = setInterval(async () => {
+      if (polling) return
+      polling = true
       try {
-        const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/subscription/payments`)
-        if (!res.ok) return
-        const rows = await res.json()
-        const match = rows.find(r => r.paymongo_payment_intent_id === intentId)
-        if (match && match.status === 'paid') {
+        const match = await requestPaymentStatus(fetch, { API_BASE, businessSlug, sessionToken }, intentId)
+        setError('')
+        if (paymentNeedsReview(match)) {
           stopPolling()
-          clearPendingCard()
+          const pending = { ...readPendingPayment(businessSlug), payment_intent_id: intentId,
+            confirming: true, review_required: true }
+          savePendingPayment(businessSlug, pending)
+          setCheckout(pending)
+        } else if (match && match.status === 'paid') {
+          stopPolling()
+          clearPaymentAttempt()
           setPaidJustNow(true)
           setCheckout(null)
-          await Promise.all([loadSubscription(), loadHistory()])
-          if (onPaid) onPaid(match)
+          // Payment is already verified; a slow history read must not prevent
+          // signup activation or encourage another payment.
+          await Promise.allSettled([loadSubscription(), loadHistory()])
+          callbacks.current.onPaid?.(match)
         } else if (match && (match.status === 'failed' || match.status === 'expired')) {
           stopPolling()
-          clearPendingCard()
+          clearPaymentAttempt()
           setError(match.status === 'expired'
             ? 'That payment attempt expired before it was completed. Start a new payment below.'
             : 'The payment did not go through. Please try again.')
           setCheckout(null)
         }
       } catch (e) {
-        // next tick retries
-      }
+        showFailure(e)
+        if ([401, 403, 404].includes(e.status)) stopPolling()
+      } finally { polling = false }
     }, POLL_INTERVAL_MS)
 
     if (qrCountdown) {
@@ -135,32 +163,40 @@ function SubscriptionPayment({
         })
       }, 1000)
     }
-  }, [API_BASE, businessSlug, loadHistory, loadSubscription, onPaid, stopPolling])
+  }, [API_BASE, businessSlug, sessionToken, loadHistory, loadSubscription, showFailure, stopPolling, clearPaymentAttempt])
+
+  const loadBilling = useCallback(async () => {
+    setLoading(true)
+    setSessionExpired(false)
+    setError('')
+    try { await Promise.all([loadSubscription(), loadHistory()]) }
+    catch (e) { showFailure(e) }
+    finally { setLoading(false) }
+  }, [loadSubscription, loadHistory, showFailure])
 
   useEffect(() => {
-    (async () => {
-      setLoading(true)
-      await Promise.all([loadSubscription(), loadHistory()])
-      setLoading(false)
-    })()
+    loadBilling()
     return () => stopPolling()
-  }, [loadSubscription, loadHistory, stopPolling])
+  }, [loadBilling, stopPolling])
 
   // Resume webhook polling after a 3DS bank-authentication redirect returns.
   useEffect(() => {
-    if (loading) return
-    try {
-      const raw = sessionStorage.getItem(PENDING_CARD_KEY)
-      if (!raw) return
-      const pending = JSON.parse(raw)
-      if (!pending?.payment_intent_id || pending?.businessSlug !== businessSlug) return
-      setCheckout({ ...pending, payment_method: 'card', confirming: true })
-      setPaymentMethod('card')
-      startPolling(pending.payment_intent_id, { qrCountdown: false })
-    } catch (e) {
-      clearPendingCard()
+    if (loading || sessionExpired || !subscription) return
+    const pending = pendingPaymentForReturn(businessSlug, window.location.search)
+    if (!pending) return
+    savePendingPayment(businessSlug, pending)
+    if (pending.review_required) {
+      stopPolling()
+      setCheckout({ ...pending, confirming: true })
+      return
     }
-  }, [loading, businessSlug, startPolling])
+    const remaining = Math.max(0, Math.ceil((Number(pending.expires_at) - Date.now()) / 1000))
+    const qrCountdown = pending.payment_method === 'qrph' && remaining > 0
+    setCheckout({ ...pending, payment_method: pending.payment_method || 'card', confirming: !qrCountdown })
+    setPaymentMethod(pending.payment_method || 'card')
+    if (qrCountdown) setSecondsLeft(remaining)
+    startPolling(pending.payment_intent_id, { qrCountdown })
+  }, [loading, sessionExpired, subscription, businessSlug, startPolling])
 
   const handleCheckout = async () => {
     setError('')
@@ -168,29 +204,27 @@ function SubscriptionPayment({
     setCheckingOut(true)
     try {
       const selectedMethod = subscription?.pricing_region === 'PH' ? paymentMethod : 'card'
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/subscription/checkout`, {
+      const data = await request('/checkout', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ billing_cycle: billingCycle, payment_method: selectedMethod }),
       })
-      const data = await res.json()
-      if (!res.ok) {
-        const detail = data.detail
-        setError(typeof detail === 'string' ? detail : (detail?.message || 'Could not start payment. Please try again.'))
-      } else {
+      if (data) {
         setCheckout(data)
         if (data.payment_method === 'qrph') {
-          setSecondsLeft(data.expires_in_seconds || QR_TTL_SECONDS)
+          const ttl = data.expires_in_seconds || QR_TTL_SECONDS
+          savePendingPayment(businessSlug, { ...data, expires_at: Date.now() + ttl * 1000 })
+          setSecondsLeft(ttl)
           startPolling(data.payment_intent_id, { qrCountdown: true })
         }
       }
     } catch (e) {
-      setError('Network error — please try again.')
+      showFailure(e)
     }
     setCheckingOut(false)
   }
 
   const payCard = async () => {
+    if (sessionExpired) return
     if (!checkout?.payment_intent_id || !checkout?.client_key || !checkout?.paymongo_public_key) {
       setError('Card checkout was not initialized correctly. Start a new payment.')
       return
@@ -239,6 +273,7 @@ function SubscriptionPayment({
       const returnUrl = new URL(window.location.href)
       returnUrl.searchParams.set('paymongo_return', '1')
       returnUrl.searchParams.set('payment_intent', checkout.payment_intent_id)
+      returnUrl.searchParams.set('business_slug', businessSlug)
 
       const attachRes = await fetch(`https://api.paymongo.com/v1/payment_intents/${checkout.payment_intent_id}/attach`, {
         method: 'POST',
@@ -257,17 +292,7 @@ function SubscriptionPayment({
       if (!attachRes.ok) throw new Error(paymongoError(attachJson, 'PayMongo could not process this card.'))
 
       const attrs = attachJson?.data?.attributes || {}
-      const pending = {
-        businessSlug,
-        payment_intent_id: checkout.payment_intent_id,
-        display_amount: checkout.display_amount,
-        display_currency: checkout.display_currency,
-        processor_amount: checkout.processor_amount,
-        processor_currency: checkout.processor_currency,
-        plan_label: checkout.plan_label,
-        billing_cycle_label: checkout.billing_cycle_label,
-      }
-      try { sessionStorage.setItem(PENDING_CARD_KEY, JSON.stringify(pending)) } catch (e) { /* ignore */ }
+      savePendingPayment(businessSlug, { ...checkout, payment_method: 'card' })
 
       const redirectUrl = attrs?.next_action?.redirect?.url
       if (attrs.status === 'awaiting_next_action' && redirectUrl) {
@@ -275,7 +300,7 @@ function SubscriptionPayment({
         return
       }
       if (attrs.status === 'awaiting_payment_method') {
-        clearPendingCard()
+        clearPaymentAttempt()
         throw new Error(attrs?.last_payment_error?.failed_message || 'The card was declined. Please try another card.')
       }
 
@@ -291,7 +316,7 @@ function SubscriptionPayment({
 
   const cancelCheckout = () => {
     stopPolling()
-    clearPendingCard()
+    clearPaymentAttempt()
     setCheckout(null)
     setCard({ number: '', expMonth: '', expYear: '', cvc: '' })
   }
@@ -306,6 +331,15 @@ function SubscriptionPayment({
 
   if (loading) {
     return <div style={styles.page}><div style={styles.card}><p style={styles.subtitle}>Loading billing details…</p></div></div>
+  }
+
+  if (sessionExpired || !subscription) {
+    return <div style={styles.page}><div style={styles.card}>
+      <h1 style={styles.title}>{title}</h1>
+      <p role="alert" style={styles.error}>{error || 'Could not load billing details. Please try again.'}</p>
+      {sessionExpired ? (!onboarding && <a href="/login">Sign in again</a>)
+        : <button type="button" style={styles.button} onClick={loadBilling}>Retry billing</button>}
+    </div></div>
   }
 
   return (
@@ -327,7 +361,7 @@ function SubscriptionPayment({
         </div>
 
         {paidJustNow && <div style={styles.successBanner}>{successMessage}</div>}
-        {error && <div style={styles.error}>{error}</div>}
+        {error && <div role="alert" style={styles.error}>{error}</div>}
 
         {!checkout ? (
           <>
@@ -373,7 +407,13 @@ function SubscriptionPayment({
                   : `Pay ${BILLING_TERMS[billingCycle]?.payLabel || '1 Month'} by Card`}
             </button>
           </>
-        ) : checkout.payment_method === 'qrph' ? (
+        ) : checkout.review_required ? (
+          <div role="status" style={styles.processorNotice}>
+            <strong>Your payment receipt is under review.</strong>
+            <p>Please contact support before making another payment. Keep your existing payment receipt.</p>
+            <a href="/contact">Contact support</a>
+          </div>
+        ) : checkout.payment_method === 'qrph' && !checkout.confirming ? (
           <div style={styles.qrBox}>
             <p style={styles.qrAmount}>{formatMoney(checkout.display_amount ?? checkout.amount, checkout.display_currency || checkout.currency || subscription?.currency || 'PHP')} <span style={styles.qrPlan}>· {checkout.plan_label} · {checkout.billing_cycle_label || billingCycleLabel(billingCycle)}</span></p>
             {checkout.qr_image_url ? <img src={checkout.qr_image_url} alt="Scan to pay via QR Ph" style={styles.qrImage} /> : <div style={styles.qrFallback}>QR code unavailable — try again.</div>}
@@ -438,7 +478,7 @@ function SubscriptionPayment({
           </div>
         )}
 
-        <h2 style={styles.historyTitle}>Payment history</h2>
+        {!onboarding && <><h2 style={styles.historyTitle}>Payment history</h2>
         {history.length === 0 ? (
           <p style={styles.emptyHistory}>No payments yet.</p>
         ) : (
@@ -459,7 +499,7 @@ function SubscriptionPayment({
               </div>
             ))}
           </div>
-        )}
+        )}</>}
       </div>
     </div>
   )

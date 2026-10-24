@@ -44,6 +44,7 @@ class BusinessAccessMiddlewareTests(unittest.TestCase):
         }
         self.lookup = MagicMock(side_effect=lambda slug: self.business)
         self.environment = {
+            "asyncio": asyncio,
             "Request": Request,
             "HTTPException": HTTPException,
             "re": re,

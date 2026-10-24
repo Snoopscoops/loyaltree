@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react'
+import { createOwnerBusinessFetch } from './ownerBusinessFetch'
 
 // Car Lending / Showroom dashboard build, step by step:
 //   - Step 1 (done): Header + tab nav
@@ -156,7 +157,7 @@ function svgToDataUri(svg) {
 // backend first to get a short-lived signature (POST .../cloudinary-signature)
 // before uploading straight to Cloudinary. Throws on any failure; caller
 // decides how to surface it.
-async function uploadImageToCloudinary(apiBase, businessId, file, purpose) {
+async function uploadImageToCloudinary(apiBase, businessId, file, purpose, ownerToken) {
   if (!file.type.startsWith('image/')) {
     throw new Error('Please choose an image file')
   }
@@ -164,7 +165,8 @@ async function uploadImageToCloudinary(apiBase, businessId, file, purpose) {
     throw new Error('Image must be smaller than 10MB')
   }
   const sigUrl = `${apiBase}/api/v1/business/${businessId}/cloudinary-signature${purpose ? `?purpose=${purpose}` : ''}`
-  const sigRes = await fetch(sigUrl, { method: 'POST' })
+  const businessFetch = createOwnerBusinessFetch(fetch, { API_BASE: apiBase, businessId, ownerToken })
+  const sigRes = await businessFetch(sigUrl, { method: 'POST' })
   const sig = await sigRes.json().catch(() => ({}))
   if (!sigRes.ok) throw new Error(sig.detail || 'Could not get upload signature')
 
@@ -191,7 +193,10 @@ async function uploadImageToCloudinary(apiBase, businessId, file, purpose) {
 const VEHICLE_MAX_PHOTOS = 10
 const CONTRACT_MAX_IMAGES = 5
 
-function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved }) {
+function AddVehicleModal({ open, vehicle, apiBase, businessId, ownerToken, onClose, onSaved }) {
+  const businessFetch = React.useMemo(() => createOwnerBusinessFetch(fetch, {
+    API_BASE: apiBase, businessId, ownerToken,
+  }), [apiBase, businessId, ownerToken])
   const emptyForm = { make: '', model: '', year: '', plate_number: '', plate_end_in: '', engine_number: '', chassis_number: '', color: '', mileage: '', transmission: '', fuel_type: '', price: '', total_cost: '', agent_name: '', status: 'available', payment_type: '', location: '', notes: '', downpayment: '', monthly_amortization_amount: '', amortization_due_date: '', amortization_next_due: '', amortization_months_remaining: '', financing_bank_name: '' }
   const [form, setForm] = useState(emptyForm)
   const [imageUrls, setImageUrls] = useState([]) // up to VEHICLE_MAX_PHOTOS Cloudinary URLs, shown as a gallery on the showroom card
@@ -257,7 +262,7 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
     const uploaded = []
     try {
       for (const file of toUpload) {
-        const url = await uploadImageToCloudinary(apiBase, businessId, file)
+        const url = await uploadImageToCloudinary(apiBase, businessId, file, undefined, ownerToken)
         uploaded.push(url)
       }
       if (uploaded.length) setImageUrls(prev => [...prev, ...uploaded])
@@ -295,7 +300,7 @@ function AddVehicleModal({ open, vehicle, apiBase, businessId, onClose, onSaved 
       const url = vehicle
         ? `${apiBase}/api/v1/business/${businessId}/vehicles/${vehicle.public_id}`
         : `${apiBase}/api/v1/business/${businessId}/vehicles`
-      const res = await fetch(url, {
+      const res = await businessFetch(url, {
         method: vehicle ? 'PATCH' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -594,6 +599,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const [business, setBusiness] = useState(null)
   const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState('')
+  const [accessError, setAccessError] = useState('')
 
   // ---------- Customers (buyers) state ----------
   const [customers, setCustomers] = useState([])
@@ -701,15 +707,18 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const [showMessageHistory, setShowMessageHistory] = useState(false)
 
   const businessId = user?.business_slug
+  const businessFetch = React.useMemo(() => createOwnerBusinessFetch(fetch, {
+    API_BASE, businessId, ownerToken: user?.token, onAuthError: error => setAccessError(error.message),
+  }), [API_BASE, businessId, user?.token])
 
   const loadData = async () => {
     try {
       const [bizRes, custRes, vehRes, conRes, msgRes] = await Promise.all([
-        fetch(`${API_BASE}/api/v1/business/${businessId}`),
-        fetch(`${API_BASE}/api/v1/business/${businessId}/cl-customers`),
-        fetch(`${API_BASE}/api/v1/business/${businessId}/vehicles`),
-        fetch(`${API_BASE}/api/v1/business/${businessId}/contracts`),
-        fetch(`${API_BASE}/api/v1/business/${businessId}/cl-announcements`),
+        businessFetch(`${API_BASE}/api/v1/business/${businessId}`),
+        businessFetch(`${API_BASE}/api/v1/business/${businessId}/cl-customers`),
+        businessFetch(`${API_BASE}/api/v1/business/${businessId}/vehicles`),
+        businessFetch(`${API_BASE}/api/v1/business/${businessId}/contracts`),
+        businessFetch(`${API_BASE}/api/v1/business/${businessId}/cl-announcements`),
       ])
       setBusiness(await bizRes.json().catch(() => null))
       setCustomers(await custRes.json().catch(() => []))
@@ -725,7 +734,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   useEffect(() => {
     if (!businessId) return
     loadData()
-  }, [businessId])
+  }, [businessId, businessFetch])
 
   // Debounce customer search so we're not firing a request per keystroke
   useEffect(() => {
@@ -734,7 +743,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
       try {
         const params = new URLSearchParams()
         if (customerSearch) params.set('search', customerSearch)
-        const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-customers?${params.toString()}`)
+        const res = await businessFetch(`${API_BASE}/api/v1/business/${businessId}/cl-customers?${params.toString()}`)
         setCustomers(await res.json().catch(() => []))
       } catch (err) {
         console.error('Customer search error:', err)
@@ -750,7 +759,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
       try {
         const params = new URLSearchParams()
         if (vehicleStatusFilter) params.set('status', vehicleStatusFilter)
-        const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/vehicles?${params.toString()}`)
+        const res = await businessFetch(`${API_BASE}/api/v1/business/${businessId}/vehicles?${params.toString()}`)
         setVehicles(await res.json().catch(() => []))
       } catch (err) {
         console.error('Vehicle filter error:', err)
@@ -765,7 +774,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
       try {
         const params = new URLSearchParams()
         if (contractStatusFilter) params.set('status', contractStatusFilter)
-        const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/contracts?${params.toString()}`)
+        const res = await businessFetch(`${API_BASE}/api/v1/business/${businessId}/contracts?${params.toString()}`)
         setContracts(await res.json().catch(() => []))
       } catch (err) {
         console.error('Contract filter error:', err)
@@ -785,7 +794,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
         const params = new URLSearchParams()
         params.set('role', applicationRoleTab)
         if (applicationStatusFilter) params.set('status', applicationStatusFilter)
-        const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/applications?${params.toString()}`)
+        const res = await businessFetch(`${API_BASE}/api/v1/business/${businessId}/applications?${params.toString()}`)
         const data = await res.json().catch(() => [])
         // A non-2xx response's body is {detail: "..."} - not an array - so
         // this must be checked before setApplications, or the list below
@@ -809,7 +818,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
     if (!businessId || activeTab !== 'applications' || applicationRoleTab !== 'reservation') return
     ;(async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/reservation-settings`)
+        const res = await businessFetch(`${API_BASE}/api/v1/business/${businessId}/reservation-settings`)
         const data = await res.json().catch(() => ({}))
         if (res.ok) {
           setReservationSettings({
@@ -831,7 +840,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
     (async () => {
       setLoadingAgents(true)
       try {
-        const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-agents`)
+        const res = await businessFetch(`${API_BASE}/api/v1/business/${businessId}/cl-agents`)
         const data = await res.json().catch(() => [])
         if (!res.ok) {
           console.error('Agent list error:', data.detail || res.status)
@@ -864,7 +873,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
     if (!businessId) return
     setLoadingWalletInfo(true)
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-wallet-class`)
+      const res = await businessFetch(`${API_BASE}/api/v1/business/${businessId}/cl-wallet-class`)
       setWalletClassInfo(await res.json().catch(() => null))
     } catch (err) {
       console.error('Wallet class info error:', err)
@@ -883,7 +892,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
     if (!businessId) return
     setPublishingWallet(true)
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-wallet-class`, { method: 'POST' })
+      const res = await businessFetch(`${API_BASE}/api/v1/business/${businessId}/cl-wallet-class`, { method: 'POST' })
       const data = await res.json().catch(() => ({}))
       if (res.ok) {
         flash('Published to Google Wallet')
@@ -928,7 +937,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
       const url = editingCustomer
         ? `${API_BASE}/api/v1/business/${businessId}/cl-customers/${editingCustomer.public_id}`
         : `${API_BASE}/api/v1/business/${businessId}/cl-customers`
-      const res = await fetch(url, {
+      const res = await businessFetch(url, {
         method: editingCustomer ? 'PATCH' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -954,7 +963,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const deleteCustomer = async (c) => {
     if (!window.confirm(`Remove ${c.name} from your customer list?`)) return
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-customers/${c.public_id}`, { method: 'DELETE' })
+      const res = await businessFetch(`${API_BASE}/api/v1/business/${businessId}/cl-customers/${c.public_id}`, { method: 'DELETE' })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'Delete failed')
       flash('Customer removed')
@@ -968,7 +977,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const saveReservationSettings = async () => {
     setSavingReservationSettings(true)
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/reservation-settings`, {
+      const res = await businessFetch(`${API_BASE}/api/v1/business/${businessId}/reservation-settings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -995,7 +1004,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
       const params = new URLSearchParams()
       params.set('role', applicationRoleTab)
       if (applicationStatusFilter) params.set('status', applicationStatusFilter)
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/applications?${params.toString()}`)
+      const res = await businessFetch(`${API_BASE}/api/v1/business/${businessId}/applications?${params.toString()}`)
       const data = await res.json().catch(() => [])
       if (!res.ok) {
         console.error('Application reload error:', data.detail || res.status)
@@ -1045,7 +1054,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
       // owner had open when they clicked "New" - only sent on create,
       // since it can't be changed on an existing application.
       if (!editingApplication) body.role = applicationRoleTab
-      const res = await fetch(url, {
+      const res = await businessFetch(url, {
         method: editingApplication ? 'PATCH' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -1081,7 +1090,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
     if (!reviewingApplication) return
     setDecidingApplication(true)
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/applications/${reviewingApplication.public_id}`, {
+      const res = await businessFetch(`${API_BASE}/api/v1/business/${businessId}/applications/${reviewingApplication.public_id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status, review_note: reviewNote || null }),
@@ -1110,7 +1119,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const deleteApplication = async (a) => {
     if (!window.confirm(`Remove ${a.name}'s application?`)) return
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/applications/${a.public_id}`, { method: 'DELETE' })
+      const res = await businessFetch(`${API_BASE}/api/v1/business/${businessId}/applications/${a.public_id}`, { method: 'DELETE' })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'Delete failed')
       flash('Application removed')
@@ -1123,7 +1132,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   // ---------- Agent roster (approved cl_agents accounts) ----------
   const reloadAgents = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-agents`)
+      const res = await businessFetch(`${API_BASE}/api/v1/business/${businessId}/cl-agents`)
       const data = await res.json().catch(() => [])
       if (!res.ok) {
         console.error('Agent reload error:', data.detail || res.status)
@@ -1139,7 +1148,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const deleteAgent = async (a) => {
     if (!window.confirm(`Remove ${a.name}'s agent account?`)) return
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-agents/${a.public_id}`, { method: 'DELETE' })
+      const res = await businessFetch(`${API_BASE}/api/v1/business/${businessId}/cl-agents/${a.public_id}`, { method: 'DELETE' })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'Delete failed')
       flash('Agent removed')
@@ -1165,7 +1174,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const deleteVehicle = async (v) => {
     if (!window.confirm(`Remove ${v.year ? v.year + ' ' : ''}${v.make} ${v.model} from inventory?`)) return
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/vehicles/${v.public_id}`, { method: 'DELETE' })
+      const res = await businessFetch(`${API_BASE}/api/v1/business/${businessId}/vehicles/${v.public_id}`, { method: 'DELETE' })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'Delete failed')
       flash('Vehicle removed')
@@ -1179,7 +1188,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   // on a buyer's Wallet loan card ("Browse Showroom").
   const showShowroomQR = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/showroom-qr-code`)
+      const res = await businessFetch(`${API_BASE}/api/v1/business/${businessId}/showroom-qr-code`)
       const data = await res.json().catch(() => ({}))
       if (!res.ok || !data.svg) throw new Error(data.detail || 'Could not load showroom QR code')
       setShowroomQR(data)
@@ -1260,7 +1269,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
     const uploaded = []
     try {
       for (const file of toUpload) {
-        const url = await uploadImageToCloudinary(API_BASE, businessId, file, 'contract')
+        const url = await uploadImageToCloudinary(API_BASE, businessId, file, 'contract', user?.token)
         uploaded.push(url)
       }
       if (uploaded.length) setContractForm(f => ({ ...f, image_urls: [...f.image_urls, ...uploaded] }))
@@ -1333,7 +1342,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
         body.customer_public_id = contractForm.customer_public_id
         body.vehicle_public_id = contractForm.vehicle_public_id
       }
-      const res = await fetch(url, {
+      const res = await businessFetch(url, {
         method: editingContract ? 'PATCH' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -1352,7 +1361,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const deleteContract = async (c) => {
     if (!window.confirm(`Delete this contract for ${c.customer?.name || 'this customer'}? The vehicle will be freed back up as available.`)) return
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/contracts/${c.public_id}`, { method: 'DELETE' })
+      const res = await businessFetch(`${API_BASE}/api/v1/business/${businessId}/contracts/${c.public_id}`, { method: 'DELETE' })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'Delete failed')
       flash('Contract removed')
@@ -1378,7 +1387,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const loadPaymentHistory = async (contract) => {
     setLoadingHistory(true)
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/contracts/${contract.public_id}/payments`)
+      const res = await businessFetch(`${API_BASE}/api/v1/business/${businessId}/contracts/${contract.public_id}/payments`)
       setPaymentHistory(await res.json().catch(() => []))
     } catch (err) {
       console.error('Payment history error:', err)
@@ -1393,7 +1402,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
     }
     setSavingPayment(true)
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/contracts/${payingContract.public_id}/payments`, {
+      const res = await businessFetch(`${API_BASE}/api/v1/business/${businessId}/contracts/${payingContract.public_id}/payments`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1417,7 +1426,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const undoPayment = async (payment) => {
     if (!window.confirm(`Undo this ₱${Number(payment.amount).toLocaleString()} payment? The balance will be restored.`)) return
     try {
-      const res = await fetch(
+      const res = await businessFetch(
         `${API_BASE}/api/v1/business/${businessId}/contracts/${payingContract.public_id}/payments/${payment.public_id}`,
         { method: 'DELETE' }
       )
@@ -1445,7 +1454,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const loadCustomerHistory = async (customer) => {
     setLoadingCustomerHistory(true)
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-customers/${customer.public_id}/payments`)
+      const res = await businessFetch(`${API_BASE}/api/v1/business/${businessId}/cl-customers/${customer.public_id}/payments`)
       setCustomerHistory(await res.json().catch(() => []))
     } catch (err) {
       console.error('Customer payment history error:', err)
@@ -1501,7 +1510,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   const [customerQR, setCustomerQR] = useState(null) // { svg, customer_name } for the "Show QR" modal
   const showCustomerQR = async (customer) => {
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-customers/${customer.public_id}/qr-code`)
+      const res = await businessFetch(`${API_BASE}/api/v1/business/${businessId}/cl-customers/${customer.public_id}/qr-code`)
       const data = await res.json().catch(() => ({}))
       if (!res.ok || !data.svg) throw new Error(data.detail || 'Could not load QR code')
       setCustomerQR(data)
@@ -1515,7 +1524,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   // wallet without any dashboard data entry.
   const showJoinQR = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-join-qr-code`)
+      const res = await businessFetch(`${API_BASE}/api/v1/business/${businessId}/cl-join-qr-code`)
       const data = await res.json().catch(() => ({}))
       if (!res.ok || !data.svg) throw new Error(data.detail || 'Could not load join QR code — make sure the backend has been redeployed with the /cl-join-qr-code endpoint.')
       setJoinQR(data)
@@ -1530,7 +1539,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
   // scan with their own phone, or a link the owner can copy/text/share.
   const showWalletShare = async (customer) => {
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-customers/${customer.public_id}/wallet-qr-code`)
+      const res = await businessFetch(`${API_BASE}/api/v1/business/${businessId}/cl-customers/${customer.public_id}/wallet-qr-code`)
       const data = await res.json().catch(() => ({}))
       if (!res.ok || !data.svg) throw new Error(data.detail || 'Could not load wallet share code')
       setWalletShare(data)
@@ -1571,7 +1580,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
     setSavingEditPayment(true)
     try {
       const { payment, contract } = editingPayment
-      const res = await fetch(
+      const res = await businessFetch(
         `${API_BASE}/api/v1/business/${businessId}/contracts/${contract.public_id}/payments/${payment.public_id}`,
         {
           method: 'PATCH',
@@ -1613,7 +1622,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
     if (!messageTarget && !window.confirm('Send this to every customer with an email on file?')) return
     setSavingMessage(true)
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessId}/cl-announcements`, {
+      const res = await businessFetch(`${API_BASE}/api/v1/business/${businessId}/cl-announcements`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1652,6 +1661,9 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
       </header>
 
       {message && <div style={styles.toast}>{message}</div>}
+      {accessError && <div role="alert" style={{ padding: 16, background: '#fef2f2', color: '#991b1b' }}>
+        {accessError} <button type="button" onClick={onLogout}>Sign out</button>
+      </div>}
 
       <nav style={styles.tabBar}>
         {TABS.map(t => (
@@ -2571,6 +2583,7 @@ function CarLendingDashboard({ API_BASE, user, onLogout }) {
         vehicle={editingVehicle}
         apiBase={API_BASE}
         businessId={businessId}
+        ownerToken={user?.token}
         onClose={() => setShowVehicleForm(false)}
         onSaved={(msg) => { flash(msg); loadData() }}
       />

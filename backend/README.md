@@ -441,3 +441,9 @@ Leave both unset for normal operation. On shutdown any active snapshot worker
 is drained before tracing is stopped. No profiler is required to serve requests.
 
 # points_prizes update
+
+## Core hardening release
+
+See [README-core-hardening.md](README-core-hardening.md) for the required SQL
+migrations, access/billing compatibility, password migration and Apple container
+memory thresholds. Apply the migrations before deploying this release.

@@ -11,7 +11,9 @@ from types import SimpleNamespace
 from typing import Optional, Literal
 import unittest
 from unittest.mock import MagicMock
+from fastapi import HTTPException as FastAPIHTTPException
 from pydantic import BaseModel, Field, ValidationError
+from backend import business_data_access
 
 class HTTPException(Exception):
     def __init__(self, status_code, detail):
@@ -27,12 +29,14 @@ NAMES = {'branch_price_bracket', 'normalize_billing_cycle', 'get_price_for_plan'
 def namespace():
     env = dict(Optional=Optional, Literal=Literal, BaseModel=BaseModel, Field=Field,
                subscription_access_expiry=lambda b:b.get('subscription_expires_at'),billing_hold=lambda b:False,datetime=datetime, HTTPException=HTTPException, SubscriptionCheckoutRequest=SimpleNamespace,
-               Depends=lambda value: None, require_admin=lambda: True,
+               Depends=lambda value: None, Header=lambda **kwargs: kwargs.get('default', ''),
+               require_admin=lambda: True, business_data_access=business_data_access,
+               require_billing_access=lambda *args: {'role': 'owner', 'business_id': 1, 'business_public_id': 'biz'},
                SUBSCRIPTION_PLANS={'starter': {}},
                price_tiers_for_region=lambda *args: {'1': 100, '2': 200, '3': 250, '5': 400},
                normalize_country_code=lambda value: value, business_pricing_region=lambda b: 'PH', business_currency=lambda b: 'PHP', subscription_currency=lambda b: 'PHP',
                business_has_plan_feature=lambda *args: False,
-               PAYMONGO_SECRET_KEY='', paymongo_card_configured=lambda: False)
+               PAYMONGO_SECRET_KEY='sk_test_synthetic', paymongo_card_configured=lambda: False)
     nodes = []
     for node in TREE.body:
         if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id in {'BILLING_CYCLE_CONFIG', 'ANNUAL_BILLABLE_MONTHS', 'PH_BILLING_MONTHLY_DISCOUNTS'} for t in node.targets):
@@ -51,6 +55,8 @@ class BillingBranchTests(unittest.TestCase):
         self.db = MagicMock()
         self.db.table.return_value.select.return_value.eq.return_value.execute.return_value = SimpleNamespace(count=1, data=[])
         self.env['supabase'] = self.db
+        self.db.table.return_value.insert.return_value.execute.side_effect = lambda: SimpleNamespace(
+            data=[self.db.table.return_value.insert.call_args.args[0]])
 
     def test_override_prices_all_cycles_and_extra_branches(self):
         price = self.env['get_price_for_business']
@@ -133,6 +139,52 @@ class BillingBranchTests(unittest.TestCase):
                 payment=self.db.table.return_value.insert.call_args.args[0]
                 self.assertEqual(payment['amount'],total)
                 self.assertEqual(payment['billing_cycle'],cycle)
+
+    def test_checkout_does_not_expose_unrecorded_intent(self):
+        checkout = MagicMock(return_value={'intent_id': 'test-payment', 'client_key': 'synthetic-client-key'})
+        self.env.update(fx_to_php=lambda amount, currency: (amount, 1),
+                        billing_cycle_label=lambda cycle: cycle, SETUP_KIT_PRICE_PER_BRANCH=150,
+                        SUBSCRIPTION_QR_EXPIRES_SECONDS=900, create_qrph_checkout=checkout,
+                        generate_public_id=lambda: 'payment')
+        self.db.table.return_value.insert.return_value.execute.side_effect = RuntimeError('synthetic outage')
+        with self.assertRaises(FastAPIHTTPException) as error:
+            asyncio.run(self.env['create_subscription_checkout']('biz'))
+        self.assertEqual(error.exception.status_code, 503)
+        checkout.assert_called_once()
+
+    def test_signup_checkout_preserves_fresh_billing_session_for_payment_polling(self):
+        import jwt
+        business = {**self.business, 'public_id': 'biz', 'auth_version': 0}
+        secret = 'synthetic-billing-session-test-signing-key'
+        token = business_data_access.issue_billing_token(business, secret)
+        claims = jwt.decode(token, secret, algorithms=['HS256'])
+        guard = MagicMock(return_value=claims)
+        self.env.update(require_billing_access=guard,
+                        fx_to_php=lambda amount, currency: (amount, 1),
+                        billing_cycle_label=lambda cycle: cycle, SETUP_KIT_PRICE_PER_BRANCH=150,
+                        SUBSCRIPTION_QR_EXPIRES_SECONDS=900,
+                        create_qrph_checkout=MagicMock(return_value={'intent_id': 'signup-payment'}),
+                        generate_public_id=lambda: 'payment')
+        result = asyncio.run(self.env['create_subscription_checkout']('biz', authorization=f'Bearer {token}'))
+        guard.assert_called_once_with('biz', f'Bearer {token}')
+        payment = self.db.table.return_value.insert.call_args.args[0]
+        self.assertEqual(result['payment_intent_id'], 'signup-payment')
+        self.assertEqual(payment['billing_session_id'], claims['jti'])
+        self.assertTrue(business_data_access.can_read_payment(claims, payment))
+        other_token = business_data_access.issue_billing_token(business, secret)
+        other_claims = jwt.decode(other_token, secret, algorithms=['HS256'])
+        self.assertFalse(business_data_access.can_read_payment(other_claims, payment))
+
+    def test_missing_payment_migration_fails_before_provider_call(self):
+        checkout = MagicMock()
+        self.env.update(fx_to_php=lambda amount, currency: (amount, 1),
+                        billing_cycle_label=lambda cycle: cycle, SETUP_KIT_PRICE_PER_BRANCH=150,
+                        create_qrph_checkout=checkout)
+        self.db.table.return_value.select.return_value.limit.return_value.execute.side_effect = RuntimeError('missing schema')
+        with self.assertRaises(FastAPIHTTPException) as error:
+            asyncio.run(self.env['create_subscription_checkout']('biz'))
+        self.assertEqual(error.exception.status_code, 503)
+        checkout.assert_not_called()
 
     def test_admin_authorization_dependency_remains(self):
         route = next(n for n in ast.parse(SOURCE.read_text()).body if isinstance(n, ast.AsyncFunctionDef) and n.name == 'admin_update_business')

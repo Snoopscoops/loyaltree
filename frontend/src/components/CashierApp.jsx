@@ -3,7 +3,7 @@ import { Html5QrcodeScanner } from 'html5-qrcode'
 import { useLocation, useNavigate } from 'react-router-dom'
 import BenefitsCashier from './BenefitsCashier'
 import { validBenefitCoupons } from './benefitsManagementModel'
-import { cashierAttemptKey, cashierBillAmount, cashierNewAttemptKey, cashierStampBill } from './cashierBenefitsModel'
+import { cashierActsAsOwner, cashierAttemptKey, cashierBillAmount, cashierNewAttemptKey, cashierStampBill } from './cashierBenefitsModel'
 
 // Only shows the raw scan/debug panel in local dev - never in a production
 // build, since it prints internal API paths and response codes on-screen.
@@ -87,6 +87,7 @@ function CashierApp({ API_BASE }) {
   // fill out a separate cashier PIN login screen too.
   const ownerState = location.state?.ownerMode ? location.state : null
   const isOwner = !!ownerState
+  const ownerAction = cashierActsAsOwner(ownerState)
   const initialQuery = new URLSearchParams(location.search)
   const pendingNfcToken = initialQuery.get('nfc') || ''
   const nfcBusinessSlug = initialQuery.get('business') || ''
@@ -329,7 +330,7 @@ function CashierApp({ API_BASE }) {
         let membershipBenefitState = { benefits: [], membership_name: program.membership_name || 'Membership', benefits_unlocked: true, unlock: { enabled:false, unlocked:true } }
         if (cardType === 'membership' || cardType === 'hybrid' || cardType === 'employee') {
           try {
-            const benefitRes = await fetch(`${API_BASE}/api/v1/business/${scannedBusinessSlug || businessSlug}/customers/${c.public_id}/membership-benefits`, { cache:'no-store' })
+            const benefitRes = await fetch(`${API_BASE}/api/v1/business/${scannedBusinessSlug || businessSlug}/customers/${c.public_id}/membership-benefits`, { cache:'no-store', headers: { Authorization: `Bearer ${sessionToken}` } })
             const benefitData = await benefitRes.json().catch(() => ({}))
             if (benefitRes.ok) membershipBenefitState = benefitData
           } catch (_) {}
@@ -430,7 +431,7 @@ function CashierApp({ API_BASE }) {
     setLoading(true)
     const bill = cashierStampBill({ enabled: customerData.lt_benefits_enabled && !!sessionToken, amount: ltPurchaseAmount, confirmed: ltPurchaseConfirmed })
     if (bill.error) { setMessage(bill.error); setLoading(false); return }
-    const payload = { customer_public_id: customerData.public_id, stamp_kind: stampKind, ...(sessionToken ? {} : { staff_pin: staffPin }), as_owner: isOwner, ...bill.payload }
+    const payload = { customer_public_id: customerData.public_id, stamp_kind: stampKind, ...(sessionToken ? {} : { staff_pin: staffPin }), as_owner: ownerAction, ...bill.payload }
     const operation = `stamp:${stampKind}`
     const idempotencyKey = cashierAttemptKey(purchaseAttempts.current, operation, payload, cashierNewAttemptKey)
     setMessage(stampKind === 'tier' ? 'Adding Tier stamp...' : 'Adding reward stamp...')
@@ -497,7 +498,7 @@ function CashierApp({ API_BASE }) {
       return
     }
     setLoading(true)
-    const payload = { customer_public_id: customerData.public_id, amount_spent: amount, ...(sessionToken ? {} : { staff_pin: staffPin }), as_owner: isOwner }
+    const payload = { customer_public_id: customerData.public_id, amount_spent: amount, ...(sessionToken ? {} : { staff_pin: staffPin }), as_owner: ownerAction }
     const idempotencyKey = cashierAttemptKey(purchaseAttempts.current, 'points-sale', payload, cashierNewAttemptKey)
     setMessage('Adding points...')
 
@@ -559,7 +560,7 @@ function CashierApp({ API_BASE }) {
     }
 
     setLoading(true)
-    const payload = { customer_public_id: customerData.public_id, amount_spent: amount, ...(sessionToken ? {} : { staff_pin: staffPin }), as_owner: isOwner }
+    const payload = { customer_public_id: customerData.public_id, amount_spent: amount, ...(sessionToken ? {} : { staff_pin: staffPin }), as_owner: ownerAction }
     const idempotencyKey = cashierAttemptKey(purchaseAttempts.current, 'vip-sale', payload, cashierNewAttemptKey)
     setMessage('Adding Tier points...')
 
@@ -628,7 +629,7 @@ function CashierApp({ API_BASE }) {
           service_name: serviceName || null,
           entry_source: entrySource === 'nfc' ? 'nfc' : 'qr',
           ...(sessionToken ? {} : { staff_pin: staffPin }),
-          as_owner: isOwner,
+          as_owner: ownerAction,
         }),
       })
       const data = await res.json().catch(() => ({}))
@@ -643,7 +644,7 @@ function CashierApp({ API_BASE }) {
   const refreshMembershipBenefits = async () => {
     if (!customerData?.public_id || !businessSlug) return
     try {
-      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/customers/${customerData.public_id}/membership-benefits`, {cache:'no-store'})
+      const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/customers/${customerData.public_id}/membership-benefits`, {cache:'no-store', headers: { Authorization: `Bearer ${sessionToken}` }})
       const data = await res.json().catch(() => ({}))
       if (res.ok) setCustomerData(prev => prev ? {
         ...prev,
@@ -668,7 +669,7 @@ function CashierApp({ API_BASE }) {
       const res = await fetch(`${API_BASE}/api/v1/business/${businessSlug}/membership-benefit/redeem`, {
         method:'POST',
         headers:{'Content-Type':'application/json','X-Idempotency-Key':idempotencyKey,...(sessionToken?{Authorization:`Bearer ${sessionToken}`}:{})},
-        body:JSON.stringify({customer_public_id:customerData.public_id,benefit_id:benefit.id,quantity:1,...(sessionToken?{}:{staff_pin:staffPin}),as_owner:isOwner}),
+        body:JSON.stringify({customer_public_id:customerData.public_id,benefit_id:benefit.id,quantity:1,...(sessionToken?{}:{staff_pin:staffPin}),as_owner:ownerAction}),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'Could not redeem benefit')
@@ -695,7 +696,7 @@ function CashierApp({ API_BASE }) {
           customer_public_id: customerData.public_id,
           action,
           ...(sessionToken ? {} : { staff_pin: staffPin }),
-          as_owner: isOwner,
+          as_owner: ownerAction,
         }),
       })
       const data = await res.json().catch(() => ({}))
@@ -726,7 +727,7 @@ function CashierApp({ API_BASE }) {
         body: JSON.stringify({
           customer_public_id: customerData.public_id,
           ...(sessionToken ? {} : { staff_pin: staffPin }),
-          as_owner: isOwner,
+          as_owner: ownerAction,
         })
       })
 
@@ -781,7 +782,7 @@ function CashierApp({ API_BASE }) {
           customer_public_id: customerData.public_id,
           ...(overrideCount ? { session_count: overrideCount } : {}),
           ...(sessionToken ? {} : { staff_pin: staffPin }),
-          as_owner: isOwner,
+          as_owner: ownerAction,
         })
       })
 
@@ -820,7 +821,7 @@ function CashierApp({ API_BASE }) {
         body: JSON.stringify({
           customer_public_id: customerData.public_id,
           ...(sessionToken ? {} : { staff_pin: staffPin }),
-          as_owner: isOwner,
+          as_owner: ownerAction,
         })
       })
 
@@ -855,7 +856,7 @@ function CashierApp({ API_BASE }) {
           customer_public_id: customerData.public_id,
           prize_id: prize.id,
           ...(sessionToken ? {} : { staff_pin: staffPin }),
-          as_owner: isOwner,
+          as_owner: ownerAction,
         })
       })
 
@@ -892,7 +893,7 @@ function CashierApp({ API_BASE }) {
           customer_public_id: customerData.public_id,
           ...(coupon?.public_id ? { coupon_public_id: coupon.public_id } : {}),
           ...(sessionToken ? {} : { staff_pin: staffPin }),
-          as_owner: isOwner,
+          as_owner: ownerAction,
         })
       })
 

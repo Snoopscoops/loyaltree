@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
-from fastapi import HTTPException, Query
+from fastapi import HTTPException, Query, Header
 from backend import owner_activity as activity
 
 
@@ -256,7 +256,14 @@ SOURCE = Path(__file__).resolve().parents[1] / 'main.py'
 
 def dashboard_namespace():
     names = {'_owner_dashboard_activity_stats', 'get_stats', 'get_stamp_rewards'}
-    env = dict(Optional=Optional, Query=Query, HTTPException=HTTPException, asyncio=asyncio,
+    def scoped_owner(public_id, authorization):
+        # Metric fixtures represent an already verified owner. Real HTTP auth
+        # and cross-business denial are covered by the access-control suite.
+        if public_id != 'sample-business' or authorization != 'Bearer fixture-owner':
+            raise HTTPException(401, 'Synthetic owner session required')
+        return {'role': 'owner', 'business_slug': public_id}
+    env = dict(Optional=Optional, Query=Query, Header=Header, HTTPException=HTTPException, asyncio=asyncio,
+        require_owner_session=MagicMock(side_effect=scoped_owner),
         defaultdict=defaultdict, build_owner_activity=activity.build_owner_activity,
         _parse_ts=parse_ts, LOYALTY_TIMEZONE=TZ, _loyalty_today=lambda: NOW.astimezone(TZ).date(),
         _date_only=lambda value: date.fromisoformat(str(value)[:10]) if value else None,
@@ -337,7 +344,7 @@ class DashboardStatsTests(unittest.TestCase):
         self.env.update(supabase=db, safe_get_business=lambda _: self.business,
             safe_get_loyalty_program=lambda *args, **kwargs: {'id': 2, 'card_type': 'stamp', 'stamp_goal': 5},
             _owner_dashboard_activity_stats=MagicMock(return_value={'total_customer_visits': 3}))
-        result = asyncio.run(self.env['get_stats']('sample-business', 'program-two'))
+        result = asyncio.run(self.env['get_stats']('sample-business', 'program-two', authorization='Bearer fixture-owner'))
         self.assertEqual(result['total_customers'], 1)
         self.assertEqual(result['total_stamps'], 5)
         self.assertIn('unlocked_rewards', result)
@@ -348,7 +355,7 @@ class DashboardStatsTests(unittest.TestCase):
     def test_unknown_program_remains_404(self):
         self.env.update(safe_get_business=lambda _: self.business, safe_get_loyalty_program=lambda *args, **kwargs: None)
         with self.assertRaises(HTTPException) as error:
-            asyncio.run(self.env['get_stats']('sample-business', 'missing'))
+            asyncio.run(self.env['get_stats']('sample-business', 'missing', authorization='Bearer fixture-owner'))
         self.assertEqual(error.exception.status_code, 404)
 
     def test_optional_metric_failure_preserves_valid_customer_count(self):
@@ -357,7 +364,7 @@ class DashboardStatsTests(unittest.TestCase):
             safe_get_business=lambda _: self.business,
             safe_get_loyalty_program=lambda *args, **kwargs: {'id': 2, 'card_type': 'stamp'},
             _owner_dashboard_activity_stats=MagicMock(side_effect=TimeoutError('metrics read failed')))
-        result = asyncio.run(self.env['get_stats']('sample-business', 'program-two'))
+        result = asyncio.run(self.env['get_stats']('sample-business', 'program-two', authorization='Bearer fixture-owner'))
         self.assertEqual(result['total_customers'], 1)
         self.assertTrue(result['customer_count_available'])
         self.assertEqual(result['total_stamps'], 3)

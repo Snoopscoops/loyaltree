@@ -81,7 +81,7 @@ class CouponTests(unittest.TestCase):
         source=Path(__file__).resolve().parents[1]/'main.py'
         node=next(n for n in ast.parse(source.read_text()).body if isinstance(n,ast.AsyncFunctionDef) and n.name=='overdue_business_guard');node.decorator_list=[]
         row={'subscription_expires_at':'2020-01-01','last_paid_at':'2019-01-01'}
-        env=dict(Request=Request,HTTPException=HTTPException,re=re,billing_hold=billing_hold,JSONResponse=JSONResponse,business_for_access_check=lambda slug:row,get_admin_token=lambda:'admin')
+        env=dict(asyncio=asyncio,Request=Request,HTTPException=HTTPException,re=re,billing_hold=billing_hold,JSONResponse=JSONResponse,business_for_access_check=lambda slug:row,get_admin_token=lambda:'admin')
         exec(compile(ast.Module(body=[node],type_ignores=[]),str(source),'exec'),env)
         async def next_call(req):return JSONResponse({'ok':True})
         def request(path,method='GET',headers=[]):return Request({'type':'http','method':method,'path':path,'headers':headers,'query_string':b''})

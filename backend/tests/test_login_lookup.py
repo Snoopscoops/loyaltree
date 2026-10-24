@@ -5,7 +5,10 @@ from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
+import sys
 from unittest.mock import Mock
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import password_security
 
 SOURCE=Path(__file__).with_name('main.py')
 if not SOURCE.exists(): SOURCE=Path(__file__).resolve().parents[1]/'main.py'
@@ -42,6 +45,11 @@ class LoginLookupTests(unittest.TestCase):
     def setUp(self):
         self.record=Mock()
         self.env=dict(LoginRequest=object,Request=object,HTTPException=HTTPError,
+            asyncio=asyncio,owner_password_security=SimpleNamespace(
+                verify_owner_password=password_security.verify_owner_password,
+                migrate_owner_password=lambda db,business,password:business,
+                PasswordWorkBusy=password_security.PasswordWorkBusy,
+                OwnerCredentialsChanged=password_security.OwnerCredentialsChanged),
             _check_auth_bruteforce=lambda *args:None,get_admin_token=lambda:None,
             SUPER_ADMIN_EMAIL='admin@example.invalid',SUPER_ADMIN_PASSWORD='admin-test',
             BASE_URL='https://example.invalid',

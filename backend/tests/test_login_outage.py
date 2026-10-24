@@ -3,9 +3,12 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
+import sys
 from unittest.mock import MagicMock
 import httpx
 from fastapi import HTTPException
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import password_security
 
 class FakeDB:
     def __init__(self,business=None,fail=False):
@@ -31,6 +34,11 @@ class LoginOutageTests(unittest.TestCase):
         node.decorator_list=[]
         fail=MagicMock()
         env=dict(LoginRequest=object,Request=object,HTTPException=HTTPException,supabase=db,
+                 asyncio=asyncio,owner_password_security=SimpleNamespace(
+                     verify_owner_password=password_security.verify_owner_password,
+                     migrate_owner_password=lambda db,business,password:business,
+                     PasswordWorkBusy=password_security.PasswordWorkBusy,
+                     OwnerCredentialsChanged=password_security.OwnerCredentialsChanged),
                  _check_auth_bruteforce=lambda *a:None,get_admin_token=lambda:None,
                  SUPER_ADMIN_EMAIL='',SUPER_ADMIN_PASSWORD='',hash_password=lambda x:'hash:'+x,
                  _clear_auth_failures=lambda *a:None,_record_auth_failure=fail,

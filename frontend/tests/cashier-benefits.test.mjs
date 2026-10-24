@@ -1,6 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { cashierAttemptKey, cashierBillAmount, cashierNewAttemptKey, cashierStampBill } from '../src/components/cashierBenefitsModel.js'
+import { cashierActsAsOwner, cashierAttemptKey, cashierBillAmount, cashierNewAttemptKey, cashierStampBill } from '../src/components/cashierBenefitsModel.js'
+
+test('dashboard scanner presentation does not make managers or cashiers act as owners', () => {
+  const dashboard = { ownerMode: true, ownerToken: 'signed-session' }
+  for (const sessionRole of ['manager', 'cashier', 'billing', undefined]) assert.equal(cashierActsAsOwner({ ...dashboard, sessionRole }), false)
+  assert.equal(cashierActsAsOwner({ ...dashboard, sessionRole: 'owner' }), true)
+  assert.equal(cashierActsAsOwner(null), false)
+  assert.equal(cashierActsAsOwner({ ...dashboard, sessionRole: 'owner', ownerToken: '' }), false)
+})
 
 test('stamp scans and ordinary stamps never become LT purchases without an explicit positive confirmed bill', () => {
   assert.deepEqual(cashierStampBill({ enabled: true, amount: '', confirmed: true }), { payload: {} })

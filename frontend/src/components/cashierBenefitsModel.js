@@ -1,4 +1,8 @@
 // A bill must be explicitly confirmed; scanning or adding a plain stamp is not a sale.
+export function cashierActsAsOwner(dashboardState) {
+  return dashboardState?.ownerMode === true && dashboardState?.sessionRole === 'owner' && Boolean(dashboardState?.ownerToken)
+}
+
 export function cashierBillAmount(value) {
   const text = String(value ?? '').trim()
   if (!/^\d+(?:\.\d{1,2})?$/.test(text)) return null

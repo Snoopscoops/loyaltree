@@ -10,7 +10,7 @@ import hashlib
 import hmac
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 import unittest
 
 from fastapi import HTTPException, BackgroundTasks
@@ -160,6 +160,10 @@ def registration_namespace(db):
         generate_business_public_id=lambda name: 'test-cafe',
         generate_public_id=lambda: 'test-record',
         hash_password=lambda password: 'test-password-hash',
+        owner_password_security=SimpleNamespace(hash_owner_password=AsyncMock(
+            return_value='pbkdf2_sha256$600000$AAAAAAAAAAAAAAAAAAAAAA$' + '0' * 64)),
+        STAFF_SESSION_SECRET='local test signing configuration',
+        create_billing_session_token=lambda business: 'test-billing-session',
         _decode_signature_data_url=lambda value: b'test-signature',
         lookup_trial_coupon=lambda code: {'code': code, 'trial_days': 7},
         coupon_available=lambda row, *args: row,
@@ -242,6 +246,9 @@ class TrialRegistrationTests(unittest.TestCase):
         self.assertLess(db.events.index(('business_agreements', 'insert')),
                         db.events.index(('redeem_business_trial', 'rpc')))
         self.assertTrue(result['success'])
+        self.assertEqual(result['billing_token'], 'test-billing-session')
+        self.assertNotIn('token', result)
+        self.assertNotIn('owner-token-', str(result))
         self.assertTrue(result['agreement_signed'])
         self.assertEqual(result['trial'], TRIAL)
         self.assertEqual(db.businesses[1]['status'], 'ACTIVE')
@@ -256,6 +263,16 @@ class TrialRegistrationTests(unittest.TestCase):
         self.assertEqual(db.businesses[1]['status'], 'PENDING')
         self.assertEqual(db.rpc_calls, [])
         self.assertIn(1, db.agreements)
+
+    def test_missing_signing_configuration_fails_before_creating_an_account(self):
+        db = FakeDB()
+        env = registration_namespace(db)
+        env['STAFF_SESSION_SECRET'] = ''
+        with self.assertRaises(HTTPException) as caught:
+            asyncio.run(env['register'](signup_payload(), SimpleNamespace(headers={}), BackgroundTasks()))
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertFalse(db.businesses)
+        self.assertFalse(db.events)
 
     def test_failed_agreement_storage_never_redeems_trial(self):
         db = FakeDB(fail_agreement=True)

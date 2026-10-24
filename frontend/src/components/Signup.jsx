@@ -5,6 +5,8 @@ import logo128 from './logo-128.png'
 import { COUNTRY_OPTIONS, formatMoney } from './currency'
 import legalPolicy from '../legal-content.json'
 import { BILLING_TERMS, planPrice as priceFor, billingSavings } from './billingPricing'
+import { readOnboardingSession, saveOnboardingSession, clearOnboardingSession,
+  pendingPaymentForReturn, readPaymentReturn, renewBillingSession, ONBOARDING_SESSION_KEY } from './billingSession'
 
 const SELF_SERVE_BILLING_CYCLES = new Set(['monthly', '3_months', '6_months', 'annual'])
 
@@ -204,6 +206,12 @@ function Signup({ API_BASE }) {
   const [loading,setLoading]=useState(false)
   const [businessSlug,setBusinessSlug]=useState('')
   const [registered,setRegistered]=useState(false)
+  const [billingToken,setBillingToken]=useState('')
+  const [billingSessionExpired,setBillingSessionExpired]=useState(false)
+  const [recoveryEmail,setRecoveryEmail]=useState('')
+  const [recoveryPassword,setRecoveryPassword]=useState('')
+  const [recoveringBilling,setRecoveringBilling]=useState(false)
+  const [recoveryError,setRecoveryError]=useState('')
   const [coupon,setCoupon]=useState(()=>new URLSearchParams(window.location.search).get('coupon')||'')
   const [couponPreview,setCouponPreview]=useState(null)
   const [couponError,setCouponError]=useState('')
@@ -262,11 +270,32 @@ function Signup({ API_BASE }) {
       }
     }
 
-    let restored=null
-    if(params.get('paymongo_return')==='1'){
-      try{restored=JSON.parse(localStorage.getItem('loyaltree_pending_onboarding')||'null')}catch(_){restored=null}
+    let restored=readOnboardingSession()
+    if(!restored&&params.get('paymongo_return')==='1'){
+      // A previous release stored non-auth onboarding details in localStorage.
+      // Migrate only the context; require account verification for billing.
+      try{
+        const legacy=JSON.parse(localStorage.getItem(ONBOARDING_SESSION_KEY)||'null')
+        if(legacy?.business_slug){
+          restored={business_slug:legacy.business_slug,trial:legacy.trial||null,
+            billing_cycle:legacy.billing_cycle,pricing_region:legacy.pricing_region,billing_token:''}
+          saveOnboardingSession(restored)
+          localStorage.removeItem(ONBOARDING_SESSION_KEY)
+        }
+      }catch(_){/* Verification can also be resumed from the owner sign-in. */}
+    }
+    if(!restored){
+      const returned=readPaymentReturn(window.location.search)
+      if(returned){
+        // A bank redirect can open a new browser/tab without our storage. Only
+        // restore the recovery screen; email/password verification is required.
+        restored={business_slug:returned.business_slug,billing_token:''}
+        saveOnboardingSession(restored)
+      }
+    }
       if(restored?.business_slug){
         setActiveTrial(restored.trial||null);setBusinessSlug(restored.business_slug);setRegistered(true);setWizardStep(6)
+        setBillingToken(restored.billing_token||'')
         setForm(f=>({
           ...f,
           billing_cycle:normalizeSelfServeBillingCycle(restored.billing_cycle||f.billing_cycle, restored?.pricing_region||f.country_code),
@@ -274,7 +303,6 @@ function Signup({ API_BASE }) {
           pricing_region:restored.pricing_region||f.pricing_region
         }))
       }
-    }
     loadPricingContext(restored?.pricing_region||requestedCountry||undefined)
   },[API_BASE])
   const chooseCountry=(code)=>loadPricingContext(code)
@@ -397,7 +425,11 @@ function Signup({ API_BASE }) {
       if(!res.ok)throw new Error(apiErrorMessage(data,'Signup failed'))
       setActiveTrial(data.trial||null)
       setBusinessSlug(data.business_slug); setRegistered(true)
-      localStorage.setItem('loyaltree_pending_onboarding',JSON.stringify({business_slug:data.business_slug,trial:data.trial||null,contact_person:form.contact_person,billing_cycle:billingCycle,pricing_region:form.pricing_region||form.country_code,started_at:new Date().toISOString()}))
+      const token=data.billing_token||data.token||''
+      setBillingToken(token);setBillingSessionExpired(false);setRecoveryEmail(form.email)
+      saveOnboardingSession({business_slug:data.business_slug,billing_token:token,trial:data.trial||null,
+        billing_cycle:billingCycle,pricing_region:form.pricing_region||form.country_code})
+      setForm(current=>({...current,password:''}))
       setWizardStep(6)
       return true
     }catch(err){
@@ -406,6 +438,32 @@ function Signup({ API_BASE }) {
       if(msg.toLowerCase().includes('agreement details changed') || msg.toLowerCase().includes('legal documents have been updated')) loadAgreement()
       return false
     }finally{setLoading(false)}
+  }
+
+  const recoverBilling=async(event)=>{
+    event.preventDefault()
+    setRecoveringBilling(true);setRecoveryError('')
+    try{
+      const pending=pendingPaymentForReturn(businessSlug,window.location.search)
+      const renewed=await renewBillingSession(fetch,API_BASE,{
+        email:recoveryEmail.trim(),password:recoveryPassword,
+        payment_intent_id:pending?.payment_intent_id,
+      })
+      if(!renewed?.billing_token||renewed.business_slug!==businessSlug){
+        throw new Error('Please use the business account you just registered, or sign in to manage its billing.')
+      }
+      saveOnboardingSession({...readOnboardingSession(),business_slug:businessSlug,
+        billing_token:renewed.billing_token,trial:activeTrial,billing_cycle:form.billing_cycle,
+        pricing_region:form.pricing_region||form.country_code})
+      setBillingToken(renewed.billing_token);setBillingSessionExpired(false)
+    }catch(failure){setRecoveryError(failure.message||'Could not verify your business account. Please try again.')}
+    finally{setRecoveringBilling(false);setRecoveryPassword('')}
+  }
+
+  const continueToLogin=()=>{
+    clearOnboardingSession()
+    localStorage.setItem('loyaltree_continue_onboarding','1')
+    navigate('/login?onboarding=1')
   }
 
   const steps=['Apply','Business Profile','Logo', pricingContext.setup_kit_available ? 'Plan + PR Kit' : 'Plan','Review + Sign',couponPreview||activeTrial?'Start trial':'Pay']
@@ -482,9 +540,25 @@ function Signup({ API_BASE }) {
           </div>
         </>}
       </section>}
-      {wizardStep===6&&activeTrial&&<section><h1>Your {activeTrial.trial_days}-day free trial is active!</h1><p>Trial ends {new Date(activeTrial.trial_ends_at).toLocaleString('en-PH',{timeZone:'Asia/Manila'})} (PH). Sign in to set up your loyalty program.</p><button style={styles.primary} onClick={()=>{localStorage.setItem('loyaltree_continue_onboarding','1');navigate('/login?onboarding=1')}}>Sign in & set up your business →</button></section>}
+      {wizardStep===6&&activeTrial&&<section><h1>Your {activeTrial.trial_days}-day free trial is active!</h1><p>Trial ends {new Date(activeTrial.trial_ends_at).toLocaleString('en-PH',{timeZone:'Asia/Manila'})} (PH). Sign in to set up your loyalty program.</p><button style={styles.primary} onClick={continueToLogin}>Sign in & set up your business →</button></section>}
       {wizardStep===6&&!activeTrial&&<section><p style={styles.eyebrow}>6 · PAYMENT</p><h1 style={styles.title}>Activate your business</h1><p style={styles.subtitle}>Your signed agreement has been recorded. Complete your payment to activate the business, then sign in and continue the LoyaltyTree onboarding guide.</p>
-        {loading?<div style={styles.loadingBox}>Creating your business account…</div>:businessSlug?<SubscriptionPayment API_BASE={API_BASE} businessSlug={businessSlug} initialBillingCycle={form.billing_cycle} title="Pay & Activate" subtitle={(form.setup_kit_requested&&pricingContext.setup_kit_available)?`Your total includes your ${BILLING_TERMS[form.billing_cycle]?.label || 'Monthly'} subscription plus ₱${kitTotal.toLocaleString()} for the PR Kit (${branchCount} × ₱150).`:`Pay your selected ${BILLING_TERMS[form.billing_cycle]?.label || 'Monthly'} plan in ${pricingContext.currency} to activate your business.`} successMessage="🎉 Payment received — your business is active!" onPaid={()=>{localStorage.setItem('loyaltree_continue_onboarding','1');navigate('/login?onboarding=1')}}/>:<div style={styles.error}>The account was not created. Go back to Review + Sign and try again.</div>}
+        {loading?<div style={styles.loadingBox}>Creating your business account…</div>:businessSlug?(billingToken&&!billingSessionExpired?
+          <SubscriptionPayment API_BASE={API_BASE} businessSlug={businessSlug} sessionToken={billingToken} onboarding
+            onSessionExpired={()=>setBillingSessionExpired(true)} initialBillingCycle={form.billing_cycle}
+            title="Pay & Activate" subtitle={(form.setup_kit_requested&&pricingContext.setup_kit_available)?`Your total includes your ${BILLING_TERMS[form.billing_cycle]?.label || 'Monthly'} subscription plus ₱${kitTotal.toLocaleString()} for the PR Kit (${branchCount} × ₱150).`:`Pay your selected ${BILLING_TERMS[form.billing_cycle]?.label || 'Monthly'} plan in ${pricingContext.currency} to activate your business.`}
+            successMessage="🎉 Payment received — your business is active!" onPaid={continueToLogin}/>
+          :<form onSubmit={recoverBilling} style={styles.kitCard}>
+            <div style={{width:'100%'}}>
+              <h2>Continue your payment</h2>
+              <p>Your business account already exists. Verify your account to continue securely; you do not need to register again.</p>
+              <Field label="Business email"><input type="email" autoComplete="username" required value={recoveryEmail} onChange={e=>setRecoveryEmail(e.target.value)} style={styles.input}/></Field>
+              <Field label="Password"><input type="password" autoComplete="current-password" required value={recoveryPassword} onChange={e=>setRecoveryPassword(e.target.value)} style={styles.input}/></Field>
+              {recoveryError&&<p role="alert" style={styles.error}>{recoveryError}</p>}
+              <button type="submit" disabled={recoveringBilling} style={styles.primary}>{recoveringBilling?'Verifying account…':'Verify & continue payment'}</button>
+              <p><Link to="/login">Or sign in to manage billing</Link></p>
+            </div>
+          </form>)
+          :<div style={styles.error}>The account was not created. Go back to Review + Sign and try again.</div>}
       </section>}
       {error&&<div style={styles.error}>{error}</div>}
       {wizardStep<5&&<div style={styles.actions}>{wizardStep>1?<button type="button" onClick={back} style={styles.secondary}>← Back</button>:<span/>}<button type="button" onClick={next} disabled={logoUpload.uploading} style={styles.primary}>Continue →</button></div>}
