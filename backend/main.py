@@ -45,6 +45,11 @@ except ImportError:
     from business_welcome_email import build_business_getting_started_email
 
 try:
+    from . import business_data_access
+except ImportError:
+    import business_data_access
+
+try:
     from .trial_coupons import register_trial_routes, coupon_available, billing_hold, subscription_access_expiry
 except ImportError:
     from trial_coupons import register_trial_routes, coupon_available, billing_hold, subscription_access_expiry
@@ -1624,6 +1629,19 @@ def validate_owner_auth_version(claims: dict, business=None):
     return owner_password_security.validate_business_auth_version(supabase, claims, business)
 
 
+async def _pos_internal_owner_authorization(business: dict):
+    """Bridge an already authenticated POS device into the canonical ledger.
+
+    This is server-only: callers must have checked the device, transaction and
+    customer business scope. No endpoint exposes the short-lived credential.
+    """
+    fresh = await asyncio.to_thread(owner_password_security._read_auth_business,
+        supabase, {'business_public_id': business.get('public_id')})
+    if str(fresh.get('id')) != str(business.get('id')):
+        raise HTTPException(403, 'POS business scope does not match')
+    return f"Bearer {create_owner_session_token(fresh, ttl_seconds=60)}"
+
+
 def require_owner_session(public_id: str, authorization: str):
     """Require a valid signed owner token scoped to the business in the URL."""
     if not authorization or not authorization.startswith('Bearer '):
@@ -1710,6 +1728,56 @@ def require_announcement_session(public_id: str, authorization: str):
         _, business, manager, branch = require_branch_manager_session(public_id, authorization)
         return role, business, manager, branch
     raise HTTPException(status_code=403, detail='Owner or manager access required')
+
+
+def create_billing_session_token(business: dict, resume_payment_intent_id=None):
+    if not STAFF_SESSION_SECRET:
+        raise HTTPException(503, 'Account authentication is temporarily unavailable')
+    return business_data_access.issue_billing_token(
+        business, STAFF_SESSION_SECRET, resume_payment_intent_id=resume_payment_intent_id)
+
+
+def require_billing_access(public_id: str, authorization: str):
+    if not authorization or not authorization.startswith('Bearer '):
+        raise HTTPException(401, 'Sign in to manage billing')
+    claims = verify_staff_session_token(authorization.split(' ', 1)[1])
+    if not claims:
+        raise HTTPException(401, 'Billing session expired. Please sign in again')
+    if claims.get('business_public_id') != public_id:
+        raise HTTPException(403, 'Session does not match this business')
+    if claims.get('role') == 'owner':
+        return require_owner_session(public_id, authorization)
+    if (claims.get('role') != 'billing' or claims.get('purpose') != 'subscription_billing'
+            or not claims.get('jti')):
+        raise HTTPException(403, 'Owner or signup billing access required')
+    owner_password_security.validate_business_auth_version(
+        supabase, claims, allowed_roles=('billing',))
+    return claims
+
+
+def _business_access_status(public_id: str, authorization: str):
+    """Minimal entitlement information, shared by owners and active staff."""
+    claims = get_staff_session_claims(public_id, authorization)
+    if not claims:
+        raise HTTPException(401, 'Authentication required')
+    business = business_for_access_check(public_id)
+    if claims.get('role') != 'owner':
+        if not claims.get('staff_id'):
+            raise HTTPException(401, 'Staff authentication required')
+        try:
+            rows = (supabase.table('staff').select('id,business_id,is_active,role')
+                    .eq('id', claims['staff_id']).eq('business_id', business['id'])
+                    .limit(1).execute().data or [])
+        except Exception as exc:
+            raise HTTPException(503, 'Staff authentication is temporarily unavailable') from exc
+        if (not rows or rows[0].get('is_active') is False or
+                str(rows[0].get('role') or 'cashier').lower() != claims.get('role')):
+            raise HTTPException(403, 'Staff access is no longer assigned')
+    return {
+        'billing_hold': billing_hold(business),
+        'trial_ends_at': business.get('trial_ends_at'),
+        'last_paid_at': business.get('last_paid_at'),
+    }
 
 
 def _supabase_server_key_role(key: str) -> Optional[str]:
@@ -13932,6 +14000,7 @@ def _api_limit_for_path(path: str, method: str):
 profiler.checkpoint('helpers_and_models_ready')
 app = FastAPI(title='LoyaltyTree API')
 
+
 @app.middleware('http')
 async def prefetch_owner_auth_version(request: Request, call_next):
     """Fresh owner reset-revocation reads never block the async request loop."""
@@ -13941,7 +14010,6 @@ async def prefetch_owner_auth_version(request: Request, call_next):
         async with owner_password_security.owner_auth_request(supabase, claims):
             return await call_next(request)
     return await call_next(request)
-
 
 def business_for_access_check(public_id: str) -> dict:
     """Unlike optional page reads, a failed billing lookup cannot grant access."""
@@ -13973,7 +14041,7 @@ async def overdue_business_guard(request: Request, call_next):
         is_admin = bool(admin_token and request.headers.get('authorization') == f'Bearer {admin_token}')
         if not billing_route and not public_read and not is_admin and suffix not in ('/help', '/help/question-event'):
             try:
-                business = business_for_access_check(slug)
+                business = await asyncio.to_thread(business_for_access_check, slug)
             except HTTPException as exc:
                 return JSONResponse(status_code=exc.status_code, content={'detail': exc.detail})
             if billing_hold(business):
@@ -14097,6 +14165,21 @@ async def check_env(request: Request, call_next):
     return await call_next(request)
 
 lookup_trial_coupon = register_trial_routes(app, supabase, require_admin)
+
+
+@app.middleware('http')
+async def private_response_cache_policy(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if (path.startswith('/api/v1/auth/') or path == '/api/v1/me' or
+            (path.startswith('/api/v1/business/') and request.headers.get('authorization'))):
+        response.headers['Cache-Control'] = 'private, no-store'
+    if path.startswith('/api/v1/business/'):
+        vary = [value.strip() for value in response.headers.get('Vary', '').split(',') if value.strip()]
+        if not any(value.lower() == 'authorization' for value in vary):
+            vary.append('Authorization')
+        response.headers['Vary'] = ', '.join(vary)
+    return response
 
 # AUTH ROUTES
 
@@ -14757,7 +14840,9 @@ async def register(biz: BusinessCreate, request: Request, background_tasks: Back
         "success": True,
         "business_slug": public_id,
         "business_name": biz.name,
-        "token": "owner-token-" + public_id,
+        "billing_token": create_billing_session_token({
+            'id': business_id, 'public_id': public_id, 'auth_version': 0,
+        }),
         "logo_url": biz.logo_url,
         "business_type": biz.business_type,
         "plan": plan,
@@ -15046,7 +15131,8 @@ async def update_business_onboarding_progress(public_id: str, item: BusinessOnbo
     return {'success': True, **patch}
 
 @app.get("/api/v1/business/{public_id}/setup-kit")
-async def get_setup_kit(public_id: str):
+async def get_setup_kit(public_id: str, authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail='Business not found')
@@ -15054,7 +15140,8 @@ async def get_setup_kit(public_id: str):
     return setup_kit_payload(rows[0], business) if rows else None
 
 @app.patch("/api/v1/business/{public_id}/setup-kit")
-async def update_setup_kit(public_id: str, item: SetupKitOwnerUpdate):
+async def update_setup_kit(public_id: str, item: SetupKitOwnerUpdate, authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail='Business not found')
@@ -20394,11 +20481,86 @@ async def admin_delete_platform_announcement(announcement_id: str, _: bool = Dep
 # API ROUTES
 
 @app.get("/api/v1/business/{public_id}")
-async def get_business_api(public_id: str):
+async def get_business_api(public_id: str, authorization: str = Header(default='')):
+    if authorization:
+        require_owner_session(public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
-    return business
+    return (business_data_access.owner_business(business) if authorization
+            else business_data_access.public_business(business))
+
+
+class BillingSessionRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=1, max_length=1024)
+    payment_intent_id: Optional[str] = Field(default=None, max_length=100)
+
+
+@app.post('/api/v1/auth/billing-session')
+async def recover_billing_session(req: BillingSessionRequest, request: Request):
+    """Resume signup billing using verified credentials, never a slug alone."""
+    _check_auth_bruteforce('owner', request, req.email)
+    if not supabase:
+        raise HTTPException(503, 'Billing sign-in is temporarily unavailable')
+    try:
+        business = await asyncio.to_thread(
+            lambda: _login_lookup_one(supabase.table('businesses').select('*'), req.password,
+                                     email=req.email, owner_password=True))
+    except owner_password_security.PasswordWorkBusy as exc:
+        raise HTTPException(503, 'Sign-in is busy. Please retry.', headers={'Retry-After': '1'}) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(503, 'Billing sign-in is temporarily unavailable') from exc
+    if not business:
+        _record_auth_failure('owner', request, req.email)
+        raise HTTPException(401, 'Invalid email or password')
+    if str(business.get('status') or '').upper() not in ('PENDING', 'ACTIVE'):
+        raise HTTPException(403, 'Please contact support about this business account')
+    if req.payment_intent_id:
+        try:
+            rows = await asyncio.to_thread(lambda: (
+                supabase.table('subscription_payments').select('id')
+                .eq('business_id', business['id'])
+                .eq('paymongo_payment_intent_id', req.payment_intent_id).limit(1).execute().data or []))
+        except Exception as exc:
+            raise HTTPException(503, 'Could not verify the payment attempt. Please retry.') from exc
+        if not rows:
+            raise HTTPException(404, 'Payment attempt not found for this business')
+    _clear_auth_failures('owner', request, req.email)
+    return {
+        'billing_token': create_billing_session_token(business, req.payment_intent_id),
+        'business_slug': business['public_id'],
+        'expires_in_seconds': 3600,
+    }
+
+
+@app.get('/api/v1/business/{public_id}/subscription/access')
+async def get_business_access_status(public_id: str, authorization: str = Header(default='')):
+    return await asyncio.to_thread(_business_access_status, public_id, authorization)
+
+
+@app.get('/api/v1/business/{public_id}/subscription/payments/{payment_intent_id}')
+async def get_subscription_payment(public_id: str, payment_intent_id: str, authorization: str = Header(default='')):
+    claims = require_billing_access(public_id, authorization)
+    business = owner_password_security.validate_business_auth_version(
+        supabase, claims, allowed_roles=('owner', 'billing'))
+    try:
+        rows = await asyncio.to_thread(lambda: (
+            supabase.table('subscription_payments').select('*')
+            .eq('business_id', business['id']).eq('paymongo_payment_intent_id', payment_intent_id)
+            .limit(1).execute().data or []))
+    except Exception as exc:
+        raise HTTPException(503, 'Payment status is temporarily unavailable') from exc
+    if not rows:
+        raise HTTPException(404, 'Payment attempt not found')
+    if not business_data_access.can_read_payment({**claims, 'business_id': business['id']}, rows[0]):
+        raise HTTPException(403, 'This billing session cannot access that payment')
+    result = business_data_access.public_payment(rows[0])
+    if result.get('status') == 'paid' and result.get('fulfillment_status') != 'fulfilled':
+        result['status'] = 'review_required'
+    return result
 
 # SUBSCRIPTION PAYMENTS (PayMongo QR Ph)
 # Flow: owner opens their billing page -> frontend POSTs to /checkout -> we
@@ -20410,7 +20572,8 @@ async def get_business_api(public_id: str):
 # the moment the webhook has landed.
 
 @app.post("/api/v1/business/{public_id}/subscription/checkout")
-async def create_subscription_checkout(public_id: str, req: Optional[SubscriptionCheckoutRequest] = None):
+async def create_subscription_checkout(public_id: str, req: Optional[SubscriptionCheckoutRequest] = None, authorization: str = Header(default='')):
+    billing_claims = require_billing_access(public_id, authorization)
     if not supabase:
         raise HTTPException(status_code=503, detail="Database not connected")
     business = safe_get_business(public_id)
@@ -20514,6 +20677,7 @@ async def create_subscription_checkout(public_id: str, req: Optional[Subscriptio
         supabase.table("subscription_payments").insert({
             'public_id': payment_public_id,
             'business_id': business.get('id'),
+            'billing_session_id': billing_claims.get('jti') if billing_claims.get('role') == 'billing' else None,
             'paymongo_payment_intent_id': checkout['intent_id'],
             'payment_provider': 'paymongo',
             'payment_method': payment_method,
@@ -20632,7 +20796,8 @@ async def get_business_referrals(public_id: str, authorization: str = Header(def
 
 
 @app.get("/api/v1/business/{public_id}/subscription")
-async def get_subscription_status(public_id: str):
+async def get_subscription_status(public_id: str, authorization: str = Header(default='')):
+    billing_claims = require_billing_access(public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -20714,7 +20879,8 @@ async def get_subscription_status(public_id: str):
         "billing_hold": billing_hold(business),
         "trial_ends_at": business.get("trial_ends_at"),
         "days_left": days_left,
-        "latest_payment": latest_payment,
+        "latest_payment": (business_data_access.public_payment(latest_payment)
+                           if latest_payment and billing_claims.get('role') == 'owner' else None),
         "features": {
             "hybrid_cards": business_has_plan_feature(business, 'hybrid_cards'),
             "gift_cards": business_has_plan_feature(business, 'gift_cards'),
@@ -20723,7 +20889,8 @@ async def get_subscription_status(public_id: str):
     }
 
 @app.get("/api/v1/business/{public_id}/subscription/payments")
-async def list_subscription_payments(public_id: str):
+async def list_subscription_payments(public_id: str, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -20735,7 +20902,7 @@ async def list_subscription_payments(public_id: str):
             .order("created_at", desc=True)
             .execute()
         )
-        return res.data or []
+        return [business_data_access.public_payment(row) for row in (res.data or [])]
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
@@ -21110,7 +21277,8 @@ async def get_customer_api(public_id: str, response: Response):
     }
 
 @app.get("/api/v1/business/{public_id}/customers")
-async def get_customers(public_id: str, program_id: Optional[str] = Query(default=None)):
+async def get_customers(public_id: str, program_id: Optional[str] = Query(default=None), authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -21646,10 +21814,11 @@ async def update_customer(public_id: str, customer_public_id: str, update: Custo
     return updated_customer
 
 @app.delete("/api/v1/business/{public_id}/customers/{customer_public_id}")
-async def delete_customer(public_id: str, customer_public_id: str):
+async def delete_customer(public_id: str, customer_public_id: str, authorization: str = Header(default='')):
     """Owner removes a member from their loyalty program. No cascading FKs
     on these tables (same as admin_delete_business below), so related rows
     are cleared first, then the customer row itself."""
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -22474,7 +22643,8 @@ def _owner_dashboard_activity_stats(business, customers, programs):
 
 @app.get("/api/v1/business/{public_id}/stats")
 @resilient_read("stats")
-async def get_stats(public_id: str, program_id: Optional[str] = Query(default=None)):
+async def get_stats(public_id: str, program_id: Optional[str] = Query(default=None), authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -22853,6 +23023,8 @@ async def get_analytics(
     range: str = '30d',
     program_id: Optional[str] = Query(default=None),
     branch_id: Optional[str] = Query(default=None),
+
+    authorization: str = Header(default=''),
 ):
     """Owner analytics with optional program + branch scope.
 
@@ -22861,6 +23033,7 @@ async def get_analytics(
     branches, so branch customer counts represent known members who have recorded
     activity at that branch.
     """
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -25198,7 +25371,8 @@ def build_cl_announcement_email(business: dict, title: str, message: str) -> tup
 # CAR LENDING / SHOWROOM - CUSTOMERS (BUYERS)
 
 @app.get("/api/v1/business/{public_id}/cl-customers")
-async def list_cl_customers(public_id: str, search: Optional[str] = None):
+async def list_cl_customers(public_id: str, search: Optional[str] = None, authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -25215,7 +25389,8 @@ async def list_cl_customers(public_id: str, search: Optional[str] = None):
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
 @app.post("/api/v1/business/{public_id}/cl-customers")
-async def create_cl_customer(public_id: str, customer: CLCustomerCreate):
+async def create_cl_customer(public_id: str, customer: CLCustomerCreate, authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -25242,7 +25417,8 @@ async def create_cl_customer(public_id: str, customer: CLCustomerCreate):
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
 @app.patch("/api/v1/business/{public_id}/cl-customers/{customer_public_id}")
-async def update_cl_customer(public_id: str, customer_public_id: str, update: CLCustomerUpdate):
+async def update_cl_customer(public_id: str, customer_public_id: str, update: CLCustomerUpdate, authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -25284,7 +25460,8 @@ async def update_cl_customer(public_id: str, customer_public_id: str, update: CL
     return updated_customer
 
 @app.delete("/api/v1/business/{public_id}/cl-customers/{customer_public_id}")
-async def delete_cl_customer(public_id: str, customer_public_id: str):
+async def delete_cl_customer(public_id: str, customer_public_id: str, authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -25329,11 +25506,12 @@ async def delete_cl_customer(public_id: str, customer_public_id: str):
     return {"success": True, "deleted": customer_public_id}
 
 @app.get("/api/v1/business/{public_id}/cl-customers/{customer_public_id}/qr-code")
-async def get_cl_customer_qr_code(public_id: str, customer_public_id: str):
+async def get_cl_customer_qr_code(public_id: str, customer_public_id: str, authorization: str = Header(default='')):
     """Encodes just the buyer's public_id (not a URL) - there's no payment
     portal for it to link to. It only ever gets read back by this same
     owner's own "Scan QR" button on the Payments tab, to look the buyer's
     contract up quickly instead of searching by name."""
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -25348,7 +25526,7 @@ async def get_cl_customer_qr_code(public_id: str, customer_public_id: str):
     })
 
 @app.get("/api/v1/business/{public_id}/cl-customers/{customer_public_id}/wallet-qr-code")
-async def get_cl_customer_wallet_qr_code(public_id: str, customer_public_id: str):
+async def get_cl_customer_wallet_qr_code(public_id: str, customer_public_id: str, authorization: str = Header(default='')):
     """For buyers the owner already had on the books before this system
     existed (an imported, already-in-progress loan created via the
     'existing loan' toggle on the Contracts tab) - they never went through
@@ -25357,6 +25535,7 @@ async def get_cl_customer_wallet_qr_code(public_id: str, customer_public_id: str
     encodes just the bare public_id for the owner's own payment-lookup
     scan) so the owner can show/print/share it and the buyer's own phone
     camera opens the Add-to-Wallet page directly."""
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -25391,10 +25570,11 @@ async def get_cl_join_qr_code(public_id: str):
     })
 
 @app.get("/api/v1/business/{public_id}/showroom-config")
-async def get_showroom_config(public_id: str):
+async def get_showroom_config(public_id: str, authorization: str = Header(default='')):
     """Hero banner + logo + owner-editable contact/inquiries note shown on
     the public /showroom page. Read straight off the businesses row - no
     separate table."""
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -25405,7 +25585,8 @@ async def get_showroom_config(public_id: str):
     }
 
 @app.post("/api/v1/business/{public_id}/showroom-config")
-async def save_showroom_config(public_id: str, config: ShowroomConfigUpdate):
+async def save_showroom_config(public_id: str, config: ShowroomConfigUpdate, authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -25662,7 +25843,8 @@ async def delete_vehicle(public_id: str, vehicle_public_id: str):
 # CAR LENDING / SHOWROOM - CONTRACTS (DEALS)
 
 @app.get("/api/v1/business/{public_id}/contracts")
-async def list_contracts(public_id: str, status: Optional[str] = None):
+async def list_contracts(public_id: str, status: Optional[str] = None, authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -25699,7 +25881,8 @@ async def list_contracts(public_id: str, status: Optional[str] = None):
     return contracts
 
 @app.post("/api/v1/business/{public_id}/contracts")
-async def create_contract(public_id: str, contract: ContractCreate):
+async def create_contract(public_id: str, contract: ContractCreate, authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -25785,7 +25968,8 @@ async def create_contract(public_id: str, contract: ContractCreate):
     return created
 
 @app.patch("/api/v1/business/{public_id}/contracts/{contract_public_id}")
-async def update_contract(public_id: str, contract_public_id: str, update: ContractUpdate):
+async def update_contract(public_id: str, contract_public_id: str, update: ContractUpdate, authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -25840,7 +26024,8 @@ async def update_contract(public_id: str, contract_public_id: str, update: Contr
     return updated
 
 @app.delete("/api/v1/business/{public_id}/contracts/{contract_public_id}")
-async def delete_contract(public_id: str, contract_public_id: str):
+async def delete_contract(public_id: str, contract_public_id: str, authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -25868,7 +26053,8 @@ async def delete_contract(public_id: str, contract_public_id: str):
 # CAR LENDING / SHOWROOM - PAYMENTS
 
 @app.get("/api/v1/business/{public_id}/contracts/{contract_public_id}/payments")
-async def list_contract_payments(public_id: str, contract_public_id: str):
+async def list_contract_payments(public_id: str, contract_public_id: str, authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -25889,7 +26075,8 @@ async def list_contract_payments(public_id: str, contract_public_id: str):
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
 @app.post("/api/v1/business/{public_id}/contracts/{contract_public_id}/payments")
-async def log_contract_payment(public_id: str, contract_public_id: str, payment: CLPaymentCreate):
+async def log_contract_payment(public_id: str, contract_public_id: str, payment: CLPaymentCreate, authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -25989,11 +26176,12 @@ async def log_contract_payment(public_id: str, contract_public_id: str, payment:
     return created_payment
 
 @app.delete("/api/v1/business/{public_id}/contracts/{contract_public_id}/payments/{payment_public_id}")
-async def delete_contract_payment(public_id: str, contract_public_id: str, payment_public_id: str):
+async def delete_contract_payment(public_id: str, contract_public_id: str, payment_public_id: str, authorization: str = Header(default='')):
     """Undo a payment logged by mistake. Only the most recent payment on the
     contract can be undone, so balance_remaining never drifts out of sync
     with the payment log - correcting an older one means undoing everything
     after it, in order."""
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -26058,9 +26246,10 @@ async def delete_contract_payment(public_id: str, contract_public_id: str, payme
     return {"success": True, "deleted": payment_public_id, "contract": updated_contract}
 
 @app.patch("/api/v1/business/{public_id}/contracts/{contract_public_id}/payments/{payment_public_id}")
-async def update_contract_payment(public_id: str, contract_public_id: str, payment_public_id: str, update: CLPaymentUpdate):
+async def update_contract_payment(public_id: str, contract_public_id: str, payment_public_id: str, update: CLPaymentUpdate, authorization: str = Header(default='')):
     """Owner-side correction of a logged payment - see CLPaymentUpdate for
     why amount/payment_date are restricted to the most recent payment."""
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -26166,7 +26355,7 @@ async def update_contract_payment(public_id: str, contract_public_id: str, payme
     return updated_payment
 
 @app.get("/api/v1/business/{public_id}/cl-customers/{customer_public_id}/payments")
-async def list_customer_payment_history(public_id: str, customer_public_id: str):
+async def list_customer_payment_history(public_id: str, customer_public_id: str, authorization: str = Header(default='')):
     """Step 6: full receipt/payment history for one buyer across ALL of
     their contracts (not just the currently-open one) - what the Payments
     tab's per-contract history (Step 5) doesn't show, since that view only
@@ -26174,6 +26363,7 @@ async def list_customer_payment_history(public_id: str, customer_public_id: str)
     enough of its parent contract + vehicle to render a standalone receipt
     (business name is looked up client-side from the already-loaded
     business object)."""
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -26236,7 +26426,8 @@ async def list_customer_payment_history(public_id: str, customer_public_id: str)
 # (e.g. after receiving one by call/message) and then approved or rejected.
 
 @app.get("/api/v1/business/{public_id}/applications")
-async def list_cl_applications(public_id: str, role: Optional[str] = None, status: Optional[str] = None):
+async def list_cl_applications(public_id: str, role: Optional[str] = None, status: Optional[str] = None, authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -26258,7 +26449,8 @@ async def list_cl_applications(public_id: str, role: Optional[str] = None, statu
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
 @app.post("/api/v1/business/{public_id}/applications")
-async def create_cl_application(public_id: str, application: CLApplicationCreate):
+async def create_cl_application(public_id: str, application: CLApplicationCreate, authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -26280,7 +26472,7 @@ async def create_cl_application(public_id: str, application: CLApplicationCreate
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
 @app.patch("/api/v1/business/{public_id}/applications/{application_public_id}")
-async def update_cl_application(public_id: str, application_public_id: str, update: CLApplicationUpdate):
+async def update_cl_application(public_id: str, application_public_id: str, update: CLApplicationUpdate, authorization: str = Header(default='')):
     """Covers plain edits (name/phone/email/notes) and the owner's
     approve/reject decision (status + review_note). Approving an agent
     application - whether it came in through the showroom's Agent Login KYC
@@ -26295,6 +26487,7 @@ async def update_cl_application(public_id: str, application_public_id: str, upda
     an agent application, and only on first approval, takes this branch.
     The dashboard is the only caller of this endpoint, so there's no
     applicant-facing path that could set status itself."""
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -26382,7 +26575,8 @@ async def update_cl_application(public_id: str, application_public_id: str, upda
     return {**_cl_agent_public(agent_row), 'moved_to_agents': True}
 
 @app.delete("/api/v1/business/{public_id}/applications/{application_public_id}")
-async def delete_cl_application(public_id: str, application_public_id: str):
+async def delete_cl_application(public_id: str, application_public_id: str, authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -26402,8 +26596,9 @@ async def delete_cl_application(public_id: str, application_public_id: str):
 # endpoints needed - GET/PATCH .../applications already cover it.
 
 @app.get("/api/v1/business/{public_id}/reservation-settings")
-async def get_reservation_settings(public_id: str):
+async def get_reservation_settings(public_id: str, authorization: str = Header(default='')):
     """Public read used by the showroom reservation popup."""
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -26413,8 +26608,9 @@ async def get_reservation_settings(public_id: str):
     }
 
 @app.post("/api/v1/business/{public_id}/reservation-settings")
-async def save_reservation_settings(public_id: str, settings: CLReservationSettingsUpdate):
+async def save_reservation_settings(public_id: str, settings: CLReservationSettingsUpdate, authorization: str = Header(default='')):
     """Owner-managed payment instructions shown in the reservation popup."""
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -26576,7 +26772,8 @@ def _cl_agent_public(agent: dict) -> dict:
     return {k: v for k, v in agent.items() if k != 'password_hash'}
 
 @app.get("/api/v1/business/{public_id}/cl-agents")
-async def list_cl_agents(public_id: str):
+async def list_cl_agents(public_id: str, authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -26588,10 +26785,11 @@ async def list_cl_agents(public_id: str):
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
 @app.patch("/api/v1/business/{public_id}/cl-agents/{agent_public_id}")
-async def update_cl_agent(public_id: str, agent_public_id: str, update: CLAgentUpdate):
+async def update_cl_agent(public_id: str, agent_public_id: str, update: CLAgentUpdate, authorization: str = Header(default='')):
     """Editing an already-approved agent's own contact details only -
     name/phone/email. There's no status here to approve/reject; that
     decision already happened on the cl_applications row."""
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -26612,10 +26810,11 @@ async def update_cl_agent(public_id: str, agent_public_id: str, update: CLAgentU
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
 @app.delete("/api/v1/business/{public_id}/cl-agents/{agent_public_id}")
-async def delete_cl_agent(public_id: str, agent_public_id: str):
+async def delete_cl_agent(public_id: str, agent_public_id: str, authorization: str = Header(default='')):
     """Revokes an approved agent's account. Does not touch the original
     cl_applications row it was provisioned from - that stays as a record
     that it was once approved."""
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -26634,7 +26833,8 @@ async def delete_cl_agent(public_id: str, agent_public_id: str):
 # these go by email instead, either to one buyer or broadcast to everyone.
 
 @app.get("/api/v1/business/{public_id}/cl-announcements")
-async def list_cl_announcements(public_id: str):
+async def list_cl_announcements(public_id: str, authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -26662,7 +26862,7 @@ async def list_cl_announcements(public_id: str):
     return items
 
 @app.post("/api/v1/business/{public_id}/cl-announcements")
-async def create_cl_announcement(public_id: str, ann: CLAnnouncementCreate):
+async def create_cl_announcement(public_id: str, ann: CLAnnouncementCreate, authorization: str = Header(default='')):
     """Wallet-push only, no email - see build_cl_wallet_reminder_text's
     sibling logic below. A single buyer (ann.customer_public_id set) gets a
     personalized push via their own Wallet object/pass. Omitting it
@@ -26671,6 +26871,7 @@ async def create_cl_announcement(public_id: str, ann: CLAnnouncementCreate):
     so the whole membership can be reached regardless of loan status, same
     as requested. A buyer only receives this if they've added the wallet
     pass; there's no email fallback."""
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -27125,7 +27326,8 @@ async def invite_staff(public_id: str, invite: StaffInvite, authorization: str =
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/business/{public_id}/go-live")
-async def go_live(public_id: str):
+async def go_live(public_id: str, authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -27977,6 +28179,8 @@ def sync_loyalty_wallets_background(
 
 @app.post("/api/v1/business/{public_id}/stamp")
 async def add_stamp(public_id: str, req: StampRequest, background_tasks: BackgroundTasks, authorization: str = Header(default=""), x_idempotency_key: str = Header(default="", alias="X-Idempotency-Key")):
+    if req.as_owner:
+        await asyncio.to_thread(require_owner_session, public_id, authorization)
     print(f"STAMP REQUEST: business={public_id}, customer={req.customer_public_id}")
 
     business = safe_get_business(public_id)
@@ -28262,6 +28466,8 @@ async def add_stamp(public_id: str, req: StampRequest, background_tasks: Backgro
 @app.post("/api/v1/business/{public_id}/stamp/adjust")
 async def adjust_stamp(public_id: str, req: StampAdjustRequest, background_tasks: BackgroundTasks, authorization: str = Header(default="")):
     """Audited correction for either redeemable Reward stamps or cumulative Tier stamps."""
+    if req.as_owner:
+        await asyncio.to_thread(require_owner_session, public_id, authorization)
     if req.delta == 0:
         raise HTTPException(status_code=400, detail="Adjustment must add or remove at least one stamp")
     business = safe_get_business(public_id)
@@ -28451,6 +28657,8 @@ async def adjust_points_balance(
 
 @app.post("/api/v1/business/{public_id}/vip-sale")
 async def add_vip_sale(public_id: str, req: VIPSaleRequest, background_tasks: BackgroundTasks, authorization: str = Header(default=""), x_idempotency_key: str = Header(default="", alias="X-Idempotency-Key")):
+    if req.as_owner:
+        await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business: raise HTTPException(status_code=404, detail="Business not found")
     customer = safe_get_customer(req.customer_public_id)
@@ -28557,6 +28765,8 @@ async def add_points_sale(public_id: str, req: PointsSaleRequest, background_tas
     any Google/Apple Wallet pass the customer already saved - same pattern
     add_stamp() uses, now that build_loyalty_object()/build_apple_pass_json()
     are points-aware."""
+    if req.as_owner:
+        await asyncio.to_thread(require_owner_session, public_id, authorization)
     print(f"POINTS SALE REQUEST: business={public_id}, customer={req.customer_public_id}, amount={req.amount_spent}")
 
     business = safe_get_business(public_id)
@@ -30177,7 +30387,7 @@ async def storehub_test_transaction(
                         as_owner=True,
                     ),
                     background_tasks,
-                    authorization='',
+                    authorization=authorization,
                     x_idempotency_key=(f'{idempotency_key}:points' if stamps_active or redemption else idempotency_key),
                 )
             else:
@@ -30199,7 +30409,7 @@ async def storehub_test_transaction(
                         stamp_kind='reward',
                     ),
                     background_tasks,
-                    authorization='',
+                    authorization=authorization,
                     x_idempotency_key=(f'{idempotency_key}:stamp' if points_active or redemption else idempotency_key),
                 )
             except HTTPException as stamp_exc:
@@ -30561,6 +30771,8 @@ async def redeem_points_prize(public_id: str, req: PointsRedeemRequest, backgrou
     points_cost from the customer's points_balance instead of resetting a
     stamp count. Same staff-session / owner / legacy-PIN auth pattern as
     every other cashier-facing action."""
+    if req.as_owner:
+        await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -30672,6 +30884,8 @@ async def issue_multipass(public_id: str, req: MultipassIssueRequest, background
     their previous pack is used up or expired. Overwrites whatever pack the
     customer currently has, since a business runs ONE active card at a time
     and a customer only ever has one multipass in flight."""
+    if req.as_owner:
+        await asyncio.to_thread(require_owner_session, public_id, authorization)
     print(f"MULTIPASS ISSUE REQUEST: business={public_id}, customer={req.customer_public_id}")
 
     business = safe_get_business(public_id)
@@ -30778,6 +30992,8 @@ async def use_multipass_session(public_id: str, req: MultipassUseRequest, backgr
     customer's current pack (e.g. checking off one of their 12 tooth-cleaning
     visits). Refuses if the pack is exhausted or has expired - the cashier
     should issue a new pack via /multipass/issue instead."""
+    if req.as_owner:
+        await asyncio.to_thread(require_owner_session, public_id, authorization)
     print(f"MULTIPASS USE REQUEST: business={public_id}, customer={req.customer_public_id}")
 
     business = safe_get_business(public_id)
@@ -30866,7 +31082,8 @@ async def use_multipass_session(public_id: str, req: MultipassUseRequest, backgr
 
 
 @app.get("/api/v1/business/{public_id}/customers/{customer_public_id}/membership-benefits")
-async def get_customer_membership_benefits(public_id: str, customer_public_id: str):
+async def get_customer_membership_benefits(public_id: str, customer_public_id: str, authorization: str = Header(default='')):
+    await asyncio.to_thread(_business_access_status, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail='Business not found')
@@ -30897,6 +31114,8 @@ async def redeem_membership_benefit(
     authorization: str = Header(default=''),
     x_idempotency_key: Optional[str] = Header(default=None),
 ):
+    if req.as_owner:
+        await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail='Business not found')
@@ -31022,6 +31241,8 @@ async def redeem_membership_benefit(
 
 @app.post('/api/v1/business/{public_id}/employee/attendance')
 async def record_employee_attendance(public_id: str, req: EmployeeAttendanceRequest, authorization: str = Header(default='')):
+    if req.as_owner:
+        await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail='Business not found')
@@ -31064,7 +31285,8 @@ async def record_employee_attendance(public_id: str, req: EmployeeAttendanceRequ
 
 
 @app.get("/api/v1/business/{public_id}/customers/{customer_public_id}/membership-benefit-history")
-async def membership_benefit_history(public_id: str, customer_public_id: str):
+async def membership_benefit_history(public_id: str, customer_public_id: str, authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail='Business not found')
@@ -31181,8 +31403,9 @@ def attach_activity_location_names(rows: list) -> list:
 
 
 @app.get("/api/v1/business/{public_id}/customers/{customer_public_id}/stamp-history")
-async def get_customer_stamp_history(public_id: str, customer_public_id: str):
+async def get_customer_stamp_history(public_id: str, customer_public_id: str, authorization: str = Header(default='')):
     """Stamp-card activity for one customer: stamps, corrections, and the full coupon lifecycle."""
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -31294,8 +31517,9 @@ async def get_customer_stamp_history(public_id: str, customer_public_id: str):
 
 
 @app.get("/api/v1/business/{public_id}/customers/{customer_public_id}/multipass-history")
-async def get_multipass_history(public_id: str, customer_public_id: str):
+async def get_multipass_history(public_id: str, customer_public_id: str, authorization: str = Header(default='')):
     """Customer-visible/owner-visible issue and use history, newest first."""
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -31317,7 +31541,7 @@ async def get_multipass_history(public_id: str, customer_public_id: str):
 
 
 @app.get("/api/v1/business/{public_id}/customers/{customer_public_id}/points-history")
-async def get_points_history(public_id: str, customer_public_id: str):
+async def get_points_history(public_id: str, customer_public_id: str, authorization: str = Header(default='')):
     """Complete points activity for one customer, newest first.
 
     Includes:
@@ -31330,6 +31554,7 @@ async def get_points_history(public_id: str, customer_public_id: str):
     while newer balance movements use transaction_audit for reliable before /
     after balances and actor information.
     """
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -31456,10 +31681,11 @@ async def get_points_history(public_id: str, customer_public_id: str):
 
 
 @app.get("/api/v1/business/{public_id}/customers/{customer_public_id}/vip-history")
-async def get_vip_history(public_id: str, customer_public_id: str):
+async def get_vip_history(public_id: str, customer_public_id: str, authorization: str = Header(default='')):
     """Every recorded VIP points/tier movement for one customer, including
     date, cashier and branch - same shape/pattern as stamp-history, just
     against vip_events (see log_vip_event)."""
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -31480,7 +31706,8 @@ async def get_vip_history(public_id: str, customer_public_id: str):
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
 @app.get("/api/v1/business/{public_id}/customers/{customer_public_id}/membership-history")
-async def get_membership_history(public_id: str, customer_public_id: str):
+async def get_membership_history(public_id: str, customer_public_id: str, authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -31515,6 +31742,8 @@ async def add_membership_note(public_id: str, req: MembershipNoteRequest, backgr
     """Cashier logs one visit: what service the member came in for, and
     (usually) today's date. This is the membership-card equivalent of
     /stamp - the thing a cashier does at every visit."""
+    if req.as_owner:
+        await asyncio.to_thread(require_owner_session, public_id, authorization)
     print(f"MEMBERSHIP NOTE REQUEST: business={public_id}, customer={req.customer_public_id}")
 
     business = safe_get_business(public_id)
@@ -31618,10 +31847,11 @@ async def add_membership_note(public_id: str, req: MembershipNoteRequest, backgr
     return response_payload
 
 @app.get("/api/v1/business/{public_id}/customers/{customer_public_id}/leaves")
-async def get_membership_leaves(public_id: str, customer_public_id: str):
+async def get_membership_leaves(public_id: str, customer_public_id: str, authorization: str = Header(default='')):
     """Owner dashboard: the full, dated activity history for one member -
     every service they've come in for, most recent first. This is the
     membership card's equivalent of a patient chart."""
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -31670,8 +31900,9 @@ async def get_membership_leaves(public_id: str, customer_public_id: str):
     return leaves
 
 @app.api_route("/api/v1/business/{public_id}/leaves/{leaf_id}", methods=["PUT", "PATCH"])
-async def update_membership_leaf(public_id: str, leaf_id: int, update: MembershipLeafUpdate):
+async def update_membership_leaf(public_id: str, leaf_id: int, update: MembershipLeafUpdate, authorization: str = Header(default='')):
     """Lets the owner fix a typo'd or mistaken visit note from the dashboard."""
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -31705,8 +31936,9 @@ async def update_membership_leaf(public_id: str, leaf_id: int, update: Membershi
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
 @app.delete("/api/v1/business/{public_id}/leaves/{leaf_id}")
-async def delete_membership_leaf(public_id: str, leaf_id: int):
+async def delete_membership_leaf(public_id: str, leaf_id: int, authorization: str = Header(default='')):
     """Lets the owner remove a mistakenly-logged visit note."""
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -31992,6 +32224,8 @@ async def unlock_cashier_device(public_id: str, device_public_id: str, authoriza
 
 @app.post("/api/v1/business/{public_id}/reward/redeem")
 async def redeem_reward(public_id: str, req: RedeemRequest, background_tasks: BackgroundTasks, authorization: str = Header(default=""), x_idempotency_key: str = Header(default="", alias="X-Idempotency-Key")):
+    if req.as_owner:
+        await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -32127,7 +32361,8 @@ async def redeem_reward(public_id: str, req: RedeemRequest, background_tasks: Ba
 # /stamp and /reward/redeem above.
 
 @app.post("/api/v1/business/{public_id}/customers/{customer_public_id}/coupons")
-async def create_coupon(public_id: str, customer_public_id: str, req: CouponCreate, background_tasks: BackgroundTasks):
+async def create_coupon(public_id: str, customer_public_id: str, req: CouponCreate, background_tasks: BackgroundTasks, authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -32181,7 +32416,8 @@ async def create_coupon(public_id: str, customer_public_id: str, req: CouponCrea
     return created
 
 @app.get("/api/v1/business/{public_id}/customers/{customer_public_id}/coupons")
-async def list_customer_coupons(public_id: str, customer_public_id: str):
+async def list_customer_coupons(public_id: str, customer_public_id: str, authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -32203,10 +32439,11 @@ async def list_customer_coupons(public_id: str, customer_public_id: str):
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
 @app.delete("/api/v1/business/{public_id}/coupons/{coupon_public_id}")
-async def cancel_coupon(public_id: str, coupon_public_id: str, background_tasks: BackgroundTasks):
+async def cancel_coupon(public_id: str, coupon_public_id: str, background_tasks: BackgroundTasks, authorization: str = Header(default='')):
     """Lets the owner cancel a coupon they just issued by mistake, freeing
     the customer up for a new one. Only works while it's still active -
     a redeemed or already-cancelled/expired coupon can't be touched."""
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -32248,6 +32485,8 @@ async def cancel_coupon(public_id: str, coupon_public_id: str, background_tasks:
 
 @app.post("/api/v1/business/{public_id}/coupon/redeem")
 async def redeem_coupon(public_id: str, req: CouponRedeem, background_tasks: BackgroundTasks, authorization: str = Header(default="")):
+    if req.as_owner:
+        await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -32846,7 +33085,8 @@ async def get_customer_hero_image(customer_public_id: str, s: Optional[str] = No
 # GOOGLE WALLET CLASS MANAGEMENT
 
 @app.get("/api/v1/business/{public_id}/wallet-class")
-async def get_wallet_class(public_id: str, program_id: Optional[str] = Query(default=None)):
+async def get_wallet_class(public_id: str, program_id: Optional[str] = Query(default=None), authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -32901,7 +33141,8 @@ async def get_wallet_class(public_id: str, program_id: Optional[str] = Query(def
     }
 
 @app.post("/api/v1/business/{public_id}/wallet-class")
-async def create_or_update_wallet_class(public_id: str, program_id: Optional[str] = Query(default=None)):
+async def create_or_update_wallet_class(public_id: str, program_id: Optional[str] = Query(default=None), authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -33067,7 +33308,8 @@ async def create_or_update_wallet_class(public_id: str, program_id: Optional[str
 # row - the class lives one level up, straight on the business).
 
 @app.get("/api/v1/business/{public_id}/cl-wallet-class")
-async def get_cl_wallet_class(public_id: str):
+async def get_cl_wallet_class(public_id: str, authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -33109,7 +33351,8 @@ async def get_cl_wallet_class(public_id: str):
     }
 
 @app.post("/api/v1/business/{public_id}/cl-wallet-class")
-async def create_or_update_cl_wallet_class(public_id: str):
+async def create_or_update_cl_wallet_class(public_id: str, authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -45815,6 +46058,7 @@ async def pos_companion_benefit_commit(
         raise HTTPException(status_code=404, detail='Employee/member record no longer exists.')
 
     # Reuse the canonical membership-benefit ledger and Wallet refresh path.
+    pos_owner_authorization = await _pos_internal_owner_authorization(_pos_business_by_id(device.get('business_id')))
     redemption_result = await redeem_membership_benefit(
         _pos_business_by_id(device.get('business_id')).get('public_id'),
         MembershipBenefitRedeemRequest(
@@ -45825,7 +46069,7 @@ async def pos_companion_benefit_commit(
             as_owner=True,
         ),
         background_tasks,
-        authorization='',
+        authorization=pos_owner_authorization,
         x_idempotency_key=f"pos-benefit:{row.get('id')}",
     )
     redemption = (redemption_result or {}).get('redemption') or {}
@@ -47501,6 +47745,7 @@ async def _companion_process_transaction(
         )
         tx = _lt_prepare_pos_purchase(tx, customer, business,
             test_mode=bool(allow_test_mode or integration.get('mode') != 'live'))
+        pos_owner_authorization = await _pos_internal_owner_authorization(business)
         if points_active and earning_amount > 0:
             points_result = await add_points_sale(
                 business.get('public_id'),
@@ -47509,7 +47754,7 @@ async def _companion_process_transaction(
                     amount_spent=earning_amount,
                     as_owner=True,
                 ),
-                background_tasks, authorization='', x_idempotency_key=f'{base_key}:points',
+                background_tasks, authorization=pos_owner_authorization, x_idempotency_key=f'{base_key}:points',
             )
         elif points_active:
             fresh = safe_get_customer(customer.get('public_id')) or customer
@@ -47525,7 +47770,7 @@ async def _companion_process_transaction(
                 stamp_result = await add_stamp(
                     business.get('public_id'),
                     StampRequest(customer_public_id=customer.get('public_id'), as_owner=True, stamp_kind='reward'),
-                    background_tasks, authorization='', x_idempotency_key=f'{base_key}:stamp',
+                    background_tasks, authorization=pos_owner_authorization, x_idempotency_key=f'{base_key}:stamp',
                 )
             except HTTPException as exc:
                 if exc.status_code == 409:

@@ -246,6 +246,9 @@ class TrialRegistrationTests(unittest.TestCase):
         self.assertLess(db.events.index(('business_agreements', 'insert')),
                         db.events.index(('redeem_business_trial', 'rpc')))
         self.assertTrue(result['success'])
+        self.assertEqual(result['billing_token'], 'test-billing-session')
+        self.assertNotIn('token', result)
+        self.assertNotIn('owner-token-', str(result))
         self.assertTrue(result['agreement_signed'])
         self.assertEqual(result['trial'], TRIAL)
         self.assertEqual(db.businesses[1]['status'], 'ACTIVE')

@@ -16,7 +16,7 @@ from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 import unittest
 
-from fastapi import HTTPException, Query
+from fastapi import HTTPException, Query, Header
 import httpx
 
 
@@ -119,8 +119,15 @@ def endpoint_namespace(program, outcomes, events):
                 'reviewStatus': kwargs['review_status']}
 
     upsert_mock = MagicMock(side_effect=upsert)
+    def scoped_owner(public_id, authorization):
+        # Publish tests start after owner verification; actual auth failures are
+        # exercised through HTTP in the access-control suite.
+        if public_id != BUSINESS['public_id'] or authorization != 'Bearer fixture-owner':
+            raise HTTPException(401, 'Synthetic owner session required')
+        return {'role': 'owner', 'business_slug': public_id}
     env = dict(
-        Optional=Optional, Query=Query, HTTPException=HTTPException,
+        Optional=Optional, Query=Query, Header=Header, HTTPException=HTTPException,
+        require_owner_session=MagicMock(side_effect=scoped_owner),
         asyncio=SimpleNamespace(to_thread=asyncio.to_thread, create_task=schedule),
         httpx=httpx, datetime=datetime, re=re,
         GOOGLE_WALLET_ISSUER_ID='issuer',
@@ -153,7 +160,8 @@ class WalletPublishEndpointTests(unittest.IsolatedAsyncioTestCase):
               patch('traceback.print_exc')):
             result = await harness.env['create_or_update_wallet_class'](
                 BUSINESS['public_id'], program_id=(
-                    harness.env['safe_get_loyalty_program'].return_value.get('public_id')))
+                    harness.env['safe_get_loyalty_program'].return_value.get('public_id')),
+                authorization='Bearer fixture-owner')
             if harness.tasks:
                 await asyncio.gather(*harness.tasks)
             return result
