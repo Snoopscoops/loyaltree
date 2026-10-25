@@ -68,6 +68,7 @@ class OfferCreate(StrictModel):
     points_cost: int = Field(strict=True, ge=1, le=10_000_000)
     total_quantity: int = Field(strict=True, ge=1, le=1_000_000)
     per_member_limit: int = Field(default=1, strict=True, ge=1, le=100)
+    weekly_limit: Optional[int] = Field(default=None, strict=True, ge=1, le=1_000_000)
     min_spend_centavos: int = Field(default=0, strict=True, ge=0, le=100_000_000)
     starts_at: Optional[datetime] = None
     ends_at: Optional[datetime] = None
@@ -115,6 +116,7 @@ class OfferPatch(StrictModel):
     points_cost: Optional[int] = Field(default=None, strict=True, ge=1, le=10_000_000)
     total_quantity: Optional[int] = Field(default=None, strict=True, ge=1, le=1_000_000)
     per_member_limit: Optional[int] = Field(default=None, strict=True, ge=1, le=100)
+    weekly_limit: Optional[int] = Field(default=None, strict=True, ge=1, le=1_000_000)
     min_spend_centavos: Optional[int] = Field(default=None, strict=True, ge=0, le=100_000_000)
     starts_at: Optional[datetime] = None
     ends_at: Optional[datetime] = None
@@ -127,7 +129,7 @@ class OfferPatch(StrictModel):
 
     @model_validator(mode="after")
     def explicit_nulls(self):
-        for name in self.model_fields_set - {"image_url", "starts_at", "ends_at"}:
+        for name in self.model_fields_set - {"image_url", "starts_at", "ends_at", "weekly_limit"}:
             if getattr(self, name) is None:
                 raise ValueError(f"{name} cannot be null")
         if self.starts_at and self.ends_at and self.ends_at <= self.starts_at:
@@ -201,6 +203,7 @@ ERRORS = {
     "out_of_stock": (409, "This offer is fully claimed."),
     "insufficient_points": (409, "Not enough LT Points."),
     "member_limit": (409, "You have reached this offer's claim limit."),
+    "weekly_limit": (409, "This coupon's weekly claim limit has been reached. Try again next week."),
     "already_used": (409, "This coupon has already been used."),
     "coupon_expired": (409, "This coupon has expired."),
     "minimum_spend": (409, "The bill does not meet the coupon minimum or discount value."),

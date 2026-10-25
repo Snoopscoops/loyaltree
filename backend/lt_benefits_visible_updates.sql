@@ -1,6 +1,9 @@
 -- Run after lt_benefits.sql on an existing database. Rerunnable; no points,
 -- purchases, carry, merchant rewards or pending Wallet work are discarded.
 BEGIN;
+ALTER TABLE public.ltb_offers ADD COLUMN IF NOT EXISTS weekly_limit integer
+ CONSTRAINT ltb_offers_weekly_limit_check CHECK(weekly_limit BETWEEN 1 AND 1000000);
+CREATE INDEX IF NOT EXISTS ltb_coupons_offer_week_idx ON public.ltb_coupons(offer_id,claimed_at);
 ALTER TABLE public.ltb_wallet_jobs ADD COLUMN IF NOT EXISTS dirty_cards jsonb NOT NULL DEFAULT '{}';
 ALTER TABLE public.ltb_wallet_jobs ADD COLUMN IF NOT EXISTS claimed_cards jsonb NOT NULL DEFAULT '{}';
 UPDATE public.ltb_wallet_jobs j SET dirty_cards=COALESCE((SELECT jsonb_object_agg(k.customer_public_id,gen_random_uuid()::text)
@@ -148,16 +151,17 @@ BEGIN
    UPDATE ltb_offers SET title=data->>'title',description=data->>'description',terms=data->>'terms',image_url=data->>'image_url',
     category=data->>'category',discount_centavos=(data->>'discount_centavos')::bigint,points_cost=(data->>'points_cost')::integer,
     total_quantity=(data->>'total_quantity')::integer,per_member_limit=(data->>'per_member_limit')::integer,
+    weekly_limit=(data->>'weekly_limit')::integer,
     min_spend_centavos=(data->>'min_spend_centavos')::bigint,starts_at=(data->>'starts_at')::timestamptz,
     ends_at=(data->>'ends_at')::timestamptz,coupon_valid_days=(data->>'coupon_valid_days')::integer,status=data->>'status',updated_at=now()
    WHERE id=o.id RETURNING * INTO o;
   ELSE
    INSERT INTO ltb_offers(business_id,business_slug,business_name,business_logo_url,title,description,terms,image_url,category,
-    discount_centavos,points_cost,total_quantity,per_member_limit,min_spend_centavos,starts_at,ends_at,coupon_valid_days,status)
+    discount_centavos,points_cost,total_quantity,per_member_limit,weekly_limit,min_spend_centavos,starts_at,ends_at,coupon_valid_days,status)
    VALUES(p_data->>'business_id',p_data->>'business_slug',p_data->>'business_name',p_data->>'business_logo_url',data->>'title',
     COALESCE(data->>'description',''),COALESCE(data->>'terms',''),data->>'image_url',COALESCE(data->>'category','other'),
     (data->>'discount_centavos')::bigint,(data->>'points_cost')::integer,(data->>'total_quantity')::integer,
-    COALESCE((data->>'per_member_limit')::integer,1),COALESCE((data->>'min_spend_centavos')::bigint,0),
+    COALESCE((data->>'per_member_limit')::integer,1),(data->>'weekly_limit')::integer,COALESCE((data->>'min_spend_centavos')::bigint,0),
     (data->>'starts_at')::timestamptz,(data->>'ends_at')::timestamptz,COALESCE((data->>'coupon_valid_days')::integer,30),COALESCE(data->>'status','draft')) RETURNING * INTO o;
   END IF;RETURN ltb_offer_json(o);
  ELSIF p_action='link' THEN
@@ -185,6 +189,12 @@ BEGIN
   IF NOT FOUND THEN RETURN jsonb_build_object('error','not_found');END IF;
   IF o.status<>'active' OR o.starts_at>now() OR o.ends_at<=now() THEN RETURN jsonb_build_object('error','offer_closed');END IF;
   IF o.claimed_count>=o.total_quantity THEN RETURN jsonb_build_object('error','out_of_stock');END IF;
+  -- All claimers hold the same offer row lock. A retry is returned above before
+  -- this check; successful claims count even if used or expired later.
+  IF o.weekly_limit IS NOT NULL AND (SELECT count(*) FROM ltb_coupons WHERE offer_id=o.id
+   AND claimed_at>=(date_trunc('week',now() AT TIME ZONE 'Asia/Manila') AT TIME ZONE 'Asia/Manila')
+   AND claimed_at<((date_trunc('week',now() AT TIME ZONE 'Asia/Manila')+interval '7 days') AT TIME ZONE 'Asia/Manila'))>=o.weekly_limit
+   THEN RETURN jsonb_build_object('error','weekly_limit');END IF;
   IF m.balance_points<o.points_cost THEN RETURN jsonb_build_object('error','insufficient_points');END IF;
   IF (SELECT count(*) FROM ltb_coupons WHERE offer_id=o.id AND member_id=m.id)>=o.per_member_limit THEN RETURN jsonb_build_object('error','member_limit');END IF;
   expiry:=LEAST(COALESCE(o.ends_at,'infinity'::timestamptz),now()+make_interval(days=>o.coupon_valid_days));

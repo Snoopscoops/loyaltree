@@ -25603,6 +25603,8 @@ async def get_cloudinary_signature(public_id: str, purpose: Optional[str] = None
     `purpose=agent_kyc` (sent by the showroom's Agent Sign Up popup) signs
     into a business-scoped agent-kyc/ folder for the camera-captured selfie
     + ID photo - also private, never shown on the public showroom."""
+    if purpose == 'lt_benefits':
+        require_owner_session(public_id, authorization)
     if asset_role is not None:
         require_owner_session(public_id, authorization)
         if purpose != 'branding' or asset_role not in ('logo', 'hero', 'progress_icon'):
@@ -25618,6 +25620,8 @@ async def get_cloudinary_signature(public_id: str, purpose: Optional[str] = None
         folder = f'branding/{public_id}'
     elif purpose == 'order_ahead_menu':
         folder = f'order-ahead-menu/{public_id}'
+    elif purpose == 'lt_benefits':
+        folder = f'lt-benefits/{public_id}'
     elif purpose == 'contract':
         folder = f'contracts/{public_id}'
     elif purpose == 'agent_kyc':

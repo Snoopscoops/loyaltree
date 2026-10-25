@@ -1,6 +1,6 @@
 export const BENEFIT_CATEGORIES = [{ value: 'food_drink', label: 'Food & drink' }, { value: 'shopping', label: 'Shopping' }, { value: 'wellness', label: 'Wellness' }, { value: 'experiences', label: 'Experiences' }, { value: 'other', label: 'Other' }]
 
-export const newBenefitOffer = () => ({ title: '', description: '', terms: '', image_url: '', category: 'food_drink', discount_php: '', points_cost: '', total_quantity: '', min_spend_php: '0', per_member_limit: '1', coupon_valid_days: '30', starts_at: '', ends_at: '', status: 'active' })
+export const newBenefitOffer = () => ({ title: '', description: '', terms: '', image_url: '', category: 'food_drink', discount_php: '', points_cost: '', total_quantity: '', min_spend_php: '0', per_member_limit: '1', weekly_limit: '', coupon_valid_days: '30', starts_at: '', ends_at: '', status: 'active' })
 
 // Parse currency as decimal text, never binary floating point or scientific notation.
 export function benefitCentavos(value) {
@@ -17,6 +17,7 @@ export const benefitDate = value => value && Number.isFinite(Date.parse(value)) 
 
 export function benefitImage(value) {
   if (!value) return ''
+  if (String(value).length > 2048 || /\s/.test(String(value))) return ''
   try { const url = new URL(value); return url.protocol === 'https:' && !url.username && !url.password ? url.href : '' } catch { return '' }
 }
 
@@ -29,6 +30,8 @@ export function benefitOfferPayload(form) {
   if (!integer(form.points_cost) || !integer(form.total_quantity) || !integer(form.per_member_limit) || !integer(form.coupon_valid_days)) return { error: 'Points cost, quantity, validity and member limit must be positive whole numbers.' }
   if (Number(form.points_cost) > 10000000 || Number(form.total_quantity) > 1000000 || Number(form.per_member_limit) > 100 || Number(form.coupon_valid_days) > 365) return { error: 'Use at most 10,000,000 points, 1,000,000 coupons, 100 claims per member and 365 valid days.' }
   if (Number(form.per_member_limit) > Number(form.total_quantity)) return { error: 'The member limit cannot exceed the total quantity.' }
+  const weeklyLimit = form.weekly_limit == null || form.weekly_limit === '' ? null : form.weekly_limit
+  if (weeklyLimit != null && (!integer(weeklyLimit) || Number(weeklyLimit) > 1000000)) return { error: 'Coupons per week must be blank or a whole number from 1 to 1,000,000.' }
   const discount = benefitCentavos(form.discount_php), minimum = benefitCentavos(form.min_spend_php)
   if (discount == null || discount < 1 || minimum == null) return { error: 'Enter a positive peso discount and a valid minimum spend, using up to two decimal places.' }
   if (discount > 100000000 || minimum > 100000000) return { error: 'Coupon discount and minimum spend cannot exceed ₱1,000,000.' }
@@ -40,7 +43,7 @@ export function benefitOfferPayload(form) {
   if (image && !benefitImage(image)) return { error: 'Use a valid HTTPS photo URL without embedded sign-in details.' }
   if (!['draft', 'active', 'paused'].includes(form.status)) return { error: 'Choose a valid offer status.' }
   if (!BENEFIT_CATEGORIES.some(item => item.value === form.category)) return { error: 'Choose a valid coupon category.' }
-  return { payload: { title, description: String(form.description || '').trim(), terms: String(form.terms || '').trim(), image_url: image || null, category: form.category, discount_centavos: discount, points_cost: Number(form.points_cost), total_quantity: Number(form.total_quantity), min_spend_centavos: 0, per_member_limit: Number(form.per_member_limit), coupon_valid_days: Number(form.coupon_valid_days), starts_at: startsAt, ends_at: endsAt, status: form.status } }
+  return { payload: { title, description: String(form.description || '').trim(), terms: String(form.terms || '').trim(), image_url: image || null, category: form.category, discount_centavos: discount, points_cost: Number(form.points_cost), total_quantity: Number(form.total_quantity), min_spend_centavos: minimum, per_member_limit: Number(form.per_member_limit), weekly_limit: weeklyLimit == null ? null : Number(weeklyLimit), coupon_valid_days: Number(form.coupon_valid_days), starts_at: startsAt, ends_at: endsAt, status: form.status } }
 }
 
 function dateInput(value) {
@@ -50,7 +53,7 @@ function dateInput(value) {
 }
 
 export function benefitOfferForm(offer) {
-  return { ...newBenefitOffer(), ...offer, discount_php: Number.isSafeInteger(offer.discount_centavos) ? (offer.discount_centavos / 100).toFixed(2) : '', min_spend_php: Number.isSafeInteger(offer.min_spend_centavos) ? (offer.min_spend_centavos / 100).toFixed(2) : '0', starts_at: dateInput(offer.starts_at), ends_at: dateInput(offer.ends_at) }
+  return { ...newBenefitOffer(), ...offer, weekly_limit: offer.weekly_limit ?? '', discount_php: Number.isSafeInteger(offer.discount_centavos) ? (offer.discount_centavos / 100).toFixed(2) : '', min_spend_php: Number.isSafeInteger(offer.min_spend_centavos) ? (offer.min_spend_centavos / 100).toFixed(2) : '0', starts_at: dateInput(offer.starts_at), ends_at: dateInput(offer.ends_at) }
 }
 
 export function benefitRequestError(status, body) {

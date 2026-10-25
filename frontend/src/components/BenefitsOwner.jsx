@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { BENEFIT_CATEGORIES, benefitDate, benefitImage, benefitMoney, benefitNumber, benefitOfferForm, benefitOfferPayload, newBenefitOffer, validBenefitOffers } from './benefitsManagementModel'
 import { BenefitField, BenefitMessage, BenefitMetric, useBenefitsRequest } from './BenefitsShared'
+import { BENEFIT_PHOTO_TYPES, uploadBenefitPhoto } from './benefitPhotoUpload'
 import './benefits-management.css'
 
 const PAGE_SIZE = 25
@@ -18,9 +19,10 @@ function OwnerBenefitsContent({ API_BASE = '', businessSlug, ownerToken, authFet
   const [loading, setLoading] = useState(true), [loaded, setLoaded] = useState(false), [error, setError] = useState('')
   const [form, setForm] = useState(newBenefitOffer), [editing, setEditing] = useState(null), [formOpen, setFormOpen] = useState(false)
   const [saving, setSaving] = useState(false), [changing, setChanging] = useState(null), [formError, setFormError] = useState(''), [notice, setNotice] = useState('')
+  const [uploading, setUploading] = useState(false)
   const [reload, setReload] = useState(0)
-  const alive = useRef(true), mutation = useRef(null), formRef = useRef(null)
-  useEffect(() => { alive.current = true; return () => { alive.current = false; mutation.current?.abort() } }, [])
+  const alive = useRef(true), mutation = useRef(null), formRef = useRef(null), photoUpload = useRef(null)
+  useEffect(() => { alive.current = true; return () => { alive.current = false; mutation.current?.abort(); photoUpload.current?.abort() } }, [])
   useEffect(() => {
     const controller = new AbortController()
     setLoading(true); setError(''); setLoaded(false); setOffers([]); setReport(null)
@@ -37,11 +39,11 @@ function OwnerBenefitsContent({ API_BASE = '', businessSlug, ownerToken, authFet
   }, [base, businessSlug, offset, reload, request])
 
   const update = event => { const { name, value } = event.target; setForm(previous => ({ ...previous, [name]: value })) }
-  const closeForm = () => { setFormOpen(false); setEditing(null); setForm(newBenefitOffer()); setFormError('') }
-  const openForm = offer => { setEditing(offer?.id ?? null); setForm(offer ? benefitOfferForm(offer) : newBenefitOffer()); setFormError(''); setNotice(''); setFormOpen(true); requestAnimationFrame(() => formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })) }
+  const closeForm = () => { photoUpload.current?.abort(); photoUpload.current = null; setUploading(false); setFormOpen(false); setEditing(null); setForm(newBenefitOffer()); setFormError('') }
+  const openForm = offer => { photoUpload.current?.abort(); photoUpload.current = null; setUploading(false); setEditing(offer?.id ?? null); setForm(offer ? benefitOfferForm(offer) : newBenefitOffer()); setFormError(''); setNotice(''); setFormOpen(true); requestAnimationFrame(() => formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })) }
   const save = async event => {
     event.preventDefault()
-    if (mutation.current) return
+    if (mutation.current || photoUpload.current) return
     const result = benefitOfferPayload(form)
     if (result.error) { setFormError(result.error); return }
     const current = offers.find(item => item.id === editing)
@@ -51,7 +53,9 @@ function OwnerBenefitsContent({ API_BASE = '', businessSlug, ownerToken, authFet
     try {
       await request(`${base}/offers${editing != null ? `/${encodeURIComponent(editing)}` : ''}`, { method: editing != null ? 'PATCH' : 'POST', body: JSON.stringify(result.payload), signal: controller.signal })
       if (alive.current) { setNotice(editing != null ? 'Offer updated. Previously claimed coupons keep their original details.' : 'Coupon offer created.'); closeForm(); setOffset(0); setReload(value => value + 1) }
-    } catch (failure) { if (alive.current && failure.name !== 'AbortError') setFormError(failure.message) }
+    } catch (failure) { if (alive.current && failure.name !== 'AbortError') setFormError(failure.name === 'TimeoutError'
+      ? 'The save response timed out. Your changes may already be saved. Refresh your offers and check the list before saving again.'
+      : failure.message) }
     finally { mutation.current = null; if (alive.current) setSaving(false) }
   }
   const changeStatus = async offer => {
@@ -65,9 +69,24 @@ function OwnerBenefitsContent({ API_BASE = '', businessSlug, ownerToken, authFet
     } catch (failure) { if (alive.current && failure.name !== 'AbortError') setError(failure.message) }
     finally { mutation.current = null; if (alive.current) setChanging(null) }
   }
+  const uploadPhoto = async event => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file || photoUpload.current || saving) return
+    const controller = new AbortController(); photoUpload.current = controller
+    setUploading(true); setFormError('')
+    try {
+      const image = await uploadBenefitPhoto({ file, request, businessSlug, signal: controller.signal })
+      if (alive.current && photoUpload.current === controller) setForm(current => ({ ...current, image_url: image }))
+    } catch (failure) {
+      if (alive.current && !controller.signal.aborted) setFormError(failure.message || 'Could not upload the photo.')
+    } finally {
+      if (photoUpload.current === controller) { photoUpload.current = null; if (alive.current) setUploading(false) }
+    }
+  }
   const now = Date.now()
   const available = offers.filter(row => row.status === 'active' && (!row.starts_at || Date.parse(row.starts_at) <= now) && (!row.ends_at || Date.parse(row.ends_at) > now)).reduce((sum, row) => sum + Math.max(0, row.remaining_quantity), 0)
-  const input = (name, label, { type = 'text', hint, min, max, step, required = false, wide = false, placeholder } = {}) => <BenefitField label={label} hint={hint} wide={wide}><input name={name} value={form[name] ?? ''} onChange={update} type={type} min={min} max={max} step={step} required={required} maxLength={name === 'title' ? 120 : undefined} placeholder={placeholder} disabled={saving}/></BenefitField>
+  const input = (name, label, { type = 'text', hint, min, max, step, required = false, wide = false, placeholder } = {}) => <BenefitField label={label} hint={hint} wide={wide}><input name={name} value={form[name] ?? ''} onChange={update} type={type} min={min} max={max} step={step} required={required} maxLength={name === 'title' ? 120 : undefined} placeholder={placeholder} disabled={saving || uploading}/></BenefitField>
 
   return <section className="lt-benefits">
     <header className="lt-benefit-heading"><div><p className="lt-benefit-eyebrow">LOYALTY TREE NETWORK</p><h2>LT Rewards</h2><p>Create limited coupons customers can claim with their shared LT Points.</p></div><div className="lt-benefit-actions"><button type="button" onClick={() => setReload(value => value + 1)} disabled={loading || saving || changing != null}>{loading ? 'Refreshing…' : 'Refresh'}</button><button className="is-primary" type="button" onClick={() => openForm()} disabled={!loaded || saving || changing != null}>＋ Create coupon</button></div></header>
@@ -83,27 +102,20 @@ function OwnerBenefitsContent({ API_BASE = '', businessSlug, ownerToken, authFet
           <BenefitField label="Description" wide><textarea name="description" value={form.description} onChange={update} rows={2} maxLength={2000} disabled={saving} placeholder="Tell customers what makes this reward worth claiming."/></BenefitField>
           <BenefitField label="Category"><select name="category" value={form.category} onChange={update} disabled={saving}>{BENEFIT_CATEGORIES.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></BenefitField>
           {input('image_url', 'Photo URL', { type: 'url', hint: 'Optional · HTTPS image URL or upload below', placeholder: 'https://…' })}
-          <label className="lt-benefit-upload">Upload photo
-            <input type="file" accept="image/*" onChange={event => {
-              const file = event.target.files?.[0]
-              if (!file) return
-              const reader = new FileReader()
-              reader.onload = () => setForm(current => ({ ...current, image_url: reader.result }))
-              reader.readAsDataURL(file)
-            }} />
-          </label>
+          <BenefitField label="Upload photo" hint="Optional · JPG, PNG or WebP, up to 5 MB"><input type="file" accept={BENEFIT_PHOTO_TYPES} disabled={saving || uploading} onChange={uploadPhoto}/>{uploading && <small role="status">Uploading photo…</small>}{benefitImage(form.image_url) && <img src={benefitImage(form.image_url)} alt="Coupon photo preview" style={{ width: 120, height: 90, objectFit: 'cover', borderRadius: 8 }} referrerPolicy="no-referrer"/>}</BenefitField>
           {input('discount_php', 'Discount (₱)', { type: 'number', min: '0.01', max: '1000000', step: '0.01', required: true })}
+          {input('min_spend_php', 'Minimum bill (₱)', { type: 'number', min: '0', max: '1000000', step: '0.01', required: true, hint: 'Use 0 when there is no minimum spend.' })}
           {input('points_cost', 'LT Points to claim', { type: 'number', min: '1', max: '10000000', step: '1', required: true })}
           {input('total_quantity', 'Total coupons', { type: 'number', min: '1', max: '1000000', step: '1', required: true, hint: 'Includes any coupons already claimed.' })}
           {input('per_member_limit', 'Claims per member', { type: 'number', min: '1', max: '100', step: '1', required: true })}
-          {input('weekly_limit', 'Coupons per week', { type: 'number', min: '1', step: '1', placeholder: 'Unlimited', hint: 'How many times this coupon can be claimed per week' })}
+          {input('weekly_limit', 'Coupons per week', { type: 'number', min: '1', max: '1000000', step: '1', placeholder: 'Unlimited', hint: 'Total claims across all members for this offer. Resets Monday, 12:00 AM Philippine time. Blank means unlimited.' })}
           {input('coupon_valid_days', 'Valid days after claiming', { type: 'number', min: '1', max: '365', step: '1', required: true, hint: 'The offer end date can shorten this period.' })}
           {input('starts_at', 'Claims open', { type: 'datetime-local', hint: 'Optional · Your local time' })}
           {input('ends_at', 'Offer ends', { type: 'datetime-local', hint: 'Optional · Claiming and redemption cutoff, in your local time.' })}
           <BenefitField label="Terms" wide><textarea name="terms" value={form.terms} onChange={update} rows={3} maxLength={3000} disabled={saving} placeholder="Eligible items, exclusions and how the coupon can be used."/></BenefitField>
           <BenefitField label="Offer status"><select name="status" value={form.status} onChange={update} disabled={saving}><option value="active">Active · Accept new claims</option><option value="draft">Draft</option><option value="paused">Paused</option></select></BenefitField>
         </div>
-        <BenefitMessage error>{formError}</BenefitMessage><div className="lt-benefit-actions"><button type="submit" className="is-primary" disabled={saving}>{saving ? 'Saving…' : editing != null ? 'Save offer' : 'Create coupon offer'}</button><button type="button" disabled={saving} onClick={closeForm}>Cancel</button></div>
+        <BenefitMessage error>{formError}</BenefitMessage><div className="lt-benefit-actions"><button type="submit" className="is-primary" disabled={saving || uploading}>{uploading ? 'Uploading photo…' : saving ? 'Saving…' : editing != null ? 'Save offer' : 'Create coupon offer'}</button><button type="button" disabled={saving} onClick={closeForm}>Cancel</button></div>
       </form>}
       <div className="lt-benefit-section-label"><h3>Your coupon offers</h3><span>{offers.length ? `${offset + 1}–${offset + offers.length}` : '0'} shown</span></div>
       {!offers.length ? <div className="lt-benefit-empty"><strong>Your next customer perk starts here.</strong><p>Create a limited coupon with a clear discount, points cost and quantity.</p></div> : <div className="lt-benefit-offer-grid">{offers.map(offer => <article className="lt-benefit-offer" key={offer.id}>

@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { benefitCentavos, benefitImage, benefitMoney, benefitOfferForm, benefitOfferPayload, benefitRequestError, benefitSettingsPayload, benefitUseCheck, newBenefitOffer, validBenefitCoupons, validBenefitOffers } from '../src/components/benefitsManagementModel.js'
+import { BENEFIT_PHOTO_MAX_BYTES, uploadBenefitPhoto } from '../src/components/benefitPhotoUpload.js'
 
 const ready = () => ({ ...newBenefitOffer(), title: 'Twenty pesos off', discount_php: '20.00', points_cost: '20', total_quantity: '100' })
 
@@ -20,12 +21,69 @@ test('offer creation sends canonical centavos, stock, category and finite claim 
   assert.equal(payload.points_cost, 20)
   assert.equal(payload.total_quantity, 100)
   assert.equal(payload.per_member_limit, 1)
+  assert.equal(payload.weekly_limit, null)
   assert.equal(payload.coupon_valid_days, 30)
   assert.equal(payload.description, 'Members only')
   assert.equal(payload.category, 'food_drink')
   assert.ok(Date.parse(payload.ends_at) > Date.parse(payload.starts_at))
   assert.equal(payload.discount_php, undefined)
   assert.equal(payload.id, undefined)
+})
+
+test('weekly offer limits survive create and edit and can be cleared without changing minimum spend', () => {
+  const { payload } = benefitOfferPayload({ ...ready(), min_spend_php: '150.50', weekly_limit: '5' })
+  assert.equal(payload.weekly_limit, 5)
+  assert.equal(payload.min_spend_centavos, 15050)
+  const form = benefitOfferForm({ ...payload, id: 'existing-offer' })
+  assert.equal(form.weekly_limit, 5)
+  assert.equal(form.min_spend_php, '150.50')
+  assert.equal(benefitOfferPayload(form).payload.weekly_limit, 5)
+  form.weekly_limit = ''
+  assert.equal(benefitOfferPayload(form).payload.weekly_limit, null)
+  assert.equal(benefitOfferPayload(form).payload.min_spend_centavos, 15050)
+  assert.equal(benefitOfferForm({ ...payload, weekly_limit: null }).weekly_limit, '')
+  for (const weekly_limit of ['0', '-1', '1.2', '1e2', '1000001', ' ']) assert.ok(benefitOfferPayload({ ...ready(), weekly_limit }).error)
+})
+
+const signature = { cloud_name: 'sample-cloud', api_key: 'public-key', timestamp: 123, signature: 'signed-upload', folder: 'lt-benefits/cafe', upload_preset: 'images' }
+const uploadedImage = 'https://res.cloudinary.com/sample-cloud/image/upload/v1/lt-benefits/cafe/photo.png'
+
+test('uploaded photo uses a signed direct upload and saves an HTTPS URL in both create and edit', async () => {
+  const file = new Blob(['synthetic-image'], { type: 'image/png' })
+  const calls = []
+  const image = await uploadBenefitPhoto({ file, businessSlug: 'cafe',
+    request: async (path, options) => { calls.push({ path, options }); return signature },
+    send: async (url, options) => {
+      assert.equal(url, 'https://api.cloudinary.com/v1_1/sample-cloud/image/upload')
+      assert.equal(options.method, 'POST')
+      assert.equal(options.headers, undefined)
+      assert.equal(options.body.get('signature'), signature.signature)
+      assert.equal(options.body.get('file').size, file.size)
+      assert.equal(options.body.get('Authorization'), null)
+      return { ok: true, json: async () => ({ secure_url: uploadedImage }) }
+    } })
+  assert.equal(calls[0].path, '/api/v1/business/cafe/cloudinary-signature?purpose=lt_benefits')
+  assert.equal(calls[0].options.method, 'POST')
+  assert.equal(image, uploadedImage)
+  const offer = benefitOfferPayload({ ...ready(), image_url: image }).payload
+  assert.equal(offer.image_url, uploadedImage)
+  assert.equal(benefitOfferPayload(benefitOfferForm(offer)).payload.image_url, uploadedImage)
+})
+
+test('invalid uploads and provider failures cannot save data URLs or unexpected upload hosts', async () => {
+  let signed = 0
+  const request = async () => { signed++; return signature }
+  for (const file of [new Blob(['x'], { type: 'image/svg+xml' }), new Blob([], { type: 'image/png' }), { type: 'image/jpeg', size: BENEFIT_PHOTO_MAX_BYTES + 1 }]) {
+    await assert.rejects(uploadBenefitPhoto({ file, businessSlug: 'cafe', request }), /photo/)
+  }
+  assert.equal(signed, 0)
+  const file = new Blob(['x'], { type: 'image/png' })
+  for (const secure_url of ['data:image/png;base64,abc', 'http://res.cloudinary.com/sample-cloud/image/upload/x', 'https://example.com/photo.png', 'https://res.cloudinary.com/other/image/upload/photo.png']) {
+    await assert.rejects(uploadBenefitPhoto({ file, businessSlug: 'cafe', request, send: async () => ({ ok: true, json: async () => ({ secure_url }) }) }), /URL/)
+  }
+  await assert.rejects(uploadBenefitPhoto({ file, businessSlug: 'cafe', request, send: async () => ({ ok: false, json: async () => ({ error: { message: 'provider details' } }) }) }), /Could not upload/)
+  assert.ok(benefitOfferPayload({ ...ready(), image_url: 'data:image/png;base64,abc' }).error)
+  assert.equal(benefitImage('https://example.com/a b.png'), '')
 })
 
 test('invalid offer values fail before sending and do not silently round points or money', () => {
