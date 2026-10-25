@@ -2,6 +2,7 @@ import React, { useEffect, useId, useRef, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { filterMenuItems, groupMenuCategories, menuItemAvailable, menuItemPrice, toggleMenuOption, validMenuPayload } from './qrMenuModel'
 import loyaltyTreeLogo from './logo-192.png'
+import { requestJsonResponse } from './requestTimeout'
 import './qr-menu.css'
 
 function MenuItemPhoto({ item, available }) {
@@ -113,11 +114,12 @@ export default function QRMenuPage({ API_BASE }) {
   // switch reuses that one response; it never polls or starts customer ordering.
   useEffect(() => {
     const controller = new AbortController()
+    let active = true
     setData(null); setError(''); window.scrollTo(0, 0)
-    fetch(`${API_BASE}/api/v1/public/menu/${encodeURIComponent(businessId)}`, { signal: controller.signal, cache: 'no-store' })
-      .then(async response => { const body = await response.json().catch(() => ({})); if (!response.ok) throw new Error(response.status === 404 ? 'This menu is not available right now.' : 'We couldn’t load the menu. Please try again.'); if (!validMenuPayload(body)) throw new Error('We couldn’t load the menu. Please try again.'); return body })
-      .then(setData).catch(value => { if (value.name !== 'AbortError') setError(value.message) })
-    return () => controller.abort()
+    requestJsonResponse(fetch, `${API_BASE}/api/v1/public/menu/${encodeURIComponent(businessId)}`, { signal: controller.signal, cache: 'no-store' }, { message: 'The menu is taking too long to load. Please try again.' })
+      .then(({response,payload:body}) => { if (!response.ok) throw new Error(response.status === 404 ? 'This menu is not available right now.' : 'We couldn’t load the menu. Please try again.'); if (!validMenuPayload(body)) throw new Error('We couldn’t load the menu. Please try again.'); return body })
+      .then(value => { if(active)setData(value) }).catch(value => { if (active && value.name !== 'AbortError') setError(value.message) })
+    return () => { active=false; controller.abort() }
   }, [API_BASE, businessId, attempt])
   useEffect(() => { if (data?.business?.name) document.title = `${data.business.name} · QR Menu | Loyalty Tree` }, [data?.business?.name])
   if (error) return <main className="lt-qr-message-page"><h1>Menu unavailable</h1><p role="alert">{error}</p><button type="button" onClick={() => setAttempt(value => value + 1)}>Try again</button></main>

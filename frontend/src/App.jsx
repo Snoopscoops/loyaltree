@@ -6,6 +6,7 @@ const Login = lazy(() => import('./components/Login'))
 const Signup = lazy(() => import('./components/Signup'))
 import HomePage from './components/HomePage'
 const PublicInfoPage = lazy(() => import('./components/PublicInfoPage'))
+const NotFound = lazy(() => import('./components/NotFound'))
 const LegalPage = lazy(() => import('./components/LegalPages'))
 const OwnerDashboard = lazy(() => import('./components/OwnerDashboard'))
 const CarLendingDashboard = lazy(() => import('./components/CarLendingDashboard'))
@@ -236,6 +237,7 @@ function App() {
         <Route path="/partner" element={
           user?.role === 'partner' ? <PartnerDashboard API_BASE={API_BASE} user={user} onLogout={handleLogout} /> : <Navigate to="/login" />
         } />
+        <Route path="*" element={<NotFound />} />
       </Routes> }
 }
 

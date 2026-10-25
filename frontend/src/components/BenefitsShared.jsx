@@ -1,5 +1,6 @@
 import React, { useCallback, useRef } from 'react'
 import { benefitRequestError } from './benefitsManagementModel'
+import { requestJsonResponse } from './requestTimeout'
 
 export function useBenefitsRequest({ API_BASE = '', token, authFetch, relativeAuth = false }) {
   const latest = useRef({ API_BASE, token, authFetch, relativeAuth })
@@ -10,8 +11,8 @@ export function useBenefitsRequest({ API_BASE = '', token, authFetch, relativeAu
     const headers = { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...options.headers }
     if (current.token) headers.Authorization = `Bearer ${current.token}`
     const url = current.authFetch && current.relativeAuth ? path : `${current.API_BASE.replace(/\/$/, '')}${path}`
-    const response = await (current.authFetch || fetch)(url, { ...options, headers, cache: 'no-store' })
-    const body = await response.json().catch(() => null)
+    const { response, payload: body } = await requestJsonResponse(current.authFetch || fetch, url,
+      { ...options, headers, cache: 'no-store' }, { message: 'LT Rewards is taking too long. Please try again.' })
     if (!response.ok) { const error = new Error(benefitRequestError(response.status, body)); error.status = response.status; throw error }
     if (!body || typeof body !== 'object') throw new Error('The LT Rewards response was incomplete. Please refresh.')
     return body

@@ -1,5 +1,14 @@
 # Backend monitoring
 
+For the combined assessment 5–9 release, follow
+[the deployment notes](README-system-followups.md) and run
+`system_followups_5_9.sql` once instead of the three individual addon files.
+LT Points stays **Coming soon**; leave `LT_BENEFITS_PUBLIC_LAUNCH` unset or false.
+
+For durable APNs retries, partial acceptance, interrupted-job recovery and the
+additional health-report counts, apply `apple_wallet_delivery.sql` and read
+[Apple delivery operations](README-apple-wallet-delivery.md) before deployment.
+
 Apply `system_events.sql` in Supabase **before deploying** these files. It creates
 private, service-role-only monitoring storage and adds the durable Apple pass
 revision column. Keep the existing Supabase server credential. Set one new Render

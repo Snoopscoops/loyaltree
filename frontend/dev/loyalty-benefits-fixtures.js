@@ -38,7 +38,7 @@ export function createBenefitsDemo({ development, hostname, search, latency = 10
     const done = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
     const body = typeof options.body === 'string' ? JSON.parse(options.body || '{}') : {}
     const method = options.method || 'GET'
-    if (endpoint === '/config' && method === 'GET') return done({ enabled: scenario !== 'disabled', available: scenario !== 'unavailable', pesos_per_point: 500, currency: 'PHP' })
+    if (endpoint === '/config' && method === 'GET') return done({ enabled: scenario !== 'disabled' && scenario !== 'coming_soon', available: scenario !== 'unavailable' && scenario !== 'coming_soon', public_launch: scenario !== 'coming_soon', coming_soon: scenario === 'coming_soon', pesos_per_point: 500, currency: 'PHP' })
     if (scenario === 'offline') return done({ detail: 'Demo service unavailable.' }, 503)
     if (endpoint === '/entry' && method === 'POST') return done({email_masked:'h***@e***',business_name:'Northstar Coffee',verified:options.headers?.Authorization === `Bearer ${token}`})
     if (endpoint === '/offers' && method === 'GET') {
@@ -47,6 +47,7 @@ export function createBenefitsDemo({ development, hostname, search, latency = 10
       return done({ offers: offers.slice(offset, offset + limit), offset, limit, has_more: offers.length > offset + limit })
     }
     if (endpoint === '/auth/request-code' && method === 'POST') return body.consent && body.customer_public_id && body.card_token && !body.email ? done({ challenge_id: 'demo-challenge', expires_in: 600, retry_after: 1, message: 'Demo only. No email was sent.' }) : done({ detail: 'Consent required.' }, 400)
+    if (endpoint === '/auth/email/request-code' && method === 'POST') return body.consent === true && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email || '') ? done({ challenge_id: 'demo-challenge', email_masked: 'h***@e***', expires_in: 600, retry_after: 1, message: 'Demo only. No email was sent.' }) : done({ detail: 'A valid email and consent are required.' }, 400)
     if (endpoint === '/auth/verify' && method === 'POST') return body.challenge_id === 'demo-challenge' && body.code === '123456' ? done({ access_token: token, token_type: 'bearer', expires_in: 604800, member: me.member, linked: true, customer_public_id: 'demo-northstar-card' }) : done({ detail: 'Invalid verification code.' }, 400)
     if (options.headers?.Authorization !== `Bearer ${token}`) return done({ detail: 'Benefits session required.' }, 401)
     if (endpoint === '/me' && method === 'GET') return done(me)

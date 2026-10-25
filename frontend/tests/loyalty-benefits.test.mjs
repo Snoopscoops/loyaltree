@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { BENEFITS_SESSION_KEY, benefitMoney, readBenefitsEntry, saveBenefitsEntry, benefitsCardReference, benefitsClaimKey, benefitsClaimState, benefitsDemoAllowed, benefitsEntryUrl, benefitsFailure, clearBenefitsClaimKey, clearBenefitsSession, filterBenefitsOffers, readBenefitsSession, safeBenefitsImage, saveBenefitsSession, scrubBenefitsReference, validBenefitsClaim, validBenefitsConfig, validBenefitsMe, validBenefitsOffers } from '../src/components/benefitsModel.js'
+import { BENEFITS_SESSION_KEY, benefitMoney, readBenefitsEntry, saveBenefitsEntry, clearBenefitsEntry, benefitsCardReference, benefitsClaimKey, benefitsClaimState, benefitsDemoAllowed, benefitsEntryUrl, benefitsFailure, clearBenefitsClaimKey, clearBenefitsSession, filterBenefitsOffers, readBenefitsSession, safeBenefitsImage, saveBenefitsSession, scrubBenefitsReference, validBenefitsClaim, validBenefitsConfig, validBenefitsMe, validBenefitsOffers } from '../src/components/benefitsModel.js'
 import { createBenefitsDemo } from '../dev/loyalty-benefits-fixtures.js'
 
 const memoryStorage = () => { const values = new Map(); return { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, String(value)), removeItem: key => values.delete(key) } }
@@ -122,11 +122,17 @@ test('Benefits keeps exact peso values and rejects zero-value financial offers',
   assert.equal(validBenefitsOffers({...listing,offers:[{...listing.offers[0],points_cost:0}]}),false)
   assert.equal(validBenefitsOffers({...listing,offers:[{...listing.offers[0],discount_centavos:0}]}),false)
 })
-test('a new tab needs a Wallet entry; it cannot use a standalone email login', async () => {
+test('a new tab can use passwordless email OTP while signed Wallet entry remains compatible', async () => {
  const storage=memoryStorage();assert.equal(readBenefitsEntry(storage),null)
  const reference={customer_public_id:'card-a',card_token:'0123456789abcdef'}
  saveBenefitsEntry(storage,reference);assert.deepEqual(readBenefitsEntry(storage),reference)
  const api=fixture();assert.equal((await api('/offers')).status,401)
  assert.equal((await send(api,'/auth/request-code',{email:'hello@example.test',consent:true})).status,400)
  const entry=await json(await send(api,'/entry',reference));assert.equal(entry.verified,false)
+ const challenge=await json(await send(api,'/auth/email/request-code',{email:'hello@example.test',consent:true}))
+ assert.equal((await send(api,'/auth/verify',{challenge_id:challenge.challenge_id,code:'000000'})).status,400)
+ const verified=await json(await send(api,'/auth/verify',{challenge_id:challenge.challenge_id,code:'123456'}))
+ assert.equal((await api('/me',{headers:{Authorization:`Bearer ${verified.access_token}`}})).status,200)
+ clearBenefitsEntry(storage);assert.equal(readBenefitsEntry(storage),null)
+ assert.equal((await send(api,'/auth/email/request-code',{email:'hello@example.test',consent:false})).status,400)
 })

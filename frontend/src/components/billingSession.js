@@ -1,4 +1,5 @@
 // Billing credentials stay in this tab's session storage and only go to LT.
+import { requestJsonResponse } from './requestTimeout.js'
 export const ONBOARDING_SESSION_KEY = 'loyaltree_pending_onboarding'
 export const PENDING_PAYMENT_KEY = 'loyaltree_paymongo_pending_card'
 
@@ -81,6 +82,25 @@ export function savePendingPayment(businessSlug, payment, storage = tabStorage()
   }, storage)
 }
 
+// A storage-blocked browser must still recover this exact attempt after a
+// reload. The URL fallback contains only public routing IDs, never credentials
+// or payment details. Call before exposing a QR or submitting a card attach.
+export function preservePendingPayment(businessSlug, payment, {
+  storage = tabStorage(), href = globalThis.location?.href, history = globalThis.history,
+} = {}) {
+  if (!/^[a-zA-Z0-9_-]{1,200}$/.test(businessSlug || '')
+      || !/^pi_[a-zA-Z0-9_-]{1,128}$/.test(payment?.payment_intent_id || '')) return false
+  if (savePendingPayment(businessSlug, payment, storage)) return true
+  try {
+    const url = new URL(href)
+    url.searchParams.set('paymongo_return', '1')
+    url.searchParams.set('business_slug', businessSlug)
+    url.searchParams.set('payment_intent', payment.payment_intent_id)
+    history.replaceState(history.state, '', url.toString())
+    return true
+  } catch { return false }
+}
+
 export function clearPendingPayment(storage = tabStorage()) {
   try { storage?.removeItem(PENDING_PAYMENT_KEY) } catch { /* storage unavailable */ }
 }
@@ -90,12 +110,9 @@ export class BillingRequestError extends Error {
 }
 
 async function requestJson(fetchImpl, url, options = {}, timeoutMs = 30000) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const response = await fetchImpl(url, { ...options, credentials: 'omit', cache: 'no-store',
-      redirect: 'error', signal: controller.signal })
-    const payload = await response.json().catch(() => null)
+    const {response,payload} = await requestJsonResponse(fetchImpl, url, { ...options, credentials: 'omit', cache: 'no-store',
+      redirect: 'error' }, { timeoutMs, message: 'Billing is taking too long. Please try again.' })
     if (!response.ok) {
       const detail = payload?.detail
       throw new BillingRequestError(response.status === 401
@@ -106,10 +123,11 @@ async function requestJson(fetchImpl, url, options = {}, timeoutMs = 30000) {
     return payload
   } catch (error) {
     if (error instanceof BillingRequestError) throw error
-    throw new BillingRequestError(error?.name === 'AbortError'
+    if (error?.name === 'AbortError') throw error
+    throw new BillingRequestError(error?.name === 'TimeoutError'
       ? 'Billing is taking too long. Please try again.'
       : 'Unable to reach billing. Please try again.')
-  } finally { clearTimeout(timer) }
+  }
 }
 
 export function requestBilling(fetchImpl, { API_BASE, businessSlug, sessionToken, path = '', timeoutMs = 30000, ...options }) {
@@ -135,6 +153,14 @@ export function requestPaymentStatus(fetchImpl, options, intentId) {
 
 export function paymentNeedsReview(payment) {
   return payment?.fulfillment_status === 'legacy_review' || payment?.status === 'review_required'
+}
+
+// Hiding a local checkout does not cancel a provider payment. Keep issued QR
+// codes and possibly submitted card attempts until the server resolves them.
+export function canDiscardPaymentAttempt(checkout, { busy = false, pending } = {}) {
+  if (busy || !checkout || checkout.confirming || checkout.review_required) return false
+  if (checkout.payment_method !== 'card') return false
+  return !pending?.payment_intent_id || pending.payment_intent_id !== checkout.payment_intent_id
 }
 
 export async function renewBillingSession(fetchImpl, API_BASE, { email, password, payment_intent_id }) {

@@ -88,7 +88,7 @@ export function clearBenefitsClaimKey(storage, memberId, offerId) {
 }
 
 export function benefitsFailure(status, detail = '') {
-  if (status === 401) return 'Open Benefits from your Wallet card and verify again to continue.'
+  if (status === 401) return 'Verify your email again to continue to Benefits.'
   if (status === 403) return 'This action is unavailable for this account or card.'
   if (status === 429) return 'Please wait a moment before trying again. Too many attempts were made.'
   if (status === 503) return 'Loyalty Tree Benefits is temporarily unavailable. Please try again shortly.'
@@ -96,7 +96,7 @@ export function benefitsFailure(status, detail = '') {
     if (/insufficient|not enough|balance/i.test(detail)) return 'You need more LT Points for this benefit. Your balance has been refreshed.'
     if (/stock|quantity|sold out/i.test(detail)) return 'This benefit has just sold out. Your points have not been spent.'
     if (/limit|already claimed/i.test(detail)) return 'You have reached the claim limit for this benefit.'
-    if (/email|phone/i.test(detail)) return 'Add a valid email and phone number to this card before connecting Benefits. Ask the business to update your details.'
+    if (/email/i.test(detail)) return detail || 'Add a valid email to this card before connecting Benefits. Ask the business to update your details.'
     return detail || 'This benefit is no longer available to claim. Refresh to see the latest availability.'
   }
   if (status === 400) return 'Please check your details or verification code and try again.'
@@ -109,4 +109,7 @@ export function readBenefitsEntry(storage) {
 }
 export function saveBenefitsEntry(storage, reference) {
   try { storage.setItem(BENEFITS_ENTRY_KEY, JSON.stringify(reference)) } catch { /* This tab retains the entry in memory. */ }
+}
+export function clearBenefitsEntry(storage) {
+  try { storage.removeItem(BENEFITS_ENTRY_KEY) } catch { /* This tab can still use email verification. */ }
 }

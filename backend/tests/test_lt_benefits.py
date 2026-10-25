@@ -43,7 +43,7 @@ class FakeDB:
         }
 
     def rpc(self, name, args):
-        assert name == "ltb_command"
+        assert name == "ltb_identity_command"
         self.calls.append((args["p_action"], args["p_data"]))
         value = self.responses.get(args["p_action"], {})
         if isinstance(value, Exception):
@@ -51,7 +51,7 @@ class FakeDB:
         return SimpleNamespace(execute=lambda: SimpleNamespace(data=value))
 
 
-def fixture(enabled=True):
+def fixture(enabled=True, public_launch=True):
     db, logs, emails = FakeDB(), [], []
     business = dict(id=10, public_id="synthetic-cafe", name="Synthetic Cafe")
     def owner(slug, auth):
@@ -72,7 +72,7 @@ def fixture(enabled=True):
     app = FastAPI()
     service = benefits.register_lt_benefits_routes(app, db=db, get_business=lambda _: business,
         get_card_context=card, require_owner=owner, require_staff=staff, require_admin=admin,
-        send_email=lambda *a: emails.append(a) or True, enabled=enabled,
+        send_email=lambda *a: emails.append(a) or True, enabled=enabled, public_launch=public_launch,
         log=lambda event, **fields: logs.append((event, fields)))
     return TestClient(app), service, db, logs, emails
 
@@ -91,6 +91,37 @@ class BenefitsRouteTests(unittest.TestCase):
         self.assertEqual(db.calls, [])
         self.assertEqual(client.get("/api/v1/benefits/offers").status_code, 503)
         self.assertIsNone(service.wallet_projection("card"))
+
+    def test_public_launch_defaults_to_coming_soon_even_when_feature_switch_is_enabled(self):
+        with patch.dict(os.environ):
+            os.environ.pop('LT_BENEFITS_PUBLIC_LAUNCH', None)
+            self.assertFalse(benefits.public_launch_enabled())
+            client, service, db, _, emails = fixture(enabled=True, public_launch=None)
+            response = client.get('/api/v1/benefits/config')
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()['coming_soon'], True)
+            self.assertFalse(response.json()['enabled'])
+            self.assertFalse(response.json()['available'])
+            self.assertEqual(db.calls, [])
+            for path, body in [('/auth/email/request-code', dict(email='synthetic@example.invalid',consent=True)),
+                               ('/auth/request-code', dict(customer_public_id='card-30',card_token='signed-card-proof',consent=True)),
+                               ('/entry', dict(customer_public_id='card-30',card_token='signed-card-proof')),
+                               ('/auth/verify', dict(challenge_id=OFFER_ID,code='123456')),
+                               ('/link', dict(customer_public_id='card-30',card_token='signed-card-proof',consent=True)),
+                               (f'/offers/{OFFER_ID}/claim', {})]:
+                self.assertEqual(client.post('/api/v1/benefits'+path,json=body,headers=self.auth).status_code,503)
+            for path in ('/offers','/me'):
+                self.assertEqual(client.get('/api/v1/benefits'+path,headers=self.auth).status_code,503)
+            self.assertEqual(service.earn('card-30',10,'receipt','sale',50000)['status'],'disabled')
+            self.assertIsNone(service.provision_customer(dict(id=30,public_id='card-30',email='synthetic@example.invalid',lt_benefits_card_enabled=True),dict(id=10)))
+            self.assertIsNone(service.wallet_projection('card-30'))
+            self.assertEqual(service.process_wallet_jobs(lambda *_: True),0)
+            self.assertEqual(db.calls,[])
+            self.assertFalse(emails)
+            service.reverse(10,'receipt','prior-purchase','refund-while-coming-soon',50000)
+            self.assertEqual(db.calls[-1][0],'reverse')
+            self.assertEqual(client.get('/api/v1/business/synthetic-cafe/lt-benefits/offers',headers={'Authorization':'Bearer signed-owner'}).status_code,200)
+            self.assertEqual(client.get('/api/v1/admin/lt-benefits/settings',headers={'Authorization':'Bearer admin-secret'}).status_code,200)
 
     def test_missing_migration_fails_closed_without_rpc_payload_or_exception_message(self):
         self.db.responses["settings"] = RuntimeError("contains email secret@example.invalid bearer-token")
@@ -133,7 +164,43 @@ class BenefitsRouteTests(unittest.TestCase):
         self.assertFalse(self.emails)
         self.assertEqual(self.client.get("/api/v1/benefits/offers").status_code,401)
 
-    def test_card_entry_uses_saved_contact_and_requires_otp_for_another_card(self):
+    def test_shared_qr_email_otp_normalizes_email_and_does_not_require_phone(self):
+        response = self.client.post('/api/v1/benefits/auth/email/request-code',
+            json=dict(email='  SYNTHETIC@EXAMPLE.INVALID  ', consent=True))
+        self.assertEqual(response.status_code, 200)
+        data = next(data for action, data in self.db.calls if action == 'auth_request')
+        self.assertEqual(data['email'], 'synthetic@example.invalid')
+        self.assertEqual(data['card_context'], {'kind': 'email'})
+        self.assertEqual(self.emails[0][0], 'synthetic@example.invalid')
+        self.assertNotIn('synthetic@example.invalid', response.text)
+        self.assertEqual(response.headers['cache-control'], 'no-store')
+        for body in (dict(email='bad', consent=True), dict(email='one@example.invalid', consent=False),
+                     dict(email='one@example.invalid', consent=1), dict(email='one@example.invalid', consent=True, phone='0917')):
+            self.assertEqual(self.client.post('/api/v1/benefits/auth/email/request-code', json=body).status_code, 422)
+
+    def test_unknown_email_receives_same_generic_response_without_sending_or_provisioning(self):
+        self.db.responses['auth_request'] = dict(accepted=False)
+        response = self.client.post('/api/v1/benefits/auth/email/request-code',
+            json=dict(email='unknown@example.invalid', consent=True))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('challenge_id', response.json())
+        self.assertIn('If eligible', response.json()['message'])
+        self.assertFalse(self.emails)
+        self.assertNotIn('provision', [action for action, _ in self.db.calls])
+        self.assertNotIn('unknown@example.invalid', response.text)
+
+    def test_signup_can_use_matching_verified_session_without_sending_another_code(self):
+        self.service.provision_customer(dict(id=30,public_id='card-30',email='synthetic@example.invalid',lt_benefits_card_enabled=True),
+            dict(id=10,public_id='cafe',name='Cafe'), 'Bearer '+TOKEN)
+        self.assertEqual(self.db.calls[-1][0], 'link')
+        self.assertFalse(self.emails)
+        self.db.calls.clear()
+        self.db.responses['session']['email'] = 'other@example.invalid'
+        self.service.provision_customer(dict(id=30,public_id='card-30',email='synthetic@example.invalid',lt_benefits_card_enabled=True),
+            dict(id=10,public_id='cafe',name='Cafe'), 'Bearer '+TOKEN)
+        self.assertNotIn('link', [action for action, _ in self.db.calls])
+
+    def test_verified_email_session_links_another_matching_card_without_new_otp(self):
         response=self.client.post("/api/v1/benefits/entry",headers=self.auth,
             json=dict(customer_public_id="card-30",card_token="signed-card-proof"))
         self.assertTrue(response.json()["verified"])
@@ -141,14 +208,15 @@ class BenefitsRouteTests(unittest.TestCase):
         self.assertNotIn("0917",response.text)
         response=self.client.post("/api/v1/benefits/entry",headers=self.auth,
             json=dict(customer_public_id="card-31",card_token="signed-card-proof"))
-        self.assertFalse(response.json()["verified"])
+        self.assertTrue(response.json()["verified"])
         self.assertFalse(self.emails)
 
     def test_profile_setup_is_automatic_best_effort_and_sends_no_email(self):
         self.service.provision_customer(dict(id=30,public_id="card-30",email="SYNTHETIC@example.invalid",phone="09171234567",lt_benefits_card_enabled=True),dict(id=10,public_id="cafe",name="Cafe"))
         action,data=self.db.calls[-1]
         self.assertEqual(action,"provision")
-        self.assertEqual(data["phone_key"],"639171234567")
+        self.assertEqual(data["email"],"synthetic@example.invalid")
+        self.assertNotIn("phone_key",data)
         self.assertFalse(self.emails)
         self.db.responses["provision"]=RuntimeError("private details")
         self.assertIsNone(self.service.provision_customer(dict(id=30,email="one@example.invalid",phone="+63 917 123 4567",lt_benefits_card_enabled=True),dict(id=10)))

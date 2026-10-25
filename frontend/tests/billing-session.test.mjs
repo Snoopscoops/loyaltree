@@ -4,13 +4,70 @@ import { requestBilling, requestBillingHistory, requestPaymentStatus, renewBilli
   readOnboardingSession, saveOnboardingSession, clearOnboardingSession,
   readPendingPayment, savePendingPayment, clearPendingPayment,
   ONBOARDING_SESSION_KEY, PENDING_PAYMENT_KEY, paymentNeedsReview, readPaymentReturn,
-  pendingPaymentForReturn, clearPaymentReturnUrl } from '../src/components/billingSession.js'
+  pendingPaymentForReturn, clearPaymentReturnUrl, canDiscardPaymentAttempt, preservePendingPayment } from '../src/components/billingSession.js'
 
 const options = { API_BASE:'https://api.example.invalid', businessSlug:'test-cafe', sessionToken:'billing-fixture' }
+
+test('issued or uncertain payment attempts cannot be discarded to create a second payment', () => {
+  const card={payment_intent_id:'pi_existing',payment_method:'card'}
+  assert.equal(canDiscardPaymentAttempt(card),true)
+  assert.equal(canDiscardPaymentAttempt(card,{busy:true}),false)
+  assert.equal(canDiscardPaymentAttempt({...card,confirming:true}),false)
+  assert.equal(canDiscardPaymentAttempt({...card,review_required:true}),false)
+  assert.equal(canDiscardPaymentAttempt(card,{pending:{payment_intent_id:'pi_existing'}}),false)
+  assert.equal(canDiscardPaymentAttempt({...card,payment_method:'qrph'}),false)
+  assert.equal(canDiscardPaymentAttempt(card,{pending:{payment_intent_id:'pi_another'}}),true)
+})
 function storage() {
   const values = new Map()
   return { getItem:key=>values.get(key)||null, setItem:(key,value)=>values.set(key,value), removeItem:key=>values.delete(key) }
 }
+
+test('pending payment uses tab storage without putting routing IDs into the URL when storage works', () => {
+  const tab = storage()
+  assert.equal(preservePendingPayment('test-cafe', {payment_intent_id:'pi_existing', payment_method:'qrph'}, {
+    storage:tab, history:{replaceState(){throw Error('should not change the URL')}},
+  }), true)
+  assert.equal(readPendingPayment('test-cafe', tab).payment_intent_id, 'pi_existing')
+})
+
+test('blocked or full browser storage recovers the same QR/card intent from public URL context after reload', () => {
+  for (const reason of ['SecurityError', 'QuotaExceededError']) {
+    for (const method of ['qrph','card']) {
+      const tab = { getItem(){throw Error(reason)}, setItem(){throw Error(reason)} }
+      let current = 'https://example.invalid/signup?country=PH#billing'
+      const browserHistory = { state:{tab:'billing'}, replaceState(state, unused, href){
+        assert.deepEqual(state, {tab:'billing'}); current = href
+      } }
+      const payment = {payment_intent_id:'pi_existing', payment_method:method,
+        client_key:'client-secret', paymongo_public_key:'provider-key', card_number:'private-card',
+        billing_email:'private@example.invalid', billing_token:'capability-secret', qr_image_url:'private-image'}
+      assert.equal(preservePendingPayment('test-cafe', payment, {storage:tab, href:current, history:browserHistory}), true)
+      const url = new URL(current)
+      assert.deepEqual([...url.searchParams.keys()].sort(), ['business_slug','country','payment_intent','paymongo_return'])
+      assert.equal(url.hash, '#billing')
+      for (const secret of ['client-secret','provider-key','private-card','private@example.invalid','capability-secret','private-image']) {
+        assert.ok(!current.includes(secret))
+      }
+      const restored = pendingPaymentForReturn('test-cafe', url.search, tab)
+      assert.equal(restored.payment_intent_id, 'pi_existing')
+      assert.equal(restored.businessSlug, 'test-cafe')
+      assert.equal(pendingPaymentForReturn('another-business', url.search, tab), null)
+      const cleaned = new URL(clearPaymentReturnUrl(current, 'test-cafe'))
+      assert.equal(cleaned.search, '?country=PH')
+      assert.equal(cleaned.hash, '#billing')
+    }
+  }
+})
+
+test('payment cannot proceed when neither storage nor public URL recovery can be saved', () => {
+  const blocked = {setItem(){throw Error('blocked')}}
+  assert.equal(preservePendingPayment('test-cafe', {payment_intent_id:'pi_existing'}, {
+    storage:blocked, href:'https://example.invalid/billing', history:{replaceState(){throw Error('blocked')}},
+  }), false)
+  assert.equal(preservePendingPayment('../other', {payment_intent_id:'pi_existing'}, {storage:storage()}), false)
+  assert.equal(preservePendingPayment('test-cafe', {payment_intent_id:'https://untrusted.invalid'}, {storage:storage()}), false)
+})
 
 test('subscription reads and checkout carry the capability only to LT billing paths', async () => {
   const calls = []

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import { QRMenuBrowser } from './QRMenuPage'
 import { validMenuPayload } from './qrMenuModel'
+import { requestJsonResponse } from './requestTimeout'
 import './qr-menu.css'
 
 export default function QRMenuSection({ API_BASE, user, business, authFetch, renderBuilder, onUpgrade }) {
@@ -14,25 +15,33 @@ export default function QRMenuSection({ API_BASE, user, business, authFetch, ren
   const [branch, setBranch] = useState('')
   const [notice, setNotice] = useState('')
   const qr = useRef(null)
+  const scope = useRef(new AbortController())
   const slug = user.business_slug
   const base = `${API_BASE}/api/v1/business/${encodeURIComponent(slug)}/qr-menu`
   const load = async () => {
+    const signal=scope.current.signal
     setError('')
-    try { const response = await authFetch(base); const data = await response.json().catch(() => ({})); if (!response.ok) { setLocked(response.status === 403); throw new Error(data.detail || 'Could not load QR Menu') }; setSetup(data); setLocked(false) }
-    catch (value) { setError(value.message) }
+    try { const {response,payload} = await requestJsonResponse(authFetch,base,{signal}); const data=payload||{}; if (!response.ok) { setLocked(response.status === 403); throw new Error(data.detail || 'Could not load QR Menu') }; if(!Array.isArray(data.branches))throw new Error('Could not load QR Menu. Please try again.'); setSetup(data); setLocked(false) }
+    catch (value) { if(!signal.aborted)setError(value.message) }
   }
-  useEffect(() => { setSetup(null); setPreview(null); load() }, [base, user.token])
+  useEffect(() => {
+    const controller=new AbortController();scope.current=controller
+    setSetup(null);setPreview(null);setSaving(false);setLocked(false);load()
+    return()=>controller.abort()
+  }, [base, user.token])
   const loadPreview = async () => {
+    const signal=scope.current.signal
     setError(''); setPreview(null)
-    try { const response = await authFetch(`${base}/preview`, { cache: 'no-store' }); const data = await response.json().catch(() => ({})); if (!response.ok || !validMenuPayload(data)) throw new Error(data.detail || 'Could not load preview'); setPreview(data) }
-    catch (value) { setError(value.message) }
+    try { const {response,payload} = await requestJsonResponse(authFetch,`${base}/preview`, { cache: 'no-store',signal }); const data=payload||{}; if (!response.ok || !validMenuPayload(data)) throw new Error(data.detail || 'Could not load preview'); setPreview(data) }
+    catch (value) { if(!signal.aborted)setError(value.message) }
   }
   const chooseTab = value => { setTab(value); if (value === 'preview') loadPreview() }
   const publish = async () => {
+    const signal=scope.current.signal
     setSaving(true); setError(''); setNotice('')
-    try { const response = await authFetch(base, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_published: !setup.is_published }) }); const data = await response.json().catch(() => ({})); if (!response.ok) throw new Error(data.detail || 'Could not save publication'); setSetup(data); setNotice(data.is_published ? 'Your QR Menu is published. You can share the same QR whenever your menu changes.' : 'Your QR Menu is unpublished. You can publish it again using the same QR.') }
-    catch (value) { setError(value.message) }
-    finally { setSaving(false) }
+    try { const {response,payload} = await requestJsonResponse(authFetch,base, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_published: !setup.is_published }),signal }); const data=payload||{}; if (!response.ok || !Array.isArray(data.branches)) throw new Error(data.detail || 'Could not save publication. Refresh the menu before trying again.'); setSetup(data); setNotice(data.is_published ? 'Your QR Menu is published. You can share the same QR whenever your menu changes.' : 'Your QR Menu is unpublished. You can publish it again using the same QR.') }
+    catch (value) { if(!signal.aborted)setError(value.message) }
+    finally { if(!signal.aborted)setSaving(false) }
   }
   const url = setup?.branches.find(value => value.public_id === branch)?.public_url || setup?.public_url || ''
   const download = () => {
