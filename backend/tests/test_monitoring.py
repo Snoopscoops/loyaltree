@@ -42,7 +42,7 @@ class MonitoringTests(unittest.TestCase):
     def test_error_once_template_trace_and_request_id(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            response = self.client.get('/api/v1/business/shop/stats?token=private')
+            response = self.client.get('/api/v1/business/shop/stats?token=unlogged-query-secret')
         self.assertEqual(response.status_code, 500)
         events = [json.loads(x) for x in out.getvalue().splitlines()]
         errors = [x for x in events if x['event'] == 'error']
@@ -54,7 +54,7 @@ class MonitoringTests(unittest.TestCase):
         trace = next(x for x in events if x['event'] == 'error_traceback')
         self.assertEqual(trace['request_id'], error['request_id'])
         self.assertEqual(response.headers['x-request-id'], error['request_id'])
-        self.assertNotIn('private', out.getvalue())
+        self.assertNotIn('unlogged-query-secret', out.getvalue())
         self.assertIn('fail', trace['traceback'])
 
     def test_handled_and_plain_5xx(self):
@@ -71,7 +71,14 @@ class MonitoringTests(unittest.TestCase):
             'requests':8,'status_2xx':6,'status_4xx':1,'status_5xx':1,
             'endpoint_counts':{'/stats':8},'business_counts':{'shop':8}}),
             dict(id=2,ts='2026-10-13T00:01:00Z',event='error',endpoint='/stats',business_slug='shop',status=500,payload={'error':'failed','error_type':'ReadError'}),
-            dict(id=3,ts='2026-10-13T00:02:00Z',event='push',payload={'business_name':'Shop','title':'Hello','message':'Offer','targets':3,'google_ok':1,'apple_ok':2})]
+            dict(id=3,ts='2026-10-13T00:02:00Z',event='push',payload={'business_name':'Shop','title':'Hello','message':'Offer','targets':3,'google_ok':1,'apple_ok':2}),
+            dict(id=4,ts='2026-10-13T00:02:00Z',event='apple_push_summary',payload={'event':'apple_push_summary',
+                'business_slug':'shop','targets':3,'attempted':3,'apns_accepted':2,'retryable_failed':1,'queued':1,'delivery_status':'unconfirmed'}),
+            dict(id=5,ts='2026-10-13T00:02:01Z',event='apple_push_summary',payload={'event':'apple_push_summary',
+                'business_slug':'shop','targets':1,'attempted':1,'apns_accepted':1,'retryable_failed':0,'queued':0,'delivery_status':'unconfirmed'}),
+            dict(id=6,ts='2026-10-13T00:02:02Z',event='google_push_summary',payload={'event':'google_push_summary',
+                'target_kind':'class','attempted':1,'google_accepted':0,'failed':1,'status':429,
+                'error_code':'RESOURCE_EXHAUSTED','count_basis':'provider_requests','delivery_status':'unconfirmed'})]
         def resp(data):
             return httpx.Response(200,json=data,request=httpx.Request('GET','https://example.com'))
         with patch.dict(os.environ, {'MONITOR_TOKEN':''}):
@@ -84,6 +91,13 @@ class MonitoringTests(unittest.TestCase):
             self.assertEqual(data['totals']['status_5xx'],1)
             self.assertEqual(data['errors'][0]['error'],'failed')
             self.assertEqual(data['pushes'][0]['title'],'Hello')
+            self.assertEqual(data['apple_push_totals']['apns_accepted'],3)
+            self.assertEqual(data['apple_push_totals']['attempted'],4)
+            self.assertEqual(len(data['provider_attempts']),3)
+            self.assertEqual(data['provider_attempts'][0]['queued'],1)
+            self.assertEqual(data['provider_attempts'][0]['delivery_status'],'unconfirmed')
+            self.assertEqual(data['provider_attempts'][2]['error_code'],'RESOURCE_EXHAUSTED')
+            self.assertEqual(data['provider_attempts'][2]['status'],429)
             self.assertEqual(data['top_businesses'][0],['shop',8])
             self.assertEqual(call.await_count,2)
             self.assertEqual(self.client.get('/api/v1/admin/health-report?hours=0',headers={'Authorization':'Bearer test-secret'}).status_code,422)
@@ -221,6 +235,10 @@ class AppleRevisionTests(unittest.TestCase):
         client.__enter__.return_value=client
         client.post.side_effect=lambda *a,**k:(events.append(('apns',)),httpx.Response(200))[1]
         env['pooled_client']=lambda **kw:client
+        from backend.apple_delivery import AppleDelivery
+        delivery=AppleDelivery(db=lambda:None,client=lambda cert:client,cert=env['get_apple_push_cert_files'],
+            paused=env['memory_pressure'].paused,log=env['log_event'],fallback=env['_APPLE_DEFERRED_PUSHES'])
+        env['_apple_push_service']=lambda:delivery
         self.assertEqual(env['_send_apple_wallet_pushes'](['device','device']),1)
         self.assertEqual(events[0],('apns',))
         self.assertEqual(events[1],('counts',1,1))
@@ -232,6 +250,46 @@ class AppleRevisionTests(unittest.TestCase):
         env['_mark_apple_pass_dirty'].assert_not_called()
 
 class PersistenceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_monitor_token_warns_without_failing_startup_or_exposing_secret(self):
+        for token in ('','synthetic-configured-monitor-secret'):
+            local=m.Monitor()
+            async def idle(): await asyncio.Event().wait()
+            local.writer=idle;local.hourly=idle
+            with patch.dict(os.environ,{'MONITOR_TOKEN':token}),contextlib.redirect_stdout(io.StringIO()) as output:
+                await local.start()
+                self.assertEqual(len(local.tasks),2)
+                for task in local.tasks: task.cancel()
+                await asyncio.gather(*local.tasks,return_exceptions=True)
+                local.loop=None
+            events=[json.loads(line) for line in output.getvalue().splitlines()]
+            self.assertEqual([event['reason'] for event in events],['monitor_token_missing'] if not token else [])
+            self.assertNotIn('synthetic-configured-monitor-secret',output.getvalue())
+
+    async def test_delivery_summary_persists_counts_without_storing_device_tokens(self):
+        from backend.apple_delivery import DeliveryCount
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            m.begin_apple_delivery()
+            m._record_apple_delivery(3,DeliveryCount(1,targets=3,retryable_failed=1,deferred=1,queued=2))
+            m.log_push('create',{'public_id':'one','name':'One'},{'id':1,'title':'Offer'},'owner',
+                {'target_count':3,'apple_sent':1,'sent':True})
+        event=json.loads(output.getvalue())
+        self.assertEqual(event['apple_failed'],1)
+        self.assertEqual(event['apple_queued'],2)
+        self.assertEqual(event['apple_deferred'],1)
+        self.assertEqual(event['delivery_status'],'unconfirmed')
+        self.assertIn('apple_push_summary',m.PERSISTED)
+
+    async def test_unavailable_warning_output_does_not_fail_startup(self):
+        local=m.Monitor()
+        async def idle(): await asyncio.Event().wait()
+        local.writer=idle;local.hourly=idle
+        with patch.dict(os.environ,{'MONITOR_TOKEN':''}),patch.object(local,'emit',side_effect=OSError('closed stdout')):
+            await local.start()
+        self.assertEqual(len(local.tasks),2)
+        for task in local.tasks:task.cancel()
+        await asyncio.gather(*local.tasks,return_exceptions=True)
+        local.loop=None
+
     async def test_failed_persistence_never_escapes_or_recurses(self):
         local=m.Monitor()
         with patch.object(m.shared_http,'request',AsyncMock(side_effect=httpx.ConnectError('offline'))) as call:

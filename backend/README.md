@@ -1,5 +1,9 @@
 # Backend monitoring
 
+For durable APNs retries, partial acceptance, interrupted-job recovery and the
+additional health-report counts, apply `apple_wallet_delivery.sql` and read
+[Apple delivery operations](README-apple-wallet-delivery.md) before deployment.
+
 Apply `system_events.sql` in Supabase **before deploying** these files. It creates
 private, service-role-only monitoring storage and adds the durable Apple pass
 revision column. Keep the existing Supabase server credential. Set one new Render

@@ -3,10 +3,11 @@ import ast
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, MagicMock, patch
 from fastapi import HTTPException
 from backend.apple_memory import MemoryPressure
 from backend.wallet_memory import wallet_work
+from backend.apple_delivery import AppleDelivery
 
 
 class MemoryGateTests(unittest.TestCase):
@@ -78,15 +79,22 @@ class MemoryGateTests(unittest.TestCase):
         source = Path(__file__).resolve().parents[1] / 'main.py'
         nodes = [n for n in ast.parse(source.read_text()).body if isinstance(n, ast.FunctionDef) and n.name in {'_send_apple_wallet_pushes', '_drain_deferred_apple_pushes'}]
         for node in nodes: node.decorator_list=[]
-        gate = MemoryPressure(Mock(side_effect=[400, 290]), Mock())
+        rss=[400]
+        gate = MemoryPressure(lambda:rss[0], Mock())
         env = dict(memory_pressure=gate, _APPLE_DEFERRED_PUSHES={}, log_event=Mock(), _record_apple_delivery=Mock(), get_apple_push_cert_files=Mock())
+        env['APPLE_PASS_TYPE_IDENTIFIER']='pass.test'
+        client=MagicMock();client.__enter__.return_value=client;client.post.return_value.status_code=200
+        delivery=AppleDelivery(db=lambda:None,client=lambda cert:client,cert=env['get_apple_push_cert_files'],
+            paused=gate.paused,log=env['log_event'],fallback=env['_APPLE_DEFERRED_PUSHES'],sleep=Mock())
+        env['_apple_push_service']=lambda:delivery
         exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), 'exec'), env)
         self.assertEqual(env['_send_apple_wallet_pushes'](['phone', 'phone']), 0)
-        self.assertEqual(env['_APPLE_DEFERRED_PUSHES'], {'phone': True})
+        self.assertEqual(list(env['_APPLE_DEFERRED_PUSHES']), [('serial:legacy','phone')])
         env['get_apple_push_cert_files'].assert_not_called()
-        send = env['_send_apple_wallet_pushes'] = Mock(return_value=1)
-        env['_drain_deferred_apple_pushes']()
-        send.assert_called_once_with(['phone'])
+        rss[0]=290
+        env['get_apple_push_cert_files'].return_value=('cert','key')
+        self.assertEqual(env['_drain_deferred_apple_pushes'](),1)
+        self.assertEqual(client.post.call_count,1)
         self.assertFalse(env['_APPLE_DEFERRED_PUSHES'])
 
     def test_hysteresis_uses_current_memory_and_unknown_preserves_pause(self):

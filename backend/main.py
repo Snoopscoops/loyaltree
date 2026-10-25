@@ -8277,7 +8277,8 @@ async def refresh_existing_member_wallets(business: dict, program: dict, refresh
                 row.get('push_token') for row in apple_rows if row.get('push_token')
             ))
             if apple_tokens:
-                apple_sent = await asyncio.to_thread(_send_apple_wallet_pushes, apple_tokens)
+                apple_sent = await asyncio.to_thread(_send_apple_wallet_pushes, apple_tokens,
+                    business_id=business.get('id'), business_slug=business.get('public_id'), reason='publish_refresh')
 
         google_updated = sum(
             1 for result in google_results
@@ -8287,14 +8288,16 @@ async def refresh_existing_member_wallets(business: dict, program: dict, refresh
             1 for result in google_results
             if isinstance(result, dict) and result.get('status') == 'not_saved'
         )
-        print(
-            f"WALLET SYNC: publish refresh complete for {business.get('name')} "
-            f"members={len(members)} google_updated={google_updated} "
-            f"google_not_saved={google_not_saved} "
-            f"apple_registered={len(registered_serials)} apple_devices_woken={apple_sent}"
-        )
+        log_event('wallet_refresh_summary', business_slug=business.get('public_id'),
+            program_id=(program or {}).get('public_id'), targets=len(members),
+            google_ok=google_updated, google_not_saved=google_not_saved,
+            google_failed=sum(isinstance(r, dict) and r.get('status') == 'error' for r in google_results),
+            apple_registered=len(registered_serials), apns_accepted=int(apple_sent),
+            apple_attempted=bool(refresh_apple), apple_queued=getattr(apple_sent, 'details', {}).get('queued', 0),
+            delivery_status='unconfirmed')
     except Exception as refresh_error:
-        print(f"WALLET SYNC bulk refresh error: {refresh_error}")
+        log_event('wallet_refresh_failed', 'warning', business_slug=business.get('public_id'),
+            error_type=type(refresh_error).__name__)
 
 async def republish_wallet_class_and_refresh(business: dict, program: dict):
     """Republish the normal class, or every Tier class, then refresh Wallet objects."""
@@ -9537,7 +9540,7 @@ def _enrich_announcement_target(business: dict, announcement: dict) -> dict:
     return enriched
 
 
-def _push_apple_wallet_to_customer_public_ids(customer_public_ids: list[str]) -> int:
+def _push_apple_wallet_to_customer_public_ids(customer_public_ids: list[str], business: Optional[dict] = None) -> int:
     """Target only the selected customers' registered Apple Wallet passes.
 
     De-duplicate serials before looking up registrations. A customer can appear
@@ -9567,7 +9570,9 @@ def _push_apple_wallet_to_customer_public_ids(customer_public_ids: list[str]) ->
     except Exception as e:
         print(f"APPLE WALLET targeted announcement lookup error: {e}")
         return 0
-    return _send_apple_wallet_pushes(push_tokens)
+    scope = hashlib.sha256(','.join(sorted(serial_numbers)).encode()).hexdigest()[:24]
+    return _send_apple_wallet_pushes(push_tokens, business_id=(business or {}).get('id'),
+        business_slug=(business or {}).get('public_id'), reason='targeted_announcement', serial_scope=scope)
 
 
 @wallet_work('announcement_push', business_arg=0, serialize=False)
@@ -9661,10 +9666,11 @@ def _send_announcement_notification(business: dict, announcement: dict, resend: 
             })
 
         apple_sent = _push_apple_wallet_to_customer_public_ids(
-            [c.get('public_id') for c in customers if c.get('public_id')]
+            [c.get('public_id') for c in customers if c.get('public_id')], business=business
         )
         sent = bool(google_sent or apple_sent)
-        partial = bool((google_failed or google_missing) and sent)
+        apple_detail = getattr(apple_sent, 'details', {})
+        partial = bool((google_failed or google_missing or apple_detail.get('targets', 0) > int(apple_sent)) and sent)
         result = {
             'sent': sent,
             'partial': partial,
@@ -9677,6 +9683,8 @@ def _send_announcement_notification(business: dict, announcement: dict, resend: 
             'google_missing': google_missing,
             'google_results': google_results,
             'apple_sent': apple_sent,
+            'apple_queued': apple_detail.get('queued', 0),
+            'delivery_status': 'unconfirmed',
             'header': header,
             'program_public_id': ann.get('program_public_id'),
             'program_name': ann.get('program_name'),
@@ -9771,7 +9779,7 @@ def _send_announcement_notification(business: dict, announcement: dict, resend: 
         target_customers = q.execute().data or []
         target_count = len(target_customers)
         apple_sent = _push_apple_wallet_to_customer_public_ids(
-            [c.get('public_id') for c in target_customers if c.get('public_id')]
+            [c.get('public_id') for c in target_customers if c.get('public_id')], business=business
         )
     except Exception as exc:
         print(f"APPLE WALLET announcement push error: {exc}")
@@ -9779,7 +9787,8 @@ def _send_announcement_notification(business: dict, announcement: dict, resend: 
         apple_sent = 0
 
     sent = bool(google_sent or apple_sent)
-    partial = bool((google_failed or google_missing) and sent)
+    apple_detail = getattr(apple_sent, 'details', {})
+    partial = bool((google_failed or google_missing or apple_detail.get('targets', 0) > int(apple_sent)) and sent)
     if not sent:
         if google_attempted == 0 and google_missing:
             error = 'No active target program has a published Google Wallet class, and no Apple Wallet registration accepted the push.'
@@ -9803,6 +9812,8 @@ def _send_announcement_notification(business: dict, announcement: dict, resend: 
         'google_results': google_results,
         'google_missing_programs': missing_program_names,
         'apple_sent': apple_sent,
+        'apple_queued': apple_detail.get('queued', 0),
+        'delivery_status': 'unconfirmed',
         'header': header,
         'program_public_id': ann.get('program_public_id'),
         'program_name': ann.get('program_name'),
@@ -12098,81 +12109,40 @@ def get_apple_push_cert_files():
         print(f"APPLE WALLET: push cert setup error: {e}")
         return None, None
 
+_APPLE_DELIVERY_SERVICE = None
+
+
+def _apple_push_service():
+    global _APPLE_DELIVERY_SERVICE
+    if _APPLE_DELIVERY_SERVICE is None:
+        try: from .apple_delivery import AppleDelivery
+        except ImportError: from apple_delivery import AppleDelivery
+        _APPLE_DELIVERY_SERVICE = AppleDelivery(db=lambda: supabase,
+            client=lambda cert: pooled_client(http2=True, cert=cert, timeout=10),
+            cert=get_apple_push_cert_files, paused=memory_pressure.paused,
+            log=log_event, fallback=_APPLE_DEFERRED_PUSHES, trim=_maybe_trim_memory,
+            batch_size=APPLE_PUSH_BATCH_SIZE, batch_delay=APPLE_PUSH_BATCH_DELAY_SECONDS)
+    return _APPLE_DELIVERY_SERVICE
+
+
 @wallet_work('apple_push', serialize=False)
-def _send_apple_wallet_pushes(push_tokens: list) -> int:
-    """Shared APNs-sending core used by both push_apple_wallet_update()
-    (single customer, e.g. after a stamp/redeem) and
-    push_apple_wallet_announcement() (whole business, e.g. a new
-    announcement). Takes raw push tokens rather than querying itself, so
-    callers control which registrations get notified. Best-effort and
-    silent on failure - a push hiccup must never block the caller.
-    Returns the number of tokens APNs accepted (200 response), just for
-    logging - callers don't need to react to this."""
-    # One APNs push token can be present in multiple registration rows (for
-    # example after a device re-registers or the same device has more than one
-    # eligible serial). A single empty PassKit push wakes Wallet so it can ask
-    # which passes changed; sending the same token twice can create duplicate
-    # lock-screen notifications. Preserve order while removing duplicates.
-    tokens = list(dict.fromkeys(t for t in push_tokens if t))
-    if not tokens:
-        return 0
-    if memory_pressure.paused():
-        for token in tokens:
-            _APPLE_DEFERRED_PUSHES[token] = True
-        log_event('apple_push_deferred', 'warning', targets=len(tokens))
-        _record_apple_delivery(len(tokens), 0)
-        return 0
-    # Callers mark their exact authorized serial audience before this call.
-    # A token belongs to a device, not a business. Reverse-looking up serials
-    # by token dirties unrelated businesses' passes on the same phone.
-    cert_path, key_path = get_apple_push_cert_files()
-    if not cert_path:
-        _record_apple_delivery(len(tokens), 0)
-        return 0
-    sent = 0
-    try:
-        import httpx
-        with pooled_client(http2=True, cert=(cert_path, key_path), timeout=10) as client:
-            # Send in small batches with a short gap to avoid memory and connection spikes
-            batch_size = APPLE_PUSH_BATCH_SIZE
-            for i in range(0, len(tokens), batch_size):
-                if memory_pressure.paused():
-                    for token in tokens[i:]:
-                        _APPLE_DEFERRED_PUSHES[token] = True
-                    break
-                batch = tokens[i:i + batch_size]
-                for token in batch:
-                    try:
-                        resp = client.post(
-                            f"https://api.push.apple.com/3/device/{token}",
-                            headers={"apns-topic": APPLE_PASS_TYPE_IDENTIFIER},
-                            json={},
-                        )
-                        if resp.status_code == 200:
-                            sent += 1
-                        else:
-                            log_event("apple_push_failed", "warning", status=resp.status_code, reason=(resp.json().get("reason") if resp.content else None))
-                    except Exception as e:
-                        log_event("apple_push_failed", "warning", error_type=type(e).__name__, error=str(e))
-                if i + batch_size < len(tokens):
-                    _maybe_trim_memory()
-                    time.sleep(APPLE_PUSH_BATCH_DELAY_SECONDS)
-    except Exception as e:
-        log_event("apple_push_failed", "warning", error_type=type(e).__name__, error=str(e))
-    _record_apple_delivery(len(tokens), sent)
-    _maybe_trim_memory()
-    return sent
+def _send_apple_wallet_pushes(push_tokens: list, *, business_id=None, business_slug=None,
+                            reason='wallet_update', serial_scope=None) -> int:
+    """Persist scoped wake-ups, send bounded batches, report APNs acceptance.
+
+    No pass build, revision mutation or token-to-serial expansion occurs here.
+    Failed/deferred targets remain in the database across worker restarts.
+    """
+    result = _apple_push_service().send(push_tokens, pass_type=APPLE_PASS_TYPE_IDENTIFIER,
+        business_id=business_id, business_slug=business_slug, reason=reason, serial_scope=serial_scope)
+    _record_apple_delivery(result.details['targets'], result)
+    return result
 
 
 def _drain_deferred_apple_pushes():
-    if not memory_pressure.paused():
-        tokens = list(_APPLE_DEFERRED_PUSHES)[:20]
-        for token in tokens:
-            _APPLE_DEFERRED_PUSHES.pop(token, None)
-        if tokens:
-            _send_apple_wallet_pushes(tokens)
+    return _apple_push_service().drain(APPLE_PASS_TYPE_IDENTIFIER)
 
-def push_apple_wallet_update(serial_number: str):
+def push_apple_wallet_update(serial_number: str, business_id=None, business_slug=None):
     """Wake Apple Wallet so it refetches this member's newly-built pass.
 
     Returns diagnostics but remains best-effort: a Wallet push failure must
@@ -12215,10 +12185,9 @@ def push_apple_wallet_update(serial_number: str):
     ))
     _mark_apple_pass_dirty(registered_serials)
     tokens = list(dict.fromkeys(tokens))
-    sent = _send_apple_wallet_pushes(tokens)
-    status = "push_sent" if sent > 0 else "push_failed"
-    print(f"APPLE WALLET SYNC: {serial_number} serials={registered_serials} registrations={len(tokens)} pushes_sent={sent}")
-    return {"status": status, "registrations": len(tokens), "pushes_sent": sent, "serials": registered_serials}
+    sent = _send_apple_wallet_pushes(tokens, business_id=business_id, business_slug=business_slug,
+        serial_scope=serial_number)
+    return {**sent.wallet_result(), 'serials': registered_serials}
 
 
 APPLE_PASS_LAYOUT_RELEASE = "wallet-registration-2026-10-02-v10"
@@ -12290,14 +12259,14 @@ def refresh_business_apple_wallet_passes(business_id: int, reason: str = "card_c
     tokens = list(dict.fromkeys(
         row.get("push_token") for row in registrations if row.get("push_token")
     ))
-    sent = _send_apple_wallet_pushes(tokens) if tokens else 0
+    sent = _send_apple_wallet_pushes(tokens, business_id=business_id, reason=reason) if tokens else 0
 
     print(
         f"APPLE AUTO REFRESH: business={business_id} reason={reason} "
         f"registered={len(registered_serials)} devices_woken={sent}"
     )
     return {
-        "status": "push_sent" if sent else ("not_saved" if not tokens else "push_failed"),
+        **(sent.wallet_result() if tokens else {'status': 'not_saved'}),
         "registered": len(registered_serials),
         "devices_woken": sent,
         "reason": reason,
@@ -12363,7 +12332,7 @@ def refresh_all_apple_wallet_passes_for_release(layout_release: str):
         except Exception:
             pass
 
-    sent = _send_apple_wallet_pushes(tokens) if tokens else 0
+    sent = _send_apple_wallet_pushes(tokens, business_id='release:' + str(layout_release), reason='layout_release') if tokens else 0
 
     # Mark complete only after the fan-out attempt. If the process crashes
     # before this point, the next Render boot safely retries the migration.
@@ -12445,15 +12414,39 @@ def push_apple_wallet_announcement(business_id: int) -> int:
     except Exception as e:
         print(f"APPLE WALLET announcement lookup error: {e}")
         return 0
-    return _send_apple_wallet_pushes(push_tokens)
+    return _send_apple_wallet_pushes(push_tokens, business_id=business_id, reason='announcement')
 
 def sync_apple_wallet_pass(customer: dict):
     """Companion to sync_wallet_object(); never raises, but returns status."""
     try:
-        return push_apple_wallet_update(customer.get('public_id', ''))
+        return push_apple_wallet_update(customer.get('public_id', ''), business_id=customer.get('business_id'))
     except Exception as e:
         print(f"APPLE WALLET sync error: {e}")
         return {"status": "error", "stage": "exception", "detail": str(e), "registrations": 0, "pushes_sent": 0}
+
+def _log_google_push_outcome(target_kind, *, response=None, error=None, skipped_reason=None):
+    """Log provider acknowledgement without identifiers, content or response bodies."""
+    try:
+        status = response.status_code if response is not None else None
+        accepted = status in (200, 201)
+        error_code = None
+        if response is not None and not accepted:
+            try:
+                provider_status = (response.json().get('error') or {}).get('status')
+                if provider_status in {'INVALID_ARGUMENT', 'NOT_FOUND', 'ALREADY_EXISTS', 'PERMISSION_DENIED',
+                    'UNAUTHENTICATED', 'RESOURCE_EXHAUSTED', 'FAILED_PRECONDITION', 'ABORTED',
+                    'OUT_OF_RANGE', 'UNIMPLEMENTED', 'INTERNAL', 'UNAVAILABLE', 'DEADLINE_EXCEEDED'}:
+                    error_code = provider_status
+            except Exception:
+                pass
+        log_event('google_push_summary', 'info' if accepted or skipped_reason else 'warning',
+            target_kind=target_kind, attempted=int(not skipped_reason), google_accepted=int(accepted),
+            failed=int(not accepted and not skipped_reason), skipped=int(bool(skipped_reason)),
+            status=status, error_code=error_code, error_type=type(error).__name__ if error else None,
+            skipped_reason=skipped_reason, delivery_status='unconfirmed', count_basis='provider_requests')
+    except Exception:
+        pass  # Reporting must never change the notification result.
+
 
 def send_wallet_class_message(class_id: str, header: str, body: str, message_id: str, detail_url: str = None) -> bool:
     """Push a notification to every customer who has saved a loyalty card
@@ -12485,6 +12478,7 @@ def send_wallet_class_message(class_id: str, header: str, body: str, message_id:
     - Delivery isn't always instant; a short delay is normal."""
     access_token = get_google_access_token()
     if not access_token or not class_id:
+        _log_google_push_outcome('class', skipped_reason='credentials_unavailable' if not access_token else 'target_missing')
         return False
     try:
         import httpx
@@ -12510,13 +12504,10 @@ def send_wallet_class_message(class_id: str, header: str, body: str, message_id:
                 headers={"Authorization": f"Bearer {access_token}"},
                 json=payload
             )
-            if resp.status_code in (200, 201):
-                print(f"WALLET PUSH: sent to class {class_id}")
-                return True
-            print(f"WALLET PUSH failed: {resp.status_code} - {resp.text}")
-            return False
+            _log_google_push_outcome('class', response=resp)
+            return resp.status_code in (200, 201)
     except Exception as e:
-        print(f"WALLET PUSH error: {e}")
+        _log_google_push_outcome('class', error=e)
         return False
 
 def send_wallet_object_message(
@@ -12534,6 +12525,7 @@ def send_wallet_object_message(
     class-level version; see that function's docstring for details."""
     access_token = get_google_access_token()
     if not access_token or not object_id:
+        _log_google_push_outcome('object', skipped_reason='credentials_unavailable' if not access_token else 'target_missing')
         return False
     try:
         import httpx
@@ -12557,13 +12549,10 @@ def send_wallet_object_message(
                 headers={"Authorization": f"Bearer {access_token}"},
                 json=payload
             )
-            if resp.status_code in (200, 201):
-                print(f"WALLET PUSH: sent to object {object_id}")
-                return True
-            print(f"WALLET PUSH (object) failed: {resp.status_code} - {resp.text}")
-            return False
+            _log_google_push_outcome('object', response=resp)
+            return resp.status_code in (200, 201)
     except Exception as e:
-        print(f"WALLET PUSH (object) error: {e}")
+        _log_google_push_outcome('object', error=e)
         return False
 
 # CAR LENDING / SHOWROOM - WALLET PASSES
@@ -12747,13 +12736,15 @@ def sync_cl_wallet_object(customer: dict, business: dict, contract: Optional[dic
             if resp.status_code in (200, 201):
                 print(f"CL WALLET SYNC: updated {object_id}")
                 if notify_header and notify_message_id:
-                    send_wallet_object_message(object_id, notify_header, notify_body or '', notify_message_id)
+                    return send_wallet_object_message(object_id, notify_header, notify_body or '', notify_message_id)
+                return True
             elif resp.status_code == 404:
                 print(f"CL WALLET SYNC: {object_id} not found - buyer hasn't added it to their wallet yet")
             else:
                 print(f"CL WALLET SYNC: failed {resp.status_code} - {resp.text}")
     except Exception as e:
         print(f"CL WALLET SYNC error: {e}")
+    return False
 
 def build_cl_apple_pass_json(customer: dict, business: dict, contract: Optional[dict],
                               announcement: Optional[dict] = None, reminder_text: Optional[str] = None) -> dict:
@@ -12913,13 +12904,13 @@ def push_cl_apple_wallet_announcement(business_id: int) -> int:
     except Exception as e:
         print(f"CL APPLE WALLET announcement lookup error: {e}")
         return 0
-    return _send_apple_wallet_pushes(push_tokens)
+    return _send_apple_wallet_pushes(push_tokens, business_id=business_id, reason='cl_announcement')
 
 def sync_cl_apple_wallet_pass(customer: dict):
     """Companion to sync_cl_wallet_object() - call alongside it wherever a
     buyer's balance/due date changes. Never raises."""
     try:
-        push_apple_wallet_update(f"cl-{customer.get('public_id', '')}")
+        return push_apple_wallet_update(f"cl-{customer.get('public_id', '')}", business_id=customer.get('business_id'))
     except Exception as e:
         print(f"CL APPLE WALLET sync error: {e}")
 
@@ -17928,7 +17919,7 @@ def _oa_refresh_apple_order_status(customer: dict):
     try:
         customer_public_id = str(customer.get('public_id') or '')
         _invalidate_apple_pkpass_caches(customer_public_id)
-        push_apple_wallet_update(customer_public_id)
+        push_apple_wallet_update(customer_public_id, business_id=customer.get('business_id'))
     except Exception as e:
         print(f"ORDER AHEAD Apple order-status refresh warning: {e}")
 
@@ -26835,6 +26826,7 @@ async def create_cl_announcement(public_id: str, ann: CLAnnouncementCreate, auth
 
     message_id = f"cl-announcement-{created.get('id', generate_public_id())}"
     apple_accepted = 0
+    apple_details = {}
     google_sent = False
 
     if target_customer:
@@ -26842,14 +26834,16 @@ async def create_cl_announcement(public_id: str, ann: CLAnnouncementCreate, auth
         # sync_cl_wallet_object PATCHes the pass's live data AND (since
         # notify_message_id is given) fires the TEXT_AND_NOTIFY push in the
         # same call - no separate send_wallet_object_message call needed.
-        sync_cl_wallet_object(target_customer, business, contract, notify_header=ann.title, notify_body=ann.message, notify_message_id=message_id)
-        google_sent = bool(get_google_access_token())
-        sync_cl_apple_wallet_pass(target_customer)
-        apple_accepted = 1 if APPLE_PASS_TYPE_IDENTIFIER else 0
+        google_sent = bool(sync_cl_wallet_object(target_customer, business, contract,
+            notify_header=ann.title, notify_body=ann.message, notify_message_id=message_id))
+        apple_result = sync_cl_apple_wallet_pass(target_customer) or {}
+        apple_accepted = int(apple_result.get('pushes_sent') or 0)
+        apple_details = apple_result
     else:
         cl_class_id = business.get('cl_google_wallet_class_id') or f'{GOOGLE_WALLET_ISSUER_ID}.cl-{business.get("public_id", "")}'
         google_sent = send_wallet_class_message(cl_class_id, ann.title, ann.message, message_id)
         apple_accepted = push_cl_apple_wallet_announcement(business.get('id'))
+        apple_details = getattr(apple_accepted, 'details', {})
 
     sent_count = apple_accepted + (1 if google_sent else 0)
     try:
@@ -26861,6 +26855,15 @@ async def create_cl_announcement(public_id: str, ann: CLAnnouncementCreate, auth
     created['recipient_count'] = recipient_count
     created['google_sent'] = google_sent
     created['apple_pushes_accepted'] = apple_accepted
+    created['delivery_status'] = 'unconfirmed'
+    log_event('push', kind='create', announcement_id=created.get('id'),
+        business_slug=business.get('public_id'), business_name=business.get('name'),
+        sent_by='owner', title=ann.title, message=ann.message, targets=recipient_count,
+        google_ok=int(bool(google_sent)), google_failed=None, google_not_accepted=int(not google_sent),
+        apple_ok=int(apple_accepted),
+        apple_failed=int(apple_details.get('retryable_failed') or 0) + int(apple_details.get('permanent_failed') or 0),
+        apple_queued=int(apple_details.get('queued') or 0), apple_deferred=int(apple_details.get('deferred') or 0),
+        delivery_status='unconfirmed', count_basis='provider_acceptances', sent=bool(sent_count))
     if target_customer:
         created['customer'] = target_customer
     return created
@@ -27981,8 +27984,11 @@ def _wallet_provider_sync_failed(result: dict, provider: str) -> bool:
     status = str(result.get('status') or '').strip().lower()
     if status == 'error':
         return True
-    if str(provider or '').strip().lower() == 'apple' and status == 'push_failed':
-        return True
+    if str(provider or '').strip().lower() == 'apple':
+        if 'retry_required' in result:
+            return bool(result.get('retry_required'))
+        if status in ('push_failed', 'push_partial'):
+            return True
     return False
 
 
@@ -40108,7 +40114,8 @@ async def run_membership_expiry_reminders(_: bool = Depends(require_cron)):
                 if google_ok:
                     google_sent += 1
 
-                apple_result = push_apple_wallet_update(str(customer.get('public_id') or ''))
+                apple_result = push_apple_wallet_update(str(customer.get('public_id') or ''),
+                    business_id=business.get('id'), business_slug=business.get('public_id'))
                 apple_count = int((apple_result or {}).get('pushes_sent') or 0) if isinstance(apple_result, dict) else 0
                 apple_pushes += apple_count
 
@@ -40846,41 +40853,36 @@ def enqueue_wallet_sync(customer: dict, business: dict, reason: str = 'loyalty_u
         }).execute().data or [])
         return {'status':'queued','job_id':row[0].get('id') if row else None,'coalesced':False}
     except Exception as e:
-        print(f'WALLET QUEUE enqueue error: {e}')
+        log_event('wallet_queue_enqueue_failed', 'warning', business_slug=business.get('public_id'), error_type=type(e).__name__)
         return {'status':'queue_error','detail':str(e)}
 
 
+def _wallet_queue_command(action, **data):
+    return supabase.rpc('wallet_sync_queue_command', {'p_action': action, 'p_data': data}).execute().data or {}
+
+
 def process_wallet_sync_queue_once(limit: int = 10):
-    """Best-effort durable queue worker. Failed jobs retry with bounded exponential backoff."""
+    """Claim leased jobs, recover interrupted work, and honor terminal retries."""
     try:
-        # claim_wallet_sync_jobs uses FOR UPDATE SKIP LOCKED so multiple API
-        # workers can drain the durable queue without processing the same job.
-        jobs=(supabase.rpc('claim_wallet_sync_jobs', {'p_limit': int(limit)}).execute().data or [])
-    except Exception as claim_error:
-        # Backwards-compatible fallback until the rush-hour migration is applied.
-        try:
-            jobs=(supabase.table('wallet_sync_jobs').select('*').in_('status',['pending','failed'])
-                  .lte('next_attempt_at',datetime.utcnow().isoformat()).order('created_at').limit(limit).execute().data or [])
-        except Exception as e:
-            print(f'WALLET QUEUE fetch error: {e}'); return
-        if claim_error:
-            print(f'WALLET QUEUE atomic-claim fallback: {claim_error}')
+        result = _wallet_queue_command('claim', limit=min(20, max(1, int(limit))))
+        jobs = result.get('jobs', [])
+    except Exception as exc:
+        # Keep pending/processing rows intact if the migration is missing or DB
+        # is down. An unsafe SELECT-then-claim fallback can duplicate payments'
+        # wallet updates and can never recover an abandoned processing row.
+        log_event('wallet_queue_unavailable', 'warning', error_type=type(exc).__name__,
+            action='Apply apple_wallet_delivery.sql; pending jobs are retained.')
+        return
+    recovered = sum(bool(job.get('recovered_from_lease')) for job in jobs)
+    if recovered or result.get('expired_failed'):
+        log_event('wallet_queue_recovered', recovered=recovered, expired_failed=result.get('expired_failed', 0))
     for job in jobs:
-        jid=job.get('id'); attempts=int(job.get('attempts') or 0)
+        jid=job.get('id')
         try:
             if job.get('reason') == 'lt_benefits_admin_upgrade_v1' and (
                     memory_pressure.paused() or not upgrade_delivery_budget.take()):
-                # Deferrals are not provider failures and must not exhaust retries.
-                supabase.table('wallet_sync_jobs').update({'status': 'pending',
-                    'attempts': max(0, attempts-1) if job.get('status') == 'processing' else attempts,
-                    'next_attempt_at': (datetime.utcnow()+timedelta(seconds=15)).isoformat(),
-                    'updated_at': datetime.utcnow().isoformat()}).eq('id', jid).execute()
+                _wallet_queue_command('finish', id=str(jid), lease_token=job.get('lease_token'), outcome='deferred')
                 continue
-            # RPC-claimed rows are already processing and have attempts bumped.
-            # The fallback path may still return pending rows, so claim those here.
-            if job.get('status') != 'processing':
-                attempts += 1
-                supabase.table('wallet_sync_jobs').update({'status':'processing','started_at':datetime.utcnow().isoformat(),'attempts':attempts,'updated_at':datetime.utcnow().isoformat()}).eq('id',jid).execute()
             customer=safe_get_customer_by_id(job.get('customer_id'))
             business=safe_get_business_by_id(job.get('business_id'))
             if not customer or not business: raise RuntimeError('Customer/business no longer exists')
@@ -40892,23 +40894,17 @@ def process_wallet_sync_queue_once(limit: int = 10):
             g=sync_wallet_object(customer,business,program)
             log_wallet_sync(customer, business, job.get("reason") or "queue_retry", g, a)
             failed=_wallet_provider_sync_failed(g, 'google') or _wallet_provider_sync_failed(a, 'apple')
-            print(
-                f"WALLET QUEUE SYNC: job={jid} business={business.get('public_id')} "
-                f"customer={customer.get('public_id')} stamp_count={customer.get('stamp_count')} "
-                f"apple_status={(a or {}).get('status') if isinstance(a,dict) else None} "
-                f"apple_pushes_sent={(a or {}).get('pushes_sent') if isinstance(a,dict) else None} "
-                f"google_status={(g or {}).get('status') if isinstance(g,dict) else None}"
-            )
-            if failed: raise RuntimeError(f'Google={g}; Apple={a}')
-            supabase.table('wallet_sync_jobs').update({'status':'completed','completed_at':datetime.utcnow().isoformat(),'last_error':None,'updated_at':datetime.utcnow().isoformat()}).eq('id',jid).execute()
+            if failed: raise RuntimeError('Wallet provider update requires retry')
+            finished = _wallet_queue_command('finish', id=str(jid), lease_token=job.get('lease_token'), outcome='completed')
+            if not finished.get('accepted'):
+                log_event('wallet_queue_lease_lost', 'warning', job_id=jid)
         except Exception as e:
-            max_attempts=int(job.get('max_attempts') or 5)
-            terminal=attempts>=max_attempts
-            delay=min(300, 5*(2**max(0,attempts-1)))
-            nxt=(datetime.utcnow()+timedelta(seconds=delay)).isoformat()
-            try: supabase.table('wallet_sync_jobs').update({'status':'failed' if terminal else 'pending','last_error':str(e)[:1500],'next_attempt_at':nxt,'updated_at':datetime.utcnow().isoformat()}).eq('id',jid).execute()
-            except Exception: pass
-            print(f'WALLET QUEUE job {jid} attempt {attempts} error: {e}')
+            try:
+                _wallet_queue_command('finish', id=str(jid), lease_token=job.get('lease_token'),
+                    outcome='retry', error_type=type(e).__name__)
+            except Exception as finish_error:
+                log_event('wallet_queue_finish_failed', 'warning', job_id=jid, error_type=type(finish_error).__name__)
+            log_event('wallet_queue_retry', 'warning', job_id=jid, attempts=job.get('attempts'), error_type=type(e).__name__)
 
 
 async def wallet_queue_worker():
@@ -40916,7 +40912,7 @@ async def wallet_queue_worker():
         try:
             await asyncio.to_thread(process_wallet_sync_queue_once, WALLET_QUEUE_BATCH_SIZE)
             await asyncio.to_thread(_drain_deferred_apple_pushes)
-        except Exception as e: print(f'WALLET QUEUE worker error: {e}')
+        except Exception as e: log_event('wallet_queue_worker_failed', 'warning', error_type=type(e).__name__)
         await asyncio.sleep(WALLET_QUEUE_POLL_SECONDS)
 
 
@@ -42894,7 +42890,7 @@ def _sync_gift_wallets(gift: dict, business: dict):
     except Exception:
         pass
     try:
-        push_apple_wallet_update(f"gift-{gift.get('public_id')}")
+        push_apple_wallet_update(f"gift-{gift.get('public_id')}", business_id=business.get('id'), business_slug=business.get('public_id'))
     except Exception:
         pass
 
@@ -50347,7 +50343,7 @@ def test_geofence_notification(public_id: str, authorization: str = Header(defau
     except Exception as exc:
         print(f'GEOFENCE TEST stamp error: {exc}')
     _mark_apple_pass_dirty(public_ids)
-    apple_sent = _push_apple_wallet_to_customer_public_ids(public_ids)
+    apple_sent = _push_apple_wallet_to_customer_public_ids(public_ids, business=business)
     google_sent = 0
     program = safe_get_loyalty_program(business.get('id')) or {}
     class_id = str(program.get('google_wallet_class_id') or '').strip()

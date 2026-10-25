@@ -1,10 +1,12 @@
 """A shared phone token must never expand the business's pass audience."""
 import ast
+import hashlib
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock
+from backend.apple_delivery import AppleDelivery
 
 SOURCE = Path(__file__).resolve().parents[1] / 'main.py'
 
@@ -38,7 +40,10 @@ class BusinessIsolationTests(unittest.TestCase):
             _mark_apple_pass_dirty=lambda serials: marked.extend(serials),
             _APPLE_PKPASS_CACHE={}, get_apple_push_cert_files=lambda: ('cert', 'key'),
             pooled_client=lambda **kw: client, _record_apple_delivery=Mock(), log_event=Mock(),
-            print=Mock(), time=SimpleNamespace(sleep=Mock()), build_pkpass_bytes=Mock())
+            print=Mock(), time=SimpleNamespace(sleep=Mock()), build_pkpass_bytes=Mock(),hashlib=hashlib)
+        delivery=AppleDelivery(db=lambda:env['supabase'],client=lambda cert:client,cert=env['get_apple_push_cert_files'],
+            paused=env['memory_pressure'].paused,log=env['log_event'],fallback=env['_APPLE_DEFERRED_PUSHES'],sleep=Mock())
+        env['_apple_push_service']=lambda:delivery
         names = {'_send_apple_wallet_pushes', 'push_apple_wallet_announcement', 'refresh_business_apple_wallet_passes', '_push_apple_wallet_to_customer_public_ids'}
         nodes = [deepcopy(n) for n in ast.parse(SOURCE.read_text()).body if isinstance(n, ast.FunctionDef) and n.name in names]
         for n in nodes: n.decorator_list = []

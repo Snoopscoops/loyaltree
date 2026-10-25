@@ -17,7 +17,7 @@ from shared_http import shared_http
 from runtime_profiling import profiler
 
 request_context = contextvars.ContextVar('monitor_request', default=None)
-PERSISTED = {'error', 'push', 'wallet_sync', 'hourly_summary'}
+PERSISTED = {'error', 'push', 'wallet_sync', 'hourly_summary', 'apple_push_summary', 'google_push_summary', 'wallet_refresh_summary'}
 SENSITIVE = re.compile(r'email|phone|token|secret|password|authorization|cookie', re.I)
 
 
@@ -105,6 +105,9 @@ class Monitor:
         self.loop = asyncio.get_running_loop()
         self.queue = asyncio.Queue(maxsize=1000)
         self.tasks = [asyncio.create_task(self.writer()), asyncio.create_task(self.hourly())]
+        if not os.getenv('MONITOR_TOKEN', '').strip():
+            try: self.emit('monitoring_unavailable', 'warning', reason='monitor_token_missing')
+            except Exception: pass  # A diagnostic warning must not prevent startup.
 
     async def stop(self):
         self.summary()
@@ -268,7 +271,8 @@ async def health_report(hours: int = Query(24, ge=1, le=168), authorization: str
         log_event('health_report_failed', 'warning', error_type=type(exc).__name__)
         raise HTTPException(503, 'Monitoring storage unavailable') from exc
     totals, endpoints, businesses = Counter(), Counter(), Counter()
-    errors, pushes = [], []
+    errors, pushes, provider_attempts = [], [], []
+    push_totals = Counter()
     for row in rows:
         p = row.get('payload') or {}
         if row['event'] == 'hourly_summary':
@@ -280,7 +284,18 @@ async def health_report(hours: int = Query(24, ge=1, le=168), authorization: str
             errors.append(dict(time=row['ts'], endpoint=row.get('endpoint'), business=row.get('business_slug'),
                                error=p.get('error'), error_type=p.get('error_type'), status=row.get('status')))
         elif row['event'] in ('push', 'wallet_sync'):
-            pushes.append(dict(time=row['ts'], **{k: p.get(k) for k in ('event', 'kind', 'business_slug', 'business_name', 'announcement_id', 'title', 'message', 'notification_header', 'targets', 'google_ok', 'google_failed', 'apple_ok', 'apple_failed', 'sent')}))
+            pushes.append(dict(time=row['ts'], **{k: p.get(k) for k in ('event', 'kind', 'business_slug', 'business_name', 'announcement_id', 'title', 'message', 'notification_header', 'targets', 'google_ok', 'google_failed', 'google_not_accepted', 'apple_ok', 'apple_failed', 'apple_queued', 'apple_deferred', 'delivery_status', 'count_basis', 'sent')}))
+        elif row['event'] in ('apple_push_summary', 'google_push_summary', 'wallet_refresh_summary'):
+            provider_attempts.append(dict(time=row['ts'], **{k: p.get(k) for k in (
+                'event', 'business_id', 'business_slug', 'program_id', 'reason', 'targets', 'attempted',
+                'apns_accepted', 'retryable_failed', 'permanent_failed', 'deferred', 'queued',
+                'retry_unavailable', 'retry_exhausted', 'acknowledgement_uncertain', 'outcomes',
+                'google_ok', 'google_failed', 'google_not_saved', 'apple_registered', 'apple_attempted',
+                'apple_queued', 'delivery_status', 'target_kind', 'google_accepted', 'failed', 'skipped',
+                'status', 'error_code', 'error_type', 'skipped_reason', 'count_basis')}))
+            if row['event'] == 'apple_push_summary':
+                for key in ('attempted', 'apns_accepted', 'retryable_failed', 'permanent_failed', 'retry_exhausted'):
+                    push_totals[key] += int(p.get(key) or 0)
     # The current, unsummarized process window is included only if entirely
     # inside the requested period; summaries describe explicit windows.
     with monitor.lock:
@@ -290,7 +305,9 @@ async def health_report(hours: int = Query(24, ge=1, le=168), authorization: str
             endpoints.update(monitor.endpoints)
             businesses.update(monitor.businesses)
     return dict(hours=hours, totals={k: totals[k] for k in ('requests', 'status_2xx', 'status_4xx', 'status_5xx')},
-                errors=errors, pushes=pushes, top_businesses=businesses.most_common(5),
+                errors=errors, pushes=pushes, provider_attempts=provider_attempts,
+                apple_push_totals={key: push_totals[key] for key in ('attempted', 'apns_accepted', 'retryable_failed', 'permanent_failed', 'retry_exhausted')},
+                top_businesses=businesses.most_common(5),
                 top_endpoints=endpoints.most_common(5),
                 totals_basis='Completed summary windows plus current process window; free-tier downtime is not observed.')
 
@@ -315,14 +332,20 @@ _apple_delivery = contextvars.ContextVar('apple_delivery', default=None)
 
 
 def begin_apple_delivery():
-    _apple_delivery.set({'attempted': 0, 'ok': 0})
+    _apple_delivery.set({'attempted': 0, 'ok': 0, 'failed': 0, 'queued': 0, 'deferred': 0})
 
 
 def _record_apple_delivery(attempted, ok):
     counts = _apple_delivery.get()
     if counts is not None:
         counts['attempted'] += attempted
-        counts['ok'] += ok
+        counts['ok'] += int(ok)
+        detail = getattr(ok, 'details', {})
+        failed = (int(detail.get('retryable_failed', 0)) + int(detail.get('permanent_failed', 0))
+                  if detail else max(0, attempted-int(ok)))
+        counts['failed'] = counts.get('failed', 0) + failed
+        counts['queued'] = counts.get('queued', 0) + int(detail.get('queued', 0))
+        counts['deferred'] = counts.get('deferred', 0) + int(detail.get('deferred', 0))
 
 
 def log_push(kind, business, ann, actor, result):
@@ -335,7 +358,9 @@ def log_push(kind, business, ann, actor, result):
               targets=int(result.get('target_count') or 0),
               google_ok=int(result.get('google_sent') or 0), google_failed=int(result.get('google_failed') or 0),
               apple_ok=int(result.get('apple_sent') or 0),
-              apple_failed=max(0, apple.get('attempted', 0) - apple.get('ok', 0)),
+              apple_failed=apple.get('failed', max(0, apple.get('attempted', 0) - apple.get('ok', 0))),
+              apple_queued=apple.get('queued', 0), apple_deferred=apple.get('deferred', 0),
+              delivery_status='unconfirmed',
               sent=bool(result.get('sent')))
 
 
@@ -346,7 +371,9 @@ def log_wallet_sync(customer, business, reason, google, apple):
     log_event('wallet_sync', business_slug=business.get('public_id'), business_name=business.get('name'),
               customer_id=customer.get('public_id'), reason=reason, targets=1,
               google_ok=gok, google_failed=int(google.get('status') == 'error'),
-              apple_ok=aok, apple_failed=max(0, int(apple.get('registrations') or 0) - aok),
+              apple_ok=aok, apple_failed=(int(apple.get('retryable_failed') or 0) + int(apple.get('permanent_failed') or 0)
+                  if 'retryable_failed' in apple else max(0, int(apple.get('registrations') or 0) - aok)),
+              apple_queued=int(apple.get('queued') or 0), apple_deferred=int(apple.get('deferred') or 0), delivery_status='unconfirmed',
               google_status=google.get('status'), apple_status=apple.get('status'), sent=bool(aok or gok))
 
 
