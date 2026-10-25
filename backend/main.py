@@ -134,12 +134,12 @@ DEFAULT_LOGO_URL = os.getenv('DEFAULT_LOGO_URL', 'https://placehold.co/300x300/0
 
 try:
     from . import lt_benefits_wallet as lt_wallet
-    from .lt_benefits import register_lt_benefits_routes
+    from .lt_benefits import register_lt_benefits_routes, normalize_email as normalize_lt_email, public_launch_enabled as lt_benefits_public_launch_enabled
     from .lt_benefits_upgrade import register_lt_benefits_upgrade_routes
     from . import lt_benefits_transactions as lt_transactions
 except ImportError:
     import lt_benefits_wallet as lt_wallet
-    from lt_benefits import register_lt_benefits_routes
+    from lt_benefits import register_lt_benefits_routes, normalize_email as normalize_lt_email, public_launch_enabled as lt_benefits_public_launch_enabled
     from lt_benefits_upgrade import register_lt_benefits_upgrade_routes
     import lt_benefits_transactions as lt_transactions
 
@@ -2681,7 +2681,7 @@ class LoyaltyConfig(BaseModel):
     vip_tiers: Optional[List[dict]] = None
 
 AGE_BRACKETS = ('under_18', '18_24', '25_34', '35_44', '45_54', '55_64', '65_plus')
-GENDER_OPTIONS = ('male', 'female', 'lgbtq', 'rather_not_say')
+GENDER_OPTIONS = ('male', 'female', 'rather_not_say')
 
 
 def _age_to_bracket(raw_age) -> Optional[str]:
@@ -2705,12 +2705,12 @@ class CustomerSignup(BaseModel):
     age: Optional[int] = Field(default=None, ge=0, le=120)  # legacy input only; never stored by new flow
     age_bracket: Optional[Literal['under_18','18_24','25_34','35_44','45_54','55_64','65_plus']] = None
     phone: str
-    email: Optional[str] = None
+    email: Optional[str] = Field(default=None, max_length=320)
     birthday: Optional[str] = None  # legacy full date only
     birthday_month: Optional[int] = Field(default=None, ge=1, le=12)
     birthday_day: Optional[int] = Field(default=None, ge=1, le=31)
     occupation: Optional[str] = None
-    gender: Optional[Literal['male','female','lgbtq','rather_not_say']] = None
+    gender: Optional[Literal['male','female','rather_not_say']] = None
     last_order_date: Optional[str] = None
     privacy_consent: bool = False
     privacy_consent_version: Optional[str] = Field(default=None, max_length=40)
@@ -8853,8 +8853,13 @@ def order_ahead_wallet_action(customer: dict, business: dict) -> Optional[dict]:
     }
 
 
-def lt_benefits_enabled() -> bool:
+def lt_benefits_feature_enabled() -> bool:
     return str(os.getenv('LT_BENEFITS_ENABLED', '')).strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def lt_benefits_enabled() -> bool:
+    # Preparing offers is separate from launching customer points and wallets.
+    return lt_benefits_feature_enabled() and lt_benefits_public_launch_enabled()
 
 
 def lt_benefits_wallet_action(customer: dict, business: dict):
@@ -33704,7 +33709,11 @@ async def customer_join_page(business_public_id: str):
             '<input type="text" id="address" placeholder="Address">'
             '<select id="ageBracket"><option value="">Age bracket (optional)</option><option value="under_18">Under 18</option><option value="18_24">18–24</option><option value="25_34">25–34</option><option value="35_44">35–44</option><option value="45_54">45–54</option><option value="55_64">55–64</option><option value="65_plus">65+</option></select>'
             '<input type="tel" id="phone" placeholder="Phone number" required>'
-            '<input type="email" id="email" placeholder="Email (optional)">'
+            + ('<input type="email" id="email" placeholder="Email" required autocomplete="email">'
+               '<p style="font-size:12px;color:#64748b;">Use the same email across participating businesses for Loyalty Tree Points. Verify by email code to connect your cards.</p>'
+               if lt_benefits_public_launch_enabled() else
+               '<input type="email" id="email" placeholder="Email (optional)" autocomplete="email">'
+               '<p style="font-size:12px;color:#64748b;">Loyalty Tree Points — Coming soon. Your business loyalty card works as usual.</p>') +
             '<label style="display:block;text-align:left;font-size:13px;color:#64748b;margin-bottom:6px;">Birthday month/day</label>'
             '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;"><input type="number" id="birthdayMonth" min="1" max="12" placeholder="Month"><input type="number" id="birthdayDay" min="1" max="31" placeholder="Day"></div>'
             '<div style="font-size:11px;color:#64748b;margin:-2px 0 10px;">Birth year is not collected.</div>'
@@ -33724,8 +33733,7 @@ async def customer_join_page(business_public_id: str):
             '<option value="">Gender (optional)</option>'
             '<option value="male">Male</option>'
             '<option value="female">Female</option>'
-            '<option value="lgbtq">LGBTQ+</option>'
-            '<option value="rather_not_say">Prefer not to say</option>'
+            '<option value="rather_not_say">I would rather not say</option>'
             '</select>'
             '<div class="consent-box">'
             '<div class="consent-title">Privacy &amp; Membership Consent</div>'
@@ -33840,7 +33848,14 @@ async def customer_join_page(business_public_id: str):
         return HTMLResponse("<div style='text-align:center;padding:40px;font-family:sans-serif;'><h1>Error</h1><p>Could not load join page: " + str(e) + "</p></div>")
 
 @app.post("/api/v1/join/{business_public_id}")
-async def customer_signup(business_public_id: str, signup: CustomerSignup, background_tasks: BackgroundTasks):
+async def customer_signup(business_public_id: str, signup: CustomerSignup, background_tasks: BackgroundTasks, authorization: str = Header(default='')):
+    if str(signup.email or '').strip() or lt_benefits_public_launch_enabled():
+        try:
+            signup.email = normalize_lt_email(signup.email)
+        except ValueError:
+            raise HTTPException(status_code=422, detail='A valid email is required for Loyalty Tree Points.') from None
+    else:
+        signup.email = None  # Coming Soon preserves optional merchant onboarding.
     if not signup.privacy_consent:
         raise HTTPException(
             status_code=400,
@@ -34065,10 +34080,10 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup, backg
             program or {},
         )
 
-    # Account setup is optional background work and sends no email. A later
-    # card can join an existing profile only after its own OTP confirmation.
+    # Pending setup sends no email. A valid matching verified LT session may
+    # link this new card; without it, existing shared balances stay private.
     if inserted_customer and lt_benefits_enabled():
-        background_tasks.add_task(_lt_benefits.provision_customer, inserted_customer, business)
+        background_tasks.add_task(_lt_benefits.provision_customer, inserted_customer, business, authorization)
 
     return {
         "public_id": customer_public_id,
@@ -50440,7 +50455,7 @@ _lt_benefits = register_lt_benefits_routes(app, db=supabase, get_business=safe_g
     get_card_context=_lt_card_context, require_owner=require_owner_session,
     require_staff=_lt_require_staff, require_admin=require_admin, send_email=send_email,
     sync_member=_lt_queue_member_cards,
-    log=lambda event, **fields: log_event(event, 'warning', **fields), enabled=lt_benefits_enabled)
+    log=lambda event, **fields: log_event(event, 'warning', **fields), enabled=lt_benefits_feature_enabled)
 
 _lt_transaction_reconciler = lt_transactions.LTTransactionReconciler(
     db=supabase, benefits=_lt_benefits, enabled=lt_benefits_enabled,

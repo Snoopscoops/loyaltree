@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import loyaltyTreeLogo from './logo-192.png'
-import { BENEFITS_CATEGORIES, benefitMoney, benefitPoints, benefitsCardReference, benefitsClaimKey, benefitsClaimState, benefitsDemoAllowed, benefitsFailure, readBenefitsEntry, saveBenefitsEntry, clearBenefitsClaimKey, clearBenefitsSession, filterBenefitsOffers, offerCategory, readBenefitsSession, safeBenefitsImage, saveBenefitsSession, scrubBenefitsReference, validBenefitsClaim, validBenefitsConfig, validBenefitsMe, validBenefitsOffers } from './benefitsModel'
+import { requestJsonResponse } from './requestTimeout'
+import { BENEFITS_CATEGORIES, benefitMoney, benefitPoints, benefitsCardReference, benefitsClaimKey, benefitsClaimState, benefitsDemoAllowed, benefitsFailure, readBenefitsEntry, saveBenefitsEntry, clearBenefitsClaimKey, clearBenefitsEntry, clearBenefitsSession, filterBenefitsOffers, offerCategory, readBenefitsSession, safeBenefitsImage, saveBenefitsSession, scrubBenefitsReference, validBenefitsClaim, validBenefitsConfig, validBenefitsMe, validBenefitsOffers } from './benefitsModel'
 import './loyalty-benefits.css'
 
 const PAGE_SIZE = 24
@@ -52,17 +53,18 @@ function OfferTile({ offer, onOpen, points }) {
 
 function AuthDialog({ request, cardReference, entry, onVerified, onClose, demo }) {
   const [consent, setConsent] = useState(false), [challenge, setChallenge] = useState(null)
+  const [email, setEmail] = useState(''), [recipient, setRecipient] = useState(entry?.email_masked || '')
   const [code, setCode] = useState(''), [busy, setBusy] = useState(false), [error, setError] = useState('')
   const [resendAt, setResendAt] = useState(0), [seconds, setSeconds] = useState(0)
   useEffect(() => { if (!resendAt) return; const update = () => setSeconds(Math.max(0, Math.ceil((resendAt - Date.now()) / 1000))); update(); const timer = window.setInterval(update, 1000); return () => window.clearInterval(timer) }, [resendAt])
   const sendCode = async event => {
     event?.preventDefault()
-    if (busy || !consent || !cardReference || seconds > 0) return
+    if (busy || !consent || (!cardReference && !email.trim()) || seconds > 0) return
     setBusy(true); setError('')
     try {
-      const body = await request('/auth/request-code', { method: 'POST', body: { ...cardReference, consent: true } })
+      const body = await request(cardReference ? '/auth/request-code' : '/auth/email/request-code', { method: 'POST', body: cardReference ? { ...cardReference, consent: true } : { email: email.trim(), consent: true } })
       if (typeof body.challenge_id !== 'string') throw new Error('The verification request was incomplete. Please try again.')
-      setChallenge(body.challenge_id); setResendAt(Date.now() + Math.max(1, Number(body.retry_after) || 60) * 1000)
+      setRecipient(body.email_masked || entry?.email_masked || 'your email'); setChallenge(body.challenge_id); setResendAt(Date.now() + Math.max(1, Number(body.retry_after) || 60) * 1000)
     } catch (failure) { setError(failure.message) } finally { setBusy(false) }
   }
   const verify = async event => {
@@ -74,9 +76,12 @@ function AuthDialog({ request, cardReference, entry, onVerified, onClose, demo }
       onVerified(body)
     } catch (failure) { setError(failure.message) } finally { setBusy(false) }
   }
-  return <Modal title={challenge ? 'One code. All your benefits.' : 'Verify your Wallet card.'} onClose={busy ? () => {} : onClose} className="lt-benefit-auth">
+  return <Modal title={challenge ? 'One code. All your benefits.' : 'Your email. All your loyalty.'} onClose={busy ? () => {} : onClose} className="lt-benefit-auth">
     {demo && <p className="lt-benefit-demo-note">Local demo only · Use code <b>123456</b>. No email is sent.</p>}
-    {challenge ? <form onSubmit={verify}><p>Enter the 6-digit code sent to <b>{entry?.email_masked || 'the email on your card'}</b>.</p><label className="lt-benefit-field">Verification code<input autoFocus required inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} value={code} onChange={event => setCode(event.target.value.replace(/\D/g, ''))} placeholder="000000"/></label><button className="lt-benefit-primary" disabled={busy || code.length !== 6}>{busy ? 'Verifying…' : 'Verify & open Benefits'}</button><button type="button" className="lt-benefit-text-button" disabled={busy || seconds > 0} onClick={sendCode}>{seconds > 0 ? `Resend code in ${seconds}s` : 'Resend verification code'}</button></form> : <form onSubmit={sendCode}><p>Your LT profile is created automatically when you register for a loyalty card. We use the email and phone already saved on this card.</p><p>Send a code to <b>{entry?.email_masked || 'your registered email'}</b> to safely connect this card to your shared points and coupons.</p><label className="lt-benefit-consent"><input type="checkbox" checked={consent} onChange={event => setConsent(event.target.checked)}/><span>I agree to connect this card to my Loyalty Tree profile using my registered email and phone. <a href="/privacy">Privacy Policy</a></span></label><button className="lt-benefit-primary" disabled={busy || !consent}>{busy ? 'Sending…' : 'Send verification code'}</button></form>}
+    {challenge ? <form onSubmit={verify}><p>If this email has an eligible loyalty card, check <b>{recipient}</b> for your 6-digit code.</p><label className="lt-benefit-field">Verification code<input autoFocus required inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} value={code} onChange={event => setCode(event.target.value.replace(/\D/g, ''))} placeholder="000000"/></label><button className="lt-benefit-primary" disabled={busy || code.length !== 6}>{busy ? 'Verifying…' : 'Verify & open Benefits'}</button><button type="button" className="lt-benefit-text-button" disabled={busy || seconds > 0} onClick={sendCode}>{seconds > 0 ? `Resend code in ${seconds}s` : 'Resend verification code'}</button></form> : <form onSubmit={sendCode}>
+      <p>Your LT profile is created automatically with a participating loyalty card. Verify its email to connect eligible cards from different businesses to one shared balance.</p>
+      {cardReference ? <p>Send a code to <b>{entry?.email_masked || 'your registered email'}</b>.</p> : <label className="lt-benefit-field">Email on your loyalty cards<input autoFocus required type="email" autoComplete="email" maxLength={320} value={email} onChange={event => setEmail(event.target.value)} placeholder="you@example.com"/></label>}
+      <label className="lt-benefit-consent"><input type="checkbox" checked={consent} onChange={event => setConsent(event.target.checked)}/><span>I agree to connect my eligible cards with the same email to my Loyalty Tree profile and shared LT Points. <a href="/privacy">Privacy Policy</a></span></label><button className="lt-benefit-primary" disabled={busy || !consent}>{busy ? 'Sending…' : 'Send verification code'}</button></form>}
     {error && <p role="alert" className="lt-benefit-error">{error}</p>}
   </Modal>
 }
@@ -86,7 +91,7 @@ function OfferDialog({ offer, me, busy, error, onClaim, onSignIn, onClose }) {
   return <Modal title={offer.title} onClose={busy ? () => {} : onClose} className="lt-benefit-offer-dialog"><Photo offer={offer} large/><Merchant offer={offer}/><div className="lt-benefit-detail-cost"><Icon name="spark"/><strong>{benefitPoints(offer.points_cost)}</strong><span>LT Points</span></div><p>{offer.description}</p><div className="lt-benefit-terms"><h3>The little details</h3><p>{offer.terms || 'Present your claimed coupon and linked loyalty card to the merchant. Ask the team about eligible items before ordering.'}</p><dl><div><dt>Available</dt><dd>{benefitPoints(offer.remaining_quantity)} coupons</dd></div><div><dt>Per member</dt><dd>{offer.per_member_limit}</dd></div>{Number.isSafeInteger(offer.discount_centavos) && <div><dt>Coupon discount</dt><dd>{benefitMoney(offer.discount_centavos)} off</dd></div>}<div><dt>Claim until</dt><dd>{localDate(offer.ends_at)}</dd></div>{Number.isInteger(offer.coupon_valid_days) && <div><dt>Coupon validity</dt><dd>Up to {offer.coupon_valid_days} days after claim</dd></div>}{offer.min_spend_centavos > 0 && <div><dt>Minimum spend</dt><dd>{benefitMoney(offer.min_spend_centavos)}</dd></div>}</dl></div>
     {me && <p className="lt-benefit-claim-confirm">Claiming uses <b>{benefitPoints(offer.points_cost)} LT Points</b>. Your coupon will be saved in My Coupons. The merchant marks it used after you redeem in store.</p>}
     {error && <p role="alert" className="lt-benefit-error">{error}</p>}
-    <button className="lt-benefit-primary" type="button" disabled={busy || state === 'sold_out' || state === 'closed' || (me && state === 'insufficient')} onClick={me ? () => onClaim(offer) : onSignIn}>{busy ? 'Claiming…' : state === 'sold_out' ? 'Fully claimed' : state === 'closed' ? 'Currently unavailable' : !me ? 'Verify card to claim' : state === 'insufficient' ? `Need ${benefitPoints(offer.points_cost - me.available_points)} more LT Points` : `Confirm claim · ${benefitPoints(offer.points_cost)} LT Points`}<Icon name="arrow"/></button><p className="lt-benefit-fineprint">{me ? `${benefitPoints(me.available_points)} LT Points available before this claim.` : 'Open from your Wallet card and verify to claim a benefit.'}</p>
+    <button className="lt-benefit-primary" type="button" disabled={busy || state === 'sold_out' || state === 'closed' || (me && state === 'insufficient')} onClick={me ? () => onClaim(offer) : onSignIn}>{busy ? 'Claiming…' : state === 'sold_out' ? 'Fully claimed' : state === 'closed' ? 'Currently unavailable' : !me ? 'Verify email to claim' : state === 'insufficient' ? `Need ${benefitPoints(offer.points_cost - me.available_points)} more LT Points` : `Confirm claim · ${benefitPoints(offer.points_cost)} LT Points`}<Icon name="arrow"/></button><p className="lt-benefit-fineprint">{me ? `${benefitPoints(me.available_points)} LT Points available before this claim.` : 'Verify your email to claim a benefit.'}</p>
   </Modal>
 }
 
@@ -131,8 +136,9 @@ function HowItWorks() {
 
 export default function LoyaltyBenefits({ API_BASE = '' }) {
   const demo = benefitsDemoAllowed({ development: import.meta.env.DEV, hostname: window.location.hostname, search: window.location.search })
-  const initialReference = useRef(demo ? {customer_public_id:'demo-northstar-card',card_token:'local-demo-card-proof'} : benefitsCardReference(window.location.search) || readBenefitsEntry(storage))
-  const [cardReference] = useState(initialReference.current)
+  const businessEntry = new URLSearchParams(window.location.search).get('business')
+  const initialReference = useRef(demo ? {customer_public_id:'demo-northstar-card',card_token:'local-demo-card-proof'} : benefitsCardReference(window.location.search) || (businessEntry ? null : readBenefitsEntry(storage)))
+  const [cardReference, setCardReference] = useState(initialReference.current)
   const [session, setSession] = useState(() => demo ? null : readBenefitsSession(storage))
   const sessionRef = useRef(session); sessionRef.current = session
   const [entry, setEntry] = useState(null), [entryError, setEntryError] = useState(''), [entryLoading, setEntryLoading] = useState(!!initialReference.current)
@@ -169,16 +175,16 @@ export default function LoyaltyBenefits({ API_BASE = '' }) {
     const controller = new AbortController(); requests.current.add(controller)
     try {
       const send = await transport
-      const response = await send(path, { method: options.method || 'GET', cache: 'no-store', signal: options.signal || controller.signal, referrerPolicy: 'no-referrer', headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}), ...(options.key ? { 'Idempotency-Key': options.key } : {}) }, ...(options.body ? { body: JSON.stringify(options.body) } : {}) })
-      const body = await response.json().catch(() => ({}))
+      const { response, payload } = await requestJsonResponse(send, path, { method: options.method || 'GET', cache: 'no-store', signal: options.signal || controller.signal, referrerPolicy: 'no-referrer', headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(options.token ? { Authorization: `Bearer ${options.token}` } : {}), ...(options.key ? { 'Idempotency-Key': options.key } : {}) }, ...(options.body ? { body: JSON.stringify(options.body) } : {}) }, { message: 'Benefits is taking too long. Please try again shortly.' })
+      const body = payload || {}
       if (!response.ok) { if (response.status === 401 && options.token && sessionRef.current?.token === options.token) clearSession(); const failure = new Error(benefitsFailure(response.status, typeof body.detail === 'string' ? body.detail : '')); failure.status = response.status; throw failure }
       return body
-    } catch (failure) { if (failure.name === 'AbortError' || failure.status) throw failure; throw new Error('We could not connect to Benefits. Please try again shortly.') }
+    } catch (failure) { if (failure.name === 'AbortError' || failure.name === 'TimeoutError' || failure.status) throw failure; throw new Error('We could not connect to Benefits. Please try again shortly.') }
     finally { requests.current.delete(controller) }
   }, [transport, clearSession])
   useEffect(() => () => { for (const controller of requests.current) controller.abort() }, [])
   useEffect(() => {
-    if (!cardReference) { setEntryLoading(false); return }
+    if (!cardReference || config?.public_launch !== true) { setEntryLoading(false); return }
     const controller = new AbortController(); let active = true
     setEntryLoading(true); setEntryError('')
     request('/entry', {method:'POST', body:cardReference, token: session?.token, signal: controller.signal}).then(value => {
@@ -188,7 +194,7 @@ export default function LoyaltyBenefits({ API_BASE = '' }) {
       if (!value.verified && session?.token) clearSession()
     }).catch(failure => { if (active && failure.name !== 'AbortError') setEntryError(failure.message) }).finally(() => { if (active) setEntryLoading(false) })
     return () => { active = false; controller.abort() }
-  }, [cardReference, session?.token, request, clearSession, retry])
+  }, [cardReference, session?.token, request, clearSession, retry, config?.public_launch])
 
   useEffect(() => {
     let active = true
@@ -201,7 +207,7 @@ export default function LoyaltyBenefits({ API_BASE = '' }) {
         if (!active) return
         setConfig(settings)
         if (!settings.enabled || !settings.available) { setCatalog([]); return }
-        if (!entry?.verified || !session?.token) { setCatalog([]); return }
+        if ((cardReference && !entry?.verified) || !session?.token) { setCatalog([]); return }
         const body = await request(`/offers?limit=${PAGE_SIZE}&offset=0`, { signal: controller.signal, token: session.token })
         if (!validBenefitsOffers(body)) throw new Error('The benefits catalog could not be loaded. Please try again shortly.')
         if (active) { setCatalog(body.offers); setHasMore(body.has_more) }
@@ -209,7 +215,7 @@ export default function LoyaltyBenefits({ API_BASE = '' }) {
       finally { if (active) setLoading(false) }
     })()
     return () => { active = false; controller.abort() }
-  }, [request, retry, entry?.verified, session?.token])
+  }, [request, retry, entry?.verified, session?.token, cardReference])
   const loadMe = useCallback(async (token, signal) => {
     const body = await request('/me', { token, signal })
     if (!validBenefitsMe(body)) throw new Error('Your Benefits account could not be loaded completely. Please refresh shortly.')
@@ -228,7 +234,7 @@ export default function LoyaltyBenefits({ API_BASE = '' }) {
   const verified = body => {
     const saved = demo ? { token: body.access_token, expires_at: Date.now() + body.expires_in * 1000 } : saveBenefitsSession(storage, body.access_token, body.expires_in)
     sessionRef.current = saved; setSession(saved); setAuthOpen(false); setAccountError(''); scrubReference()
-    setEntry(current => ({...current, verified: true})); setNotice('Your card is connected. Your shared LT Points and coupons are ready.')
+    setEntry(current => ({...current, verified: true})); setNotice('Your eligible cards are connected by verified email. Your shared LT Points and coupons are ready.')
   }
   const moreOffers = async () => {
     if (loadingMore) return
@@ -270,20 +276,38 @@ export default function LoyaltyBenefits({ API_BASE = '' }) {
       if (failure.status === 409) { claimAttempt.current = null; clearBenefitsClaimKey(demo ? null : storage, me.member.id, offer.id); await loadMe(token).catch(() => {}) }
     } finally { operationBusy.current = false; setClaimBusy(false) }
   }
-  const signOut = async () => { const token = sessionRef.current?.token; clearSession(); setView('discover'); setNotice('Benefits is locked. Reopen it from your Wallet card to verify again.'); if (token) await request('/logout', { method: 'POST', token }).catch(() => {}) }
+  const signOut = async () => { const token = sessionRef.current?.token; clearSession(); setView('discover'); setNotice('Benefits is locked. Verify your email to open it again.'); if (token) await request('/logout', { method: 'POST', token }).catch(() => {}) }
   const demoUse = async coupon => { if (!demo || claimBusy) return; setClaimBusy(true); setClaimError(''); try { await request(`/__demo/use/${coupon.id}`, { method: 'POST', token: sessionRef.current.token }); const updated = await loadMe(sessionRef.current.token); setSelectedCoupon(updated.coupons.find(value => value.id === coupon.id)); setNotice('Demo: the cashier marked this coupon used in store. No live record was changed.') } catch (failure) { setClaimError(failure.message) } finally { setClaimBusy(false) } }
   const categories = ['all', ...new Set(catalog.map(offerCategory))]
   const filtered = filterBenefitsOffers(catalog, { category, search, affordable, points: me?.available_points || 0 })
   const coupons = me?.coupons || []
   const go = next => { setView(next); setSearch(''); setNotice('') }
-  if (!cardReference || entryLoading || entryError || !entry?.verified || !session?.token) return <div className="lt-benefits-customer"><main className="lt-benefit-entry-gate"><img src={loyaltyTreeLogo} alt="Loyalty Tree"/><p className="lt-benefit-eyebrow">LOYALTY TREE BENEFITS</p><h1>{!cardReference ? 'Your Wallet card opens the door.' : 'Your card. More possibilities.'}</h1><p>{!cardReference ? 'Open your Apple or Google Wallet loyalty card, then tap Loyalty Tree Benefits. Your profile is created automatically when you register with a participating business.' : entryLoading ? 'Checking your Wallet card…' : entryError || `Welcome from ${entry?.business_name || 'your loyalty card'}. Verify the code sent to your registered email to connect your shared points and coupons. No password or separate registration needed.`}</p>{demo && <p className="lt-benefit-demo-note">LOCAL DEMO · No live email is sent. Use code 123456.</p>}{cardReference && !entryLoading && !entryError && <button type="button" className="lt-benefit-primary" onClick={auth}>Continue with my card <Icon name="arrow"/></button>}{entryError && <button className="lt-benefit-secondary" onClick={() => setRetry(value => value + 1)}>Check card again</button>}<p className="lt-benefit-fineprint">Cards from different businesses connect after verification when both your registered email and phone match.</p></main>{authOpen && <AuthDialog request={request} cardReference={cardReference} entry={entry} onVerified={verified} onClose={() => setAuthOpen(false)} demo={demo}/>}</div>
+  if (config?.public_launch !== true) return <div className="lt-benefits-customer"><main className="lt-benefit-entry-gate">
+    <img src={loyaltyTreeLogo} alt="Loyalty Tree"/><p className="lt-benefit-eyebrow">LOYALTY TREE POINTS</p><h1>Coming soon.</h1>
+    <p>A little more to look forward to. Shared LT Points and Benefits are being prepared.</p>
+    <p>Your business loyalty cards, stamps, points and rewards keep working as usual.</p>
+    {businessEntry ? <a className="lt-benefit-primary" href={`/join/${encodeURIComponent(businessEntry)}?signup=1`}>Get my business loyalty card <Icon name="arrow"/></a> : <a className="lt-benefit-primary" href="/">Visit Loyalty Tree <Icon name="arrow"/></a>}
+    {error && <p className="lt-benefit-fineprint">{error}</p>}
+  </main></div>
+  if (!session?.token || (cardReference && (entryLoading || entryError || !entry?.verified))) return <div className="lt-benefits-customer"><main className="lt-benefit-entry-gate">
+    <img src={loyaltyTreeLogo} alt="Loyalty Tree"/><p className="lt-benefit-eyebrow">LOYALTY TREE BENEFITS</p><h1>Your loyalty. All together.</h1>
+    <p>{entryLoading ? 'Checking your Wallet card…' : entryError || (cardReference ? `Welcome from ${entry?.business_name || 'your loyalty card'}. Verify your email to connect your eligible cards, shared points and coupons.` : 'Use the email on your loyalty cards to open your shared LT Points and coupons. No password or separate registration needed.')}</p>
+    {demo && <p className="lt-benefit-demo-note">LOCAL DEMO · No live email is sent. Use code 123456.</p>}
+    {!entryLoading && !entryError && <button type="button" className="lt-benefit-primary" disabled={!ready || loading} onClick={auth}>{loading ? 'Checking Benefits…' : cardReference ? 'Continue with my card' : 'Continue with email'} <Icon name="arrow"/></button>}
+    {config && !ready && <p className="lt-benefit-fineprint">Benefits is being prepared or is temporarily unavailable. Your business loyalty card keeps working.</p>}
+    {error && <p role="alert" className="lt-benefit-error">{error}</p>}
+    {entryError && <button type="button" className="lt-benefit-secondary" onClick={() => setRetry(value => value + 1)}>Check card again</button>}
+    {cardReference && !entryLoading && <button type="button" className="lt-benefit-text-button" onClick={() => { clearBenefitsEntry(storage); setCardReference(null); setEntry(null); setEntryError(''); scrubReference() }}>Use email instead</button>}
+    {!cardReference && businessEntry && <a className="lt-benefit-secondary" href={`/join/${encodeURIComponent(businessEntry)}?signup=1`}>Get this business’s loyalty card</a>}
+    <p className="lt-benefit-fineprint">After email verification, eligible cards with the same email share one LT Points balance. Each business keeps its own rewards.</p>
+  </main>{authOpen && <AuthDialog request={request} cardReference={cardReference} entry={entry} onVerified={verified} onClose={() => setAuthOpen(false)} demo={demo}/>}</div>
   return <div className="lt-benefits-customer">
     {demo && <div className="lt-benefit-demo-banner"><b>LOCAL DEMO</b> Fictional businesses, benefits and points. No email, payment or live notification is sent.</div>}
     <div className="lt-benefit-topline"><span><Icon name="spark"/>A little loyalty. More possibilities.</span><a href="#benefits-how">How it works <span>↗</span></a></div>
-    <header className="lt-benefit-header"><a className="lt-benefit-brand" href="/benefits" aria-label="Loyalty Tree Benefits home"><img src={loyaltyTreeLogo} alt=""/><span>Loyalty Tree<small>BENEFITS</small></span></a><nav aria-label="Benefits navigation">{[{ id: 'discover', label: 'Discover', icon: 'spark' }, { id: 'coupons', label: 'My Coupons', icon: 'ticket' }, { id: 'account', label: 'My Cards', icon: 'card' }].map(item => <button key={item.id} type="button" className={view === item.id ? 'is-active' : ''} onClick={() => go(item.id)} aria-current={view === item.id ? 'page' : undefined}><Icon name={item.icon}/>{item.label}{item.id === 'coupons' && coupons.some(coupon => coupon.status === 'claimed') && <span className="lt-benefit-nav-count">{coupons.filter(coupon => coupon.status === 'claimed').length}</span>}</button>)}</nav><button className="lt-benefit-account-button" type="button" disabled={!ready} onClick={me ? () => go('account') : auth}><Icon name={me ? 'spark' : 'user'}/><span>{me ? `${benefitPoints(me.available_points)} LT Points` : accountLoading ? 'Loading…' : 'Verify card'}</span></button></header>
+    <header className="lt-benefit-header"><a className="lt-benefit-brand" href="/benefits" aria-label="Loyalty Tree Benefits home"><img src={loyaltyTreeLogo} alt=""/><span>Loyalty Tree<small>BENEFITS</small></span></a><nav aria-label="Benefits navigation">{[{ id: 'discover', label: 'Discover', icon: 'spark' }, { id: 'coupons', label: 'My Coupons', icon: 'ticket' }, { id: 'account', label: 'My Cards', icon: 'card' }].map(item => <button key={item.id} type="button" className={view === item.id ? 'is-active' : ''} onClick={() => go(item.id)} aria-current={view === item.id ? 'page' : undefined}><Icon name={item.icon}/>{item.label}{item.id === 'coupons' && coupons.some(coupon => coupon.status === 'claimed') && <span className="lt-benefit-nav-count">{coupons.filter(coupon => coupon.status === 'claimed').length}</span>}</button>)}</nav><button className="lt-benefit-account-button" type="button" disabled={!ready} onClick={me ? () => go('account') : auth}><Icon name={me ? 'spark' : 'user'}/><span>{me ? `${benefitPoints(me.available_points)} LT Points` : accountLoading ? 'Loading…' : 'Verify email'}</span></button></header>
     <main className="lt-benefit-main">
       {notice && <p className="lt-benefit-success" role="status"><Icon name="check"/>{notice}<button type="button" onClick={() => setNotice('')} aria-label="Dismiss notification">×</button></p>}
-      {accountError && <p className="lt-benefit-error" role="alert">{accountError}<button type="button" onClick={session ? () => loadMe(session.token).then(() => setAccountError('')).catch(failure => setAccountError(failure.message)) : auth}>{session ? 'Refresh account' : 'Verify card'}</button></p>}
+      {accountError && <p className="lt-benefit-error" role="alert">{accountError}<button type="button" onClick={session ? () => loadMe(session.token).then(() => setAccountError('')).catch(failure => setAccountError(failure.message)) : auth}>{session ? 'Refresh account' : 'Verify email'}</button></p>}
       {view === 'discover' && <>
         <section className="lt-benefit-hero"><div className="lt-benefit-hero-copy"><span className="lt-benefit-eyebrow"><span/>EVERYDAY LOYALTY. EXTRAORDINARY LITTLE WINS.</span><h1>Good things<br/>come <span>back.</span><svg viewBox="0 0 300 20" aria-hidden="true"><path d="M2 15Q130 0 294 9"/></svg></h1><p>Your coffee runs. Your local favorites. Now a little more rewarding. Turn your LT Points into benefits worth coming back for.</p><div className="lt-benefit-hero-actions"><a className="lt-benefit-primary" href="#benefits-catalog">Find my next benefit<Icon name="arrow"/></a><a className="lt-benefit-hero-link" href="#benefits-how">Meet your LT Points <span>↗</span></a></div><div className="lt-benefit-hero-trust"><span><Icon name="card"/>Your existing loyalty cards</span><i/><span><Icon name="ticket"/>A whole new set of extras</span></div></div><AppleWalletPreview points={me?.available_points} disabled={!ready} onExplore={me ? () => document.getElementById('benefits-catalog')?.scrollIntoView({ behavior: 'smooth' }) : auth}/></section>
         <section className="lt-benefit-catalog" id="benefits-catalog" aria-labelledby="benefit-catalog-title"><div className="lt-benefit-section-heading"><div><span className="lt-benefit-eyebrow">THE GOOD STUFF</span><h2 id="benefit-catalog-title">Little treats. Big yes.</h2></div><p>Discover benefits from participating businesses.<br/>Find a favorite. Make it yours.</p></div>
@@ -294,7 +318,7 @@ export default function LoyaltyBenefits({ API_BASE = '' }) {
           </>}
         </section>
       </>}
-      {view === 'coupons' && <section className="lt-benefit-personal"><span className="lt-benefit-eyebrow">SAVED FOR SOMETHING GOOD</span><h1>My Coupons<span>.</span></h1><p>Your claimed benefits, ready for their little moment in store.</p>{accountLoading ? <p className="lt-benefit-state" role="status">Loading your coupons…</p> : !me ? <div className="lt-benefit-empty"><Icon name="ticket"/><h3>Your little wins live here.</h3><p>Verify your Wallet card to see your claimed coupons.</p><button type="button" className="lt-benefit-primary" disabled={!ready} onClick={auth}>Find my coupons<Icon name="arrow"/></button></div> : !coupons.length ? <div className="lt-benefit-empty"><Icon name="ticket"/><h3>A little empty. A lot of potential.</h3><p>Claim your first benefit with LT Points. It will be saved right here.</p><button type="button" className="lt-benefit-primary" onClick={() => go('discover')}>Discover benefits<Icon name="arrow"/></button></div> : <div className="lt-benefit-coupon-grid">{coupons.map(coupon => <button className={`lt-benefit-saved-coupon is-${coupon.status}`} type="button" key={coupon.id} onClick={() => { setSelectedCoupon(coupon); setClaimError('') }}><div><span className={`lt-benefit-status is-${coupon.status}`}>{coupon.status === 'used' ? 'Used in store' : coupon.status === 'expired' ? 'Expired' : 'Claimed · ready to use'}</span><small>{coupon.business_name}</small><h3>{coupon.title}</h3><p>Valid until {localDate(coupon.expires_at)}</p></div><span className="lt-benefit-coupon-stub"><Icon name="ticket"/><span>View<br/>benefit ↗</span></span></button>)}</div>}{me && moreCoupons && <button type="button" className="lt-benefit-load-more lt-benefit-secondary" disabled={loadingCoupons} onClick={loadMoreCoupons}>{loadingCoupons ? 'Loading more coupons…' : 'Load more coupons'}<Icon name="arrow"/></button>}<p className="lt-benefit-personal-note"><Icon name="card"/>Bring your linked loyalty card. The cashier scans it to find and redeem your coupon.</p></section>}
+      {view === 'coupons' && <section className="lt-benefit-personal"><span className="lt-benefit-eyebrow">SAVED FOR SOMETHING GOOD</span><h1>My Coupons<span>.</span></h1><p>Your claimed benefits, ready for their little moment in store.</p>{accountLoading ? <p className="lt-benefit-state" role="status">Loading your coupons…</p> : !me ? <div className="lt-benefit-empty"><Icon name="ticket"/><h3>Your little wins live here.</h3><p>Verify your email to see your claimed coupons.</p><button type="button" className="lt-benefit-primary" disabled={!ready} onClick={auth}>Find my coupons<Icon name="arrow"/></button></div> : !coupons.length ? <div className="lt-benefit-empty"><Icon name="ticket"/><h3>A little empty. A lot of potential.</h3><p>Claim your first benefit with LT Points. It will be saved right here.</p><button type="button" className="lt-benefit-primary" onClick={() => go('discover')}>Discover benefits<Icon name="arrow"/></button></div> : <div className="lt-benefit-coupon-grid">{coupons.map(coupon => <button className={`lt-benefit-saved-coupon is-${coupon.status}`} type="button" key={coupon.id} onClick={() => { setSelectedCoupon(coupon); setClaimError('') }}><div><span className={`lt-benefit-status is-${coupon.status}`}>{coupon.status === 'used' ? 'Used in store' : coupon.status === 'expired' ? 'Expired' : 'Claimed · ready to use'}</span><small>{coupon.business_name}</small><h3>{coupon.title}</h3><p>Valid until {localDate(coupon.expires_at)}</p></div><span className="lt-benefit-coupon-stub"><Icon name="ticket"/><span>View<br/>benefit ↗</span></span></button>)}</div>}{me && moreCoupons && <button type="button" className="lt-benefit-load-more lt-benefit-secondary" disabled={loadingCoupons} onClick={loadMoreCoupons}>{loadingCoupons ? 'Loading more coupons…' : 'Load more coupons'}<Icon name="arrow"/></button>}<p className="lt-benefit-personal-note"><Icon name="card"/>Bring your linked loyalty card. The cashier scans it to find and redeem your coupon.</p></section>}
       {view === 'account' && <section className="lt-benefit-personal"><span className="lt-benefit-eyebrow">ONE YOU. MORE POSSIBILITIES.</span><h1>All your loyalty<span>.</span></h1><p>Linked cards, shared LT Points, and the businesses you come back to.</p>{accountLoading ? <p className="lt-benefit-state" role="status">Loading your linked cards…</p> : !me ? <div className="lt-benefit-empty"><Icon name="card"/><h3>Your cards belong together.</h3><p>Verify the email on your loyalty cards to connect eligible cards to Benefits.</p><button type="button" className="lt-benefit-primary" disabled={!ready} onClick={auth}>Connect my cards<Icon name="arrow"/></button></div> : <><div className="lt-benefit-account-summary"><div><span>YOUR LT POINTS</span><strong>{benefitPoints(me.available_points)} <small>available</small></strong><p>{benefitPoints(me.balance_points)} total balance · Store points and stamps stay with each business.</p></div><div><span>VERIFIED EMAIL</span><strong className="lt-benefit-email">{me.member.email_masked}</strong><button className="lt-benefit-text-button" type="button" onClick={signOut}>Lock Benefits</button></div></div><h2 className="lt-benefit-card-heading">Your linked cards <span>{me.cards.length}</span></h2>{me.cards.length ? <div className="lt-benefit-wallet-grid">{me.cards.map((card, index) => <article className={`lt-benefit-wallet-card tone-${index % 3}`} key={card.customer_public_id}><div><span>LINKED LOYALTY CARD</span><Icon name="leaf"/></div><strong>{card.business_name}</strong><p>Part of your Loyalty Tree Benefits account</p><footer><span><Icon name="check"/>Verified & linked</span><Icon name="card"/></footer></article>)}</div> : <div className="lt-benefit-state">No cards are linked yet. Open Loyalty Tree Benefits from your existing Wallet card to review and link it.</div>}{me.activity.length > 0 && <section className="lt-benefit-activity"><h2>Your recent activity</h2>{me.activity.slice(0, 10).map(item => <div key={item.id}><span className="lt-benefit-activity-icon"><Icon name={item.points_delta > 0 ? 'spark' : 'ticket'}/></span><span><strong>{item.description}</strong><small>{localDate(item.created_at)}</small></span><b>{item.points_delta > 0 ? '+' : ''}{benefitPoints(item.points_delta)}<small> LT Points</small></b></div>)}</section>}</> }</section>}
       <HowItWorks/>
     </main>

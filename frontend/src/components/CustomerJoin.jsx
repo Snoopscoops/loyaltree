@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useParams } from 'react-router-dom'
+import { readBenefitsSession } from './benefitsModel'
+import { requestJsonResponse } from './requestTimeout'
 
 const EMPLOYEE_POSITION_OPTIONS = [
   'Manager', 'Supervisor / Team Lead', 'Admin / Office Staff', 'Cashier',
@@ -97,6 +99,10 @@ function SignaturePad({ value, onChange, color = '#0f766e' }) {
 
 function CustomerJoin({ API_BASE }) {
   const { businessSlug } = useParams()
+  const [joining, setJoining] = useState(() => new URLSearchParams(window.location.search).get('signup') === '1')
+  const [benefitsConfig, setBenefitsConfig] = useState(null)
+  const benefitsReady = benefitsConfig?.public_launch === true && benefitsConfig.enabled === true && benefitsConfig.available === true
+  const benefitsEmailRequired = benefitsConfig?.public_launch === true
   const [form, setForm] = useState({
     name: '',
     address: '',
@@ -216,6 +222,14 @@ function CustomerJoin({ API_BASE }) {
   },[API_BASE,businessSlug])
 
   useEffect(() => {
+    const controller = new AbortController()
+    requestJsonResponse(fetch, `${API_BASE}/api/v1/benefits/config`, {signal:controller.signal,cache:'no-store'})
+      .then(({response,payload}) => { if (response.ok && !controller.signal.aborted) setBenefitsConfig(payload) })
+      .catch(() => {}) // A launch-config outage cannot stop the business card form.
+    return () => controller.abort()
+  },[API_BASE])
+
+  useEffect(() => {
     if (!submitted || !customerId) return
     setWalletLoading(true)
     fetch(`${API_BASE}/api/v1/customer/${customerId}/wallet-pass`)
@@ -290,15 +304,16 @@ function CustomerJoin({ API_BASE }) {
     }
     setLoading(true)
     try {
+      const benefitsSession = benefitsReady ? readBenefitsSession({ getItem: key => window.localStorage.getItem(key) }) : null
       const res = await fetch(`${API_BASE}/api/v1/join/${businessSlug}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(benefitsSession?.token ? { Authorization: `Bearer ${benefitsSession.token}` } : {}) },
         body: JSON.stringify({
           name: form.name,
           address: form.address || null,
           age_bracket: isEmployeeExperience ? null : (form.age_bracket || null),
           phone: form.phone,
-          email: form.email || null,
+          email: form.email.trim() || null,
           birthday_month: parseInt(form.birthday_month, 10),
           birthday_day: parseInt(form.birthday_day, 10),
           occupation: isEmployeeExperience ? null : (form.occupation || null),
@@ -334,6 +349,15 @@ function CustomerJoin({ API_BASE }) {
       <a href={businessCtaUrl} target="_blank" rel="noopener noreferrer" style={styles.businessCtaLink}>Learn how →</a>
     </div>
   )
+
+  if (benefitsReady && !joining && !isEmployeeExperience && !submitted) return <div style={styles.page}><main style={{...styles.formPanel,maxWidth:520,margin:'60px auto',textAlign:'center'}}>
+    {businessInfo?.logo_url && <img src={businessInfo.logo_url} alt="" style={{...styles.businessLogo,margin:'0 auto 20px'}}/>}
+    <div style={styles.stepPill}>LOYALTY TREE</div><h1 style={styles.formTitle}>{businessInfo?.name || 'Good things start here.'}</h1>
+    <p style={styles.formSubtitle}>One QR. Your business rewards and a little extra.</p>
+    <button type="button" style={styles.primaryWalletBtn} onClick={() => setJoining(true)}>Get my loyalty card</button>
+    <a href={`/benefits?business=${encodeURIComponent(businessSlug || '')}`} style={{...styles.primaryWalletBtn,display:'block',marginTop:12,textDecoration:'none',background:'#153e35'}}>My LT Points &amp; Benefits</a>
+    <p style={{fontSize:13,color:'#64748b',lineHeight:1.6,marginTop:20}}>Already have a card? Open Benefits with an email code. Use the same email to connect your eligible cards. No password needed.</p>
+  </main></div>
 
   if (submitted) {
     const brandColor = businessInfo?.primary_color || '#0f766e'
@@ -396,6 +420,7 @@ function CustomerJoin({ API_BASE }) {
               <span style={{fontSize:20}}>◫</span>
               Add to Wallet
             </button>
+            {!isEmployeeExperience && <p style={{fontSize:13,lineHeight:1.6,color:'#64748b'}}>{benefitsReady ? <>Want your shared LT Points and coupons? <a href={`/benefits?business=${encodeURIComponent(businessSlug || '')}`}>Open Loyalty Tree Benefits</a> and verify your email.</> : <>Loyalty Tree Points — <a href={`/benefits?business=${encodeURIComponent(businessSlug || '')}`}>Coming soon</a>.</>} Your business loyalty card is ready to use.</p>}
 
             {walletChoiceOpen && (
               <div style={styles.walletChooser}>
@@ -586,14 +611,18 @@ function CustomerJoin({ API_BASE }) {
               )}
 
               <div style={styles.inputGroup}>
-                <label style={styles.label}>Email <span style={styles.optional}>optional</span></label>
+                <label style={styles.label}>Email {!benefitsEmailRequired && <span style={styles.optional}>optional</span>}</label>
                 <input
                   placeholder="you@email.com"
                   value={form.email}
                   onChange={e => setForm({...form, email: e.target.value})}
                   style={styles.input}
                   type="email"
+                  autoComplete="email"
+                  maxLength={320}
+                  required={benefitsEmailRequired}
                 />
+                <div style={{fontSize:12,color:'#64748b',marginTop:6,lineHeight:1.5}}>{benefitsEmailRequired ? 'For Loyalty Tree Points: use the same email across participating businesses. Verify once by email code to connect your eligible cards and shared balance.' : <>Loyalty Tree Points — <a href={`/benefits?business=${encodeURIComponent(businessSlug || '')}`}>Coming soon</a>. Your business loyalty card works as usual.</>}</div>
               </div>
 
               <div style={styles.inputGroup}>
@@ -687,8 +716,7 @@ function CustomerJoin({ API_BASE }) {
                     <option value="">Select one</option>
                     <option value="male">Male</option>
                     <option value="female">Female</option>
-                    <option value="lgbtq">LGBTQ+</option>
-                    <option value="rather_not_say">Prefer not to say</option>
+                    <option value="rather_not_say">I’d rather not say</option>
                   </select>
                 </div>
               )}
