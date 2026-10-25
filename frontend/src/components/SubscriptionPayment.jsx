@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { formatMoney } from './currency'
+import { startVisibilityPolling } from './visibilityPolling'
+import { requestJsonResponse } from './requestTimeout'
 import { BILLING_TERMS, normalizeBillingCycle, billingSavings, billingSummary } from './billingPricing'
 import { requestBilling, requestBillingHistory, requestPaymentStatus,
   readPendingPayment, savePendingPayment, clearPendingPayment, paymentNeedsReview,
-  pendingPaymentForReturn, clearPaymentReturnUrl } from './billingSession'
+  pendingPaymentForReturn, clearPaymentReturnUrl, canDiscardPaymentAttempt, preservePendingPayment } from './billingSession'
 
 // Owner billing + post-signup activation.
 // PH: QR Ph by default, with an optional card path.
@@ -71,7 +73,8 @@ function SubscriptionPayment({
   }), [API_BASE, businessSlug, sessionToken])
 
   const stopPolling = useCallback(() => {
-    clearInterval(pollRef.current)
+    pollRef.current?.()
+    pollRef.current = null
     clearInterval(countdownRef.current)
   }, [])
 
@@ -114,12 +117,12 @@ function SubscriptionPayment({
   const startPolling = useCallback((intentId, options = {}) => {
     const { qrCountdown = false } = options
     stopPolling()
-    let polling = false
-    pollRef.current = setInterval(async () => {
-      if (polling) return
-      polling = true
+    let stopped = false
+    const controller = new AbortController()
+    const stop = startVisibilityPolling(async () => {
       try {
-        const match = await requestPaymentStatus(fetch, { API_BASE, businessSlug, sessionToken }, intentId)
+        const match = await requestPaymentStatus(fetch, { API_BASE, businessSlug, sessionToken, signal: controller.signal }, intentId)
+        if (stopped) return
         setError('')
         if (paymentNeedsReview(match)) {
           stopPolling()
@@ -145,22 +148,24 @@ function SubscriptionPayment({
           setCheckout(null)
         }
       } catch (e) {
+        if (stopped) return
         showFailure(e)
         if ([401, 403, 404].includes(e.status)) stopPolling()
-      } finally { polling = false }
-    }, POLL_INTERVAL_MS)
+      }
+    }, { intervalMs: POLL_INTERVAL_MS, immediate: false })
+    pollRef.current = () => { stopped = true; stop(); controller.abort() }
 
     if (qrCountdown) {
+      const expiresAt = Number(readPendingPayment(businessSlug)?.expires_at) || Date.now() + QR_TTL_SECONDS * 1000
       countdownRef.current = setInterval(() => {
-        setSecondsLeft(s => {
-          if (s <= 1) {
-            stopPolling()
-            setError('This QR code has expired. Generate a new one to try again.')
-            setCheckout(null)
-            return 0
-          }
-          return s - 1
-        })
+        const remaining = Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000))
+        setSecondsLeft(remaining)
+        if (!remaining) {
+            clearInterval(countdownRef.current)
+            countdownRef.current = null
+            setError('This QR code has reached its time limit. Checking the existing payment before you start another one.')
+            setCheckout(current => current ? { ...current, confirming: true } : current)
+        }
       }, 1000)
     }
   }, [API_BASE, businessSlug, sessionToken, loadHistory, loadSubscription, showFailure, stopPolling, clearPaymentAttempt])
@@ -209,13 +214,15 @@ function SubscriptionPayment({
         body: JSON.stringify({ billing_cycle: billingCycle, payment_method: selectedMethod }),
       })
       if (data) {
-        setCheckout(data)
         if (data.payment_method === 'qrph') {
           const ttl = data.expires_in_seconds || QR_TTL_SECONDS
-          savePendingPayment(businessSlug, { ...data, expires_at: Date.now() + ttl * 1000 })
+          if (!preservePendingPayment(businessSlug, { ...data, expires_at: Date.now() + ttl * 1000 })) {
+            throw new Error('This browser could not save payment recovery details. Enable browser storage before starting a payment.')
+          }
+          setCheckout(data)
           setSecondsLeft(ttl)
           startPolling(data.payment_intent_id, { qrCountdown: true })
-        }
+        } else setCheckout(data)
       }
     } catch (e) {
       showFailure(e)
@@ -242,9 +249,10 @@ function SubscriptionPayment({
 
     setError('')
     setCardPaying(true)
+    let attaching = false
     try {
       const auth = `Basic ${btoa(`${checkout.paymongo_public_key}:`)}`
-      const pmRes = await fetch('https://api.paymongo.com/v1/payment_methods', {
+      const { response: pmRes, payload: pmJson } = await requestJsonResponse(fetch, 'https://api.paymongo.com/v1/payment_methods', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: auth },
         body: JSON.stringify({
@@ -266,8 +274,7 @@ function SubscriptionPayment({
             },
           },
         }),
-      })
-      const pmJson = await pmRes.json()
+      }, { timeoutMs: 60000, message: 'Card verification is taking too long. Please try again.' })
       if (!pmRes.ok || !pmJson?.data?.id) throw new Error(paymongoError(pmJson, 'PayMongo could not tokenize this card.'))
 
       const returnUrl = new URL(window.location.href)
@@ -275,7 +282,13 @@ function SubscriptionPayment({
       returnUrl.searchParams.set('payment_intent', checkout.payment_intent_id)
       returnUrl.searchParams.set('business_slug', businessSlug)
 
-      const attachRes = await fetch(`https://api.paymongo.com/v1/payment_intents/${checkout.payment_intent_id}/attach`, {
+      // Retain this exact attempt before an ambiguous network timeout. Never
+      // automatically repeat a provider write or create a replacement payment.
+      if (!preservePendingPayment(businessSlug, { ...checkout, payment_method: 'card' })) {
+        throw new Error('This browser could not save payment recovery details. Enable browser storage before paying.')
+      }
+      attaching = true
+      const { response: attachRes, payload: attachJson } = await requestJsonResponse(fetch, `https://api.paymongo.com/v1/payment_intents/${checkout.payment_intent_id}/attach`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: auth },
         body: JSON.stringify({
@@ -287,9 +300,16 @@ function SubscriptionPayment({
             },
           },
         }),
-      })
-      const attachJson = await attachRes.json()
-      if (!attachRes.ok) throw new Error(paymongoError(attachJson, 'PayMongo could not process this card.'))
+      }, { timeoutMs: 60000, message: 'The payment response is delayed. Checking the existing payment…' })
+      if (!attachRes.ok) {
+        if ([400, 401, 402, 404, 422].includes(attachRes.status)) {
+          attaching = false
+          clearPaymentAttempt()
+        }
+        throw new Error(paymongoError(attachJson, 'PayMongo could not process this card.'))
+      }
+      if (!attachJson?.data?.attributes) throw new Error('The payment response was incomplete.')
+      attaching = false
 
       const attrs = attachJson?.data?.attributes || {}
       savePendingPayment(businessSlug, { ...checkout, payment_method: 'card' })
@@ -308,13 +328,18 @@ function SubscriptionPayment({
       setCheckout({ ...checkout, confirming: true })
       startPolling(checkout.payment_intent_id, { qrCountdown: false })
     } catch (e) {
-      setError(e?.message || 'Card payment could not be completed. Please try again.')
+      if (attaching) {
+        setCheckout({ ...checkout, confirming: true })
+        startPolling(checkout.payment_intent_id, { qrCountdown: false })
+        setError('The payment response is delayed. We are checking this existing attempt. Please wait before starting another payment.')
+      } else setError(e?.message || 'Card payment could not be completed. Please try again.')
     } finally {
       setCardPaying(false)
     }
   }
 
   const cancelCheckout = () => {
+    if (!canDiscardPaymentAttempt(checkout, { busy: cardPaying || checkingOut, pending: readPendingPayment(businessSlug) })) return
     stopPolling()
     clearPaymentAttempt()
     setCheckout(null)
@@ -328,6 +353,7 @@ function SubscriptionPayment({
   const isPH = subscription?.pricing_region === 'PH'
   const mm = String(Math.floor(secondsLeft / 60)).padStart(2, '0')
   const ss = String(secondsLeft % 60).padStart(2, '0')
+  const canCancel = canDiscardPaymentAttempt(checkout, { busy: cardPaying || checkingOut, pending: readPendingPayment(businessSlug) })
 
   if (loading) {
     return <div style={styles.page}><div style={styles.card}><p style={styles.subtitle}>Loading billing details…</p></div></div>
@@ -419,7 +445,7 @@ function SubscriptionPayment({
             {checkout.qr_image_url ? <img src={checkout.qr_image_url} alt="Scan to pay via QR Ph" style={styles.qrImage} /> : <div style={styles.qrFallback}>QR code unavailable — try again.</div>}
             <p style={styles.qrHint}>Scan with your banking or e-wallet app to pay.</p>
             <p style={styles.qrTimer}>Expires in {mm}:{ss}</p>
-            <button type="button" onClick={cancelCheckout} style={styles.cancelButton}>Cancel</button>
+            <p style={styles.subtitle}>We’ll check this payment before offering another QR code.</p>
           </div>
         ) : (
           <div style={styles.cardPayBox}>
@@ -474,7 +500,7 @@ function SubscriptionPayment({
                 <div style={styles.securityNote}>Card details are sent directly to PayMongo and are never stored on Loyalty Tree.</div>
               </>
             )}
-            <button type="button" onClick={cancelCheckout} style={styles.cancelButton}>Cancel</button>
+            {canCancel && <button type="button" onClick={cancelCheckout} style={styles.cancelButton}>Cancel</button>}
           </div>
         )}
 
