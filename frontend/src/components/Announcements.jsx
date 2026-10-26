@@ -281,12 +281,13 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
 
   const selectedBranch = branches.find(b => b.public_id === form.branch_public_id)
   const selectedProgram = programs.find(p => p.public_id === form.program_public_id)
-  const notificationHeaderBase = form.target_scope === 'branch' && selectedBranch
-    ? `${businessName || businessSlug} — ${selectedBranch.name}`
-    : (businessName || businessSlug)
+  // Prefer the most specific label so we don't repeat the business name
+  // when the program name already includes it.
   const notificationHeader = selectedProgram
-    ? `${notificationHeaderBase} · ${selectedProgram.program_name || selectedProgram.card_name || 'Selected Program'}`
-    : notificationHeaderBase
+    ? (selectedProgram.program_name || selectedProgram.card_name || 'Selected Program')
+    : (form.target_scope === 'branch' && selectedBranch
+        ? `${businessName || businessSlug} — ${selectedBranch.name}`
+        : (businessName || businessSlug))
 
   return (
     <div style={styles.overlay}>
@@ -441,8 +442,12 @@ function Announcements({ API_BASE, businessSlug, businessName, ownerToken, onClo
                   style={styles.textarea}
                   placeholder="What do you want to tell your customers?"
                   rows={4}
+                  maxLength={600}
                   required
                 />
+                <div style={{fontSize:11, color:'#64748b', marginTop:4, textAlign:'right'}}>
+                  {(form.message || '').length}/600
+                </div>
               </div>
               <div style={styles.row}>
                 <div style={styles.inputGroup}>

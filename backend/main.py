@@ -2929,7 +2929,7 @@ class PinVerify(BaseModel):
 
 class AnnouncementCreate(BaseModel):
     title: str
-    message: str
+    message: str = Field(min_length=1, max_length=600)
     type: Optional[str] = 'info'
     is_active: Optional[bool] = True
     target_scope: Literal['business', 'branch'] = 'business'
@@ -2956,7 +2956,7 @@ class PlatformAnnouncementUpdate(BaseModel):
 
 class AnnouncementUpdate(BaseModel):
     title: Optional[str] = None
-    message: Optional[str] = None
+    message: Optional[str] = Field(default=None, max_length=600)
     type: Optional[str] = None
     is_active: Optional[bool] = None
     target_scope: Optional[Literal['business', 'branch']] = None
@@ -49895,14 +49895,14 @@ GEOFENCE_DEFAULT_MESSAGE = "You're near us. Open your LoyaltyTree card."
 class GeofencePin(BaseModel):
     branch_public_id: Optional[str] = None
     label: Optional[str] = Field(default=None, max_length=80)
-    message: Optional[str] = Field(default=None, max_length=120)
+    message: Optional[str] = Field(default=None, max_length=600)
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
 
 
 class GeofenceConfigUpdate(BaseModel):
     enabled: bool = False
-    message: str = Field(default=GEOFENCE_DEFAULT_MESSAGE, min_length=3, max_length=120)
+    message: str = Field(default=GEOFENCE_DEFAULT_MESSAGE, min_length=3, max_length=600)
     radius_meters: int = Field(default=150, ge=GEOFENCE_MIN_RADIUS_METERS, le=GEOFENCE_MAX_RADIUS_METERS)
     max_per_day: int = Field(default=1, ge=1, le=5)
     max_per_week: int = Field(default=3, ge=1, le=20)
@@ -49920,7 +49920,7 @@ def _geofence_public(config, branches=None) -> dict:
             lng = float(pin.get('longitude'))
         except (TypeError, ValueError):
             continue
-        pins.append({'branch_public_id': pin.get('branch_public_id'), 'label': pin.get('label') or '', 'message': str(pin.get('message') or '')[:120], 'latitude': lat, 'longitude': lng})
+        pins.append({'branch_public_id': pin.get('branch_public_id'), 'label': pin.get('label') or '', 'message': str(pin.get('message') or '')[:600], 'latitude': lat, 'longitude': lng})
     try:
         radius = int(raw.get('radius_meters') or 150)
     except (TypeError, ValueError):
@@ -49930,7 +49930,7 @@ def _geofence_public(config, branches=None) -> dict:
     per_week = max(per_day, min(20, int(raw.get('max_per_week') or 3)))
     return {
         'enabled': bool(raw.get('enabled')),
-        'message': str(raw.get('message') or GEOFENCE_DEFAULT_MESSAGE)[:120],
+        'message': str(raw.get('message') or GEOFENCE_DEFAULT_MESSAGE)[:600],
         'radius_meters': radius,
         'max_per_day': per_day,
         'max_per_week': per_week,
@@ -49963,7 +49963,7 @@ def apple_geofence_locations(business: dict) -> list:
     return [{
         'latitude': float(pin['latitude']),
         'longitude': float(pin['longitude']),
-        'relevantText': (pin.get('message') or config.get('message') or GEOFENCE_DEFAULT_MESSAGE)[:120],
+        'relevantText': (pin.get('message') or config.get('message') or GEOFENCE_DEFAULT_MESSAGE)[:600],
         'maxDistance': int(config.get('radius_meters') or GEOFENCE_MIN_RADIUS_METERS),
     } for pin in (config.get('pins') or [])][:GEOFENCE_APPLE_LOCATION_CAP]
 
@@ -50019,13 +50019,13 @@ def save_geofence_config(public_id: str, payload: GeofenceConfigUpdate, authoriz
         pins.append({
             'branch_public_id': pin.branch_public_id,
             'label': (pin.label or '').strip()[:80],
-            'message': (pin.message or payload.message or '').strip()[:120],
+            'message': (pin.message or payload.message or '').strip()[:600],
             'latitude': round(float(pin.latitude), 6),
             'longitude': round(float(pin.longitude), 6),
         })
     config = {
         'enabled': bool(payload.enabled),
-        'message': payload.message.strip()[:120],
+        'message': payload.message.strip()[:600],
         'radius_meters': int(payload.radius_meters),
         'max_per_day': int(payload.max_per_day),
         'max_per_week': int(payload.max_per_week),
@@ -50109,7 +50109,7 @@ def test_geofence_notification(public_id: str, authorization: str = Header(defau
     config = _geofence_load(business)
     if not config.get('enabled') or not config.get('pins'):
         raise HTTPException(status_code=400, detail='Save an enabled pin before sending a test.')
-    message = (config.get('message') or GEOFENCE_DEFAULT_MESSAGE)[:120]
+    message = (config.get('message') or GEOFENCE_DEFAULT_MESSAGE)[:600]
     try:
         customers = supabase.table('customers').select('public_id').eq('business_id', business.get('id')).limit(5000).execute().data or []
     except Exception as exc:
