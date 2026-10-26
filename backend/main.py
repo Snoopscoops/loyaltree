@@ -20681,6 +20681,12 @@ async def get_subscription_status(public_id: str):
         },
     }
 
+@app.get("/api/v1/business/{public_id}/subscription/access")
+async def get_subscription_access(public_id: str):
+    """Alias for the current frontend. Returns the same payload as /subscription."""
+    return await get_subscription_status(public_id)
+
+
 @app.get("/api/v1/business/{public_id}/subscription/payments")
 async def list_subscription_payments(public_id: str):
     business = safe_get_business(public_id)
