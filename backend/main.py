@@ -522,7 +522,7 @@ def get_plan_features(plan: Optional[str], pricing_region: Optional[str] = None)
     Pro-only features."""
     features = dict(SUBSCRIPTION_PLANS.get(plan or 'starter', SUBSCRIPTION_PLANS['starter']))
     code = normalize_country_code(pricing_region)
-    features['geofence_notifications'] = plan == 'pro' and code in ('AE', 'PH')
+    features['geofence_notifications'] = code == 'PH' or (code == 'AE' and str(plan or '').lower() == 'pro')
     if code != 'PH':
         features['gift_cards'] = False
     return features
@@ -1816,8 +1816,8 @@ def build_signup_agreement_document(*, name: str, email: str, phone: Optional[st
         selected_features = list(selected_features)
         if plan == 'pro' and pricing_region == 'AE':
             selected_features[1] = 'Growth + compatible POS integration + geo-based notifications'
-        elif plan == 'pro' and pricing_region == 'PH':
-            selected_features[1] = 'Growth + compatible POS integration + geo-based notifications within 100 meters'
+        elif pricing_region == 'PH':
+            selected_features[1] = f'{selected_features[1]} + geo-based notifications within 100 meters'
         sections.append({
             'title': 'Selected plan feature summary',
             'paragraphs': [f'{selected_features[0]}: {selected_features[1]}. '
@@ -8292,6 +8292,15 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     if primary_is_stamps:
         loyalty_points_balance = wallet_stamp_balance_text
 
+    announcement_url = ''
+    try:
+        announcement_url = _announcement_detail_url(
+            business,
+            get_latest_active_announcement_for_customer(business, customer),
+        )
+    except Exception:
+        announcement_url = ''
+
     loyalty_object = {
         'id': object_id,
         'classId': class_id,
@@ -8324,6 +8333,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
                 *[{'uri': action['url'], 'description': f"↗ {action['label']}"} for action in custom_wallet_actions],
                 {'uri': f'{BASE_URL}/feedback/{cust_public_id}', 'description': '⭐ Rate Your Experience'},
                 {'uri': f'{BASE_URL}/wallet/{cust_public_id}', 'description': 'View Rewards / Account'},
+                *([{'uri': announcement_url, 'description': '📣 View full announcement'}] if announcement_url else []),
                 {'uri': loyaltytree_business_cta_url('wallet_google', business.get('public_id', '')), 'description': 'Integrate your business with LoyaltyTree?'},
             ]
         },
@@ -10521,6 +10531,14 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                     'label': ' ',
                     'value': ann_message.strip()[:1000],
                 })
+            announcement_url = _announcement_detail_url(business, announcement)
+            if announcement_url:
+                back_fields.append({
+                    'key': 'announcement_link',
+                    'label': 'FULL ANNOUNCEMENT',
+                    'value': 'View full details',
+                    'attributedValue': f'<a href="{html_lib.escape(announcement_url, quote=True)}">View full details</a>',
+                })
 
         back_fields += [
             {
@@ -10574,6 +10592,14 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
                 back_fields.insert(-1, order_ahead_status_field)
         if ann_message.strip() and ann_message.strip() != announcement_value:
             back_fields.append({'key': 'announcement_detail', 'label': ' ', 'value': ann_message.strip()[:1000]})
+        announcement_url = _announcement_detail_url(business, announcement)
+        if announcement_url:
+            back_fields.append({
+                'key': 'announcement_link',
+                'label': 'FULL ANNOUNCEMENT',
+                'value': 'View full details',
+                'attributedValue': f'<a href="{html_lib.escape(announcement_url, quote=True)}">View full details</a>',
+            })
 
     # Soft call-to-action for business owners who see the card. Back of the pass only.
     back_fields.append({
@@ -12664,6 +12690,32 @@ def sync_apple_wallet_pass(customer: dict):
         print(f"APPLE WALLET sync error: {e}")
         return {"status": "error", "stage": "exception", "detail": str(e), "registrations": 0, "pushes_sent": 0}
 
+def _announcement_detail_url(business, announcement) -> str:
+    ann_id = (announcement or {}).get('id')
+    public_id = (business or {}).get('public_id')
+    if not ann_id or not public_id:
+        return ''
+    return f"{BASE_URL}/a/{public_id}/{ann_id}"
+
+
+def _wallet_message_body(body: str, detail_url: Optional[str] = None) -> str:
+    """Wallet notification bodies are plain text. An <a> tag looks like a link
+    in our code, but Google and Apple "load more" views do not open it.
+    A raw https URL on its own line is what the phone can actually tap.
+    """
+    text = (body or '').strip()
+    url = str(detail_url or '').strip()
+    if not url:
+        return text[:500]
+    link = f'\n{url}'
+    room = 500 - len(link)
+    if room < 20:
+        return url[:500]
+    if len(text) > room:
+        text = text[:room].rstrip() + '…'
+    return text + link
+
+
 def send_wallet_class_message(class_id: str, header: str, body: str, message_id: str, detail_url: str = None) -> bool:
     """Push a notification to every customer who has saved a loyalty card
     under this business's Wallet class. Google Wallet's addMessage endpoint on
@@ -12697,14 +12749,7 @@ def send_wallet_class_message(class_id: str, header: str, body: str, message_id:
         return False
     try:
         import httpx
-        body_text = (body or '').strip()
-        if detail_url:
-            link_html = f' <a href="{detail_url}">View full details</a>'
-            if len(body_text) + len(link_html) > 500:
-                body_text = body_text[:500 - len(link_html)].rstrip() + '…'
-            body_text = (body_text + link_html)[:500]
-        else:
-            body_text = body_text[:500]
+        body_text = _wallet_message_body(body, detail_url)
         payload = {
             'message': {
                 'header': (header or '')[:150],
@@ -12746,12 +12791,7 @@ def send_wallet_object_message(
         return False
     try:
         import httpx
-        body_text = (body or '').strip()
-        if detail_url:
-            link_html = f' <a href="{detail_url}">View full details</a>'
-            if len(body_text) + len(link_html) > 500:
-                body_text = body_text[:500 - len(link_html)].rstrip() + '…'
-            body_text = (body_text + link_html)[:500]
+        body_text = _wallet_message_body(body, detail_url)
         payload = {
             'message': {
                 'header': (header or '')[:150],
@@ -50255,7 +50295,7 @@ GEOFENCE_MAX_RADIUS_METERS = 1000
 GEOFENCE_PH_RADIUS_METERS = 100
 GEOFENCE_APPLE_LOCATION_CAP = 10
 GEOFENCE_DEFAULT_MESSAGE = "You're near us. Open your LoyaltyTree card."
-GEOFENCE_ACCESS_MESSAGE = 'Geo-based notifications are included in Philippines Pro, UAE Pro, or an agreed Special setup.'
+GEOFENCE_ACCESS_MESSAGE = 'Nearby notifications are available for this business. Philippines radius is fixed at 100 meters.'
 
 
 def _geofence_radius_bounds(business=None):
