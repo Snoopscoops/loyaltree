@@ -363,31 +363,34 @@ function CustomerJoin({ API_BASE }) {
   )
 
   if (!submitted && !joining && !isEmployeeExperience) {
-    const brandColor = businessInfo?.primary_color || '#0f766e'
-    const businessName = businessInfo?.name || 'this business'
+    const businessName = businessInfo?.name || 'LoyaltyTree'
+    const benefitsHref = `/benefits?business=${encodeURIComponent(businessInfo?.public_id || businessSlug || '')}`
+    const benefitsBody = (
+      <>
+        <span style={styles.qrLabel}>Benefits</span>
+        <span style={styles.qrCardRow}>
+          <span style={styles.qrCardTitle}>Loyalty Tree benefits</span>
+          {benefitsLive ? <span style={styles.qrArrowLight}>→</span> : <span style={styles.qrSoon}>Coming soon</span>}
+        </span>
+      </>
+    )
     return (
-      <div style={styles.page}>
-        <main style={{...styles.formPanel, maxWidth:520, margin:'60px auto'}}>
-          {businessInfo?.logo_url && <img src={businessInfo.logo_url} alt="" style={{...styles.businessLogo, margin:'0 auto 20px', display:'block'}}/>}
-          <div style={styles.stepPill}>BUSINESS QR</div>
-          <h1 style={styles.formTitle}>{businessInfo?.name || 'LoyaltyTree'}</h1>
-          <p style={styles.formSubtitle}>Choose what you want to open.</p>
-          <div style={{display:'grid', gap:12, marginTop:22}}>
-            {benefitsLive ? (
-              <a href={`/benefits?business=${encodeURIComponent(businessInfo?.public_id || businessSlug || '')}`} style={{...styles.primaryWalletBtn, display:'flex', alignItems:'center', justifyContent:'space-between', textDecoration:'none', background:`linear-gradient(135deg, ${brandColor}, #0f172a)`}}>
-                <span>Loyalty Tree benefits</span>
-                <span>→</span>
-              </a>
-            ) : (
-              <div style={{...styles.primaryWalletBtn, display:'flex', alignItems:'center', justifyContent:'space-between', background:'#e2e8f0', color:'#334155', cursor:'default'}}>
-                <span>Loyalty Tree benefits</span>
-                <span style={styles.benefitsSoonBadge}>Coming soon</span>
-              </div>
-            )}
-            <button type="button" onClick={() => setJoining(true)} style={styles.secondaryWalletBtn}>
-              Join {businessName} loyalty card
-            </button>
-          </div>
+      <div style={styles.qrPage}>
+        <main style={styles.qrMain}>
+          <div style={styles.qrEyebrow}>LoyaltyTree</div>
+          <h1 style={styles.qrTitle}>{businessName}</h1>
+          <p style={styles.qrHint}>Choose one.</p>
+          {benefitsLive
+            ? <a href={benefitsHref} style={styles.qrBenefits}>{benefitsBody}</a>
+            : <div style={styles.qrBenefits}>{benefitsBody}</div>}
+          <button type="button" onClick={() => setJoining(true)} style={styles.qrJoin}>
+            <span style={styles.qrLabelDark}>This business</span>
+            <span style={styles.qrCardRow}>
+              <span style={styles.qrJoinTitle}>Join the loyalty card</span>
+              <span style={styles.qrArrow}>→</span>
+            </span>
+          </button>
+          <p style={styles.qrFoot}>Apple Wallet · Google Wallet</p>
         </main>
       </div>
     )
@@ -895,6 +898,31 @@ const styles = {
     color: '#0f172a',
     boxSizing: 'border-box',
   },
+  qrPage: {
+    minHeight: '100vh', background: '#073f36', color: '#fff', boxSizing: 'border-box',
+    padding: '28px 22px 36px', fontFamily: 'Inter, Arial, sans-serif',
+  },
+  qrMain: { maxWidth: 440, margin: '0 auto', paddingTop: '7vh' },
+  qrEyebrow: { color: '#d7b578', fontSize: 11, fontWeight: 750, letterSpacing: '2.4px', textTransform: 'uppercase' },
+  qrTitle: { margin: '16px 0 8px', color: '#fff', fontSize: 'clamp(40px, 10vw, 52px)', lineHeight: 1.05, letterSpacing: '-2px', fontWeight: 750 },
+  qrHint: { margin: '0 0 28px', color: '#d5e2db', fontSize: 16 },
+  qrBenefits: {
+    display: 'flex', flexDirection: 'column', gap: 22, textAlign: 'left', textDecoration: 'none', color: '#fff',
+    border: '1px solid #d7b578', borderRadius: 16, background: '#0c4a40', padding: '18px 18px 16px', marginBottom: 14,
+  },
+  qrLabel: { color: '#d7b578', fontSize: 11, fontWeight: 750, letterSpacing: '1.6px', textTransform: 'uppercase' },
+  qrLabelDark: { color: '#8b7047', fontSize: 11, fontWeight: 750, letterSpacing: '1.6px', textTransform: 'uppercase' },
+  qrCardRow: { display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12 },
+  qrCardTitle: { fontSize: 22, fontWeight: 650, letterSpacing: '-.4px', lineHeight: 1.2 },
+  qrSoon: { flexShrink: 0, background: '#d7b578', color: '#073f36', borderRadius: 999, fontSize: 12, fontWeight: 700, padding: '7px 12px' },
+  qrArrowLight: { color: '#d7b578', fontSize: 22, lineHeight: 1 },
+  qrJoin: {
+    width: '100%', display: 'flex', flexDirection: 'column', gap: 22, textAlign: 'left', cursor: 'pointer',
+    border: 'none', borderRadius: 16, background: '#f8f6ef', color: '#102d28', padding: '18px 18px 20px', fontFamily: 'inherit',
+  },
+  qrJoinTitle: { fontSize: 22, fontWeight: 700, letterSpacing: '-.4px', lineHeight: 1.2 },
+  qrArrow: { color: '#073f36', fontSize: 22, lineHeight: 1 },
+  qrFoot: { margin: '34px 0 0', textAlign: 'center', color: '#d7b578', fontSize: 13 },
   joinShell: {
     width: '100%',
     maxWidth: 1080,
