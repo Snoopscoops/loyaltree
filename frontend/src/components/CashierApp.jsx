@@ -1756,9 +1756,11 @@ function CashierApp({ API_BASE }) {
                 <div key={coupon.public_id || coupon.id || i} style={{padding:'11px 12px',borderRadius:12,background:'#f0fdfa',border:'1px dashed #5eead4',display:'flex',alignItems:'center',justifyContent:'space-between',gap:10}}>
                   <div style={{minWidth:0}}>
                     <div style={{fontSize:13,fontWeight:850,color:'#0f766e'}}>🎟️ {coupon.reward_text}</div>
-                    {coupon.expires_at && <div style={{fontSize:10.5,color:'#64748b',marginTop:3}}>Valid until {coupon.expires_at}</div>}
+                    {coupon.not_yet_redeemable
+                      ? <div style={{fontSize:10.5,color:'#b45309',marginTop:3}}>Visible now · usable from {String(coupon.starts_at||'').slice(0,10)}</div>
+                      : coupon.expires_at && <div style={{fontSize:10.5,color:'#64748b',marginTop:3}}>Valid until {coupon.expires_at}</div>}
                   </div>
-                  <button type="button" style={{...styles.actionBtn,background:'#0d9488',flex:'0 0 auto',padding:'9px 12px',fontSize:11}} onClick={()=>redeemCoupon(coupon)} disabled={loading}>Redeem</button>
+                  <button type="button" style={{...styles.actionBtn,background:coupon.not_yet_redeemable?'#94a3b8':'#0d9488',flex:'0 0 auto',padding:'9px 12px',fontSize:11}} onClick={()=>redeemCoupon(coupon)} disabled={loading||coupon.not_yet_redeemable}>{coupon.not_yet_redeemable?'Not yet':'Redeem'}</button>
                 </div>
               ))}
             </div>

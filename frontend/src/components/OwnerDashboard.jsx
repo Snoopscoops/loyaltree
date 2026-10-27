@@ -762,7 +762,7 @@ function BranchManagerDashboard({ API_BASE, user, onLogout }) {
             <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:8,marginTop:9}}>
               {(data.active_campaigns || []).map(c=><div key={c.public_id} style={{padding:'10px 11px',background:'#fff',border:'1px solid #fed7aa',borderRadius:11}}>
                 <strong style={{fontSize:12.5}}>{c.name}</strong><div style={{fontSize:11,color:'#c2410c',fontWeight:850,marginTop:3}}>{c.reward_text}</div>
-                <div style={{fontSize:10.5,color:'#64748b',marginTop:4}}>Qualify {c.qualifying_start_date} → {c.qualifying_end_date} · Coupon {c.coupon_start_date} → {c.coupon_end_date}</div>
+                <div style={{fontSize:10.5,color:'#64748b',marginTop:4}}>{c.distribution==='all_members'?'All current members':`Qualify ${c.qualifying_start_date} → ${c.qualifying_end_date}`} · Coupon {c.coupon_start_date} → {c.coupon_end_date}</div>
               </div>)}
             </div>
           </section>}
