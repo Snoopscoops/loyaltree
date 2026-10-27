@@ -114,7 +114,7 @@ export default function OwnerAutomations({ API_BASE, user, active = true }) {
   const [savingRetentionSettings, setSavingRetentionSettings] = useState(false)
   const [retentionSettingsMessage, setRetentionSettingsMessage] = useState('')
   const [automationStats, setAutomationStats] = useState({ tracking: 'log', birthday: {}, win_back: {}, recent: [] })
-  const [geofence, setGeofence] = useState({ feature_enabled: false, access_message: 'Geo-based notifications are included in UAE Pro or an agreed Special setup.', enabled: false, message: "You're near us. Open your LoyaltyTree card.", radius_meters: 150, max_per_day: 1, max_per_week: 3, pins: [], branches: [], limits: { min_radius_meters: 100, max_radius_meters: 1000, max_pins: 10 } })
+  const [geofence, setGeofence] = useState({ feature_enabled: false, access_message: 'Geo-based notifications are included in Philippines Pro, UAE Pro, or an agreed Special setup.', enabled: false, message: "You're near us. Open your LoyaltyTree card.", radius_meters: 100, max_per_day: 1, max_per_week: 3, pins: [], branches: [], limits: { min_radius_meters: 100, max_radius_meters: 1000, max_pins: 10 } })
   const [geofenceStatus, setGeofenceStatus] = useState('')
   const [savingGeofence, setSavingGeofence] = useState(false)
   const [settingsLoaded, setSettingsLoaded] = useState(false)
@@ -169,7 +169,7 @@ export default function OwnerAutomations({ API_BASE, user, active = true }) {
       setGeofenceError('')
       setGeofence({
         feature_enabled: data.feature_enabled === true,
-        access_message: data.access_message || 'Geo-based notifications are included in UAE Pro or an agreed Special setup.',
+        access_message: data.access_message || 'Geo-based notifications are included in Philippines Pro, UAE Pro, or an agreed Special setup.',
         enabled: !!data.enabled,
         message: data.message || "You're near us. Open your LoyaltyTree card.",
         radius_meters: data.radius_meters || 150,
@@ -530,11 +530,15 @@ export default function OwnerAutomations({ API_BASE, user, active = true }) {
             <input style={styles.editorInput} aria-label="Location notification message" maxLength={120} value={geofence.message || ''} onChange={e=>setGeofence(s=>({...s,message:e.target.value}))} />
             <div style={styles.formGrid2}>
               <label style={styles.editorLabel}>Radius
+                {Number(geofence.limits?.min_radius_meters) === Number(geofence.limits?.max_radius_meters) ? (
+                  <div style={styles.mutedText}>Fixed at {geofence.limits?.min_radius_meters || 100} m for Philippines accounts.</div>
+                ) : (
                 <div style={{display:'flex',gap:10,alignItems:'center'}}>
                   <input type="range" min={geofence.limits?.min_radius_meters || 100} max={geofence.limits?.max_radius_meters || 1000} step="10" value={geofence.radius_meters || 150} onChange={e=>setGeofence(s=>({...s,radius_meters:Number(e.target.value)}))} style={{flex:1}} />
                   <input type="number" min={geofence.limits?.min_radius_meters || 100} max={geofence.limits?.max_radius_meters || 1000} style={{...styles.editorInput,width:90}} value={geofence.radius_meters} onChange={e=>setGeofence(s=>({...s,radius_meters:e.target.value}))} />
                   <span style={styles.mutedText}>m</span>
                 </div>
+                )}
               </label>
               <label style={styles.editorLabel}>Max times / day
                 <input type="number" min="1" max="5" style={styles.editorInput} value={geofence.max_per_day} onChange={e=>setGeofence(s=>({...s,max_per_day:e.target.value}))} />
@@ -543,7 +547,7 @@ export default function OwnerAutomations({ API_BASE, user, active = true }) {
                 <input type="number" min="1" max="20" style={styles.editorInput} value={geofence.max_per_week} onChange={e=>setGeofence(s=>({...s,max_per_week:e.target.value}))} />
               </label>
             </div>
-            <div style={styles.editorHelp}>Allowed radius: {geofence.limits?.min_radius_meters || 100}–{geofence.limits?.max_radius_meters || 1000} m. Apple is most reliable at 100–200 m. Max {geofence.limits?.max_pins || 10} pins. Day/week caps are your policy; Wallet suppresses repeats itself and will not hard-stop at that number.</div>
+            <div style={styles.editorHelp}>{Number(geofence.limits?.min_radius_meters) === Number(geofence.limits?.max_radius_meters) ? `Philippines radius is fixed at ${geofence.limits?.min_radius_meters || 100} m.` : `Allowed radius: ${geofence.limits?.min_radius_meters || 100}–${geofence.limits?.max_radius_meters || 1000} m. Apple is most reliable at 100–200 m.`} Max {geofence.limits?.max_pins || 10} pins. Day/week caps are your policy; Wallet suppresses repeats itself and will not hard-stop at that number.</div>
             <div style={styles.editorHelp}>One location per branch. This account can save {Math.min(geofence.limits?.max_pins || 1, (geofence.branches || []).length || 1)} pin{(Math.min(geofence.limits?.max_pins || 1, (geofence.branches || []).length || 1)) === 1 ? '' : 's'}.</div>
             {(geofence.pins || []).map((pin, index) => (
               <div key={index} style={{...styles.formGrid2,marginTop:10}}>

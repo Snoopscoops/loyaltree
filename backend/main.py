@@ -522,7 +522,7 @@ def get_plan_features(plan: Optional[str], pricing_region: Optional[str] = None)
     Pro-only features."""
     features = dict(SUBSCRIPTION_PLANS.get(plan or 'starter', SUBSCRIPTION_PLANS['starter']))
     code = normalize_country_code(pricing_region)
-    features['geofence_notifications'] = code == 'AE' and plan == 'pro'
+    features['geofence_notifications'] = plan == 'pro' and code in ('AE', 'PH')
     if code != 'PH':
         features['gift_cards'] = False
     return features
@@ -1816,6 +1816,8 @@ def build_signup_agreement_document(*, name: str, email: str, phone: Optional[st
         selected_features = list(selected_features)
         if plan == 'pro' and pricing_region == 'AE':
             selected_features[1] = 'Growth + compatible POS integration + geo-based notifications'
+        elif plan == 'pro' and pricing_region == 'PH':
+            selected_features[1] = 'Growth + compatible POS integration + geo-based notifications within 100 meters'
         sections.append({
             'title': 'Selected plan feature summary',
             'paragraphs': [f'{selected_features[0]}: {selected_features[1]}. '
@@ -50250,8 +50252,17 @@ def lending_delete_document(public_id: str, document_public_id: str, authorizati
 
 GEOFENCE_MIN_RADIUS_METERS = 100
 GEOFENCE_MAX_RADIUS_METERS = 1000
+GEOFENCE_PH_RADIUS_METERS = 100
 GEOFENCE_APPLE_LOCATION_CAP = 10
 GEOFENCE_DEFAULT_MESSAGE = "You're near us. Open your LoyaltyTree card."
+GEOFENCE_ACCESS_MESSAGE = 'Geo-based notifications are included in Philippines Pro, UAE Pro, or an agreed Special setup.'
+
+
+def _geofence_radius_bounds(business=None):
+    """Philippines stays at 100 m. Other markets keep the 100-1,000 m range."""
+    if business is not None and business_pricing_region(business) == 'PH':
+        return GEOFENCE_PH_RADIUS_METERS, GEOFENCE_PH_RADIUS_METERS
+    return GEOFENCE_MIN_RADIUS_METERS, GEOFENCE_MAX_RADIUS_METERS
 
 
 class GeofencePin(BaseModel):
@@ -50271,8 +50282,9 @@ class GeofenceConfigUpdate(BaseModel):
     pins: List[GeofencePin] = Field(default_factory=list)
 
 
-def _geofence_public(config, branches=None) -> dict:
+def _geofence_public(config, branches=None, business=None) -> dict:
     raw = config if isinstance(config, dict) else {}
+    low, high = _geofence_radius_bounds(business)
     pins = []
     for pin in raw.get('pins') or []:
         if not isinstance(pin, dict):
@@ -50284,10 +50296,10 @@ def _geofence_public(config, branches=None) -> dict:
             continue
         pins.append({'branch_public_id': pin.get('branch_public_id'), 'label': pin.get('label') or '', 'message': str(pin.get('message') or '')[:600], 'latitude': lat, 'longitude': lng})
     try:
-        radius = int(raw.get('radius_meters') or 150)
+        radius = int(raw.get('radius_meters') or (low if low == high else 150))
     except (TypeError, ValueError):
-        radius = 150
-    radius = max(GEOFENCE_MIN_RADIUS_METERS, min(GEOFENCE_MAX_RADIUS_METERS, radius))
+        radius = low if low == high else 150
+    radius = max(low, min(high, radius))
     per_day = max(1, min(5, int(raw.get('max_per_day') or 1)))
     per_week = max(per_day, min(20, int(raw.get('max_per_week') or 3)))
     return {
@@ -50298,7 +50310,7 @@ def _geofence_public(config, branches=None) -> dict:
         'max_per_week': per_week,
         'pins': pins[:GEOFENCE_APPLE_LOCATION_CAP],
         'branches': branches or [],
-        'limits': {'min_radius_meters': GEOFENCE_MIN_RADIUS_METERS, 'max_radius_meters': GEOFENCE_MAX_RADIUS_METERS, 'max_pins': min(GEOFENCE_APPLE_LOCATION_CAP, max(1, len(branches or pins) or 1))},
+        'limits': {'min_radius_meters': low, 'max_radius_meters': high, 'max_pins': min(GEOFENCE_APPLE_LOCATION_CAP, max(1, len(branches or pins) or 1))},
     }
 
 
@@ -50319,7 +50331,7 @@ def _geofence_load(business: dict) -> dict:
 def apple_geofence_locations(business: dict) -> list:
     if not business_has_plan_feature(business, 'geofence_notifications'):
         return []
-    config = _geofence_public(_geofence_load(business or {}))
+    config = _geofence_public(_geofence_load(business or {}), business=business)
     if not config.get('enabled'):
         return []
     return [{
@@ -50346,10 +50358,10 @@ def get_geofence_config(public_id: str, authorization: str = Header(default=''))
         raise HTTPException(status_code=404, detail='Business not found')
     available = business_has_plan_feature(business, 'geofence_notifications')
     return {
-        **_geofence_public(_geofence_load(business), _geofence_branch_rows(business.get('id'))),
+        **_geofence_public(_geofence_load(business), _geofence_branch_rows(business.get('id')), business),
         'feature_enabled': available,
         'pricing_region': business_pricing_region(business),
-        'access_message': 'Geo-based notifications are included in UAE Pro or an agreed Special setup.',
+        'access_message': GEOFENCE_ACCESS_MESSAGE,
     }
 
 
@@ -50360,7 +50372,7 @@ def save_geofence_config(public_id: str, payload: GeofenceConfigUpdate, authoriz
     if not business:
         raise HTTPException(status_code=404, detail='Business not found')
     if not business_has_plan_feature(business, 'geofence_notifications'):
-        raise HTTPException(status_code=403, detail='Geo-based notifications require UAE Pro or an agreed Special setup.')
+        raise HTTPException(status_code=403, detail=GEOFENCE_ACCESS_MESSAGE)
     if payload.max_per_week < payload.max_per_day:
         raise HTTPException(status_code=400, detail='Weekly cap cannot be lower than the daily cap.')
     if payload.enabled and not payload.pins:
@@ -50385,10 +50397,17 @@ def save_geofence_config(public_id: str, payload: GeofenceConfigUpdate, authoriz
             'latitude': round(float(pin.latitude), 6),
             'longitude': round(float(pin.longitude), 6),
         })
+    low, high = _geofence_radius_bounds(business)
+    radius = int(payload.radius_meters)
+    if radius < low or radius > high:
+        if low == high:
+            radius = low
+        else:
+            raise HTTPException(status_code=400, detail=f'Radius must be {low}–{high} meters.')
     config = {
         'enabled': bool(payload.enabled),
         'message': payload.message.strip()[:600],
-        'radius_meters': int(payload.radius_meters),
+        'radius_meters': radius,
         'max_per_day': int(payload.max_per_day),
         'max_per_week': int(payload.max_per_week),
         'pins': pins,
@@ -50398,7 +50417,7 @@ def save_geofence_config(public_id: str, payload: GeofenceConfigUpdate, authoriz
         supabase.table('businesses').update({'geofence_config': config}).eq('id', business.get('id')).execute()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f'Run geofence_notifications.sql first. {friendly_db_error(exc)}')
-    return _geofence_public(config, branches)
+    return _geofence_public(config, branches, business)
 
 
 
@@ -50410,7 +50429,7 @@ def resolve_geofence_link(public_id: str, payload: dict, authorization: str = He
     if not business:
         raise HTTPException(status_code=404, detail='Business not found')
     if not business_has_plan_feature(business, 'geofence_notifications'):
-        raise HTTPException(status_code=403, detail='Geo-based notifications require UAE Pro or an agreed Special setup.')
+        raise HTTPException(status_code=403, detail=GEOFENCE_ACCESS_MESSAGE)
     raw = str((payload or {}).get('url') or '').strip()
     if not raw:
         raise HTTPException(status_code=400, detail='Paste a Google Maps link.')
@@ -50467,7 +50486,7 @@ def test_geofence_notification(public_id: str, authorization: str = Header(defau
     if not business:
         raise HTTPException(status_code=404, detail='Business not found')
     if not business_has_plan_feature(business, 'geofence_notifications'):
-        raise HTTPException(status_code=403, detail='Geo-based notifications require UAE Pro or an agreed Special setup.')
+        raise HTTPException(status_code=403, detail=GEOFENCE_ACCESS_MESSAGE)
     config = _geofence_load(business)
     if not config.get('enabled') or not config.get('pins'):
         raise HTTPException(status_code=400, detail='Save an enabled pin before sending a test.')
