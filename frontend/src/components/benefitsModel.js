@@ -55,6 +55,7 @@ export function filterBenefitsOffers(offers, { category = 'all', search = '', af
   return offers.filter(offer => (category === 'all' || offerCategory(offer) === category) && (!affordable || offer.points_cost <= points) && (!query || [offer.title, offer.business_name, offer.description, offerCategory(offer)].some(value => String(value || '').toLocaleLowerCase().includes(query))))
 }
 export function benefitsClaimState(offer, points, now = Date.now()) {
+  if (offer.coming_soon === true) return 'coming_soon'
   if (offer.remaining_quantity <= 0) return 'sold_out'
   if (offer.status !== 'active' || (offer.starts_at && Date.parse(offer.starts_at) > now) || (offer.ends_at && Date.parse(offer.ends_at) < now)) return 'closed'
   if (points !== null && offer.points_cost > points) return 'insufficient'

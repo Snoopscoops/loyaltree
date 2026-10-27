@@ -50,6 +50,53 @@ class CodeVerify(StrictModel):
     code: str = Field(pattern=r"^\d{6}$")
 
 
+class QrCodeRequest(StrictModel):
+    email: str = Field(min_length=3, max_length=200)
+    business_slug: str = Field(default="", max_length=120)
+    consent: Literal[True]
+
+    _consent = field_validator("consent", mode="before")(CodeRequest.explicit_consent.__func__)
+
+    @field_validator("email")
+    @classmethod
+    def email_address(cls, value):
+        email = str(value or "").strip().lower()
+        if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+            raise ValueError("Enter the email on your loyalty card")
+        return email
+
+    @field_validator("business_slug")
+    @classmethod
+    def business_slug_value(cls, value):
+        slug = str(value or "").strip()
+        if slug and not re.fullmatch(r"[A-Za-z0-9_-]{1,120}", slug):
+            raise ValueError("Invalid business")
+        return slug
+
+
+class RedeemCodeRequest(StrictModel):
+    offer_id: uuid.UUID
+
+
+class ConfirmCards(StrictModel):
+    customer_public_ids: list[str] = Field(min_length=1, max_length=20)
+
+    @field_validator("customer_public_ids")
+    @classmethod
+    def card_ids(cls, value):
+        cleaned = []
+        for item in value:
+            card_id = str(item or "").strip()
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", card_id):
+                raise ValueError("Invalid card")
+            cleaned.append(card_id)
+        return list(dict.fromkeys(cleaned))
+
+
+class BusinessApproval(StrictModel):
+    approved: bool = Field(strict=True)
+
+
 class LinkRequest(StrictModel):
     customer_public_id: str = Field(min_length=1, max_length=100)
     card_token: str = Field(min_length=1, max_length=1024)
@@ -467,6 +514,211 @@ class LTBenefitsService:
         except HTTPException:
             return {"members_updated": 0, "available": False}
 
+    def approved_slugs(self):
+        """Businesses an admin has turned on. Everyone else stays Coming soon."""
+        try:
+            rows = self.db.table("businesses").select("public_id").eq("lt_benefits_approved", True).limit(500).execute().data or []
+        except Exception as exc:
+            self._safe_log("lt_benefits_approval_unavailable", error_type=type(exc).__name__)
+            return set()
+        return {str(row.get("public_id")) for row in rows if row.get("public_id")}
+
+    def annotate_offers(self, offers):
+        approved = self.approved_slugs()
+        for offer in offers or []:
+            if isinstance(offer, dict):
+                offer["coming_soon"] = str(offer.get("business_slug") or "") not in approved
+        return offers
+
+    def assert_offer_live(self, offer_id):
+        found = None
+        offset = 0
+        while offset < 300:
+            page = self._command("catalog", limit=100, offset=offset) or {}
+            offers = page.get("offers") or []
+            found = next((offer for offer in offers if str(offer.get("id")) == str(offer_id)), None)
+            if found or len(offers) < 100:
+                break
+            offset += 100
+        if found and str(found.get("business_slug") or "") not in self.approved_slugs():
+            raise HTTPException(409, "This benefit is coming soon.")
+        return found
+
+    def _business_map(self, business_ids):
+        ids = [value for value in dict.fromkeys(str(value) for value in business_ids if value)][:40]
+        if not ids:
+            return {}
+        rows = self.db.table("businesses").select("id,public_id,name,logo_url").in_("id", ids).execute().data or []
+        return {str(row.get("id")): row for row in rows}
+
+    def cards_for_email(self, email):
+        email = str(email or "").strip().lower()
+        if not email:
+            return []
+        rows = self.db.table("customers").select("id,public_id,name,email,phone,business_id").ilike("email", email).limit(40).execute().data or []
+        rows = [row for row in rows if str(row.get("email") or "").strip().lower() == email and row.get("public_id")]
+        businesses = self._business_map(row.get("business_id") for row in rows)
+        cards = []
+        for row in rows:
+            business = businesses.get(str(row.get("business_id")))
+            phone = normalize_phone(row.get("phone"))
+            if not business or not business.get("public_id") or not phone:
+                continue
+            public_id = str(row.get("public_id"))
+            cards.append({
+                "customer_public_id": public_id,
+                "name": str(row.get("name") or "Member").strip()[:80] or "Member",
+                "business_name": business.get("name") or "Business",
+                "business_slug": str(business.get("public_id")),
+                "context": dict(customer_public_id=public_id, customer_id=str(row.get("id") or ""),
+                    business_id=str(business.get("id") or row.get("business_id") or ""),
+                    business_slug=str(business.get("public_id")), business_name=business.get("name") or "Business",
+                    business_logo_url=business.get("logo_url"), phone_key=phone),
+            })
+        return cards
+
+    def qr_request_code(self, body, request):
+        """Email OTP from a business QR. Does not require the Wallet card link."""
+        self.ready()
+        email = body.email
+        cards = []
+        try:
+            cards = self.cards_for_email(email)
+        except Exception as exc:
+            self._safe_log("lt_benefits_qr_lookup_failed", error_type=type(exc).__name__)
+        card = next((item for item in cards if item["business_slug"] == body.business_slug), None) or (cards[0] if cards else None)
+        challenge_id = str(uuid.uuid4())
+        response = dict(challenge_id=challenge_id, expires_in=600, retry_after=60, email_masked=mask_email(email),
+                        message="If this email is on a loyalty card, a verification code has been sent.")
+        if not card:
+            return response
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        client = request.client.host if request.client else "unknown"
+        client_hash = hmac.new(self._secret().encode(), f"client:{client}".encode(), hashlib.sha256).hexdigest()
+        context = dict(card["context"], email=email)
+        result = self._command("auth_request", id=challenge_id, email=email, code_hash=self._code_hash(challenge_id, code),
+                               client_hash=client_hash, card_context=context)
+        if result.get("accepted"):
+            try:
+                sent = self.send_email(email, "Your Loyalty Tree verification code",
+                    f"<p>Your Loyalty Tree verification code is <strong>{html.escape(code)}</strong>.</p>"
+                    "<p>It expires in 10 minutes. Do not share this code.</p>")
+            except Exception:
+                sent = False
+            if not sent:
+                self._command("auth_send_failed", id=challenge_id)
+        return response
+
+    def email_cards(self, authorization, business_slug=""):
+        member, _ = self.member(authorization)
+        me = self._command("me", member_id=member["member_id"], limit=100, offset=0) or {}
+        linked = {str(card.get("customer_public_id")) for card in (me.get("cards") or [])}
+        cards = []
+        for card in self.cards_for_email(member.get("email")):
+            cards.append({
+                "customer_public_id": card["customer_public_id"],
+                "name": card["name"],
+                "business_name": card["business_name"],
+                "business_slug": card["business_slug"],
+                "included": card["customer_public_id"] in linked,
+            })
+        slug = str(business_slug or "").strip()
+        return {
+            "cards": cards,
+            "business_slug": slug,
+            "has_card_at_business": any(card["business_slug"] == slug for card in cards) if slug else None,
+        }
+
+    def confirm_email_cards(self, authorization, public_ids):
+        """Include cards on the verified email using the same OTP link the Wallet flow already uses.
+
+        The code is created and verified on the server. The customer already proved
+        they can read this email, so they are not asked for a second code per card.
+        """
+        member, _ = self.member(authorization)
+        email = str(member.get("email") or "").strip().lower()
+        wanted = set(public_ids)
+        included, failed = [], []
+        for card in self.cards_for_email(email):
+            if card["customer_public_id"] not in wanted:
+                continue
+            challenge_id = str(uuid.uuid4())
+            code = f"{secrets.randbelow(1_000_000):06d}"
+            context = dict(card["context"], email=email)
+            try:
+                result = self._command("auth_request", id=challenge_id, email=email,
+                    code_hash=self._code_hash(challenge_id, code), client_hash=_hash(f"qr-confirm:{card['customer_public_id']}"), card_context=context)
+                if not result.get("accepted"):
+                    failed.append({"customer_public_id": card["customer_public_id"], "detail": "This card could not be included yet."})
+                    continue
+                verified = self._command("auth_verify", id=challenge_id, code_hash=self._code_hash(challenge_id, code), token_hash=_hash(secrets.token_urlsafe(32)))
+                if str(verified.get("member_id") or "") != str(member["member_id"]):
+                    failed.append({"customer_public_id": card["customer_public_id"], "detail": "This card belongs to a different Benefits profile."})
+                    continue
+                included.append(card["customer_public_id"])
+            except HTTPException as exc:
+                detail = exc.detail if isinstance(exc.detail, str) else "This card could not be included."
+                failed.append({"customer_public_id": card["customer_public_id"], "detail": detail})
+        self.invalidate(member["member_id"])
+        return {"included": included, "failed": failed}
+
+    def request_redeem_code(self, authorization, offer_id):
+        member, _ = self.member(authorization)
+        self.assert_offer_live(offer_id)
+        challenge_id = str(uuid.uuid4())
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        expires_at = datetime.now(timezone.utc).timestamp() + 600
+        try:
+            self.db.table("lt_benefit_redeem_challenges").insert({
+                "id": challenge_id,
+                "member_id": str(member["member_id"]),
+                "offer_id": str(offer_id),
+                "code_hash": self._code_hash(challenge_id, code),
+                "expires_at": datetime.fromtimestamp(expires_at, timezone.utc).isoformat(),
+            }).execute()
+        except Exception as exc:
+            self._safe_log("lt_benefits_redeem_unavailable", error_type=type(exc).__name__)
+            raise HTTPException(503, "Redeem verification is not ready. Apply backend/lt_benefits_approval.sql.") from None
+        email = str(member.get("email") or "").strip().lower()
+        try:
+            sent = self.send_email(email, "Your Loyalty Tree redeem code",
+                f"<p>Your code to redeem this benefit is <strong>{html.escape(code)}</strong>.</p>"
+                "<p>It expires in 10 minutes. Do not share this code.</p>")
+        except Exception:
+            sent = False
+        if not sent:
+            raise HTTPException(503, "The redeem code could not be sent. Try again.")
+        return dict(challenge_id=challenge_id, expires_in=600, email_masked=mask_email(email))
+
+    def consume_redeem_code(self, member_id, offer_id, challenge_id, code):
+        if not challenge_id or not re.fullmatch(r"\d{6}", str(code or "")):
+            raise HTTPException(400, "Enter the email code to redeem this benefit.")
+        try:
+            parsed = uuid.UUID(str(challenge_id))
+        except ValueError:
+            raise HTTPException(400, "Enter the email code to redeem this benefit.") from None
+        try:
+            rows = self.db.table("lt_benefit_redeem_challenges").select("id,member_id,offer_id,code_hash,expires_at,used_at").eq("id", str(parsed)).limit(1).execute().data or []
+        except Exception as exc:
+            self._safe_log("lt_benefits_redeem_unavailable", error_type=type(exc).__name__)
+            raise HTTPException(503, "Redeem verification is not ready. Apply backend/lt_benefits_approval.sql.") from None
+        row = rows[0] if rows else None
+        expires = row.get("expires_at") if row else None
+        try:
+            expired = not expires or datetime.fromisoformat(str(expires).replace("Z", "+00:00")) <= datetime.now(timezone.utc)
+        except ValueError:
+            expired = True
+        expected = self._code_hash(str(parsed), str(code))
+        if not row or row.get("used_at") or expired or str(row.get("member_id")) != str(member_id) or str(row.get("offer_id")) != str(offer_id) or not hmac.compare_digest(str(row.get("code_hash") or ""), expected):
+            raise HTTPException(400, "The code is invalid or expired.")
+        try:
+            updated = self.db.table("lt_benefit_redeem_challenges").update({"used_at": datetime.now(timezone.utc).isoformat()}).eq("id", str(parsed)).is_("used_at", "null").execute().data or []
+        except Exception:
+            updated = []
+        if not updated:
+            raise HTTPException(400, "The code is invalid or expired.")
+        return True
+
 
 def register_lt_benefits_routes(app, *, db, get_business, get_card_context, require_owner,
                                 require_staff, require_admin, send_email, sync_member=None,
@@ -491,8 +743,24 @@ def register_lt_benefits_routes(app, *, db, get_business, get_card_context, requ
     def catalog(authorization: str = Header(""), limit: int = Query(24, ge=1, le=100), offset: int = Query(0, ge=0, le=10000)):
         service.member(authorization)
         result = service._command("catalog", limit=limit, offset=offset)
-        result["offers"] = result["offers"][:limit]
+        result["offers"] = service.annotate_offers(result["offers"][:limit])
         return result
+
+    @app.post("/api/v1/benefits/qr/request-code")
+    def qr_request_code(body: QrCodeRequest, request: Request):
+        return service.qr_request_code(body, request)
+
+    @app.get("/api/v1/benefits/email-cards")
+    def email_cards(authorization: str = Header(""), business: str = Query("", max_length=120)):
+        return service.email_cards(authorization, business)
+
+    @app.post("/api/v1/benefits/email-cards/confirm")
+    def confirm_email_cards(body: ConfirmCards, authorization: str = Header("")):
+        return service.confirm_email_cards(authorization, body.customer_public_ids)
+
+    @app.post("/api/v1/benefits/redeem/request-code")
+    def redeem_request_code(body: RedeemCodeRequest, authorization: str = Header("")):
+        return service.request_redeem_code(authorization, body.offer_id)
 
     @app.post("/api/v1/benefits/entry")
     def entry(body: CardEntry, authorization: str = Header("")):
@@ -519,8 +787,11 @@ def register_lt_benefits_routes(app, *, db, get_business, get_card_context, requ
         raise HTTPException(409, "Verify the OTP from this Wallet card to connect it. Existing sessions cannot link a new card without verification.")
 
     @app.post("/api/v1/benefits/offers/{offer_id}/claim")
-    def claim(offer_id: uuid.UUID, authorization: str = Header(""), idempotency_key: str = Header("", alias="Idempotency-Key")):
+    def claim(offer_id: uuid.UUID, authorization: str = Header(""), idempotency_key: str = Header("", alias="Idempotency-Key"),
+              redeem_challenge: str = Header("", alias="X-Redeem-Challenge"), redeem_code: str = Header("", alias="X-Redeem-Code")):
         member, _ = service.member(authorization)
+        service.assert_offer_live(offer_id)
+        service.consume_redeem_code(member["member_id"], offer_id, redeem_challenge, redeem_code)
         result = service._command("claim", member_id=member["member_id"], offer_id=str(offer_id), key=_key(idempotency_key), request_hash=_canonical_hash(dict(offer_id=str(offer_id))))
         service.invalidate(member["member_id"])
         return result
@@ -584,5 +855,29 @@ def register_lt_benefits_routes(app, *, db, get_business, get_card_context, requ
         result = service._command("settings_update", **body.model_dump(exclude_unset=True))
         service.invalidate()
         return result
+
+    @app.get("/api/v1/admin/lt-benefits/businesses")
+    def admin_benefit_businesses(request: Request):
+        service.require_admin(request)
+        try:
+            rows = service.db.table("businesses").select("public_id,name,lt_benefits_approved").order("name").limit(300).execute().data or []
+        except Exception as exc:
+            service._safe_log("lt_benefits_approval_unavailable", error_type=type(exc).__name__)
+            raise HTTPException(503, "Business approval is not ready. Apply backend/lt_benefits_approval.sql.") from None
+        return {"businesses": [{"public_id": row.get("public_id"), "name": row.get("name") or "Business", "approved": row.get("lt_benefits_approved") is True} for row in rows if row.get("public_id")]}
+
+    @app.put("/api/v1/admin/lt-benefits/businesses/{slug}")
+    def admin_approve_benefit_business(slug: str, body: BusinessApproval, request: Request):
+        service.require_admin(request)
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,120}", slug):
+            raise HTTPException(422, "Invalid business")
+        try:
+            updated = service.db.table("businesses").update({"lt_benefits_approved": body.approved}).eq("public_id", slug).execute().data or []
+        except Exception as exc:
+            service._safe_log("lt_benefits_approval_unavailable", error_type=type(exc).__name__)
+            raise HTTPException(503, "Business approval is not ready. Apply backend/lt_benefits_approval.sql.") from None
+        if not updated:
+            raise HTTPException(404, "Business not found.")
+        return {"public_id": slug, "approved": body.approved}
 
     return service

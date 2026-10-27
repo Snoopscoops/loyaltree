@@ -127,6 +127,7 @@ function CustomerJoin({ API_BASE }) {
   const [agreementAccepted,setAgreementAccepted]=useState(false)
   const [agreementSignature,setAgreementSignature]=useState('')
   const [agreementOpen,setAgreementOpen]=useState(false)
+  const [joinFormOpen,setJoinFormOpen]=useState(false)
   // Legacy Employee Card records remain readable, but new employee programs now use Membership.
   const isEmployeeCard = businessInfo?.card_type === 'employee'
   const isEmployeeMembership = businessInfo?.card_type === 'membership' && businessInfo?.membership_employee_mode === true
@@ -334,6 +335,48 @@ function CustomerJoin({ API_BASE }) {
       <a href={businessCtaUrl} target="_blank" rel="noopener noreferrer" style={styles.businessCtaLink}>Learn how →</a>
     </div>
   )
+
+  if (!submitted && !joinFormOpen) {
+    const brandColor = businessInfo?.primary_color || '#0f766e'
+    const businessName = businessInfo?.name || 'this business'
+    return (
+      <div style={styles.page}>
+        <div style={{...styles.joinShell, maxWidth:640, gridTemplateColumns:'1fr'}}>
+          <section style={{...styles.heroPanel, minHeight:0}}>
+            <div>
+              <div style={styles.heroTag}>POWERED BY LOYALTYTREE</div>
+              <h1 style={styles.heroTitle}>{businessInfo?.name || 'LoyaltyTree'}</h1>
+              <p style={styles.heroSubtitle}>Choose what you want to open.</p>
+            </div>
+          </section>
+          <section style={styles.formPanel}>
+            <div style={styles.formHeader}>
+              <div style={styles.stepPill}>BUSINESS QR</div>
+              <h2 style={styles.formTitle}>What do you want to do?</h2>
+              <p style={styles.formSubtitle}>Benefits and your cards stay on this phone after you verify once. Joining creates the loyalty card for {businessName}.</p>
+            </div>
+            <div style={{display:'grid', gap:12}}>
+              <button
+                type="button"
+                onClick={() => { window.location.href = `/benefits?business=${encodeURIComponent(businessSlug || '')}` }}
+                style={{...styles.button, background:`linear-gradient(135deg, ${brandColor}, #0f172a)`}}
+              >
+                <span>Loyalty Tree benefits</span>
+                <span style={{fontSize:18}}>→</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setJoinFormOpen(true)}
+                style={{...styles.secondaryWalletBtn, marginTop:0}}
+              >
+                Join {businessName} loyalty card
+              </button>
+            </div>
+          </section>
+        </div>
+      </div>
+    )
+  }
 
   if (submitted) {
     const brandColor = businessInfo?.primary_color || '#0f766e'
