@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useParams } from 'react-router-dom'
+import { readBenefitsSession } from './benefitsModel'
+import { requestJsonResponse } from './requestTimeout'
 
 const EMPLOYEE_POSITION_OPTIONS = [
   'Manager', 'Supervisor / Team Lead', 'Admin / Office Staff', 'Cashier',
@@ -97,6 +99,10 @@ function SignaturePad({ value, onChange, color = '#0f766e' }) {
 
 function CustomerJoin({ API_BASE }) {
   const { businessSlug } = useParams()
+  const [benefitsConfig, setBenefitsConfig] = useState(null)
+  const [benefitsLive, setBenefitsLive] = useState(false)
+  const benefitsReady = benefitsConfig?.public_launch === true && benefitsConfig.enabled === true && benefitsConfig.available === true
+  const benefitsEmailRequired = benefitsConfig?.public_launch === true
   const [form, setForm] = useState({
     name: '',
     address: '',
@@ -127,7 +133,6 @@ function CustomerJoin({ API_BASE }) {
   const [agreementAccepted,setAgreementAccepted]=useState(false)
   const [agreementSignature,setAgreementSignature]=useState('')
   const [agreementOpen,setAgreementOpen]=useState(false)
-  const [benefitsLive,setBenefitsLive]=useState(false)
   // Legacy Employee Card records remain readable, but new employee programs now use Membership.
   const isEmployeeCard = businessInfo?.card_type === 'employee'
   const isEmployeeMembership = businessInfo?.card_type === 'membership' && businessInfo?.membership_employee_mode === true
@@ -216,14 +221,24 @@ function CustomerJoin({ API_BASE }) {
       .then(r=>r.ok?r.json():null).then(setBusinessInfo).catch(()=>setBusinessInfo(null))
   },[API_BASE,businessSlug])
 
-  useEffect(()=>{
+  useEffect(() => {
+    const controller = new AbortController()
+    requestJsonResponse(fetch, `${API_BASE}/api/v1/benefits/config`, {signal:controller.signal,cache:'no-store'})
+      .then(({response,payload}) => { if (response.ok && !controller.signal.aborted) setBenefitsConfig(payload) })
+      .catch(() => {}) // A launch-config outage cannot stop the business card form.
+    return () => controller.abort()
+  },[API_BASE])
+
+  useEffect(() => {
     const slug = businessInfo?.public_id || businessSlug
     if (!slug) return
-    fetch(`${API_BASE}/api/v1/benefits/business-status?business=${encodeURIComponent(slug)}`)
-      .then(r=>r.ok?r.json():null)
-      .then(data=>setBenefitsLive(data?.approved===true))
-      .catch(()=>setBenefitsLive(false))
-  },[API_BASE,businessSlug,businessInfo?.public_id])
+    const controller = new AbortController()
+    fetch(`${API_BASE}/api/v1/benefits/business-status?business=${encodeURIComponent(slug)}`, {signal:controller.signal, cache:'no-store'})
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (!controller.signal.aborted) setBenefitsLive(data?.approved === true) })
+      .catch(() => { if (!controller.signal.aborted) setBenefitsLive(false) })
+    return () => controller.abort()
+  }, [API_BASE, businessSlug, businessInfo?.public_id])
 
   useEffect(() => {
     if (!submitted || !customerId) return
@@ -300,15 +315,16 @@ function CustomerJoin({ API_BASE }) {
     }
     setLoading(true)
     try {
+      const benefitsSession = benefitsReady ? readBenefitsSession({ getItem: key => window.localStorage.getItem(key) }) : null
       const res = await fetch(`${API_BASE}/api/v1/join/${businessSlug}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(benefitsSession?.token ? { Authorization: `Bearer ${benefitsSession.token}` } : {}) },
         body: JSON.stringify({
           name: form.name,
           address: form.address || null,
           age_bracket: isEmployeeExperience ? null : (form.age_bracket || null),
           phone: form.phone,
-          email: form.email || null,
+          email: form.email.trim() || null,
           birthday_month: parseInt(form.birthday_month, 10),
           birthday_day: parseInt(form.birthday_day, 10),
           occupation: isEmployeeExperience ? null : (form.occupation || null),
@@ -406,6 +422,7 @@ function CustomerJoin({ API_BASE }) {
               <span style={{fontSize:20}}>◫</span>
               Add to Wallet
             </button>
+            {!isEmployeeExperience && <p style={{fontSize:13,lineHeight:1.6,color:'#64748b'}}>{benefitsReady ? <>Want your shared LT Points and coupons? <a href={`/benefits?business=${encodeURIComponent(businessSlug || '')}`}>Open Loyalty Tree Benefits</a> and verify your email.</> : <>Loyalty Tree Points — <a href={`/benefits?business=${encodeURIComponent(businessSlug || '')}`}>Coming soon</a>.</>} Your business loyalty card is ready to use.</p>}
 
             {walletChoiceOpen && (
               <div style={styles.walletChooser}>
@@ -552,10 +569,7 @@ function CustomerJoin({ API_BASE }) {
           {!isEmployeeExperience && (
             <div style={{marginBottom:18}}>
               {benefitsLive ? (
-                <a
-                  href={`/benefits?business=${encodeURIComponent(businessInfo?.public_id || businessSlug || '')}`}
-                  style={{...styles.button, background:`linear-gradient(135deg, ${brandColor}, #0f172a)`, textDecoration:'none'}}
-                >
+                <a href={`/benefits?business=${encodeURIComponent(businessInfo?.public_id || businessSlug || '')}`} style={{...styles.primaryWalletBtn, display:'flex', alignItems:'center', justifyContent:'space-between', textDecoration:'none', background:`linear-gradient(135deg, ${brandColor}, #0f172a)`}}>
                   <span style={{display:'flex', flexDirection:'column', alignItems:'flex-start', gap:2, textAlign:'left'}}>
                     <span>Loyalty Tree benefits</span>
                     <span style={{fontSize:11, fontWeight:650, opacity:.82}}>Open rewards for this business</span>
@@ -620,14 +634,18 @@ function CustomerJoin({ API_BASE }) {
               )}
 
               <div style={styles.inputGroup}>
-                <label style={styles.label}>Email <span style={styles.optional}>optional</span></label>
+                <label style={styles.label}>Email {!benefitsEmailRequired && <span style={styles.optional}>optional</span>}</label>
                 <input
                   placeholder="you@email.com"
                   value={form.email}
                   onChange={e => setForm({...form, email: e.target.value})}
                   style={styles.input}
                   type="email"
+                  autoComplete="email"
+                  maxLength={320}
+                  required={benefitsEmailRequired}
                 />
+                {benefitsEmailRequired && <div style={{fontSize:12,color:'#64748b',marginTop:6,lineHeight:1.5}}>For Loyalty Tree Points: use the same email across participating businesses. Verify once by email code to connect your eligible cards and shared balance.</div>}
               </div>
 
               <div style={styles.inputGroup}>
@@ -721,8 +739,7 @@ function CustomerJoin({ API_BASE }) {
                     <option value="">Select one</option>
                     <option value="male">Male</option>
                     <option value="female">Female</option>
-                    <option value="lgbtq">LGBTQ+</option>
-                    <option value="rather_not_say">Prefer not to say</option>
+                    <option value="rather_not_say">I’d rather not say</option>
                   </select>
                 </div>
               )}
@@ -939,6 +956,10 @@ const styles = {
   heroFooterDot:{opacity:.45},
 
   formPanel:{padding:'clamp(26px, 5vw, 54px)',background:'#ffffff',alignSelf:'stretch'},
+  benefitsSoon:{border:'1px solid #e2e8f0',borderRadius:14,padding:'14px 16px',background:'#f8fafc'},
+  benefitsSoonTop:{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,color:'#0f172a',fontSize:14},
+  benefitsSoonBadge:{flexShrink:0,fontSize:10,fontWeight:850,letterSpacing:'.08em',textTransform:'uppercase',color:'#0f766e',background:'#ecfdf5',borderRadius:999,padding:'4px 8px'},
+  benefitsSoonText:{margin:'6px 0 0',fontSize:12,lineHeight:1.5,color:'#64748b'},
   formHeader:{marginBottom:26},
   stepPill:{color:'#64748b',fontSize:10,fontWeight:850,letterSpacing:'1.35px',marginBottom:11},
   formTitle:{
@@ -980,15 +1001,6 @@ const styles = {
     boxShadow:'0 12px 24px rgba(15,23,42,.14)',
   },
   buttonDisabled:{opacity:.48,cursor:'not-allowed',boxShadow:'none'},
-  benefitsSoon:{
-    border:'1px solid #e2e8f0',borderRadius:14,padding:'14px 16px',background:'#f8fafc',
-  },
-  benefitsSoonTop:{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10},
-  benefitsSoonBadge:{
-    flexShrink:0,fontSize:10,fontWeight:850,letterSpacing:'.08em',textTransform:'uppercase',
-    color:'#0f766e',background:'#ecfdf5',borderRadius:999,padding:'4px 8px',
-  },
-  benefitsSoonText:{margin:'6px 0 0',fontSize:12,lineHeight:1.5,color:'#64748b'},
   error:{
     padding:'12px 14px',background:'#fff1f2',border:'1px solid #fecdd3',
     color:'#be123c',borderRadius:12,fontSize:12,lineHeight:1.5,
