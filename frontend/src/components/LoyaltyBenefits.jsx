@@ -143,6 +143,7 @@ export default function LoyaltyBenefits({ API_BASE = '' }) {
   const sessionRef = useRef(session); sessionRef.current = session
   const [entry, setEntry] = useState(null), [entryError, setEntryError] = useState(''), [entryLoading, setEntryLoading] = useState(!!initialReference.current)
   const [config, setConfig] = useState(null)
+  const [businessApproved, setBusinessApproved] = useState(null)
   const [catalog, setCatalog] = useState([])
   const [hasMore, setHasMore] = useState(false)
   const [me, setMe] = useState(null)
@@ -184,7 +185,17 @@ export default function LoyaltyBenefits({ API_BASE = '' }) {
   }, [transport, clearSession])
   useEffect(() => () => { for (const controller of requests.current) controller.abort() }, [])
   useEffect(() => {
-    if (!cardReference || config?.public_launch !== true) { setEntryLoading(false); return }
+    if (!businessEntry) { setBusinessApproved(null); return }
+    const controller = new AbortController()
+    fetch(`${API_BASE.replace(/\/$/, '')}/api/v1/benefits/business-status?business=${encodeURIComponent(businessEntry)}`, { signal: controller.signal, cache: 'no-store' })
+      .then(response => response.ok ? response.json() : null)
+      .then(body => { if (!controller.signal.aborted) setBusinessApproved(body?.approved === true) })
+      .catch(() => { if (!controller.signal.aborted) setBusinessApproved(false) })
+    return () => controller.abort()
+  }, [API_BASE, businessEntry])
+  const benefitsOpen = config?.public_launch === true || businessApproved === true
+  useEffect(() => {
+    if (!cardReference || !benefitsOpen) { setEntryLoading(false); return }
     const controller = new AbortController(); let active = true
     setEntryLoading(true); setEntryError('')
     request('/entry', {method:'POST', body:cardReference, token: session?.token, signal: controller.signal}).then(value => {
@@ -194,7 +205,7 @@ export default function LoyaltyBenefits({ API_BASE = '' }) {
       if (!value.verified && session?.token) clearSession()
     }).catch(failure => { if (active && failure.name !== 'AbortError') setEntryError(failure.message) }).finally(() => { if (active) setEntryLoading(false) })
     return () => { active = false; controller.abort() }
-  }, [cardReference, session?.token, request, clearSession, retry, config?.public_launch])
+  }, [cardReference, session?.token, request, clearSession, retry, benefitsOpen])
 
   useEffect(() => {
     let active = true
@@ -282,7 +293,8 @@ export default function LoyaltyBenefits({ API_BASE = '' }) {
   const filtered = filterBenefitsOffers(catalog, { category, search, affordable, points: me?.available_points || 0 })
   const coupons = me?.coupons || []
   const go = next => { setView(next); setSearch(''); setNotice('') }
-  if (config?.public_launch !== true) return <div className="lt-benefits-customer"><main className="lt-benefit-entry-gate">
+  if (businessEntry && businessApproved === null && config?.public_launch !== true) return <div className="lt-benefits-customer"><main className="lt-benefit-entry-gate"><p role="status">Loading…</p></main></div>
+  if (!benefitsOpen) return <div className="lt-benefits-customer"><main className="lt-benefit-entry-gate">
     <img src={loyaltyTreeLogo} alt="Loyalty Tree"/><p className="lt-benefit-eyebrow">LOYALTY TREE POINTS</p><h1>Coming soon.</h1>
     <p>A little more to look forward to. Shared LT Points and Benefits are being prepared.</p>
     <p>Your business loyalty cards, stamps, points and rewards keep working as usual.</p>
