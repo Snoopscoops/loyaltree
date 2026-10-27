@@ -127,7 +127,7 @@ function CustomerJoin({ API_BASE }) {
   const [agreementAccepted,setAgreementAccepted]=useState(false)
   const [agreementSignature,setAgreementSignature]=useState('')
   const [agreementOpen,setAgreementOpen]=useState(false)
-  const [joinFormOpen,setJoinFormOpen]=useState(false)
+  const [benefitsLive,setBenefitsLive]=useState(false)
   // Legacy Employee Card records remain readable, but new employee programs now use Membership.
   const isEmployeeCard = businessInfo?.card_type === 'employee'
   const isEmployeeMembership = businessInfo?.card_type === 'membership' && businessInfo?.membership_employee_mode === true
@@ -215,6 +215,15 @@ function CustomerJoin({ API_BASE }) {
     fetch(`${API_BASE}/api/v1/public/business/${businessSlug}/join-config`)
       .then(r=>r.ok?r.json():null).then(setBusinessInfo).catch(()=>setBusinessInfo(null))
   },[API_BASE,businessSlug])
+
+  useEffect(()=>{
+    const slug = businessInfo?.public_id || businessSlug
+    if (!slug) return
+    fetch(`${API_BASE}/api/v1/benefits/business-status?business=${encodeURIComponent(slug)}`)
+      .then(r=>r.ok?r.json():null)
+      .then(data=>setBenefitsLive(data?.approved===true))
+      .catch(()=>setBenefitsLive(false))
+  },[API_BASE,businessSlug,businessInfo?.public_id])
 
   useEffect(() => {
     if (!submitted || !customerId) return
@@ -335,48 +344,6 @@ function CustomerJoin({ API_BASE }) {
       <a href={businessCtaUrl} target="_blank" rel="noopener noreferrer" style={styles.businessCtaLink}>Learn how →</a>
     </div>
   )
-
-  if (!submitted && !joinFormOpen) {
-    const brandColor = businessInfo?.primary_color || '#0f766e'
-    const businessName = businessInfo?.name || 'this business'
-    return (
-      <div style={styles.page}>
-        <div style={{...styles.joinShell, maxWidth:640, gridTemplateColumns:'1fr'}}>
-          <section style={{...styles.heroPanel, minHeight:0}}>
-            <div>
-              <div style={styles.heroTag}>POWERED BY LOYALTYTREE</div>
-              <h1 style={styles.heroTitle}>{businessInfo?.name || 'LoyaltyTree'}</h1>
-              <p style={styles.heroSubtitle}>Choose what you want to open.</p>
-            </div>
-          </section>
-          <section style={styles.formPanel}>
-            <div style={styles.formHeader}>
-              <div style={styles.stepPill}>BUSINESS QR</div>
-              <h2 style={styles.formTitle}>What do you want to do?</h2>
-              <p style={styles.formSubtitle}>Benefits and your cards stay on this phone after you verify once. Joining creates the loyalty card for {businessName}.</p>
-            </div>
-            <div style={{display:'grid', gap:12}}>
-              <button
-                type="button"
-                onClick={() => { window.location.href = `/benefits?business=${encodeURIComponent(businessSlug || '')}` }}
-                style={{...styles.button, background:`linear-gradient(135deg, ${brandColor}, #0f172a)`}}
-              >
-                <span>Loyalty Tree benefits</span>
-                <span style={{fontSize:18}}>→</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setJoinFormOpen(true)}
-                style={{...styles.secondaryWalletBtn, marginTop:0}}
-              >
-                Join {businessName} loyalty card
-              </button>
-            </div>
-          </section>
-        </div>
-      </div>
-    )
-  }
 
   if (submitted) {
     const brandColor = businessInfo?.primary_color || '#0f766e'
@@ -582,6 +549,30 @@ function CustomerJoin({ API_BASE }) {
         </section>
 
         <section style={styles.formPanel}>
+          {!isEmployeeExperience && (
+            <div style={{marginBottom:18}}>
+              {benefitsLive ? (
+                <a
+                  href={`/benefits?business=${encodeURIComponent(businessInfo?.public_id || businessSlug || '')}`}
+                  style={{...styles.button, background:`linear-gradient(135deg, ${brandColor}, #0f172a)`, textDecoration:'none'}}
+                >
+                  <span style={{display:'flex', flexDirection:'column', alignItems:'flex-start', gap:2, textAlign:'left'}}>
+                    <span>Loyalty Tree benefits</span>
+                    <span style={{fontSize:11, fontWeight:650, opacity:.82}}>Open rewards for this business</span>
+                  </span>
+                  <span style={{fontSize:18}}>→</span>
+                </a>
+              ) : (
+                <div style={styles.benefitsSoon}>
+                  <div style={styles.benefitsSoonTop}>
+                    <strong>Loyalty Tree benefits</strong>
+                    <span style={styles.benefitsSoonBadge}>Coming soon</span>
+                  </div>
+                  <p style={styles.benefitsSoonText}>Rewards you can use across LoyaltyTree. Your {businessInfo?.name || 'business'} card still works as usual.</p>
+                </div>
+              )}
+            </div>
+          )}
           <div style={styles.formHeader}>
             <div style={styles.stepPill}>1-MINUTE SIGN UP</div>
             <h2 style={styles.formTitle}>{isEmployeeExperience ? 'Enter your employee details' : 'Create your digital loyalty card'}</h2>
@@ -989,6 +980,15 @@ const styles = {
     boxShadow:'0 12px 24px rgba(15,23,42,.14)',
   },
   buttonDisabled:{opacity:.48,cursor:'not-allowed',boxShadow:'none'},
+  benefitsSoon:{
+    border:'1px solid #e2e8f0',borderRadius:14,padding:'14px 16px',background:'#f8fafc',
+  },
+  benefitsSoonTop:{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10},
+  benefitsSoonBadge:{
+    flexShrink:0,fontSize:10,fontWeight:850,letterSpacing:'.08em',textTransform:'uppercase',
+    color:'#0f766e',background:'#ecfdf5',borderRadius:999,padding:'4px 8px',
+  },
+  benefitsSoonText:{margin:'6px 0 0',fontSize:12,lineHeight:1.5,color:'#64748b'},
   error:{
     padding:'12px 14px',background:'#fff1f2',border:'1px solid #fecdd3',
     color:'#be123c',borderRadius:12,fontSize:12,lineHeight:1.5,

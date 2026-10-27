@@ -739,6 +739,11 @@ def register_lt_benefits_routes(app, *, db, get_business, get_card_context, requ
     def config():
         return service.config()
 
+    @app.get("/api/v1/benefits/business-status")
+    def business_status(business: str = Query("", max_length=160)):
+        slug = business.strip().split("/")[0]
+        return {"approved": bool(slug) and slug in service.approved_slugs()}
+
     @app.get("/api/v1/benefits/offers")
     def catalog(authorization: str = Header(""), limit: int = Query(24, ge=1, le=100), offset: int = Query(0, ge=0, le=10000)):
         service.member(authorization)
