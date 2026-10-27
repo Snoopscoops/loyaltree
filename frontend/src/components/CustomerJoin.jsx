@@ -101,6 +101,7 @@ function CustomerJoin({ API_BASE }) {
   const { businessSlug } = useParams()
   const [benefitsConfig, setBenefitsConfig] = useState(null)
   const [benefitsLive, setBenefitsLive] = useState(false)
+  const [joining, setJoining] = useState(false)
   const benefitsReady = benefitsConfig?.public_launch === true && benefitsConfig.enabled === true && benefitsConfig.available === true
   const benefitsEmailRequired = benefitsConfig?.public_launch === true
   const [form, setForm] = useState({
@@ -361,6 +362,37 @@ function CustomerJoin({ API_BASE }) {
     </div>
   )
 
+  if (!submitted && !joining && !isEmployeeExperience) {
+    const brandColor = businessInfo?.primary_color || '#0f766e'
+    const businessName = businessInfo?.name || 'this business'
+    return (
+      <div style={styles.page}>
+        <main style={{...styles.formPanel, maxWidth:520, margin:'60px auto'}}>
+          {businessInfo?.logo_url && <img src={businessInfo.logo_url} alt="" style={{...styles.businessLogo, margin:'0 auto 20px', display:'block'}}/>}
+          <div style={styles.stepPill}>BUSINESS QR</div>
+          <h1 style={styles.formTitle}>{businessInfo?.name || 'LoyaltyTree'}</h1>
+          <p style={styles.formSubtitle}>Choose what you want to open.</p>
+          <div style={{display:'grid', gap:12, marginTop:22}}>
+            {benefitsLive ? (
+              <a href={`/benefits?business=${encodeURIComponent(businessInfo?.public_id || businessSlug || '')}`} style={{...styles.primaryWalletBtn, display:'flex', alignItems:'center', justifyContent:'space-between', textDecoration:'none', background:`linear-gradient(135deg, ${brandColor}, #0f172a)`}}>
+                <span>Loyalty Tree benefits</span>
+                <span>→</span>
+              </a>
+            ) : (
+              <div style={{...styles.primaryWalletBtn, display:'flex', alignItems:'center', justifyContent:'space-between', background:'#e2e8f0', color:'#334155', cursor:'default'}}>
+                <span>Loyalty Tree benefits</span>
+                <span style={styles.benefitsSoonBadge}>Coming soon</span>
+              </div>
+            )}
+            <button type="button" onClick={() => setJoining(true)} style={styles.secondaryWalletBtn}>
+              Join {businessName} loyalty card
+            </button>
+          </div>
+        </main>
+      </div>
+    )
+  }
+
   if (submitted) {
     const brandColor = businessInfo?.primary_color || '#0f766e'
 
@@ -566,27 +598,6 @@ function CustomerJoin({ API_BASE }) {
         </section>
 
         <section style={styles.formPanel}>
-          {!isEmployeeExperience && (
-            <div style={{marginBottom:18}}>
-              {benefitsLive ? (
-                <a href={`/benefits?business=${encodeURIComponent(businessInfo?.public_id || businessSlug || '')}`} style={{...styles.primaryWalletBtn, display:'flex', alignItems:'center', justifyContent:'space-between', textDecoration:'none', background:`linear-gradient(135deg, ${brandColor}, #0f172a)`}}>
-                  <span style={{display:'flex', flexDirection:'column', alignItems:'flex-start', gap:2, textAlign:'left'}}>
-                    <span>Loyalty Tree benefits</span>
-                    <span style={{fontSize:11, fontWeight:650, opacity:.82}}>Open rewards for this business</span>
-                  </span>
-                  <span style={{fontSize:18}}>→</span>
-                </a>
-              ) : (
-                <div style={styles.benefitsSoon}>
-                  <div style={styles.benefitsSoonTop}>
-                    <strong>Loyalty Tree benefits</strong>
-                    <span style={styles.benefitsSoonBadge}>Coming soon</span>
-                  </div>
-                  <p style={styles.benefitsSoonText}>Rewards you can use across LoyaltyTree. Your {businessInfo?.name || 'business'} card still works as usual.</p>
-                </div>
-              )}
-            </div>
-          )}
           <div style={styles.formHeader}>
             <div style={styles.stepPill}>1-MINUTE SIGN UP</div>
             <h2 style={styles.formTitle}>{isEmployeeExperience ? 'Enter your employee details' : 'Create your digital loyalty card'}</h2>
