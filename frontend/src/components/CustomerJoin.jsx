@@ -99,8 +99,8 @@ function SignaturePad({ value, onChange, color = '#0f766e' }) {
 
 function CustomerJoin({ API_BASE }) {
   const { businessSlug } = useParams()
-  const [joining, setJoining] = useState(() => new URLSearchParams(window.location.search).get('signup') === '1')
   const [benefitsConfig, setBenefitsConfig] = useState(null)
+  const [benefitsLive, setBenefitsLive] = useState(false)
   const benefitsReady = benefitsConfig?.public_launch === true && benefitsConfig.enabled === true && benefitsConfig.available === true
   const benefitsEmailRequired = benefitsConfig?.public_launch === true
   const [form, setForm] = useState({
@@ -230,6 +230,17 @@ function CustomerJoin({ API_BASE }) {
   },[API_BASE])
 
   useEffect(() => {
+    const slug = businessInfo?.public_id || businessSlug
+    if (!slug) return
+    const controller = new AbortController()
+    fetch(`${API_BASE}/api/v1/benefits/business-status?business=${encodeURIComponent(slug)}`, {signal:controller.signal, cache:'no-store'})
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (!controller.signal.aborted) setBenefitsLive(data?.approved === true) })
+      .catch(() => { if (!controller.signal.aborted) setBenefitsLive(false) })
+    return () => controller.abort()
+  }, [API_BASE, businessSlug, businessInfo?.public_id])
+
+  useEffect(() => {
     if (!submitted || !customerId) return
     setWalletLoading(true)
     fetch(`${API_BASE}/api/v1/customer/${customerId}/wallet-pass`)
@@ -349,15 +360,6 @@ function CustomerJoin({ API_BASE }) {
       <a href={businessCtaUrl} target="_blank" rel="noopener noreferrer" style={styles.businessCtaLink}>Learn how →</a>
     </div>
   )
-
-  if (benefitsReady && !joining && !isEmployeeExperience && !submitted) return <div style={styles.page}><main style={{...styles.formPanel,maxWidth:520,margin:'60px auto',textAlign:'center'}}>
-    {businessInfo?.logo_url && <img src={businessInfo.logo_url} alt="" style={{...styles.businessLogo,margin:'0 auto 20px'}}/>}
-    <div style={styles.stepPill}>LOYALTY TREE</div><h1 style={styles.formTitle}>{businessInfo?.name || 'Good things start here.'}</h1>
-    <p style={styles.formSubtitle}>One QR. Your business rewards and a little extra.</p>
-    <button type="button" style={styles.primaryWalletBtn} onClick={() => setJoining(true)}>Get my loyalty card</button>
-    <a href={`/benefits?business=${encodeURIComponent(businessSlug || '')}`} style={{...styles.primaryWalletBtn,display:'block',marginTop:12,textDecoration:'none',background:'#153e35'}}>My LT Points &amp; Benefits</a>
-    <p style={{fontSize:13,color:'#64748b',lineHeight:1.6,marginTop:20}}>Already have a card? Open Benefits with an email code. Use the same email to connect your eligible cards. No password needed.</p>
-  </main></div>
 
   if (submitted) {
     const brandColor = businessInfo?.primary_color || '#0f766e'
@@ -564,6 +566,27 @@ function CustomerJoin({ API_BASE }) {
         </section>
 
         <section style={styles.formPanel}>
+          {!isEmployeeExperience && (
+            <div style={{marginBottom:18}}>
+              {benefitsLive ? (
+                <a href={`/benefits?business=${encodeURIComponent(businessInfo?.public_id || businessSlug || '')}`} style={{...styles.primaryWalletBtn, display:'flex', alignItems:'center', justifyContent:'space-between', textDecoration:'none', background:`linear-gradient(135deg, ${brandColor}, #0f172a)`}}>
+                  <span style={{display:'flex', flexDirection:'column', alignItems:'flex-start', gap:2, textAlign:'left'}}>
+                    <span>Loyalty Tree benefits</span>
+                    <span style={{fontSize:11, fontWeight:650, opacity:.82}}>Open rewards for this business</span>
+                  </span>
+                  <span style={{fontSize:18}}>→</span>
+                </a>
+              ) : (
+                <div style={styles.benefitsSoon}>
+                  <div style={styles.benefitsSoonTop}>
+                    <strong>Loyalty Tree benefits</strong>
+                    <span style={styles.benefitsSoonBadge}>Coming soon</span>
+                  </div>
+                  <p style={styles.benefitsSoonText}>Rewards you can use across LoyaltyTree. Your {businessInfo?.name || 'business'} card still works as usual.</p>
+                </div>
+              )}
+            </div>
+          )}
           <div style={styles.formHeader}>
             <div style={styles.stepPill}>1-MINUTE SIGN UP</div>
             <h2 style={styles.formTitle}>{isEmployeeExperience ? 'Enter your employee details' : 'Create your digital loyalty card'}</h2>
@@ -622,7 +645,7 @@ function CustomerJoin({ API_BASE }) {
                   maxLength={320}
                   required={benefitsEmailRequired}
                 />
-                <div style={{fontSize:12,color:'#64748b',marginTop:6,lineHeight:1.5}}>{benefitsEmailRequired ? 'For Loyalty Tree Points: use the same email across participating businesses. Verify once by email code to connect your eligible cards and shared balance.' : <>Loyalty Tree Points — <a href={`/benefits?business=${encodeURIComponent(businessSlug || '')}`}>Coming soon</a>. Your business loyalty card works as usual.</>}</div>
+                {benefitsEmailRequired && <div style={{fontSize:12,color:'#64748b',marginTop:6,lineHeight:1.5}}>For Loyalty Tree Points: use the same email across participating businesses. Verify once by email code to connect your eligible cards and shared balance.</div>}
               </div>
 
               <div style={styles.inputGroup}>
@@ -933,6 +956,10 @@ const styles = {
   heroFooterDot:{opacity:.45},
 
   formPanel:{padding:'clamp(26px, 5vw, 54px)',background:'#ffffff',alignSelf:'stretch'},
+  benefitsSoon:{border:'1px solid #e2e8f0',borderRadius:14,padding:'14px 16px',background:'#f8fafc'},
+  benefitsSoonTop:{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,color:'#0f172a',fontSize:14},
+  benefitsSoonBadge:{flexShrink:0,fontSize:10,fontWeight:850,letterSpacing:'.08em',textTransform:'uppercase',color:'#0f766e',background:'#ecfdf5',borderRadius:999,padding:'4px 8px'},
+  benefitsSoonText:{margin:'6px 0 0',fontSize:12,lineHeight:1.5,color:'#64748b'},
   formHeader:{marginBottom:26},
   stepPill:{color:'#64748b',fontSize:10,fontWeight:850,letterSpacing:'1.35px',marginBottom:11},
   formTitle:{

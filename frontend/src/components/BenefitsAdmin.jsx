@@ -12,6 +12,7 @@ export default function BenefitsAdmin(props) {
 function AdminBenefitsContent({ API_BASE = '', token, authFetch }) {
   const request = useBenefitsRequest({ API_BASE, token, authFetch, relativeAuth: true })
   const [settings, setSettings] = useState(null), [form, setForm] = useState({ enabled: false, pesos_per_point: '500', max_points_per_transaction: '' })
+  const [businesses, setBusinesses] = useState([]), [approvalBusy, setApprovalBusy] = useState('')
   const [loading, setLoading] = useState(true), [saving, setSaving] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState(''), [reload, setReload] = useState(0)
   const alive = useRef(true), mutation = useRef(null)
   useEffect(() => { alive.current = true; return () => { alive.current = false; mutation.current?.abort() } }, [])
@@ -22,6 +23,9 @@ function AdminBenefitsContent({ API_BASE = '', token, authFetch }) {
       if (!validSettings(data)) throw new Error('The LT Rewards settings response was incomplete. Please refresh.')
       if (!controller.signal.aborted) { setSettings(data); setForm({ enabled: data.enabled, pesos_per_point: String(data.pesos_per_point), max_points_per_transaction: data.max_points_per_transaction == null ? '' : String(data.max_points_per_transaction) }) }
     }).catch(failure => { if (!controller.signal.aborted) setError(failure.message) }).finally(() => { if (!controller.signal.aborted) setLoading(false) })
+    request('/api/v1/admin/lt-benefits/businesses', { signal: controller.signal }).then(data => {
+      if (!controller.signal.aborted && data && Array.isArray(data.businesses)) setBusinesses(data.businesses)
+    }).catch(failure => { if (!controller.signal.aborted) setError(failure.message) })
     return () => controller.abort()
   }, [request, reload])
   const save = async event => {
@@ -38,6 +42,18 @@ function AdminBenefitsContent({ API_BASE = '', token, authFetch }) {
     } catch (failure) { if (alive.current && failure.name !== 'AbortError') setError(failure.message) }
     finally { mutation.current = null; if (alive.current) setSaving(false) }
   }
+  const setApproval = async (slug, approved) => {
+    if (approvalBusy) return
+    setApprovalBusy(slug); setError(''); setNotice('')
+    try {
+      const data = await request(`/api/v1/admin/lt-benefits/businesses/${encodeURIComponent(slug)}`, { method: 'PUT', body: JSON.stringify({ approved }) })
+      if (alive.current) {
+        setBusinesses(current => current.map(row => row.public_id === slug ? { ...row, approved: data.approved === true } : row))
+        setNotice(approved ? 'This business can now be redeemed. Other businesses stay Coming soon.' : 'This business is Coming soon again.')
+      }
+    } catch (failure) { if (alive.current) setError(failure.message) }
+    finally { if (alive.current) setApprovalBusy('') }
+  }
   return <section className="lt-benefits">
     <header className="lt-benefit-heading"><div><p className="lt-benefit-eyebrow">SUPER ADMIN · NETWORK RULES</p><h2>LT Points settings</h2><p>Set the platform earning rule used across participating businesses.</p></div><button type="button" disabled={loading || saving} onClick={() => { setNotice(''); setReload(value => value + 1) }}>{loading ? 'Loading…' : 'Reload settings'}</button></header>
     <BenefitMessage error>{error}</BenefitMessage><BenefitMessage>{notice}</BenefitMessage>
@@ -51,6 +67,9 @@ function AdminBenefitsContent({ API_BASE = '', token, authFetch }) {
         <p className="lt-benefit-note">This setting controls how points are earned. A merchant coupon defines its own discount and required LT Points; there is no cash-out value set here.</p>
         <div className="lt-benefit-actions"><button type="submit" className="is-primary" disabled={saving || loading}>{saving ? 'Saving…' : 'Save earning rule'}</button></div>
       </form>
+      <section className="lt-benefit-panel"><header><div><h3>Approve a business</h3><p>Benefits stay Coming soon until you approve that business. Approve one business first so you can test it. Everyone else stays Coming soon.</p></div></header>
+        {businesses.length ? <div className="lt-benefit-table-wrap"><table><thead><tr><th>Business</th><th>Benefits</th><th></th></tr></thead><tbody>{businesses.map(row => <tr key={row.public_id}><td><strong>{row.name}</strong><small>{row.public_id}</small></td><td>{row.approved ? 'Live' : 'Coming soon'}</td><td><button type="button" disabled={!!approvalBusy} onClick={() => setApproval(row.public_id, !row.approved)}>{approvalBusy === row.public_id ? 'Saving…' : row.approved ? 'Set coming soon' : 'Approve'}</button></td></tr>)}</tbody></table></div> : <p className="lt-benefit-empty">No businesses to approve yet.</p>}
+      </section>
     </>}
   </section>
 }
