@@ -11884,15 +11884,14 @@ def _resize_png_bytes(png_bytes: bytes, width: int, height: int) -> Optional[byt
 def _apple_loyalty_brand_assets(customer: dict, business: dict, program: dict, primary_color: str) -> dict:
     """Reuse compressed branding across members; no decoded PIL objects retained."""
     logo_url = (program or {}).get('program_logo_url') or business.get('logo_url')
-    branded = lt_wallet.card_enabled(customer, enabled=lt_benefits_enabled())
-    key = 'apple-brand-png-v1:' + hashlib.sha256(json.dumps(
-        [logo_url, primary_color, business.get('name'), branded, lt_wallet.RELEASE],
+    key = 'apple-brand-png-v2:' + hashlib.sha256(json.dumps(
+        [logo_url, primary_color, business.get('name'), lt_wallet.RELEASE],
         separators=(',', ':'), default=str).encode()).hexdigest()
     cached = _APPLE_IMAGE_CACHE.get(key)
     if cached is not None:
         return cached
-    # Cloudinary supplies a bounded PNG source. Keep the established alpha trim,
-    # center crop and LT composite, and run them only once per branding version.
+    # Cloudinary supplies a bounded PNG source. Keep the established alpha trim
+    # and center crop, and run them only once per branding version.
     logo_bytes = _fetch_image_bytes(logo_url)
     icon_87 = apple_icon_from_logo_bytes(logo_bytes, 87) if logo_bytes else None
     if not icon_87:
@@ -11900,8 +11899,6 @@ def _apple_loyalty_brand_assets(customer: dict, business: dict, program: dict, p
     logo_480 = apple_logo_from_image_bytes(logo_bytes, 480, 150) if logo_bytes else None
     if not logo_480:
         logo_480 = generate_apple_logo_bytes(business.get('name') or 'Loyalty', 480, 150)
-    if branded:
-        logo_480 = _lt_cobrand_logo(logo_480)
     assets = {'icon.png': _resize_png_bytes(icon_87, 29, 29),
               'icon@2x.png': _resize_png_bytes(icon_87, 58, 58), 'icon@3x.png': icon_87,
               'logo.png': _resize_png_bytes(logo_480, 160, 50),
