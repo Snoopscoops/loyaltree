@@ -94,6 +94,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
     stamp_icon: 'star',
     stamp_rewards: [{ id: 'legacy-final', stamps: 8, reward_name: 'Free Service' }],
     stamp_once_per_day: false,
+    lt_points_per_stamp: 0.5,
     stamp_reset_after_final: true,
     reward_expiry_days: 30,
     card_expiration_enabled: false,
@@ -302,6 +303,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
             ? data.stamp_rewards
             : [{ id: 'legacy-final', stamps: data.stamp_goal || 8, reward_name: data.reward_name || 'Free Service' }],
           stamp_once_per_day: data.stamp_once_per_day === true,
+          lt_points_per_stamp: data.lt_points_per_stamp == null || data.lt_points_per_stamp === '' ? 0.5 : Number(data.lt_points_per_stamp),
           stamp_reset_after_final: data.stamp_reset_after_final !== false,
           reward_expiry_days: data.reward_expiry_days || 30,
           card_expiration_enabled: data.card_expiration_enabled === true,
@@ -905,6 +907,7 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
       reward_name: (r.reward_name || 'Reward').trim(),
     })).sort((a,b) => a.stamps - b.stamps),
     stamp_once_per_day: form.stamp_once_per_day === true,
+    lt_points_per_stamp: Number.isFinite(Number(form.lt_points_per_stamp)) ? Math.max(0, Math.min(100, Number(form.lt_points_per_stamp))) : 0.5,
     stamp_reset_after_final: form.stamp_reset_after_final !== false,
     reward_expiry_days: Number(form.reward_expiry_days) || 30,
     card_expiration_enabled: form.card_type === 'hybrid' ? false : form.card_expiration_enabled === true,
@@ -1860,6 +1863,9 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
                   <input type="checkbox" checked={form.stamp_once_per_day===true} onChange={e=>update('stamp_once_per_day',e.target.checked)} style={{marginTop:2}}/>
                   <span>Limit each customer to 1 stamp per day</span>
                 </label>
+                <label style={{...styles.label,display:'block',marginTop:16}}>LT Points per stamp</label>
+                <input style={{...styles.input,width:120}} type="number" min="0" max="100" step="0.01" value={form.lt_points_per_stamp ?? 0.5} onChange={e=>update('lt_points_per_stamp', e.target.value)}/>
+                <p style={styles.hint}>Standard is 0.5. ₱500 spent = 1 LT Point. Raise it when a stamp is worth more. 0 turns this off.</p>
               </>}
 
               {rewardEditorType==='points' && <>
@@ -2761,6 +2767,9 @@ function LoyaltyCardCustomizer({ API_BASE, user, onSaved, guided = false, progra
                   Maximum 1 stamp per customer per day
                 </label>
                 <p style={styles.hint}>When enabled, the backend blocks a second stamp for the same customer until the next day, even from another cashier/device.</p>
+                <label style={styles.label}>LT Points per stamp</label>
+                <input style={{...styles.input,width:120}} type="number" min="0" max="100" step="0.01" value={form.lt_points_per_stamp ?? 0.5} onChange={e=>update('lt_points_per_stamp', e.target.value)}/>
+                <p style={styles.hint}>Standard is 0.5. ₱500 spent = 1 LT Point. Raise it when a stamp is worth more. 0 turns this off. A typed purchase amount uses the peso rule instead.</p>
                 <label style={{display:'flex',gap:10,alignItems:'center',fontSize:13,fontWeight:700}}>
                   <input type="checkbox" checked={form.stamp_reset_after_final !== false} onChange={e=>update('stamp_reset_after_final',e.target.checked)}/>
                   Reset stamps after the final reward is redeemed

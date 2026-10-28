@@ -465,7 +465,7 @@ class LTBenefitsService:
         return json.loads(json.dumps(projection))
 
     def earn(self, customer_public_id, business_id, source_type, source_id, amount_centavos, currency="PHP"):
-        if not self.enabled() or not self.public_launch_enabled():
+        if not self.enabled():
             return dict(status="disabled")
         _money(amount_centavos)
         data = self._source(business_id, source_type, source_id)

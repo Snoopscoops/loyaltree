@@ -2581,6 +2581,8 @@ class LoyaltyConfig(BaseModel):
     reward_name: str = 'Free Service'
     stamp_rewards: Optional[List[StampRewardMilestone]] = None
     stamp_once_per_day: bool = False
+    # Points for a stamp when no purchase amount is typed. 1 LT Point = 500 pesos.
+    lt_points_per_stamp: float = Field(default=0.5, ge=0, le=100)
     stamp_reset_after_final: bool = True
     primary_color: str = '#3b82f6'
     reward_expiry_days: int = Field(default=30, ge=1)
@@ -8901,8 +8903,22 @@ def _lt_require_staff(public_id: str, authorization: str):
     return {**claims, 'branch_id': rows[0].get('branch_id')}
 
 
+def _lt_stamp_spend(program, amount_spent):
+    """Typed spend wins. A bare stamp uses the business rate. Standard is 0.5, and 1 point is 500 pesos."""
+    if amount_spent is not None:
+        return amount_spent
+    raw = (program or {}).get('lt_points_per_stamp')
+    try:
+        points = 0.5 if raw is None else float(raw)
+    except (TypeError, ValueError):
+        points = 0.5
+    if points != points or points <= 0:
+        return None
+    return round(min(points, 100.0) * 500, 2)
+
+
 def _lt_purchase_metadata(public_id: str, authorization: str, amount, business=None):
-    if not lt_benefits_enabled() or amount is None:
+    if not lt_benefits_feature_enabled() or amount is None:
         return {}
     try:
         _lt_require_staff(public_id, authorization)
@@ -8920,7 +8936,7 @@ def _lt_purchase_metadata(public_id: str, authorization: str, amount, business=N
 
 
 def _lt_award_audit_purchase(audit_row, metadata=None, customer=None, business=None):
-    if not lt_benefits_enabled() or not audit_row or audit_row.get('_duplicate_response'):
+    if not lt_benefits_feature_enabled() or not audit_row or audit_row.get('_duplicate_response'):
         return
     info = {**(audit_row.get('metadata') or {}), **(metadata or {})}
     if info.get('lt_purchase_authorized') is not True:
@@ -24110,6 +24126,7 @@ async def get_loyalty_config(public_id: str, response: Response, program_id: Opt
             "reward_name": "Free Service",
             "stamp_rewards": [{"id": "legacy-final", "stamps": 8, "reward_name": "Free Service"}],
             "stamp_once_per_day": False,
+            "lt_points_per_stamp": 0.5,
             "stamp_reset_after_final": True,
             "primary_color": "#3b82f6",
             "reward_expiry_days": 30,
@@ -24728,6 +24745,7 @@ async def save_loyalty_config(public_id: str, config: LoyaltyConfig, background_
         'stamp_icon': config.stamp_icon,
         'reward_name': config.reward_name,
         'stamp_once_per_day': bool(config.stamp_once_per_day),
+        'lt_points_per_stamp': round(min(100.0, max(0.0, float(config.lt_points_per_stamp))), 2),
         'stamp_reset_after_final': bool(config.stamp_reset_after_final),
         'primary_color': config.primary_color,
         # LoyaltyCardCustomizer uses UI labels `gradient`/`classic`; the DB
@@ -28206,7 +28224,7 @@ async def add_stamp(public_id: str, req: StampRequest, background_tasks: Backgro
                 'card_type': (program or {}).get('card_type'),
                 'tier_progression':'stamps',
                 'reward_engine': effective_loyalty_type(program),
-                **_lt_purchase_metadata(public_id, authorization, req.amount_spent, business=business),
+                **_lt_purchase_metadata(public_id, authorization, _lt_stamp_spend(program, req.amount_spent), business=business),
             },
         )
         if audit_row and audit_row.get('_duplicate_response'):
@@ -28284,7 +28302,7 @@ async def add_stamp(public_id: str, req: StampRequest, background_tasks: Backgro
         delta=1,
         balance_before=old_count,
         metadata={'card_type': 'stamp', 'goal': goal,
-                  **_lt_purchase_metadata(public_id, authorization, req.amount_spent, business=business)},
+                  **_lt_purchase_metadata(public_id, authorization, _lt_stamp_spend(program, req.amount_spent), business=business)},
     )
     if audit_row and audit_row.get('_duplicate_response'):
         return audit_row['_duplicate_response']
