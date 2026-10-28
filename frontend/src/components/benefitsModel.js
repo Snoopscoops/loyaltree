@@ -3,6 +3,8 @@ const ATTEMPT_KEY = 'lt_benefits_claim_attempts_v1'
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 const text = value => typeof value === 'string'
 const count = value => Number.isSafeInteger(value) && value >= 0
+const pointsValue = value => typeof value === 'number' && Number.isFinite(value) && Math.abs(value * 100 - Math.round(value * 100)) < 1e-6
+const pointsBalance = value => pointsValue(value) && value >= 0
 const date = value => value === null || (text(value) && Number.isFinite(Date.parse(value)))
 const rows = (value, check) => Array.isArray(value) && value.every(row => object(row) && check(row))
 
@@ -43,10 +45,10 @@ export function validBenefitsOffers(value) {
   return object(value) && typeof value.has_more === 'boolean' && rows(value.offers, offer => text(offer.id) && text(offer.title) && text(offer.business_slug) && text(offer.business_name) && text(offer.description ?? '') && text(offer.terms ?? '') && count(offer.points_cost) && offer.points_cost > 0 && count(offer.discount_centavos) && offer.discount_centavos > 0 && count(offer.total_quantity) && count(offer.claimed_count) && count(offer.remaining_quantity) && count(offer.per_member_limit) && count(offer.min_spend_centavos) && date(offer.starts_at) && date(offer.ends_at) && text(offer.status))
 }
 export function validBenefitsMe(value) {
-  return object(value) && object(value.member) && text(value.member.id) && text(value.member.email_masked) && Number.isSafeInteger(value.balance_points) && count(value.available_points) && rows(value.cards, card => text(card.customer_public_id) && text(card.business_slug) && text(card.business_name)) && rows(value.coupons, validBenefitsCoupon) && rows(value.activity, item => text(item.id) && text(item.kind) && Number.isSafeInteger(item.points_delta) && date(item.created_at) && text(item.description))
+  return object(value) && object(value.member) && text(value.member.id) && text(value.member.email_masked) && pointsValue(value.balance_points) && pointsBalance(value.available_points) && rows(value.cards, card => text(card.customer_public_id) && text(card.business_slug) && text(card.business_name)) && rows(value.coupons, validBenefitsCoupon) && rows(value.activity, item => text(item.id) && text(item.kind) && pointsValue(item.points_delta) && date(item.created_at) && text(item.description))
 }
 export function validBenefitsCoupon(coupon) { return object(coupon) && text(coupon.id) && text(coupon.offer_id) && text(coupon.title) && text(coupon.business_slug) && text(coupon.business_name) && count(coupon.points_cost) && coupon.points_cost > 0 && count(coupon.discount_centavos) && coupon.discount_centavos > 0 && count(coupon.min_spend_centavos) && ['claimed', 'used', 'expired'].includes(coupon.status) && date(coupon.claimed_at) && date(coupon.expires_at) && date(coupon.used_at) }
-export function validBenefitsClaim(value) { return object(value) && validBenefitsCoupon(value.coupon) && count(value.balance_points) && count(value.available_points) && typeof value.idempotent_replay === 'boolean' }
+export function validBenefitsClaim(value) { return object(value) && validBenefitsCoupon(value.coupon) && pointsBalance(value.balance_points) && pointsBalance(value.available_points) && typeof value.idempotent_replay === 'boolean' }
 
 export function offerCategory(offer) { return typeof offer.category === 'string' && offer.category.trim() ? offer.category.trim() : 'other' }
 export const BENEFITS_CATEGORIES = { all: 'All benefits', food_drink: 'Food & drinks', coffee: 'Coffee', dining: 'Dining', wellness: 'Wellness', shopping: 'Shopping', experiences: 'Experiences', other: 'More discoveries' }
@@ -60,7 +62,11 @@ export function benefitsClaimState(offer, points, now = Date.now()) {
   if (points !== null && offer.points_cost > points) return 'insufficient'
   return 'available'
 }
-export const benefitPoints = value => Number(value || 0).toLocaleString()
+export const benefitPoints = value => {
+  const number = Number(value || 0)
+  const whole = Math.abs(number - Math.round(number)) < 1e-6
+  return number.toLocaleString(undefined, { minimumFractionDigits: whole ? 0 : 2, maximumFractionDigits: 2 })
+}
 export const benefitMoney = centavos => new Intl.NumberFormat('en-PH', { style: 'currency', currency: 'PHP', maximumFractionDigits: 2, minimumFractionDigits: 0 }).format(centavos / 100)
 
 export function readBenefitsSession(storage, now = Date.now()) {

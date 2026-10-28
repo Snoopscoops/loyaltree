@@ -52,6 +52,23 @@ def wallet_action(customer, business, frontend_url, secret, enabled=False):
             urlencode({'card': customer_id, 'token': token})}
 
 
+def points_amount(value):
+    """Whole points stay integers. Smaller rewards keep two decimal places."""
+    try:
+        number = round(float(value or 0), 2)
+    except (TypeError, ValueError):
+        number = 0
+    if number < 0 or number != number:
+        number = 0
+    whole = int(round(number))
+    return whole if abs(number - whole) < 0.001 else number
+
+
+def points_text(value):
+    number = points_amount(value)
+    return str(number) if isinstance(number, int) else f'{number:.2f}'
+
+
 def projection(customer):
     """Read denormalized columns returned by the EXISTING customer lookup.
 
@@ -62,7 +79,7 @@ def projection(customer):
     value = customer.get('lt_points_balance')
     return {
         'linked': customer.get('lt_member_id') is not None and value is not None,
-        'balance': max(0, int(value or 0)),
+        'balance': points_amount(value),
         'version': int(customer.get('lt_points_version') or 0),
         'updated_at': customer.get('lt_points_updated_at'),
         'coupon_count': max(0, int(customer.get('lt_coupon_count') or 0)),
@@ -76,7 +93,7 @@ def apply_apple(pass_dict, customer, action):
     fields = pass_dict.get('storeCard')
     if not fields:
         return pass_dict
-    value = str(state['balance']) if state['linked'] else 'Connect'
+    value = points_text(state['balance']) if state['linked'] else 'Connect'
     field = {'key': 'lt_points', 'label': 'LT POINTS', 'value': value, 'changeMessage': 'Your LT Points are now %@.'}
     secondary, auxiliary = fields.setdefault('secondaryFields', []), fields.setdefault('auxiliaryFields', [])
     if len(secondary) + len(auxiliary) < 4:
@@ -114,7 +131,7 @@ def apply_google(loyalty_object, customer, action):
     if not action:
         return loyalty_object
     state = projection(customer)
-    value = str(state['balance']) if state['linked'] else 'Connect your account'
+    value = points_text(state['balance']) if state['linked'] else 'Connect your account'
     modules = loyalty_object.setdefault('textModulesData', [])
     modules.insert(0, {'id': 'lt_points', 'header': 'LT POINTS', 'body': value})
     modules.insert(1, {'id': 'lt_points_about', 'header': 'ABOUT LT POINTS',
