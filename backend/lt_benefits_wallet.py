@@ -7,6 +7,9 @@ from urllib.parse import quote, urlencode
 
 
 LABEL = 'Loyalty Tree Benefits'
+POINT_RATE = '1 LT Point for every ₱500 spent'
+POINT_ABOUT = "One shared balance across participating businesses. This card's own stamps and rewards stay here."
+POINT_USE = 'Use LT Points for partner benefits. Show this same card. The cashier scans it.'
 RELEASE = 'lt-benefits-v2'
 GOOGLE_CLASS_SUFFIX = '-ltbenefits-v1'
 
@@ -74,7 +77,7 @@ def apply_apple(pass_dict, customer, action):
     if not fields:
         return pass_dict
     value = str(state['balance']) if state['linked'] else 'Connect'
-    field = {'key': 'lt_points', 'label': 'LT POINTS', 'value': value}
+    field = {'key': 'lt_points', 'label': 'LT POINTS', 'value': value, 'changeMessage': 'Your LT Points are now %@.'}
     secondary, auxiliary = fields.setdefault('secondaryFields', []), fields.setdefault('auxiliaryFields', [])
     if len(secondary) + len(auxiliary) < 4:
         auxiliary.append(field)
@@ -86,13 +89,14 @@ def apply_apple(pass_dict, customer, action):
     back = fields.setdefault('backFields', [])
     back.insert(0, {
         'key': 'lt_benefits', 'label': LABEL.upper(),
-        'value': 'View points and partner coupons',
-        'attributedValue': f'<a href="{html.escape(action["url"], quote=True)}">View points and partner coupons ›</a>',
+        'value': 'Open your shared LT Points and partner benefits',
+        'attributedValue': f'<a href="{html.escape(action["url"], quote=True)}">Open Loyalty Tree Benefits ›</a>',
     })
-    back.insert(1, {'key': 'lt_points_detail', 'label': 'LOYALTY TREE POINTS',
-                    'value': value if state['linked'] else 'Verify your account to connect your cards'})
+    detail = f"{value} available. {POINT_RATE}" if state['linked'] else f"Verify the email on this card to connect your businesses. {POINT_RATE}"
+    back.insert(1, {'key': 'lt_points_detail', 'label': 'LT POINTS', 'value': detail})
+    back.insert(2, {'key': 'lt_points_about', 'label': 'ABOUT LT POINTS', 'value': f'{POINT_ABOUT} {POINT_USE}'})
     if state['coupon_count']:
-        back.insert(2, {'key': 'lt_coupons', 'label': 'LOYALTY TREE COUPONS',
+        back.insert(3, {'key': 'lt_coupons', 'label': 'LOYALTY TREE COUPONS',
                         'value': f"{state['coupon_count']} claimed · view your coupons in Loyalty Tree Benefits"})
     pass_dict.setdefault('userInfo', {})['loyaltyTreePointsVersion'] = str(state['version'])
     # iOS 27 uses Apple's membership-benefits action type and system label.
@@ -112,7 +116,9 @@ def apply_google(loyalty_object, customer, action):
     state = projection(customer)
     value = str(state['balance']) if state['linked'] else 'Connect your account'
     modules = loyalty_object.setdefault('textModulesData', [])
-    modules.insert(0, {'id': 'lt_points', 'header': 'LOYALTY TREE POINTS', 'body': value})
+    modules.insert(0, {'id': 'lt_points', 'header': 'LT POINTS', 'body': value})
+    modules.insert(1, {'id': 'lt_points_about', 'header': 'ABOUT LT POINTS',
+                       'body': f'{POINT_ABOUT} {POINT_RATE} {POINT_USE}'})
     merchant = loyalty_object.get('loyaltyPoints') or {}
     merchant_balance = merchant.get('balance') or {}
     modules.append({'id': 'lt_merchant_reward', 'header': merchant.get('label') or 'BUSINESS REWARDS',
@@ -123,7 +129,7 @@ def apply_google(loyalty_object, customer, action):
         modules.append({'id': 'lt_merchant_status', 'header': secondary.get('label') or 'BUSINESS STATUS',
                         'body': str(next(iter((secondary.get('balance') or {}).values()), ''))})
     if state['coupon_count']:
-        modules.insert(1, {'id': 'lt_coupons', 'header': 'LOYALTY TREE COUPONS',
+        modules.insert(2, {'id': 'lt_coupons', 'header': 'LOYALTY TREE COUPONS',
                            'body': f"{state['coupon_count']} claimed · open Loyalty Tree Benefits"})
     if not loyalty_object.get('secondaryLoyaltyPoints'):
         loyalty_object['secondaryLoyaltyPoints'] = {

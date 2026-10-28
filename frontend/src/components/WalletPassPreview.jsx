@@ -34,7 +34,7 @@ export default function WalletPassPreview({ provider, form, model, primaryColor,
       <div className="lt-wallet-action-list">
         {model.actions.map(action => <div key={action.id} className="lt-wallet-action-detail"><strong>{action.primary ? '★ ' : '↗ '}{action.label}</strong><span>{action.url}</span></div>)}
         <div className="lt-wallet-action-detail"><strong>View Rewards / Account ›</strong><span>Member card and history</span></div>
-        <div className="lt-wallet-action-detail"><strong>Rate Your Experience ›</strong><span>Member feedback</span></div>
+        <div className="lt-wallet-action-detail"><strong>LT POINTS</strong><span>Shared balance. 1 point per ₱500. This card's rewards stay its own. Partner benefits use this same card.</span></div>
       </div>
       {fields(model.details, 'lt-wallet-detail-fields')}
       <button type="button" className="lt-wallet-back" onClick={() => setDetailsOpen(false)}>Back to card</button>
