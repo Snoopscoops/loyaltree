@@ -7571,7 +7571,7 @@ def google_wallet_class_id_for_customer(customer: dict, business: dict, program:
         )
     else:
         legacy_id = _google_wallet_base_class_id(business, program)
-    return lt_wallet.google_class_id(legacy_id, customer, enabled=lt_benefits_enabled())
+    return lt_wallet.google_class_id(legacy_id, customer, enabled=lt_benefits_feature_enabled())
 
 
 def ensure_google_wallet_tier_class(customer: dict, business: dict, program: dict) -> bool:
@@ -7581,7 +7581,7 @@ def ensure_google_wallet_tier_class(customer: dict, business: dict, program: dic
     configured tier. That lets the existing LoyaltyObject keep the same object ID
     while moving between classes/colors as the customer levels up.
     """
-    if not program_has_tier(program) and not lt_wallet.card_enabled(customer, enabled=lt_benefits_enabled()):
+    if not program_has_tier(program) and not lt_wallet.card_enabled(customer, enabled=lt_benefits_feature_enabled()):
         return True
 
     access_token = get_google_access_token()
@@ -7697,7 +7697,7 @@ def build_loyalty_class(
     # programLogo is circular-masked by Google and ignores transparency, so
     # that slot is painted with the pass color after the white plate is removed.
     # wideProgramLogo is the transparent header and is not circular-masked.
-    lt_class = lt_benefits_enabled() and lt_wallet.is_google_class(class_id)
+    lt_class = lt_benefits_feature_enabled() and lt_wallet.is_google_class(class_id)
     logo_url = google_wallet_program_logo_uri(business, program, source_logo_url, primary_color, 'program')
     wide_logo_url = google_wallet_program_logo_uri(business, program, source_logo_url, primary_color, 'wide', benefits=lt_class)
     loyalty_class['programLogo'] = {
@@ -8325,7 +8325,7 @@ async def republish_wallet_class_and_refresh(business: dict, program: dict):
                         default_tier_name,
                     )]
 
-                if lt_benefits_enabled():
+                if lt_benefits_feature_enabled():
                     # Existing LT cards use independent classes. Reapply edits to
                     # those siblings too; checking that a class exists cannot
                     # propagate a new logo, program name or background color.
@@ -8490,7 +8490,7 @@ def sync_wallet_object(customer: dict, business: dict, program: dict,
 
             # Only customers with an actually-saved Google pass need the expensive
             # desired-object build and any tier-class preparation.
-            if program_has_tier(program) or lt_wallet.card_enabled(customer, enabled=lt_benefits_enabled()):
+            if program_has_tier(program) or lt_wallet.card_enabled(customer, enabled=lt_benefits_feature_enabled()):
                 if not ensure_google_wallet_tier_class(customer, business, program or {}):
                     return {'status': 'error', 'stage': 'class', 'detail': 'Google Wallet class is not ready'}
 
@@ -8867,13 +8867,13 @@ def lt_benefits_enabled() -> bool:
 def lt_benefits_wallet_action(customer: dict, business: dict):
     return lt_wallet.wallet_action(
         customer, business, FRONTEND_URL or 'https://theloyaltytree.com',
-        _order_ahead_signing_secret(), enabled=lt_benefits_enabled(),
+        _order_ahead_signing_secret(), enabled=lt_benefits_feature_enabled(),
     )
 
 
 def _lt_card_context(customer_public_id: str, token: str):
     customer = safe_get_customer(customer_public_id)
-    if not lt_wallet.card_enabled(customer, enabled=lt_benefits_enabled()):
+    if not lt_wallet.card_enabled(customer, enabled=lt_benefits_feature_enabled()):
         raise HTTPException(status_code=409, detail='This business has not enabled LT Benefits on this card yet.')
     business = safe_get_business_by_id((customer or {}).get('business_id')) if customer else None
     if not customer or not business or not lt_wallet.verify_card_token(
@@ -11681,7 +11681,7 @@ def _resize_png_bytes(png_bytes: bytes, width: int, height: int) -> Optional[byt
 def _apple_loyalty_brand_assets(customer: dict, business: dict, program: dict, primary_color: str) -> dict:
     """Reuse compressed branding across members; no decoded PIL objects retained."""
     logo_url = (program or {}).get('program_logo_url') or business.get('logo_url')
-    branded = lt_wallet.card_enabled(customer, enabled=lt_benefits_enabled())
+    branded = lt_wallet.card_enabled(customer, enabled=lt_benefits_feature_enabled())
     key = 'apple-brand-png-v1:' + hashlib.sha256(json.dumps(
         [logo_url, primary_color, business.get('name'), branded, lt_wallet.RELEASE],
         separators=(',', ':'), default=str).encode()).hexdigest()
@@ -11874,8 +11874,8 @@ def _apple_pkpass_fingerprint(customer: dict, business: dict, program: dict, ann
         },
         "wallet_revision": str(_apple_pass_dirty_at(customer.get("public_id")) or ""),
         "lt_points": {
-            "release": lt_wallet.RELEASE if lt_wallet.card_enabled(customer, enabled=lt_benefits_enabled()) else '',
-            "card_enabled": lt_wallet.card_enabled(customer, enabled=lt_benefits_enabled()),
+            "release": lt_wallet.RELEASE if lt_wallet.card_enabled(customer, enabled=lt_benefits_feature_enabled()) else '',
+            "card_enabled": lt_wallet.card_enabled(customer, enabled=lt_benefits_feature_enabled()),
             "version": customer.get('lt_points_version'),
             "balance": customer.get('lt_points_balance'),
             "updated_at": customer.get('lt_points_updated_at'),
@@ -21194,7 +21194,7 @@ async def get_customer_api(public_id: str, response: Response):
     return {
         "current_card_type": current_card_type,
         "customer": {key: value for key, value in customer.items() if key != 'lt_member_id'},
-        "lt_benefits_enabled": lt_wallet.card_enabled(customer, enabled=lt_benefits_enabled()),
+        "lt_benefits_enabled": lt_wallet.card_enabled(customer, enabled=lt_benefits_feature_enabled()),
         "business": {
             "id": business.get("id") if business else None,
             "public_id": business.get("public_id") if business else None,
@@ -39002,7 +39002,7 @@ async def get_wallet_pass(customer_public_id: str):
     loyalty_object = build_loyalty_object(customer, business, program)
 
     google_class_ready = True
-    if program_has_tier(program) or lt_wallet.card_enabled(customer, enabled=lt_benefits_enabled()):
+    if program_has_tier(program) or lt_wallet.card_enabled(customer, enabled=lt_benefits_feature_enabled()):
         google_class_ready = await asyncio.to_thread(ensure_google_wallet_tier_class, customer, business, program or {})
         if not google_class_ready:
             print(
