@@ -531,7 +531,7 @@ def get_plan_features(plan: Optional[str], pricing_region: Optional[str] = None)
     Pro-only features."""
     features = dict(SUBSCRIPTION_PLANS.get(plan or 'starter', SUBSCRIPTION_PLANS['starter']))
     code = normalize_country_code(pricing_region)
-    features['geofence_notifications'] = code == 'AE' and plan == 'pro'
+    features['geofence_notifications'] = code == 'PH' or (code == 'AE' and plan == 'pro')
     if code != 'PH':
         features['gift_cards'] = False
     return features
