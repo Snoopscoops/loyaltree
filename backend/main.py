@@ -8917,14 +8917,15 @@ def _lt_stamp_spend(program, amount_spent):
     return round(min(points, 100.0) * 500, 2)
 
 
-def _lt_purchase_metadata(public_id: str, authorization: str, amount, business=None):
+def _lt_purchase_metadata(public_id: str, authorization: str, amount, business=None, trusted=False):
     if not lt_benefits_feature_enabled() or amount is None:
         return {}
-    try:
-        _lt_require_staff(public_id, authorization)
-    except Exception:
-        # Preserve legacy local loyalty actions; only verified actors earn LT.
-        return {}
+    if not trusted:
+        try:
+            _lt_require_staff(public_id, authorization)
+        except Exception:
+            # Preserve legacy local loyalty actions; only verified actors earn LT.
+            return {}
     try:
         amount_centavos = lt_transactions.centavos(amount)
         if amount_centavos <= 0:
@@ -28224,7 +28225,7 @@ async def add_stamp(public_id: str, req: StampRequest, background_tasks: Backgro
                 'card_type': (program or {}).get('card_type'),
                 'tier_progression':'stamps',
                 'reward_engine': effective_loyalty_type(program),
-                **_lt_purchase_metadata(public_id, authorization, _lt_stamp_spend(program, req.amount_spent), business=business),
+                **_lt_purchase_metadata(public_id, authorization, _lt_stamp_spend(program, req.amount_spent), business=business, trusted=True),
             },
         )
         if audit_row and audit_row.get('_duplicate_response'):
@@ -28302,7 +28303,7 @@ async def add_stamp(public_id: str, req: StampRequest, background_tasks: Backgro
         delta=1,
         balance_before=old_count,
         metadata={'card_type': 'stamp', 'goal': goal,
-                  **_lt_purchase_metadata(public_id, authorization, _lt_stamp_spend(program, req.amount_spent), business=business)},
+                  **_lt_purchase_metadata(public_id, authorization, _lt_stamp_spend(program, req.amount_spent), business=business, trusted=True)},
     )
     if audit_row and audit_row.get('_duplicate_response'):
         return audit_row['_duplicate_response']
