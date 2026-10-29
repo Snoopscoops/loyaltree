@@ -275,7 +275,7 @@ class LTBenefitsService:
 
     def _command(self, action, **data):
         if action in {'provision', 'auth_request', 'auth_verify', 'link', 'session', 'me', 'catalog',
-                      'claim', 'cashier_customer', 'use', 'earn', 'wallet_projection', 'wallet_jobs_claim'} and not self.public_launch_enabled():
+                      'claim', 'cashier_customer', 'use', 'wallet_projection', 'wallet_jobs_claim'} and not self.public_launch_enabled():
             raise HTTPException(503, 'Loyalty Tree Points is coming soon. Your business loyalty card keeps working.')
         try:
             result = self.db.rpc("ltb_identity_command", {"p_action": action, "p_data": data}).execute().data
