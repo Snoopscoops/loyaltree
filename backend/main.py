@@ -10989,7 +10989,7 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
     # The logo image already carries the brand - headerFields already carry
     # the member context - logoText is redundant and the most common source
     # of the overlapping-text look on real devices.
-    geofence_locations = apple_geofence_locations(business)
+    geofence_locations = apple_geofence_locations(business, customer)
     if geofence_locations:
         pass_dict['locations'] = geofence_locations
     return lt_wallet.apply_apple(pass_dict, customer, lt_benefits_wallet_action(customer, business))
@@ -20781,6 +20781,78 @@ def send_due_network_pings(limit: int = 3) -> list:
             }).eq("id", ping.get("id")).execute()
             sent.append({"public_id": ping.get("public_id"), "status": "failed"})
     return sent
+
+
+
+class GeoRegionAssign(BaseModel):
+    business_public_id: str = Field(min_length=2, max_length=80)
+    region: str = Field(default="", max_length=80)
+    branch_public_id: Optional[str] = None
+
+
+class GeoHighlightAssign(BaseModel):
+    region: str = Field(min_length=2, max_length=80)
+    business_public_id: str = Field(min_length=2, max_length=80)
+
+
+@app.get("/api/v1/admin/geo-highlights")
+async def admin_list_geo_highlights(region: str = "", _: bool = Depends(require_admin)):
+    key = _region_key(region)
+    try:
+        query = supabase.table("geo_region_highlights").select("*").order("created_at")
+        if key:
+            query = query.eq("region_key", key)
+        rows = query.limit(100).execute().data or []
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+    return rows
+
+
+@app.post("/api/v1/admin/geo-region")
+async def admin_set_geo_region(body: GeoRegionAssign, _: bool = Depends(require_admin)):
+    business = safe_get_business(body.business_public_id.strip())
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    region = _clean_region(body.region)
+    try:
+        if body.branch_public_id:
+            updated = (supabase.table("branches").update({"geo_region": region or None})
+                       .eq("business_id", business.get("id")).eq("public_id", body.branch_public_id.strip()).execute().data or [])
+            if not updated:
+                raise HTTPException(status_code=404, detail="Branch not found")
+        else:
+            supabase.table("businesses").update({"geo_region": region or None}).eq("id", business.get("id")).execute()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+    _geo_highlight_cache.clear()
+    return {"business_public_id": business.get("public_id"), "branch_public_id": body.branch_public_id, "region": region}
+
+
+@app.post("/api/v1/admin/geo-highlights")
+async def admin_add_geo_highlight(body: GeoHighlightAssign, _: bool = Depends(require_admin)):
+    business = safe_get_business(body.business_public_id.strip())
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    region = _clean_region(body.region)
+    row = {"region": region, "region_key": _region_key(region), "business_public_id": business.get("public_id")}
+    try:
+        saved = (supabase.table("geo_region_highlights").upsert(row, on_conflict="region_key,business_public_id").execute().data or [row])[0]
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+    _geo_highlight_cache.clear()
+    return saved
+
+
+@app.delete("/api/v1/admin/geo-highlights")
+async def admin_remove_geo_highlight(region: str, business_public_id: str, _: bool = Depends(require_admin)):
+    try:
+        supabase.table("geo_region_highlights").delete().eq("region_key", _region_key(region)).eq("business_public_id", business_public_id.strip()).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+    _geo_highlight_cache.clear()
+    return {"removed": True}
 
 
 @app.get("/api/v1/admin/network-pings")
@@ -50641,18 +50713,122 @@ def _geofence_load(business: dict) -> dict:
         return {}
 
 
-def apple_geofence_locations(business: dict) -> list:
-    if not business_has_plan_feature(business, 'geofence_notifications'):
+
+_geo_highlight_cache = {}
+
+
+def _clean_region(value) -> str:
+    return " ".join(str(value or "").strip().split())
+
+
+def _region_key(value) -> str:
+    return _clean_region(value).lower()
+
+
+def _branch_region_rows(business_id):
+    if not supabase or not business_id:
+        return []
+    try:
+        return supabase.table("branches").select("public_id,name,geo_region").eq("business_id", business_id).execute().data or []
+    except Exception:
+        return []
+
+
+def _customer_geo_region(customer, business) -> str:
+    customer = customer or {}
+    branches = {row.get("public_id"): row for row in _branch_region_rows((business or {}).get("id"))}
+    for key in ("joined_branch_public_id", "home_branch_public_id", "branch_public_id"):
+        row = branches.get(customer.get(key)) or {}
+        if _clean_region(row.get("geo_region")):
+            return _clean_region(row.get("geo_region"))
+    return _clean_region((business or {}).get("geo_region"))
+
+
+def _pin_region(pin, business, branches) -> str:
+    row = branches.get((pin or {}).get("branch_public_id")) or {}
+    return _clean_region(row.get("geo_region")) or _clean_region((business or {}).get("geo_region"))
+
+
+def _highlighted_businesses(region):
+    key = _region_key(region)
+    if not key or not supabase:
+        return []
+    cached = _geo_highlight_cache.get(key)
+    if cached and time.time() - cached[0] < 60:
+        return cached[1]
+    try:
+        rows = (supabase.table("geo_region_highlights").select("business_public_id,region,created_at")
+                .eq("region_key", key).order("created_at").limit(20).execute().data or [])
+    except Exception:
+        rows = []
+    _geo_highlight_cache[key] = (time.time(), rows)
+    return rows
+
+
+def _apple_location(pin, config, label):
+    text = (label or pin.get("message") or config.get("message") or GEOFENCE_DEFAULT_MESSAGE)[:120]
+    return {
+        "latitude": float(pin["latitude"]),
+        "longitude": float(pin["longitude"]),
+        "relevantText": text,
+        "maxDistance": int(config.get("radius_meters") or GEOFENCE_MIN_RADIUS_METERS),
+    }
+
+
+def apple_geofence_locations(business: dict, customer: dict = None) -> list:
+    if not business_has_plan_feature(business, "geofence_notifications"):
         return []
     config = _geofence_public(_geofence_load(business or {}))
-    if not config.get('enabled'):
+    if not config.get("enabled"):
         return []
-    return [{
-        'latitude': float(pin['latitude']),
-        'longitude': float(pin['longitude']),
-        'relevantText': (pin.get('message') or config.get('message') or GEOFENCE_DEFAULT_MESSAGE)[:120],
-        'maxDistance': int(config.get('radius_meters') or GEOFENCE_MIN_RADIUS_METERS),
-    } for pin in (config.get('pins') or [])][:GEOFENCE_APPLE_LOCATION_CAP]
+    branches = {row.get("public_id"): row for row in _branch_region_rows(business.get("id"))}
+    region = _customer_geo_region(customer, business)
+    own = []
+    for pin in config.get("pins") or []:
+        try:
+            latitude = float(pin.get("latitude"))
+            longitude = float(pin.get("longitude"))
+        except (TypeError, ValueError):
+            continue
+        pin_region = _pin_region(pin, business, branches)
+        if region and pin_region and _region_key(pin_region) != _region_key(region):
+            continue
+        branch = branches.get(pin.get("branch_public_id")) or {}
+        name = branch.get("name") or business.get("name") or "this store"
+        own.append(_apple_location({**pin, "latitude": latitude, "longitude": longitude}, config, "You're near " + name))
+        if len(own) >= GEOFENCE_APPLE_LOCATION_CAP:
+            return own[:GEOFENCE_APPLE_LOCATION_CAP]
+    seen = {(item["latitude"], item["longitude"]) for item in own}
+    for row in _highlighted_businesses(region):
+        if len(own) >= GEOFENCE_APPLE_LOCATION_CAP:
+            break
+        public_id = row.get("business_public_id")
+        if not public_id or public_id == business.get("public_id"):
+            continue
+        other = safe_get_business(public_id)
+        if not other or not business_has_plan_feature(other, "geofence_notifications"):
+            continue
+        other_config = _geofence_public(_geofence_load(other))
+        if not other_config.get("enabled"):
+            continue
+        other_branches = {item.get("public_id"): item for item in _branch_region_rows(other.get("id"))}
+        for pin in other_config.get("pins") or []:
+            pin_region = _pin_region(pin, other, other_branches)
+            if region and pin_region and _region_key(pin_region) != _region_key(region):
+                continue
+            try:
+                point = (round(float(pin.get("latitude")), 6), round(float(pin.get("longitude")), 6))
+            except (TypeError, ValueError):
+                continue
+            if point in seen:
+                continue
+            label = "You're near " + (other.get("name") or "a Loyalty Tree business")
+            own.append(_apple_location({**pin, "latitude": point[0], "longitude": point[1]}, other_config, label))
+            seen.add(point)
+            break
+    return own[:GEOFENCE_APPLE_LOCATION_CAP]
+
+
 
 
 def _geofence_branch_rows(business_id) -> list:

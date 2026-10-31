@@ -5,6 +5,67 @@ const EMPTY_FORM = { title: '', message: '', type: 'promo' }
 // Lets the platform admin write/edit/delete the promos that show up as a
 // dismissible banner on every business owner's dashboard (PlatformPromoBanner.jsx).
 
+
+function GeoHighlightAdmin({ API_BASE, token }) {
+  const [region, setRegion] = React.useState('')
+  const [business, setBusiness] = React.useState('')
+  const [branch, setBranch] = React.useState('')
+  const [items, setItems] = React.useState([])
+  const [error, setError] = React.useState('')
+  const [note, setNote] = React.useState('')
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
+  const load = async (value) => {
+    const name = (value === undefined ? region : value).trim()
+    if (!name) { setItems([]); return }
+    const res = await fetch(`${API_BASE}/api/v1/admin/geo-highlights?region=${encodeURIComponent(name)}`, { headers: { Authorization: `Bearer ${token}` } })
+    const data = await res.json().catch(() => [])
+    setItems(Array.isArray(data) ? data : [])
+  }
+  const setBusinessRegion = async () => {
+    setError(''); setNote('')
+    const res = await fetch(`${API_BASE}/api/v1/admin/geo-region`, { method: 'POST', headers, body: JSON.stringify({ business_public_id: business.trim(), region: region.trim(), branch_public_id: branch.trim() || null }) })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) setError(typeof data.detail === 'string' ? data.detail : 'Could not set region')
+    else setNote('Region saved')
+  }
+  const add = async () => {
+    setError(''); setNote('')
+    const res = await fetch(`${API_BASE}/api/v1/admin/geo-highlights`, { method: 'POST', headers, body: JSON.stringify({ region: region.trim(), business_public_id: business.trim() }) })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) setError(typeof data.detail === 'string' ? data.detail : 'Could not highlight')
+    else { setNote('Highlighted'); load() }
+  }
+  const remove = async (item) => {
+    const res = await fetch(`${API_BASE}/api/v1/admin/geo-highlights?region=${encodeURIComponent(item.region)}&business_public_id=${encodeURIComponent(item.business_public_id)}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } })
+    if (res.ok) load()
+  }
+  return (
+    <section style={{ ...styles.section, marginTop: 20 }}>
+      <h2 style={styles.sectionTitle}>Region highlights</h2>
+      <p style={styles.sectionSubtitle}>Set a business region, then choose who fills the leftover nearby slots. Own branches come first. The card still stops at 10. Android does not get these extra businesses.</p>
+      <div style={styles.form}>
+        <input style={styles.input} placeholder="Region, e.g. Makati" value={region} onChange={e => setRegion(e.target.value)} />
+        <input style={styles.input} placeholder="Business public id" value={business} onChange={e => setBusiness(e.target.value)} />
+        <input style={styles.input} placeholder="Branch public id, only if this branch has its own region" value={branch} onChange={e => setBranch(e.target.value)} />
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button type="button" onClick={setBusinessRegion} style={styles.smallBtn}>Save region</button>
+          <button type="button" onClick={add} style={styles.smallBtn}>Highlight in this region</button>
+          <button type="button" onClick={() => load()} style={styles.smallBtn}>Show list</button>
+        </div>
+        {error && <p style={{ color: '#b91c1c', fontSize: 13 }}>{error}</p>}
+        {note && <p style={{ color: '#166534', fontSize: 13 }}>{note}</p>}
+      </div>
+      {items.map(item => (
+        <div key={item.id || item.business_public_id} style={styles.item}>
+          <div style={styles.itemTitle}>{item.region}</div>
+          <div style={styles.itemMessage}>{item.business_public_id}</div>
+          <button type="button" onClick={() => remove(item)} style={{ ...styles.smallBtn, color: '#b91c1c' }}>Remove</button>
+        </div>
+      ))}
+    </section>
+  )
+}
+
 function NetworkPingAdmin({ API_BASE, token }) {
   const [form, setForm] = React.useState({ title: 'Welcome to Loyalty Tree', message: '', business: '', when: '' })
   const [items, setItems] = React.useState([])
@@ -251,6 +312,7 @@ function PlatformAnnouncementsAdmin({ API_BASE, token }) {
       )}
     </div>
     <NetworkPingAdmin API_BASE={API_BASE} token={token} />
+    <GeoHighlightAdmin API_BASE={API_BASE} token={token} />
     </>
   )
 }
