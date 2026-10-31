@@ -7783,6 +7783,79 @@ def ensure_google_wallet_vip_class(customer: dict, business: dict, program: dict
     return ensure_google_wallet_tier_class(customer, business, program)
 
 
+
+def google_merchant_locations(business: dict) -> list:
+    """Saved nearby pins for the Google loyalty class. Google accepts at most 10."""
+    if not business_has_plan_feature(business or {}, 'geofence_notifications'):
+        return []
+    config = _geofence_public(_geofence_load(business or {}))
+    if not config.get('enabled'):
+        return []
+    locations = []
+    for pin in config.get('pins') or []:
+        try:
+            latitude = float(pin.get('latitude'))
+            longitude = float(pin.get('longitude'))
+        except (TypeError, ValueError):
+            continue
+        if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+            continue
+        locations.append({'latitude': round(latitude, 6), 'longitude': round(longitude, 6)})
+        if len(locations) >= 10:
+            break
+    return locations
+
+
+def _google_geofence_class_ids(business: dict) -> list:
+    programs = []
+    try:
+        if supabase and business.get('id'):
+            programs = supabase.table('loyalty_programs').select('*').eq('business_id', business.get('id')).execute().data or []
+    except Exception as exc:
+        print(f'GEOFENCE Google class lookup warning: {exc}')
+    if not programs:
+        program = safe_get_loyalty_program(business.get('id')) if business.get('id') else None
+        programs = [program] if program else []
+    ids = []
+    for program in programs:
+        if program_has_tier(program):
+            tiers = normalize_vip_tiers(program or {}) or [get_vip_tier({}, program or {})]
+            specs = [google_wallet_tier_class_id(business, program, tier) for tier in tiers]
+        else:
+            specs = [program.get('google_wallet_class_id') or _google_wallet_base_class_id(business, program)]
+        if lt_benefits_feature_enabled():
+            specs += [str(item) + lt_wallet.GOOGLE_CLASS_SUFFIX for item in list(specs) if item]
+        ids.extend(str(item) for item in specs if item)
+    return list(dict.fromkeys(ids))
+
+
+def sync_google_geofence_locations(business: dict) -> int:
+    """Push the saved pins onto every existing Google loyalty class for this business."""
+    if not GOOGLE_WALLET_ISSUER_ID:
+        return 0
+    access_token = get_google_access_token()
+    if not access_token:
+        print('GEOFENCE Google class: no access token')
+        return 0
+    locations = google_merchant_locations(business)
+    updated = 0
+    try:
+        import httpx
+        with pooled_client(timeout=20) as client:
+            for class_id in _google_geofence_class_ids(business):
+                response = client.patch(
+                    f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}',
+                    headers={'Authorization': f'Bearer {access_token}'},
+                    json={'merchantLocations': locations},
+                )
+                print(f'GEOFENCE Google class {class_id} -> {response.status_code} locations={len(locations)}')
+                if response.status_code == 200:
+                    updated += 1
+    except Exception as exc:
+        print(f'GEOFENCE Google class update warning: {exc}')
+    return updated
+
+
 def build_loyalty_class(
     business: dict,
     program: dict,
@@ -7883,6 +7956,7 @@ def build_loyalty_class(
         loyalty_class['enableSmartTap'] = True
         loyalty_class['redemptionIssuers'] = [str(GOOGLE_SMART_TAP_REDEMPTION_ISSUER_ID)]
 
+    loyalty_class['merchantLocations'] = google_merchant_locations(business)
     return lt_wallet.apply_google_class(loyalty_class) if lt_class else loyalty_class
 
 
@@ -50389,7 +50463,7 @@ def get_geofence_config(public_id: str, authorization: str = Header(default=''))
         **_geofence_public(_geofence_load(business), _geofence_branch_rows(business.get('id'))),
         'feature_enabled': available,
         'pricing_region': business_pricing_region(business),
-        'access_message': 'Geo-based notifications are included in UAE Pro or an agreed Special setup.',
+        'access_message': 'Nearby notifications are not included on this plan.',
     }
 
 
@@ -50400,7 +50474,7 @@ def save_geofence_config(public_id: str, payload: GeofenceConfigUpdate, authoriz
     if not business:
         raise HTTPException(status_code=404, detail='Business not found')
     if not business_has_plan_feature(business, 'geofence_notifications'):
-        raise HTTPException(status_code=403, detail='Geo-based notifications require UAE Pro or an agreed Special setup.')
+        raise HTTPException(status_code=403, detail='Nearby notifications are not included on this plan.')
     if payload.max_per_week < payload.max_per_day:
         raise HTTPException(status_code=400, detail='Weekly cap cannot be lower than the daily cap.')
     if payload.enabled and not payload.pins:
@@ -50438,6 +50512,11 @@ def save_geofence_config(public_id: str, payload: GeofenceConfigUpdate, authoriz
         supabase.table('businesses').update({'geofence_config': config}).eq('id', business.get('id')).execute()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f'Run geofence_notifications.sql first. {friendly_db_error(exc)}')
+    business['geofence_config'] = config
+    try:
+        sync_google_geofence_locations(business)
+    except Exception as exc:
+        print(f'GEOFENCE Google class update warning: {exc}')
     return _geofence_public(config, branches)
 
 
@@ -50450,7 +50529,7 @@ def resolve_geofence_link(public_id: str, payload: dict, authorization: str = He
     if not business:
         raise HTTPException(status_code=404, detail='Business not found')
     if not business_has_plan_feature(business, 'geofence_notifications'):
-        raise HTTPException(status_code=403, detail='Geo-based notifications require UAE Pro or an agreed Special setup.')
+        raise HTTPException(status_code=403, detail='Nearby notifications are not included on this plan.')
     raw = str((payload or {}).get('url') or '').strip()
     if not raw:
         raise HTTPException(status_code=400, detail='Paste a Google Maps link.')
@@ -50507,7 +50586,7 @@ def test_geofence_notification(public_id: str, authorization: str = Header(defau
     if not business:
         raise HTTPException(status_code=404, detail='Business not found')
     if not business_has_plan_feature(business, 'geofence_notifications'):
-        raise HTTPException(status_code=403, detail='Geo-based notifications require UAE Pro or an agreed Special setup.')
+        raise HTTPException(status_code=403, detail='Nearby notifications are not included on this plan.')
     config = _geofence_load(business)
     if not config.get('enabled') or not config.get('pins'):
         raise HTTPException(status_code=400, detail='Save an enabled pin before sending a test.')

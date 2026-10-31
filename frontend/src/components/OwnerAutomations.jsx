@@ -114,7 +114,7 @@ export default function OwnerAutomations({ API_BASE, user, active = true }) {
   const [savingRetentionSettings, setSavingRetentionSettings] = useState(false)
   const [retentionSettingsMessage, setRetentionSettingsMessage] = useState('')
   const [automationStats, setAutomationStats] = useState({ tracking: 'log', birthday: {}, win_back: {}, recent: [] })
-  const [geofence, setGeofence] = useState({ feature_enabled: false, access_message: 'Geo-based notifications are included in UAE Pro or an agreed Special setup.', enabled: false, message: "You're near us. Open your LoyaltyTree card.", radius_meters: 150, max_per_day: 1, max_per_week: 3, pins: [], branches: [], limits: { min_radius_meters: 100, max_radius_meters: 1000, max_pins: 10 } })
+  const [geofence, setGeofence] = useState({ feature_enabled: false, access_message: 'Nearby notifications are not included on this plan.', enabled: false, message: "You're near us. Open your LoyaltyTree card.", radius_meters: 150, max_per_day: 1, max_per_week: 3, pins: [], branches: [], limits: { min_radius_meters: 100, max_radius_meters: 1000, max_pins: 10 } })
   const [geofenceStatus, setGeofenceStatus] = useState('')
   const [savingGeofence, setSavingGeofence] = useState(false)
   const [settingsLoaded, setSettingsLoaded] = useState(false)
@@ -169,7 +169,7 @@ export default function OwnerAutomations({ API_BASE, user, active = true }) {
       setGeofenceError('')
       setGeofence({
         feature_enabled: data.feature_enabled === true,
-        access_message: data.access_message || 'Geo-based notifications are included in UAE Pro or an agreed Special setup.',
+        access_message: data.access_message || 'Nearby notifications are not included on this plan.',
         enabled: !!data.enabled,
         message: data.message || "You're near us. Open your LoyaltyTree card.",
         radius_meters: data.radius_meters || 150,
