@@ -4,6 +4,75 @@ const EMPTY_FORM = { title: '', message: '', type: 'promo' }
 
 // Lets the platform admin write/edit/delete the promos that show up as a
 // dismissible banner on every business owner's dashboard (PlatformPromoBanner.jsx).
+
+function NetworkPingAdmin({ API_BASE, token }) {
+  const [form, setForm] = React.useState({ title: 'Welcome to Loyalty Tree', message: '', business: '', when: '' })
+  const [items, setItems] = React.useState([])
+  const [error, setError] = React.useState('')
+  const [saving, setSaving] = React.useState(false)
+  const load = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/admin/network-pings`, { headers: { Authorization: `Bearer ${token}` } })
+      const data = await res.json()
+      setItems(Array.isArray(data) ? data : [])
+    } catch (err) {}
+  }
+  React.useEffect(() => { if (token) load() }, [token])
+  const submit = async (event) => {
+    event.preventDefault()
+    setError('')
+    if (!form.title.trim() || !form.message.trim() || !form.business.trim() || !form.when) {
+      setError('Title, message, business id, and time are required')
+      return
+    }
+    setSaving(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/admin/network-pings`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: form.title.trim(),
+          message: form.message.trim(),
+          highlight_business_public_id: form.business.trim(),
+          scheduled_at: new Date(form.when).toISOString(),
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) setError(typeof data.detail === 'string' ? data.detail : 'Could not schedule')
+      else {
+        setForm({ title: 'Welcome to Loyalty Tree', message: '', business: '', when: '' })
+        load()
+      }
+    } catch (err) {
+      setError('Network error')
+    }
+    setSaving(false)
+  }
+  return (
+    <section style={{ ...styles.section, marginTop: 20 }}>
+      <h2 style={styles.sectionTitle}>Nationwide welcome</h2>
+      <p style={styles.sectionSubtitle}>Schedule one Loyalty Tree ping for saved cards at Philippines businesses. It highlights one business. It is not a nearby alert.</p>
+      <form onSubmit={submit} style={styles.form}>
+        <input style={styles.input} placeholder="Title" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} />
+        <textarea style={{ ...styles.input, minHeight: 70 }} placeholder="Message, e.g. Welcome Cafe Luna to Loyalty Tree." value={form.message} onChange={e => setForm({ ...form, message: e.target.value })} />
+        <input style={styles.input} placeholder="Business public id to highlight" value={form.business} onChange={e => setForm({ ...form, business: e.target.value })} />
+        <input style={styles.input} type="datetime-local" value={form.when} onChange={e => setForm({ ...form, when: e.target.value })} />
+        {error && <p style={{ color: '#b91c1c', fontSize: 13 }}>{error}</p>}
+        <div style={styles.formActions}>
+          <button type="submit" disabled={saving} style={{ padding: '10px 16px', borderRadius: 10, border: 'none', background: '#17352b', color: 'white', fontWeight: 700 }}>{saving ? 'Saving...' : 'Schedule ping'}</button>
+        </div>
+      </form>
+      {items.map(item => (
+        <div key={item.public_id} style={styles.item}>
+          <div style={styles.itemTitle}>{item.title}</div>
+          <div style={styles.itemMessage}>{item.message}</div>
+          <div style={styles.itemMeta}>{item.highlight_business_public_id} · {item.status} · {item.scheduled_at}</div>
+        </div>
+      ))}
+    </section>
+  )
+}
+
 function PlatformAnnouncementsAdmin({ API_BASE, token }) {
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
@@ -109,6 +178,7 @@ function PlatformAnnouncementsAdmin({ API_BASE, token }) {
   }
 
   return (
+    <>
     <div style={styles.section}>
       <h2 style={styles.sectionTitle}>📣 Platform Promotions</h2>
       <p style={styles.sectionSubtitle}>
@@ -180,6 +250,8 @@ function PlatformAnnouncementsAdmin({ API_BASE, token }) {
         </div>
       )}
     </div>
+    <NetworkPingAdmin API_BASE={API_BASE} token={token} />
+    </>
   )
 }
 

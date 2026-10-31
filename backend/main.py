@@ -10611,6 +10611,15 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         if ann_message.strip() and ann_message.strip() != announcement_value:
             back_fields.append({'key': 'announcement_detail', 'label': ' ', 'value': ann_message.strip()[:1000]})
 
+    ping = latest_network_ping()
+    if ping:
+        back_fields.append({
+            'key': 'network_ping',
+            'label': 'LOYALTY TREE',
+            'value': str(ping.get('message') or ping.get('title') or 'A business joined Loyalty Tree')[:120],
+            'changeMessage': '%@',
+        })
+
     # Soft call-to-action for business owners who see the card. Back of the pass only.
     back_fields.append({
         'key': 'loyaltytree_for_business',
@@ -20642,6 +20651,208 @@ async def admin_partner_logo_signature(_: bool = Depends(require_admin)):
         "cloud_name": CLOUDINARY_CLOUD_NAME, "upload_preset": CLOUDINARY_UPLOAD_PRESET,
         "folder": folder,
     }
+
+
+class NetworkPingCreate(BaseModel):
+    title: str = Field(min_length=2, max_length=80)
+    message: str = Field(min_length=2, max_length=180)
+    highlight_business_public_id: str = Field(min_length=2, max_length=80)
+    scheduled_at: str
+
+
+_network_ping_cache = {"at": 0.0, "row": None}
+
+
+def _parse_ping_time(value: str) -> datetime:
+    raw = str(value or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Choose a date and time")
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        when = datetime.fromisoformat(raw)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Use a valid date and time")
+    if when.tzinfo is not None:
+        when = when.astimezone(timezone.utc).replace(tzinfo=None)
+    return when
+
+
+def latest_network_ping():
+    now = time.time()
+    if now - _network_ping_cache["at"] < 30:
+        return _network_ping_cache["row"]
+    row = None
+    try:
+        rows = (supabase.table("network_pings").select("public_id,title,message,sent_at")
+                .eq("status", "sent").order("sent_at", desc=True).limit(1).execute().data or [])
+        row = rows[0] if rows else None
+    except Exception:
+        row = None
+    _network_ping_cache["at"] = now
+    _network_ping_cache["row"] = row
+    return row
+
+
+def _active_ph_businesses():
+    rows = []
+    start = 0
+    while start < 5000:
+        chunk = (supabase.table("businesses")
+                 .select("id,public_id,name,status,pricing_region,country_code,logo_url")
+                 .eq("status", "ACTIVE").range(start, start + 999).execute().data or [])
+        rows.extend(chunk)
+        if len(chunk) < 1000:
+            break
+        start += 1000
+    return [row for row in rows if row.get("public_id") and business_pricing_region(row) == "PH"]
+
+
+def _ping_class_ids(business):
+    try:
+        programs = supabase.table("loyalty_programs").select("*").eq("business_id", business.get("id")).execute().data or []
+    except Exception:
+        programs = []
+    ids = []
+    for program in programs or [{}]:
+        if program_has_tier(program):
+            tiers = normalize_vip_tiers(program or {}) or [get_vip_tier({}, program or {})]
+            specs = [google_wallet_tier_class_id(business, program, tier) for tier in tiers]
+        else:
+            specs = [(program or {}).get("google_wallet_class_id") or _google_wallet_base_class_id(business, program or {})]
+        if lt_benefits_feature_enabled():
+            specs += [str(item) + lt_wallet.GOOGLE_CLASS_SUFFIX for item in list(specs) if item]
+        ids.extend(str(item) for item in specs if item)
+    return list(dict.fromkeys(ids))
+
+
+def _deliver_network_ping(ping: dict) -> dict:
+    highlight = safe_get_business(ping.get("highlight_business_public_id")) or {}
+    name = highlight.get("name") or "a new business"
+    header = "Loyalty Tree"
+    body = (ping.get("message") or ("Welcome " + name + " to Loyalty Tree."))[:180]
+    detail_url = BASE_URL + "/ping/" + str(ping.get("public_id") or "")
+    message_id = "ping-" + str(ping.get("public_id") or "")
+    google_sent = 0
+    google_failed = 0
+    apple_sent = 0
+    businesses = _active_ph_businesses()
+    for business in businesses:
+        for class_id in _ping_class_ids(business):
+            if send_wallet_class_message(class_id, header, body, message_id, detail_url):
+                google_sent += 1
+            else:
+                google_failed += 1
+        try:
+            apple_sent += int(push_apple_wallet_announcement(business.get("id")) or 0)
+        except Exception as exc:
+            print("NETWORK PING apple warning: " + str(exc))
+        time.sleep(0.05)
+    _network_ping_cache["at"] = 0
+    return {"businesses": len(businesses), "highlight": name, "google_sent": google_sent, "google_failed": google_failed, "apple_sent": apple_sent}
+
+
+def send_due_network_pings(limit: int = 3) -> list:
+    if not supabase:
+        return []
+    now = datetime.utcnow().isoformat()
+    try:
+        rows = (supabase.table("network_pings").select("*").eq("status", "scheduled")
+                .lte("scheduled_at", now).order("scheduled_at").limit(limit).execute().data or [])
+    except Exception as exc:
+        print("NETWORK PING lookup warning: " + str(exc))
+        return []
+    sent = []
+    for ping in rows:
+        claimed = (supabase.table("network_pings").update({"status": "sending"})
+                   .eq("id", ping.get("id")).eq("status", "scheduled").execute().data or [])
+        if not claimed:
+            continue
+        try:
+            result = _deliver_network_ping(ping)
+            supabase.table("network_pings").update({
+                "status": "sent", "sent_at": datetime.utcnow().isoformat(), "result": result,
+            }).eq("id", ping.get("id")).execute()
+            sent.append({"public_id": ping.get("public_id"), "status": "sent", **result})
+        except Exception as exc:
+            print("NETWORK PING send warning: " + str(exc))
+            supabase.table("network_pings").update({
+                "status": "failed", "result": {"error": str(exc)[:300]},
+            }).eq("id", ping.get("id")).execute()
+            sent.append({"public_id": ping.get("public_id"), "status": "failed"})
+    return sent
+
+
+@app.get("/api/v1/admin/network-pings")
+async def admin_list_network_pings(_: bool = Depends(require_admin)):
+    try:
+        rows = supabase.table("network_pings").select("*").order("scheduled_at", desc=True).limit(50).execute().data or []
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+    return rows
+
+
+@app.post("/api/v1/admin/network-pings")
+async def admin_create_network_ping(ping: NetworkPingCreate, _: bool = Depends(require_admin)):
+    business = safe_get_business(ping.highlight_business_public_id.strip())
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    when = _parse_ping_time(ping.scheduled_at)
+    row = {
+        "public_id": generate_public_id(),
+        "title": ping.title.strip(),
+        "message": ping.message.strip(),
+        "highlight_business_public_id": business.get("public_id"),
+        "scheduled_at": when.isoformat(),
+        "status": "scheduled",
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    try:
+        saved = (supabase.table("network_pings").insert(row).execute().data or [row])[0]
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=friendly_db_error(exc))
+    if when <= datetime.utcnow():
+        asyncio.create_task(asyncio.to_thread(send_due_network_pings, 3))
+    return saved
+
+
+@app.post("/api/v1/cron/network-pings")
+async def cron_network_pings(request: Request):
+    require_cron(request)
+    result = await asyncio.to_thread(send_due_network_pings, 3)
+    return {"sent": result}
+
+
+@app.get("/ping/{ping_public_id}", response_class=HTMLResponse)
+async def network_ping_page(ping_public_id: str):
+    try:
+        rows = supabase.table("network_pings").select("*").eq("public_id", ping_public_id).limit(1).execute().data or []
+    except Exception:
+        rows = []
+    ping = rows[0] if rows else None
+    if not ping:
+        return HTMLResponse("<div style='font-family:sans-serif;padding:40px'>Not found</div>", status_code=404)
+    business = safe_get_business(ping.get("highlight_business_public_id")) or {}
+    name = html_lib.escape(business.get("name") or "this business")
+    title = html_lib.escape(ping.get("title") or "Loyalty Tree")
+    message = html_lib.escape(ping.get("message") or "").replace("\n", "<br>")
+    logo = business.get("logo_url") or ""
+    logo_html = ("<img src='" + html_lib.escape(logo) + "' alt='' style='width:72px;height:72px;border-radius:18px;object-fit:cover'/>") if logo else ""
+    join_url = html_lib.escape(BASE_URL + "/join/" + str(business.get("public_id") or ""))
+    page = (
+        "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'><title>" + title + "</title></head>"
+        "<body style='margin:0;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;background:#f4f7f6;color:#14221c'>"
+        "<main style='max-width:440px;margin:32px auto;background:white;border-radius:24px;padding:28px'>"
+        "<p style='letter-spacing:.14em;font-size:12px;font-weight:700;color:#1f7a4d'>LOYALTY TREE</p>"
+        + logo_html +
+        "<h1 style='font-size:28px;line-height:1.2;margin:16px 0 8px'>Welcome, " + name + "</h1>"
+        "<p style='font-size:16px;line-height:1.5;color:#3d4f46'>" + message + "</p>"
+        "<a href='" + join_url + "' style='display:block;margin-top:22px;background:#17352b;color:white;text-align:center;text-decoration:none;border-radius:999px;padding:14px 18px;font-weight:700'>View " + name + "</a>"
+        "</main></body></html>"
+    )
+    return HTMLResponse(page)
+
 
 @app.get("/api/v1/admin/platform-announcements")
 async def admin_list_platform_announcements(_: bool = Depends(require_admin)):
