@@ -94,9 +94,29 @@ document.addEventListener('DOMContentLoaded',()=>{
 });
 
 // Duplicate a single set for a seamless rightward (clockwise) logo loop.
-document.addEventListener('DOMContentLoaded',()=>{
+document.addEventListener('DOMContentLoaded',async()=>{
  const track=document.getElementById('partnerTrack'),control=document.getElementById('partnerMotion'),region=document.querySelector('.partner-carousel');if(!track)return;
- const cards=[...track.children];for(const card of cards){const clone=card.cloneNode(true);clone.setAttribute('aria-hidden','true');clone.dataset.ltClone='true';clone.querySelector('img').loading='eager';track.append(clone)}
+ try{
+  const response=await fetch(`${apiBase}/api/v1/public/partners`,{credentials:'omit'});
+  const rows=response.ok?await response.json():[];
+  const ready=[];
+  if(Array.isArray(rows)){
+   rows.forEach(partner=>{
+    const logo=typeof partner.logo_url==='string'&&/^https:\/\/res\.cloudinary\.com\/du72linxf\/image\/upload\/[A-Za-z0-9_.\/%-]+$/.test(partner.logo_url)?partner.logo_url:'';
+    const name=String(partner.name||'').trim().slice(0,80);
+    if(!logo||!name)return;
+    const card=document.createElement('article');
+    card.className='partner logo-partner';
+    const img=document.createElement('img');
+    img.src=logo;img.alt=name+' logo';img.loading='lazy';
+    const title=document.createElement('h3');title.textContent=name;
+    const sector=document.createElement('p');sector.textContent=String(partner.sector||'').trim().slice(0,40);
+    card.append(img,title,sector);ready.push(card);
+   });
+  }
+  if(ready.length)track.replaceChildren(...ready);
+ }catch{}
+ const cards=[...track.children];if(!cards.length)return;for(const card of cards){const clone=card.cloneNode(true);clone.setAttribute('aria-hidden','true');clone.dataset.ltClone='true';const image=clone.querySelector('img');if(image)image.loading='eager';track.append(clone)}
  let paused=false,hovered=false,focused=false,visible=false;const reduced=scopedWindow.matchMedia('(prefers-reduced-motion: reduce)');
  function measure(){track.style.setProperty('--loop-distance',`${track.children[cards.length].offsetLeft-track.children[0].offsetLeft}px`)}
  function sync(){track.style.animationPlayState=paused||hovered||focused||!visible||document.hidden||reduced.matches?'paused':'running';control.setAttribute('aria-label',paused?'Play partner carousel':'Pause partner carousel');control.setAttribute('aria-pressed',String(paused));control.textContent=paused?'▷':'Ⅱ'}
