@@ -51005,17 +51005,18 @@ def test_geofence_notification(public_id: str, authorization: str = Header(defau
     _mark_apple_pass_dirty(public_ids)
     apple_sent = _push_apple_wallet_to_customer_public_ids(public_ids, business=business)
     google_sent = 0
-    program = safe_get_loyalty_program(business.get('id')) or {}
-    class_id = str(program.get('google_wallet_class_id') or '').strip()
-    if not class_id and GOOGLE_WALLET_ISSUER_ID:
-        class_id = f"{GOOGLE_WALLET_ISSUER_ID}.{business.get('public_id')}"
-    if class_id and send_wallet_class_message(class_id, business.get('name') or 'LoyaltyTree', message, f"geo-test-{business.get('public_id')}-{int(datetime.utcnow().timestamp())}"):
-        google_sent = 1
-    log_event('geofence_test', 'info' if google_sent else 'warning',
-        business_slug=business.get('public_id'), class_id=class_id or None,
-        google_accepted=google_sent, apple_targets=len(public_ids),
-        benefits_class=bool(class_id and class_id.endswith(lt_wallet.GOOGLE_CLASS_SUFFIX)),
-        pins=len(config.get('pins') or []))
+    tested = []
+    stamp = int(datetime.utcnow().timestamp())
+    for class_id in _google_geofence_class_ids(business):
+        accepted = bool(send_wallet_class_message(class_id, business.get('name') or 'LoyaltyTree', message, f"geo-test-{business.get('public_id')}-{stamp}"))
+        google_sent += int(accepted)
+        tested.append(class_id)
+        log_event('geofence_test', 'info' if accepted else 'warning',
+            business_slug=business.get('public_id'), class_id=class_id,
+            google_accepted=int(accepted), apple_targets=len(public_ids),
+            benefits_class=class_id.endswith(lt_wallet.GOOGLE_CLASS_SUFFIX),
+            pins=len(config.get('pins') or []))
+    class_id = tested[0] if tested else None
     return {
         'apple_pushes_sent': apple_sent,
         'google_class_notified': bool(google_sent),
