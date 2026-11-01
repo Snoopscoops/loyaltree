@@ -9,6 +9,7 @@ import { customerMatchesFilter, overviewMetrics } from './ownerCustomerMetrics'
 import { canUseOwnerDashboardRefresh, ownerDashboardTab } from './ownerDashboardDesign'
 import './owner-dashboard-refresh.css'
 import Announcements from './Announcements'
+import DigitalBillboard from './DigitalBillboard'
 import PlatformPromoBanner from './PlatformPromoBanner'
 import LoyaltyCardCustomizer from './LoyaltyCardCustomizer'
 import GiftCards from './GiftCards'
@@ -2899,7 +2900,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
   const customerSearchTerm = customerSearch.trim().toLowerCase()
   const activeNavGroup = ['staff','orderahead','qrmenu','giftcards','pos','operations'].includes(activeTab)
     ? 'operate'
-    : ['satisfaction','retention','crm','campaigns'].includes(activeTab)
+    : ['satisfaction','retention','crm','campaigns','billboard'].includes(activeTab)
     ? 'grow'
     : activeTab === 'program'
     ? 'card'
@@ -3302,6 +3303,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
             <button style={{...styles.subTab,...(activeTab==='satisfaction'?styles.subTabActive:{})}} onClick={()=>setActiveTab('satisfaction')}>Satisfaction</button>
             <button style={{...styles.subTab,...(activeTab==='campaigns'?styles.subTabActive:{})}} onClick={()=>setActiveTab('campaigns')}>Campaigns</button>
             <button style={styles.subTab} onClick={()=>{setShowAnnouncements(true);markAnnouncementsChecked()}}>Announcements</button>
+            <button style={{...styles.subTab,...(activeTab==='billboard'?styles.subTabActive:{})}} onClick={()=>setActiveTab('billboard')}>Digital Billboard</button>
             <button style={styles.subTab} onClick={()=>{markAnalyticsChecked();openAnalytics()}}>Analytics</button>
           </div>
         )}
@@ -4183,6 +4185,8 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
         )}
 
         {activeTab === 'ltbenefits' && <BenefitsOwner API_BASE={API_BASE} businessSlug={user.business_slug} ownerToken={user.token} authFetch={authFetch} />}
+
+        {activeTab === 'billboard' && <DigitalBillboard API_BASE={API_BASE} user={user} active={activeTab === 'billboard'} />}
 
         {activeTab === 'campaigns' && (
           <Campaigns

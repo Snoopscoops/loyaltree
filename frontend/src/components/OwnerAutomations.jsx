@@ -83,7 +83,7 @@ export function NearbyPinMap({ latitude, longitude, radius, onMove, active = tru
     <div style={{gridColumn:'1 / -1'}}>
       <div ref={holder} style={{height:280,borderRadius:14,border:'1px solid #e2e8f0',overflow:'hidden'}} />
       <div style={{display:'flex',justifyContent:'space-between',gap:8,marginTop:8,flexWrap:'wrap'}}>
-        <span style={{fontSize:12,color:'#64748b'}}>{hasPoint ? `${lat.toFixed(5)}, ${lng.toFixed(5)}` : 'Click the map or drop the business pin.'}</span>
+        <span style={{fontSize:12,color:'#64748b'}}>{hasPoint ? `${lat.toFixed(5)}, ${lng.toFixed(5)}` : 'Tap the map to place the pin.'}</span>
         <a href={mapsUrl} target="_blank" rel="noreferrer" style={{fontSize:12,fontWeight:800,color:'#0f766e'}}>Open in Google Maps</a>
       </div>
     </div>
@@ -146,7 +146,6 @@ export default function OwnerAutomations({ API_BASE, user, active = true }) {
     if (!user?.business_slug || !user?.token) return
     fetchRetentionSettings()
     fetchAutomationStats()
-    fetchGeofence()
   }, [user?.business_slug, user?.token])
 
   const fetchAutomationStats = async () => {
@@ -310,7 +309,7 @@ export default function OwnerAutomations({ API_BASE, user, active = true }) {
     <>
         <div style={styles.section}>
           <h2 className="an-section-title" style={styles.sectionTitle}>Automations</h2>
-          <div style={{...styles.mutedText,marginBottom:16}}>Birthday greetings, churn messages, and location notifications for your business. These settings apply to all programs.</div>
+          <div style={{...styles.mutedText,marginBottom:16}}>Birthday greetings and churn messages for your business. These settings apply to all programs.</div>
 
           <div style={{...styles.insightCard,marginBottom:16}}>
             <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-start',flexWrap:'wrap',marginBottom:12}}>
@@ -513,59 +512,7 @@ export default function OwnerAutomations({ API_BASE, user, active = true }) {
           {retentionSettingsMessage && <div style={{marginTop:10,fontSize:13,fontWeight:700,color:retentionSettingsMessage.includes('Saved')?'#166534':'#b91c1c'}}>{retentionSettingsMessage}</div>}
 
           </div>
-          <div style={{...styles.insightCard,marginTop:16}}>
-            <div style={styles.settingRow}>
-              <div>
-                <div style={styles.settingTitle}>📍 Nearby notification</div>
-                <div style={styles.mutedText}>Pin the branch, set the radius, then write the lock-screen message. Apple shows it when the saved card is nearby. Google gets the same pin as a merchant location.</div>
-              </div>
-              <label style={styles.checkboxLabel}>
-                <input type="checkbox" disabled={!geofenceLoaded || !geofence.feature_enabled} checked={geofence.enabled === true} onChange={e=>setGeofence(s=>({...s,enabled:e.target.checked}))} />
-                {geofence.enabled ? 'On' : 'Off'}
-              </label>
-            </div>
-            {geofenceError && <p role="alert" style={styles.errorText}>{geofenceError} <button type="button" style={styles.actionBtnCompact} onClick={fetchGeofence}>Retry</button></p>}
-            {geofence.feature_enabled && geofenceLoaded ? <>
-            <label style={styles.editorLabel}>Notification message</label>
-            <input style={styles.editorInput} aria-label="Location notification message" maxLength={120} value={geofence.message || ''} onChange={e=>setGeofence(s=>({...s,message:e.target.value}))} />
-            <div style={styles.formGrid2}>
-              <label style={styles.editorLabel}>Radius
-                <div style={{display:'flex',gap:10,alignItems:'center'}}>
-                  <input type="range" min={geofence.limits?.min_radius_meters || 100} max={geofence.limits?.max_radius_meters || 1000} step="10" value={geofence.radius_meters || 150} onChange={e=>setGeofence(s=>({...s,radius_meters:Number(e.target.value)}))} style={{flex:1}} />
-                  <input type="number" min={geofence.limits?.min_radius_meters || 100} max={geofence.limits?.max_radius_meters || 1000} style={{...styles.editorInput,width:90}} value={geofence.radius_meters} onChange={e=>setGeofence(s=>({...s,radius_meters:e.target.value}))} />
-                  <span style={styles.mutedText}>m</span>
-                </div>
-              </label>
-              <label style={styles.editorLabel}>Max times / day
-                <input type="number" min="1" max="5" style={styles.editorInput} value={geofence.max_per_day} onChange={e=>setGeofence(s=>({...s,max_per_day:e.target.value}))} />
-              </label>
-              <label style={styles.editorLabel}>Max times / week
-                <input type="number" min="1" max="20" style={styles.editorInput} value={geofence.max_per_week} onChange={e=>setGeofence(s=>({...s,max_per_week:e.target.value}))} />
-              </label>
-            </div>
-            <div style={styles.editorHelp}>Allowed radius: {geofence.limits?.min_radius_meters || 100}–{geofence.limits?.max_radius_meters || 1000} m. Apple is most reliable at 100–200 m. Max {geofence.limits?.max_pins || 10} pins. Day/week caps are your policy; Wallet suppresses repeats itself and will not hard-stop at that number.</div>
-            <div style={styles.editorHelp}>One location per branch. This account can save {Math.min(geofence.limits?.max_pins || 1, (geofence.branches || []).length || 1)} pin{(Math.min(geofence.limits?.max_pins || 1, (geofence.branches || []).length || 1)) === 1 ? '' : 's'}.</div>
-            {(geofence.pins || []).map((pin, index) => (
-              <div key={index} style={{...styles.formGrid2,marginTop:10}}>
-                <select style={styles.editorSelect} value={pin.branch_public_id || ''} onChange={e=>updateGeofencePin(index,{branch_public_id:e.target.value})}>
-                  <option value="">Branch</option>
-                  {(geofence.branches || []).map(branch => <option key={branch.public_id} value={branch.public_id}>{branch.name}</option>)}
-                </select>
-                <input style={styles.editorInput} placeholder="Paste a Google Maps share link" onBlur={async e=>{ const raw = e.target.value.trim(); if (!raw) return; const point = parseMapPoint(raw); if (point) { updateGeofencePin(index, point); return } setGeofenceStatus('Reading the Maps link...'); try { const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/geofence/resolve-link`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ url: raw }) }); const data = await res.json().catch(()=>({})); if (!res.ok) throw new Error(data.detail || 'Could not read that link'); updateGeofencePin(index, { latitude: data.latitude, longitude: data.longitude }); setGeofenceStatus('Pin placed from the Google Maps link. Save location and message.') } catch (err) { setGeofenceStatus(err.message || 'Could not read that link') } }} />
-                <input style={styles.editorInput} maxLength={120} placeholder="Message at this location" value={pin.message || ''} onChange={e=>updateGeofencePin(index,{message:e.target.value})} />
-                <button type="button" style={styles.actionBtnCompact} onClick={()=>useGeofenceLocation(index)}>Use my location</button>
-                <NearbyPinMap active={active} latitude={pin.latitude} longitude={pin.longitude} radius={geofence.radius_meters} onMove={(latitude, longitude)=>updateGeofencePin(index,{latitude,longitude})} />
-                <button type="button" style={styles.actionBtn} disabled={savingGeofence} onClick={saveGeofence}>{savingGeofence ? 'Saving…' : 'Save location and message'}</button>
-                <button type="button" style={styles.actionBtnCompact} onClick={testGeofenceNotification}>Test notification to saved cards</button>
-                <button type="button" style={{...styles.actionBtnCompact,color:'#b91c1c',borderColor:'#fecaca'}} disabled={savingGeofence} onClick={()=>deleteGeofencePin(index)}>Delete location</button>
-              </div>
-            ))}
-            <div style={{display:'flex',gap:8,marginTop:12,flexWrap:'wrap'}}>
-              <button type="button" style={styles.actionBtnCompact} onClick={()=>setGeofence(s=>({...s,pins:[...(s.pins||[]),{branch_public_id:'',label:'',message:s.message||'',latitude:'',longitude:''}]}))} disabled={(geofence.pins||[]).length >= Math.min(geofence.limits?.max_pins || 1, (geofence.branches || []).length || 1)}>Add branch location</button>
-            </div>
-            {geofenceStatus && <div style={{marginTop:10,fontSize:13,fontWeight:700,color:geofenceStatus.startsWith('Saved')?'#166534':'#b91c1c'}}>{geofenceStatus}</div>}
-            </> : <p style={styles.mutedText}>{geofence.access_message}</p>}
-          </div>
+
         </div>
     </>
     </div>

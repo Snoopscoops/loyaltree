@@ -10,6 +10,7 @@ function Icon({ name, className = '' }) {
     card: <><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M7 15h4"/></>,
     chart: <><path d="M4 3v18h17M9 17v-5m5 5V7m5 10V3"/></>,
     announcement: <><path d="m3 10 17-6v15L3 14Zm5 6 1 5h4l-2-4M20 10l2-1m-2 5 2 1"/></>,
+    billboard: <><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></>,
     campaign: <><path d="m4 17 6-6 4 3 7-10M16 4h5v5"/><path d="M3 4v17h18"/></>,
     star: <path d="m12 3 2.8 5.8 6.4.9-4.6 4.5 1.1 6.3-5.7-3-5.7 3 1.1-6.3L2.8 9.7l6.4-.9Z"/>,
     team: <><rect x="3" y="7" width="18" height="14" rx="2"/><path d="M8 7V3h8v4M3 12h18m-11 0v3h4v-3"/></>,
@@ -37,7 +38,7 @@ function Icon({ name, className = '' }) {
   return <svg className={`lt-owner-icon ${className}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name] || paths.card}</svg>
 }
 const tabTitles = {
-  tree: 'Overview', customers: 'Customers', program: 'Loyalty card', analytics: 'Analytics', announcements: 'Announcements', staff: 'Team & locations',
+  tree: 'Overview', customers: 'Customers', program: 'Loyalty card', analytics: 'Analytics', announcements: 'Announcements', billboard: 'Digital Billboard', staff: 'Team & locations',
   qrmenu: 'QR Menu', orderahead: 'Order Ahead', giftcards: 'Gift cards', ltbenefits: 'LT Rewards', pos: 'Integrations', campaigns: 'Campaigns',
   satisfaction: 'Satisfaction', billing: 'Billing', referrals: 'Referrals', security: 'Transactions & security',
   walletqueue: 'Wallet queue', crm: 'Customer segments', retention: 'Retention', operations: 'Branch operations',
@@ -112,6 +113,7 @@ export default function OwnerDashboardNavigation({
         {item('analytics', 'Analytics', 'chart', () => act(onAnalytics))}
         <div className="lt-owner-nav-section">GROW</div>
         {item('announcements', 'Announcements', 'announcement', () => act(onAnnouncements))}
+        {item('billboard', 'Digital Billboard', 'billboard')}
         {item('ltbenefits', 'LT Rewards', 'gift')}
         {item('campaigns', 'Campaigns', 'campaign')}{item('satisfaction', 'Satisfaction', 'star')}
         <div className="lt-owner-nav-section">OPERATE</div>
