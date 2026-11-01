@@ -41,12 +41,12 @@ export default function DigitalBillboard({ API_BASE, user, active = true }) {
         access_message: data.access_message || 'Nearby alerts are not included on this plan.',
         enabled: !!data.enabled,
         message: data.message || 'You are near us. Open your Loyalty Tree card.',
-        radius_meters: Number(data.radius_meters) || 150,
+        radius_meters: Math.min(150, Number(data.radius_meters) || 150),
         max_per_day: data.max_per_day || 1,
         max_per_week: data.max_per_week || 3,
         pins: data.pins || [],
         branches: data.branches || [],
-        limits: data.limits || { min_radius_meters: 100, max_radius_meters: 1000, max_pins: 10 },
+        limits: { ...(data.limits || {}), min_radius_meters: data.limits?.min_radius_meters || 100, max_radius_meters: 150, max_pins: data.limits?.max_pins || 10 },
       })
       setDirty(false)
     } catch (err) {
@@ -148,7 +148,7 @@ export default function DigitalBillboard({ API_BASE, user, active = true }) {
   if (!form.feature_enabled) return <section className="lt-billboard"><div className="lt-locked">{form.access_message}</div></section>
 
   const minRadius = form.limits?.min_radius_meters || 100
-  const maxRadius = form.limits?.max_radius_meters || 1000
+  const maxRadius = 150
 
   return (
     <section className="lt-billboard" aria-label="Digital Billboard">
@@ -174,7 +174,7 @@ export default function DigitalBillboard({ API_BASE, user, active = true }) {
             <span className="lt-quiet">{form.radius_meters} m</span>
           </div>
         </label>
-        <p className="lt-quiet">150 meters is about a short walk. One pin per branch, up to {pinLimit}.</p>
+        <p className="lt-quiet">Up to 150 meters, about a short walk. One pin per branch, up to {pinLimit}.</p>
       </div>
       <div className="lt-pins">
         {(form.pins || []).map((pin, index) => (

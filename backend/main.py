@@ -50646,7 +50646,7 @@ def lending_delete_document(public_id: str, document_public_id: str, authorizati
 
 
 GEOFENCE_MIN_RADIUS_METERS = 100
-GEOFENCE_MAX_RADIUS_METERS = 1000
+GEOFENCE_MAX_RADIUS_METERS = 150
 GEOFENCE_APPLE_LOCATION_CAP = 10
 GEOFENCE_DEFAULT_MESSAGE = "You're near us. Open your LoyaltyTree card."
 
