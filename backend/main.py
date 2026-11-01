@@ -7831,28 +7831,43 @@ def _google_geofence_class_ids(business: dict) -> list:
 
 def sync_google_geofence_locations(business: dict) -> int:
     """Push the saved pins onto every existing Google loyalty class for this business."""
+    locations = google_merchant_locations(business)
+    slug = (business or {}).get('public_id')
     if not GOOGLE_WALLET_ISSUER_ID:
+        log_event('geofence_google_class', 'warning', business_slug=slug, reason='issuer_missing', locations=len(locations))
         return 0
     access_token = get_google_access_token()
     if not access_token:
-        print('GEOFENCE Google class: no access token')
+        log_event('geofence_google_class', 'warning', business_slug=slug, reason='no_access_token', locations=len(locations))
         return 0
-    locations = google_merchant_locations(business)
     updated = 0
+    class_ids = _google_geofence_class_ids(business)
+    if not class_ids:
+        log_event('geofence_google_class', 'warning', business_slug=slug, reason='no_class', locations=len(locations))
+        return 0
     try:
         import httpx
         with pooled_client(timeout=20) as client:
-            for class_id in _google_geofence_class_ids(business):
+            for class_id in class_ids:
                 response = client.patch(
                     f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}',
                     headers={'Authorization': f'Bearer {access_token}'},
                     json={'merchantLocations': locations},
                 )
-                print(f'GEOFENCE Google class {class_id} -> {response.status_code} locations={len(locations)}')
+                error_code = None
+                if response.status_code != 200:
+                    try:
+                        error_code = ((response.json() or {}).get('error') or {}).get('status')
+                    except Exception:
+                        error_code = None
+                log_event('geofence_google_class', 'info' if response.status_code == 200 else 'warning',
+                    business_slug=slug, class_id=class_id, status=response.status_code,
+                    locations=len(locations), benefits_class=class_id.endswith(lt_wallet.GOOGLE_CLASS_SUFFIX),
+                    error_code=error_code)
                 if response.status_code == 200:
                     updated += 1
     except Exception as exc:
-        print(f'GEOFENCE Google class update warning: {exc}')
+        log_event('geofence_google_class', 'warning', business_slug=slug, reason='exception', error_type=type(exc).__name__, locations=len(locations))
     return updated
 
 
@@ -50996,6 +51011,11 @@ def test_geofence_notification(public_id: str, authorization: str = Header(defau
         class_id = f"{GOOGLE_WALLET_ISSUER_ID}.{business.get('public_id')}"
     if class_id and send_wallet_class_message(class_id, business.get('name') or 'LoyaltyTree', message, f"geo-test-{business.get('public_id')}-{int(datetime.utcnow().timestamp())}"):
         google_sent = 1
+    log_event('geofence_test', 'info' if google_sent else 'warning',
+        business_slug=business.get('public_id'), class_id=class_id or None,
+        google_accepted=google_sent, apple_targets=len(public_ids),
+        benefits_class=bool(class_id and class_id.endswith(lt_wallet.GOOGLE_CLASS_SUFFIX)),
+        pins=len(config.get('pins') or []))
     return {
         'apple_pushes_sent': apple_sent,
         'google_class_notified': bool(google_sent),
