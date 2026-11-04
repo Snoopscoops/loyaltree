@@ -50781,7 +50781,21 @@ def _highlighted_businesses(region):
 
 
 def _apple_location(pin, config, label):
-    text = (label or pin.get("message") or config.get("message") or GEOFENCE_DEFAULT_MESSAGE)[:120]
+    near = " ".join(str(label or "You're near us").split())
+    message = " ".join(str(pin.get("message") or config.get("message") or "").split())
+    generic = message.lower() in {
+        "",
+        "you're near us. open your loyaltytree card.",
+        "you are near us. open your loyalty tree card.",
+        "you're near us. open your loyalty tree card.",
+    }
+    if generic:
+        text = near
+    else:
+        text = f"{near}. {message}"
+        if len(text) > 120:
+            text = message
+    text = text[:120]
     return {
         "latitude": float(pin["latitude"]),
         "longitude": float(pin["longitude"]),
