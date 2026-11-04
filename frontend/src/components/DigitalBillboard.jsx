@@ -17,6 +17,10 @@ function detailOf(data, fallback) {
   return typeof data?.detail === 'string' ? data.detail : fallback
 }
 
+function hasPin(pin) {
+  return pin && pin.latitude !== '' && pin.latitude != null && pin.longitude !== '' && pin.longitude != null
+}
+
 export default function DigitalBillboard({ API_BASE, user, active = true }) {
   const [form, setForm] = useState(null)
   const [error, setError] = useState('')
@@ -59,16 +63,20 @@ export default function DigitalBillboard({ API_BASE, user, active = true }) {
   }, [user?.business_slug, user?.token])
 
   const patch = (next) => { setForm(current => ({ ...current, ...next })); setDirty(true); setStatus('') }
-  const patchPin = (index, pinPatch) => setForm(current => ({
-    ...current,
-    pins: current.pins.map((pin, pinIndex) => pinIndex === index ? { ...pin, ...pinPatch } : pin),
-  })) || setDirty(true)
+  const patchPin = (index, pinPatch) => {
+    setForm(current => ({
+      ...current,
+      pins: current.pins.map((pin, pinIndex) => pinIndex === index ? { ...pin, ...pinPatch } : pin),
+    }))
+    setDirty(true)
+    setStatus('')
+  }
 
   const pinLimit = Math.min(form?.limits?.max_pins || 1, (form?.branches || []).length || 1)
 
   const save = async () => {
     if (!form?.feature_enabled) return
-    if (form.enabled && !(form.pins || []).length) {
+    if (form.enabled && !(form.pins || []).some(hasPin)) {
       setStatus('Add a branch pin before turning this on.')
       return
     }
@@ -84,12 +92,12 @@ export default function DigitalBillboard({ API_BASE, user, active = true }) {
           radius_meters: Number(form.radius_meters),
           max_per_day: Number(form.max_per_day),
           max_per_week: Number(form.max_per_week),
-          pins: (form.pins || []).map(pin => ({
+          pins: (form.pins || []).filter(hasPin).map(pin => ({
             branch_public_id: pin.branch_public_id || '',
             label: pin.label || '',
             message: form.message || '',
-            latitude: pin.latitude === '' ? null : Number(pin.latitude),
-            longitude: pin.longitude === '' ? null : Number(pin.longitude),
+            latitude: Number(pin.latitude),
+            longitude: Number(pin.longitude),
           })),
         }),
       })
@@ -97,7 +105,9 @@ export default function DigitalBillboard({ API_BASE, user, active = true }) {
       if (!res.ok) throw new Error(detailOf(data, 'Could not save'))
       setForm(current => ({ ...current, ...data, branches: data.branches || current.branches, limits: data.limits || current.limits }))
       setDirty(false)
-      setStatus('Saved. Members see the new pin after their card updates.')
+      setStatus(form.enabled
+        ? 'Saved. Nearby alerts are on. Cards pick this up the next time they update.'
+        : 'Saved. Nearby alerts are off. Pins stay here if you turn it on again.')
     } catch (err) {
       setStatus(err.message || 'Could not save')
     }
@@ -105,6 +115,7 @@ export default function DigitalBillboard({ API_BASE, user, active = true }) {
   }
 
   const sendTest = async () => {
+    if (!form?.enabled) { setStatus('Turn nearby alerts on, then save, before sending a test.'); return }
     if (dirty) { setStatus('Save first, then send a test.'); return }
     setStatus('Sending a test to saved cards...')
     try {
@@ -149,38 +160,60 @@ export default function DigitalBillboard({ API_BASE, user, active = true }) {
 
   const minRadius = form.limits?.min_radius_meters || 100
   const maxRadius = 150
+  const placed = (form.pins || []).filter(hasPin).length
+  const powerCopy = !form.enabled
+    ? 'No nearby alerts. Your pins stay saved.'
+    : placed
+      ? 'People near a saved pin can get an alert after you save.'
+      : 'Add a pin before this can alert anyone.'
 
   return (
-    <section className="lt-billboard" aria-label="Digital Billboard">
+    <section className={form.enabled ? 'lt-billboard is-on' : 'lt-billboard is-off'} aria-label="Digital Billboard">
       <header className="lt-billboard-head">
-        <h1>Digital Billboard</h1>
-        <p>Members nearby can see this business on their Loyalty Tree card.</p>
+        <p className="lt-kicker">Digital Billboard</p>
+        <h1>Nearby alerts</h1>
+        <p>Turn this off any time. Members only get an alert while it is on and a pin is saved.</p>
       </header>
-      <div className="lt-billboard-facts">
-        <div><strong>iPhone</strong><span>Can show the branch name.</span></div>
-        <div><strong>Android</strong><span>Says you are near, with your card logo.</span></div>
-      </div>
-      <div className="lt-billboard-card">
-        <div className="lt-switch">
-          <div><b>Nearby alerts</b><div className="lt-quiet">Off until you save at least one pin.</div></div>
-          <button type="button" className={form.enabled ? 'on' : 'off'} onClick={() => patch({ enabled: !form.enabled })}>{form.enabled ? 'On' : 'Off'}</button>
+
+      <div className="lt-power">
+        <button
+          type="button"
+          role="switch"
+          aria-checked={form.enabled}
+          className={form.enabled ? 'lt-toggle on' : 'lt-toggle'}
+          onClick={() => patch({ enabled: !form.enabled })}
+        >
+          <span />
+        </button>
+        <div>
+          <b>{form.enabled ? 'On' : 'Off'}</b>
+          <div className="lt-quiet">{powerCopy}</div>
         </div>
+      </div>
+
+      <div className="lt-billboard-facts">
+        <div><strong>iPhone</strong><span>Can show your message, inside {form.radius_meters} m.</span></div>
+        <div><strong>Android</strong><span>Google shows a short “you’re nearby” notice.</span></div>
+      </div>
+
+      <div className="lt-billboard-card">
         <label className="lt-field">What the iPhone says
           <input maxLength={120} value={form.message} onChange={e => patch({ message: e.target.value })} />
         </label>
         <label className="lt-field">How close
           <div className="lt-distance">
             <input type="range" min={minRadius} max={maxRadius} step="10" value={form.radius_meters} onChange={e => patch({ radius_meters: Number(e.target.value) })} />
-            <span className="lt-quiet">{form.radius_meters} m</span>
+            <span>{form.radius_meters} m</span>
           </div>
         </label>
-        <p className="lt-quiet">Up to 150 meters, about a short walk. One pin per branch, up to {pinLimit}.</p>
+        <p className="lt-quiet">Up to 150 meters. One pin per branch, up to {pinLimit}.</p>
       </div>
+
       <div className="lt-pins">
         {(form.pins || []).map((pin, index) => (
           <article className="lt-pin" key={index}>
             <div className="lt-pin-top">
-              <span>Location {index + 1}</span>
+              <span>Location {index + 1}{hasPin(pin) ? '' : ' · not placed'}</span>
               <button type="button" className="lt-text-btn" onClick={() => { if (window.confirm('Remove this location?')) patch({ pins: form.pins.filter((_, pinIndex) => pinIndex !== index) }) }}>Remove</button>
             </div>
             <label className="lt-field">Branch
@@ -193,17 +226,19 @@ export default function DigitalBillboard({ API_BASE, user, active = true }) {
               <button type="button" className="lt-secondary" onClick={() => setOpenIndex(openIndex === index ? -1 : index)}>{openIndex === index ? 'Hide map' : 'Show map'}</button>
               <button type="button" className="lt-secondary" onClick={() => useMyLocation(index)}>Use my location</button>
             </div>
-            {openIndex === index && <div style={{ marginTop: 12 }}><NearbyPinMap active={active} latitude={pin.latitude} longitude={pin.longitude} radius={form.radius_meters} onMove={(latitude, longitude) => patchPin(index, { latitude, longitude })} /></div>}
+            {openIndex === index && <div className="lt-map"><NearbyPinMap active={active} latitude={pin.latitude} longitude={pin.longitude} radius={form.radius_meters} onMove={(latitude, longitude) => patchPin(index, { latitude, longitude })} /></div>}
             <label className="lt-field">Or paste a Google Maps link
               <input placeholder="https://maps.google.com/..." onBlur={e => { const raw = e.target.value.trim(); if (raw) readLink(index, raw) }} />
             </label>
           </article>
         ))}
       </div>
-      <div className="lt-actions">
+
+      <div className="lt-savebar">
         <button type="button" className="lt-secondary" disabled={(form.pins || []).length >= pinLimit} onClick={() => patch({ pins: [...form.pins, { branch_public_id: form.branches[0]?.public_id || '', label: '', message: form.message, latitude: '', longitude: '' }] })}>Add a location</button>
-        <button type="button" className="lt-primary" disabled={saving} onClick={save}>{saving ? 'Saving...' : 'Save'}</button>
-        <button type="button" className="lt-secondary" onClick={sendTest}>Send a test</button>
+        <button type="button" className="lt-primary" disabled={saving || !dirty} onClick={save}>{saving ? 'Saving...' : 'Save'}</button>
+        <button type="button" className="lt-secondary" disabled={!form.enabled || dirty} onClick={sendTest}>Send a test</button>
+        {dirty && <span className="lt-quiet">Not saved yet.</span>}
       </div>
       {status && <p className={status.startsWith('Saved') || status.startsWith('Test sent') || status.startsWith('Pin placed') ? 'lt-status good' : 'lt-status bad'}>{status}</p>}
     </section>
