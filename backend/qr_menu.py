@@ -62,6 +62,25 @@ def public_catalog(snapshot):
     return dict(categories=categories, items=items, branches=branches)
 
 
+def published_for_join(db, business, has_feature, on_hold) -> bool:
+    """True only when this merchant has published a Digital Menu.
+
+    Missing setup, a draft menu, or a database error stays off so the join
+    page keeps its current look.
+    """
+    if not business or not has_feature(business, 'qr_menu'):
+        return False
+    if str(business.get('status') or '').upper() != 'ACTIVE' or on_hold(business):
+        return False
+    if not db or not business.get('id'):
+        return False
+    try:
+        rows = db.table('qr_menu_settings').select('is_published').eq('business_id', business['id']).limit(1).execute().data or []
+    except Exception:
+        return False
+    return bool(rows and rows[0].get('is_published'))
+
+
 def menu_link(frontend_url, public_id, branch=None):
     url = f"{frontend_url.rstrip('/')}/menu/{quote(str(public_id), safe='')}"
     return url + ('?' + urlencode({'branch': branch}) if branch else '')

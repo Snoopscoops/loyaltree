@@ -35,3 +35,65 @@ export function menuItemPrice(item, selected) {
 export function validMenuPayload(value) {
   return Boolean(value?.business?.public_id && value.business.name && Array.isArray(value.items) && Array.isArray(value.categories) && Array.isArray(value.branches))
 }
+
+function lineKey(item, selected) {
+  const options = (item.modifier_groups || []).flatMap(group =>
+    group.options.filter(option => (selected[group.public_id] || []).includes(option.public_id)).map(option => option.public_id))
+  return `${item.public_id}|${options.sort().join(',')}`
+}
+
+function lineOptions(item, selected) {
+  return (item.modifier_groups || []).flatMap(group =>
+    group.options.filter(option => (selected[group.public_id] || []).includes(option.public_id))
+      .map(option => ({ public_id: option.public_id, name: option.name, price_delta: Number(option.price_delta || 0) })))
+}
+
+export function addCartItem(cart, item, selected = {}, quantity = 1) {
+  if (!item?.public_id || !menuItemAvailable(item)) return cart
+  const qty = Math.max(1, Math.min(20, Math.floor(Number(quantity) || 1)))
+  const key = lineKey(item, selected)
+  const current = cart.find(line => line.key === key)
+  if (current) return cart.map(line => line.key === key ? { ...line, quantity: Math.min(20, line.quantity + qty) } : line)
+  return [...cart, {
+    key,
+    item_id: item.public_id,
+    name: item.name,
+    unit_price: menuItemPrice(item, selected),
+    quantity: qty,
+    options: lineOptions(item, selected),
+  }]
+}
+
+export function changeCartQuantity(cart, key, quantity) {
+  const qty = Math.floor(Number(quantity) || 0)
+  if (qty <= 0) return cart.filter(line => line.key !== key)
+  return cart.map(line => line.key === key ? { ...line, quantity: Math.min(20, qty) } : line)
+}
+
+export function cartSubtotal(cart) {
+  return (cart || []).reduce((sum, line) => sum + Number(line.unit_price || 0) * Number(line.quantity || 0), 0)
+}
+
+export function buildMenuOrder({ merchantId, cart, orderId }) {
+  const items = (cart || []).map(line => ({
+    item_id: line.item_id,
+    name: line.name,
+    quantity: line.quantity,
+    unit_price: line.unit_price,
+    line_total: Number(line.unit_price || 0) * Number(line.quantity || 0),
+    options: line.options || [],
+  }))
+  return {
+    order_id: orderId,
+    merchant_id: merchantId,
+    items,
+    subtotal: cartSubtotal(cart),
+    status: 'pending_payment',
+  }
+}
+
+export function digitalMenuHref(config, slug) {
+  if (config?.digital_menu_published !== true) return ''
+  const id = String(config.public_id || slug || '').trim()
+  return id ? `/menu/${encodeURIComponent(id)}` : ''
+}
