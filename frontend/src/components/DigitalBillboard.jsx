@@ -123,7 +123,9 @@ export default function DigitalBillboard({ API_BASE, user, active = true }) {
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(detailOf(data, 'Test failed'))
       const apple = data.apple_pushes_sent || 0
-      setStatus(`Test sent. iPhone cards woken: ${apple}. Android: ${data.google_class_notified ? 'sent' : 'not sent'}.`)
+      const stored = data.google_locations_stored ?? 0
+      const sent = data.google_locations_sent ?? 0
+      setStatus(`Test sent. iPhone cards woken: ${apple}. Android: ${data.google_class_notified ? 'sent' : 'not sent'}. Google pins stored: ${stored} of ${sent}.`)
     } catch (err) {
       setStatus(err.message || 'Test failed')
     }
