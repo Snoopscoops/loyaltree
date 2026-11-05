@@ -1123,6 +1123,17 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
     ? `${user?.business_slug || ''}__p__${selectedProgramSummary.public_id}`
     : (user?.business_slug || '')
   const selectedJoinUrl = viewingAllPrograms ? '' : `${FRONTEND_URL}/join/${selectedJoinSlug}`
+  const nfcJoinUrl = user?.business_slug ? `${FRONTEND_URL}/join/${user.business_slug}` : ''
+  const copyJoinLink = async (url = nfcJoinUrl) => {
+    const value = String(url || '').trim()
+    if (!value) return
+    try {
+      await navigator.clipboard.writeText(value)
+      setMessage('Join link copied. Paste it into your NFC tag.')
+    } catch (_) {
+      setMessage('Select the join link and copy it manually.')
+    }
+  }
   const isActive = (business?.status || '').toUpperCase() === 'ACTIVE'
 
   const isTablet = viewportWidth >= 600 && viewportWidth <= 1100
@@ -3183,6 +3194,12 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
                 </span>
                 <span style={styles.heroProgramBadge}>{cardExperience.icon} {cardExperience.title}</span>
               </div>
+              {nfcJoinUrl && (
+                <div style={{marginTop:12,display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',maxWidth:560}}>
+                  <span style={{fontSize:13,lineHeight:1.45,color:'#134e4a',wordBreak:'break-all',fontWeight:750}}>{nfcJoinUrl}</span>
+                  <button type="button" onClick={() => copyJoinLink(nfcJoinUrl)} style={{...styles.secondaryActionBtn, borderColor:'#99f6e4', color:'#0f766e', padding:'8px 12px'}}>Copy join link</button>
+                </div>
+              )}
             </div>
           </div>
 
@@ -4282,9 +4299,12 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
             <p style={{fontSize: 12, color: '#94a3b8', wordBreak: 'break-all', marginBottom: 16}}>
               {selectedJoinUrl}
             </p>
-            <div style={{display: 'flex', gap: 12, justifyContent: 'center'}}>
+            <div style={{display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap'}}>
               <button onClick={shareQR} style={styles.submitBtn}>
                 📤 Share
+              </button>
+              <button type="button" onClick={() => copyJoinLink(selectedJoinUrl || nfcJoinUrl)} style={{...styles.submitBtn, background: '#134e4a'}}>
+                Copy join link
               </button>
               <button onClick={downloadQR} style={{...styles.submitBtn, background: '#64748b'}}>
                 ⬇️ Download

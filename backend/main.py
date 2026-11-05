@@ -45,6 +45,11 @@ except ImportError:
     from business_welcome_email import build_business_getting_started_email
 
 try:
+    from .business_slug import short_business_slug
+except ImportError:
+    from business_slug import short_business_slug
+
+try:
     from . import business_data_access
 except ImportError:
     import business_data_access
@@ -3459,21 +3464,21 @@ def slugify(text: str) -> str:
     return slug[:30] or 'biz'
 
 def generate_business_public_id(name: str) -> str:
-    """Human-readable business ID: 'businessname-xxxx' instead of a raw UUID,
-    so cashiers can read/type it more easily when logging in."""
-    slug = slugify(name)
-    if not supabase:
-        return f"{slug}-{uuid.uuid4().hex[:4]}"
-    for _ in range(5):
-        candidate = f"{slug}-{uuid.uuid4().hex[:4]}"
+    """Short join slug for a business created from now on.
+
+    Existing rows keep whatever public_id they already have. This function
+    is only called while inserting a new business.
+    """
+    def taken(candidate: str) -> bool:
+        if not supabase:
+            return False
         try:
             existing = supabase.table("businesses").select("id").eq("public_id", candidate).maybe_single().execute()
         except Exception:
-            existing = None
-        if not existing or not existing.data:
-            return candidate
-    # Extremely unlikely fallback if 5 collisions happen in a row
-    return f"{slug}-{uuid.uuid4().hex[:8]}"
+            return False
+        return bool(existing and getattr(existing, "data", None))
+
+    return short_business_slug(name, taken)
 
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
