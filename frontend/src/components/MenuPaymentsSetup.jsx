@@ -13,6 +13,7 @@ export default function MenuPaymentsSetup({ API_BASE, slug, authFetch }) {
   const [saved, setSaved] = useState(null)
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
+  const [verifyNote, setVerifyNote] = useState('')
   const endpoint = `${API_BASE}/api/v1/business/${encodeURIComponent(slug)}/qr-menu/payments`
   const set = key => event => setForm(current => ({ ...current, [key]: event.target.value }))
 
@@ -44,12 +45,18 @@ export default function MenuPaymentsSetup({ API_BASE, slug, authFetch }) {
   }
 
   const missing = new Set(saved?.missing || [])
-  return <form className="lt-qr-payments" onSubmit={save}>
+  const balance = typeof saved?.balance_centavos === 'number'
+    ? `₱${(saved.balance_centavos / 100).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    : null
+  const identityUrl = typeof saved?.identity_url === 'string' && saved.identity_url.startsWith('https://') ? saved.identity_url : ''
+  const withdrawals = Array.isArray(saved?.withdrawals) ? saved.withdrawals : []
+  return <div className="lt-qr-payments-layout">
+  <form className="lt-qr-payments" onSubmit={save}>
     <div className="lt-qr-payments-head">
       <div>
         <p className="lt-qr-eyebrow">PAYMENTS</p>
         <h3>Accept payments on this menu</h3>
-        <p>Loyalty Tree takes 3% of each paid order automatically. You do not set this. PayMongo's fee is separate and comes out of the business, not the customer.</p>
+        <p>Customers pay on this menu through PayMongo. Loyalty Tree's 3% is automatic.</p>
       </div>
       <strong>3% automatic</strong>
     </div>
@@ -90,8 +97,25 @@ export default function MenuPaymentsSetup({ API_BASE, slug, authFetch }) {
       <label>{form.payout_kind === 'gcash' ? 'GCash mobile number' : 'Account number'}<input value={form.payout_account_number} onChange={set('payout_account_number')} inputMode="numeric" autoComplete="off" placeholder={form.payout_last4 ? `Saved ending ${form.payout_last4}` : ''} /></label>
       <p className="lt-qr-owner-hint">GCash is instant up to ₱50,000 per send. Above that, use a bank. We keep only the last 4 digits.</p>
     </details>
-    <p className="lt-qr-owner-hint">A government ID and a selfie are still required. PayMongo asks for those when it reviews the account. DTI or SEC is not required for QR Ph.</p>
+    <p className="lt-qr-owner-hint">DTI or SEC is not required for QR Ph.</p>
     {saved?.missing?.length > 0 && <p className="lt-qr-owner-hint">Still needed: {saved.missing.join(', ')}.</p>}
     <button type="submit" className="lt-qr-primary" disabled={saving}>{saving ? 'Saving…' : 'Save payment setup'}</button>
   </form>
+  <aside className="lt-qr-pay-wallet">
+    <p className="lt-qr-eyebrow">POWERED BY PAYMONGO</p>
+    <h3>Your PayMongo wallet</h3>
+    <p>Loyalty Tree takes a 3% platform fee from each paid order. PayMongo charges its own payment fee. Both come from the business, not the customer. The 3% goes to Loyalty Tree. The rest stays in this wallet.</p>
+    <div>
+      <span>Current balance</span>
+      <strong>{balance || 'Not available yet'}</strong>
+    </div>
+    <h4>Withdrawals</h4>
+    {withdrawals.length === 0 ? <p>No withdrawals yet.</p> : <ul>{withdrawals.map(item => <li key={item.id}>{item.destination || 'Payout'} · {item.status}</li>)}</ul>}
+    <p>Payouts go to the saved GCash or bank. ₱10 per send, and one send each week is free. GCash is up to ₱50,000.</p>
+    {identityUrl
+      ? <a className="lt-qr-primary" href={identityUrl} target="_blank" rel="noreferrer">Verify ID and selfie</a>
+      : <button type="button" className="lt-qr-primary" onClick={() => setVerifyNote('PayMongo is not accepting new accounts yet. When it opens, this button goes to their camera page for one government ID and a selfie. Loyalty Tree does not keep the photos.')}>Verify ID and selfie</button>}
+    {verifyNote && <p role="status">{verifyNote}</p>}
+  </aside>
+  </div>
 }
