@@ -80,15 +80,15 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
       {hasCover && <img className="lt-qr-hero" src={business.hero_url} alt="" onError={() => setFailedHero(business.hero_url)} />}
       <div className="lt-qr-menu-shell">
       <header className="lt-qr-brand">
-        {business.logo_url ? <img className="lt-qr-logo" src={business.logo_url} alt="" style={{ borderRadius: design.logo_shape === 'circle' ? '50%' : design.logo_shape === 'square' ? 4 : 16 }} /> : <span className="lt-qr-monogram" aria-hidden="true">{business.name.slice(0, 1)}</span>}
-        <div><h1>{business.name}</h1><p className="lt-qr-subtitle">Our menu{branch && branches.length < 2 ? ` · ${branch.name}` : ''}</p></div>
+        {business.logo_url ? <img className="lt-qr-logo" src={business.logo_url} alt="" style={{ borderRadius: design.logo_shape === 'circle' ? '50%' : design.logo_shape === 'square' ? 4 : '50%' }} /> : <span className="lt-qr-monogram" aria-hidden="true">{business.name.slice(0, 1)}</span>}
+        <div className="lt-qr-brand-copy"><h1>{business.name}</h1><p className="lt-qr-subtitle">{branch && branches.length < 2 ? branch.name : 'Menu'}</p></div>
+        <button type="button" className="lt-qr-search-toggle" aria-expanded={searchOpen} aria-label={searchOpen ? 'Close search' : 'Search menu'} onClick={() => { setSearchOpen(value => !value); setSearch('') }}>{searchOpen ? '×' : '⌕'}</button>
       </header>
       {branches.length > 1 && <label className="lt-qr-branch-select">Location<select aria-label="Menu location" value={branchId} onChange={event => chooseBranch(event.target.value)}><option value="">Choose a location</option>{branches.map(value => <option key={value.public_id} value={value.public_id}>{value.name}</option>)}</select></label>}
       {branches.length > 1 && !branchId ? <section className="lt-qr-location-prompt"><h2>Find your local favorites.</h2><p>Choose a location to see its menu and availability.</p>{branches.map(value => <button type="button" key={value.public_id} onClick={() => chooseBranch(value.public_id)}><strong>{value.name}</strong><span>{value.address || 'View menu'} →</span></button>)}</section> : <>
         {branch?.address && <p className="lt-qr-address">{branch.address}</p>}
         <div className="lt-qr-section-label">
           <div>{category !== null && groups.length > 0 && <button type="button" className="lt-qr-back" onClick={() => chooseCategory(null)}>← All categories</button>}<h2 ref={menuHeading} tabIndex={-1}>{showCategoryTiles ? 'Browse menu' : search.trim() ? 'Search results' : selectedCategory?.name || 'Our menu'}</h2></div>
-          <button type="button" className="lt-qr-search-toggle" aria-expanded={searchOpen} onClick={() => { setSearchOpen(value => !value); setSearch('') }}>{searchOpen ? 'Close search' : '⌕ Search'}</button>
         </div>
         {(searchOpen || (!showCategoryTiles && groups.length > 0)) && <div className="lt-qr-browse-tools">
           {searchOpen && <label className="lt-qr-search"><span aria-hidden="true">⌕</span><input ref={searchInput} type="search" aria-label="Search menu" placeholder="Find something you’ll love" value={search} onChange={event => setSearch(event.target.value)} /></label>}
