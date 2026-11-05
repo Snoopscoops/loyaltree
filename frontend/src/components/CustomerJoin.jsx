@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { readBenefitsSession } from './benefitsModel'
+import { digitalMenuHref } from './qrMenuModel'
 import { requestJsonResponse } from './requestTimeout'
 
 const EMPLOYEE_POSITION_OPTIONS = [
@@ -365,6 +366,7 @@ function CustomerJoin({ API_BASE }) {
   if (!submitted && !joining && !isEmployeeExperience) {
     const businessName = businessInfo?.name || 'LoyaltyTree'
     const benefitsHref = `/benefits?business=${encodeURIComponent(businessInfo?.public_id || businessSlug || '')}`
+    const menuHref = digitalMenuHref(businessInfo, businessSlug)
     const benefitsBody = (
       <>
         <span style={styles.qrLabel}>Benefits</span>
@@ -390,6 +392,13 @@ function CustomerJoin({ API_BASE }) {
               <span style={styles.qrArrow}>→</span>
             </span>
           </button>
+          {menuHref && <a href={menuHref} style={styles.qrMenu}>
+            <span style={styles.qrLabel}>Menu</span>
+            <span style={styles.qrCardRow}>
+              <span style={styles.qrCardTitle}>View Digital Menu</span>
+              <span style={styles.qrArrowLight}>→</span>
+            </span>
+          </a>}
           <p style={styles.qrFoot}>Apple Wallet · Google Wallet</p>
         </main>
       </div>
@@ -919,6 +928,10 @@ const styles = {
   qrJoin: {
     width: '100%', display: 'flex', flexDirection: 'column', gap: 22, textAlign: 'left', cursor: 'pointer',
     border: 'none', borderRadius: 16, background: '#f8f6ef', color: '#102d28', padding: '18px 18px 20px', fontFamily: 'inherit',
+  },
+  qrMenu: {
+    display: 'flex', flexDirection: 'column', gap: 22, textAlign: 'left', textDecoration: 'none', color: '#fff',
+    border: '1px solid rgba(255,255,255,.22)', borderRadius: 16, background: 'transparent', padding: '18px 18px 16px', marginTop: 14,
   },
   qrJoinTitle: { fontSize: 22, fontWeight: 700, letterSpacing: '-.4px', lineHeight: 1.2 },
   qrArrow: { color: '#073f36', fontSize: 22, lineHeight: 1 },
