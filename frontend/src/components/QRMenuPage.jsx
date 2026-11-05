@@ -98,10 +98,14 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
         <p className="lt-qr-result-count">{items.length} {items.length === 1 ? 'item' : 'items'}</p>
         <div className="lt-qr-items">{items.map(value => {
           const available = menuItemAvailable(value, branchId)
-          return <button type="button" key={value.public_id} className={`lt-qr-item${available ? '' : ' is-sold'}`} onClick={() => setItem(value)} aria-label={`View ${value.name}${available ? '' : ', sold out'}`}>
-            <MenuItemPhoto item={value} available={available} />
-            <div className="lt-qr-item-copy"><h3>{value.name}</h3>{design.show_product_description !== false && value.description && <p>{value.description}</p>}<div className="lt-qr-item-bottom"><strong>{money(value.base_price)}</strong>{available && !(value.modifier_groups || []).length ? <span className="lt-qr-add" onClick={event => { event.stopPropagation(); addItem(value) }}>Add</span> : <span aria-hidden="true">Details ↗</span>}</div></div>
-          </button>
+          const canAdd = available && !(value.modifier_groups || []).length
+          return <article key={value.public_id} className={`lt-qr-item${available ? '' : ' is-sold'}`}>
+            <button type="button" className="lt-qr-item-open" onClick={() => setItem(value)} aria-label={`View ${value.name}${available ? '' : ', sold out'}`}>
+              <MenuItemPhoto item={value} available={available} />
+              <div className="lt-qr-item-copy"><h3>{value.name}</h3>{design.show_product_description !== false && value.description && <p>{value.description}</p>}<strong>{money(value.base_price)}</strong></div>
+            </button>
+            {canAdd ? <button type="button" className="lt-qr-add" onClick={() => addItem(value)} aria-label={`Add ${value.name}`}>+</button> : <button type="button" className="lt-qr-details" onClick={() => setItem(value)}>{available ? 'Choose' : 'Sold out'}</button>}
+          </article>
         })}</div>
         {!items.length && <div className="lt-qr-empty" role="status"><h3>{search ? 'No matches yet.' : 'More good things are coming.'}</h3><p>{search ? 'Try another search or category.' : 'Check back soon for menu updates.'}</p>{(search || category !== null) && <button type="button" className="lt-qr-text-button" onClick={() => chooseCategory('all')}>Show all items</button>}</div>}
         </>}
