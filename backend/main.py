@@ -51173,6 +51173,13 @@ register_qr_menu_routes(app, db=supabase, get_business=safe_get_business,
     require_owner=require_owner_session, has_feature=business_has_plan_feature,
     on_hold=billing_hold, menu_snapshot=_oa_menu_snapshot, branding=_qr_menu_branding,
     frontend_url=FRONTEND_URL or 'https://theloyaltytree.com')
+try:
+    from .menu_payments import register_menu_payment_routes
+except ImportError:
+    from menu_payments import register_menu_payment_routes
+register_menu_payment_routes(app, db=supabase, get_business=safe_get_business,
+    require_owner=require_owner_session, has_feature=business_has_plan_feature, on_hold=billing_hold)
+
 
 register_customer_demographics_routes(app, db=supabase, require_admin=require_admin,
     on_warning=lambda error_type: log_event('customer_demographics_unavailable', level='warning', error_type=error_type))
