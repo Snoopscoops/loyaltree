@@ -159,6 +159,9 @@ def normalize_setup(payload):
     record['ready'] = not missing
     record['platform_fee_percent'] = PLATFORM_FEE_PERCENT
     record['platform_fee_editable'] = False
+    record['balance_centavos'] = None
+    record['withdrawals'] = []
+    record['identity_url'] = None
     return record
 
 

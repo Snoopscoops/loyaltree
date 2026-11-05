@@ -106,6 +106,17 @@
 .lt-qr-pay-choice button { border:1px solid #d0ded5; background:#f7faf8; color:#173f35; border-radius:999px; padding:8px 14px; }
 .lt-qr-pay-choice button[aria-pressed=true] { background:#173f35; color:#fff; border-color:#173f35; }
 .lt-qr-payments .lt-qr-primary { margin-top:16px; }
+.lt-qr-payments-layout { display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:18px; align-items:start; }
+.lt-qr-pay-wallet { background:#fff; border:1px solid #dce6df; border-radius:16px; padding:22px; }
+.lt-qr-pay-wallet h3 { margin:4px 0 8px; font-size:20px; }
+.lt-qr-pay-wallet h4 { margin:18px 0 6px; font-size:14px; }
+.lt-qr-pay-wallet p, .lt-qr-pay-wallet li { color:#64748b; font-size:13px; line-height:1.55; }
+.lt-qr-pay-wallet div { display:flex; justify-content:space-between; gap:12px; align-items:baseline; margin-top:16px; padding-top:14px; border-top:1px solid #e6ebe7; }
+.lt-qr-pay-wallet div span { color:#64748b; font-size:12px; }
+.lt-qr-pay-wallet div strong { color:#173f35; font-size:22px; }
+.lt-qr-pay-wallet ul { margin:0; padding-left:18px; }
+.lt-qr-pay-wallet .lt-qr-primary { display:inline-block; margin-top:14px; border:0; border-radius:999px; background:#173f35; color:#fff; padding:12px 16px; text-decoration:none; font-weight:700; }
+@media(max-width:760px) { .lt-qr-payments-layout { grid-template-columns:1fr; } .lt-qr-pay-wallet { order:-1; } }
 .lt-qr-print-card { padding:24px 14px; border:1px solid #dce6df; border-radius:15px; background:#fafcf8; text-align:center; }.lt-qr-print-card h3 { margin:10px 0 18px; overflow-wrap:anywhere; }.lt-qr-print-card svg { max-width:100%; height:auto; background:#fff; border-radius:10px; }.lt-qr-print-card > strong { display:block; margin-top:18px; }.lt-qr-print-card p:not(.lt-qr-eyebrow) { color:#64748b; font-size:12px; }.lt-qr-print-card small { color:#748b7c; font-size:10px; }
 .lt-qr-catalog-editor input,.lt-qr-catalog-editor textarea { min-width:0; }.lt-qr-catalog-editor .lt-menu-editor { min-width:0; }.lt-qr-catalog-editor .lt-menu-columns > div { min-width:0; }
 .lt-qr-message-page { max-width:500px; margin:12vh auto; padding:24px; font-family:system-ui,sans-serif; color:#173f35; }.lt-qr-message-page button { padding:12px 18px; border:0; border-radius:9px; background:#0f766e; color:#fff; cursor:pointer; }
