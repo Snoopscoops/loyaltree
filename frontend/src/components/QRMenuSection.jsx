@@ -49,7 +49,7 @@ export default function QRMenuSection({ API_BASE, user, business, authFetch, ren
     {!setup ? !error && <p role="status">Loading QR Menu…</p> : <>
       <div className="lt-qr-owner-tabs" aria-label="QR Menu sections">{[['builder','Menu builder'],['preview','Customer preview'],['share','Payments']].map(([value,label]) => <button type="button" key={value} aria-pressed={tab === value} onClick={() => chooseTab(value)}>{label}</button>)}</div>
       {tab === 'builder' && <><p className="lt-qr-owner-hint">This is your shared menu catalog. Saved changes also appear in Order Ahead wherever it is enabled.</p><div className="lt-qr-catalog-editor">{renderBuilder(() => { setPreview(null) })}</div></>}
-      {tab === 'preview' && <div className="lt-qr-preview-frame">{preview ? <QRMenuBrowser data={preview} preview /> : !error && <p role="status">Loading customer preview…</p>}</div>}
+      {tab === 'preview' && <div className="lt-qr-preview-frame"><p className="lt-qr-preview-caption">What customers see</p>{preview ? <QRMenuBrowser data={preview} preview /> : !error && <p className="lt-qr-preview-caption" role="status">Loading customer preview…</p>}</div>}
       {tab === 'share' && <MenuPaymentsSetup API_BASE={API_BASE} slug={slug} authFetch={authFetch} />}
     </>}
   </section>
