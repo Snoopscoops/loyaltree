@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import MagicMock
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
-from backend.qr_menu import public_catalog, register_qr_menu_routes, safe_image
+from backend.qr_menu import public_catalog, register_qr_menu_routes, safe_image, published_for_join
 from backend.trial_coupons import billing_hold
 
 
@@ -235,3 +235,15 @@ class SharedCatalogAccessTests(unittest.TestCase):
         self.assertFalse(plans['starter']['qr_menu'])
         self.assertTrue(plans['growth']['qr_menu'])
         self.assertTrue(plans['pro']['qr_menu'])
+
+    def test_join_page_flag_stays_off_until_the_menu_is_published(self):
+        feature = lambda business, name: business.get('plan') in ('growth', 'pro')
+        hold = lambda business: False
+        self.assertFalse(published_for_join(self.db, self.business, feature, hold))
+        self.publish()
+        self.assertTrue(published_for_join(self.db, self.business, feature, hold))
+        self.business['plan'] = 'starter'
+        self.assertFalse(published_for_join(self.db, self.business, feature, hold))
+        self.db.fail = True
+        self.business['plan'] = 'growth'
+        self.assertFalse(published_for_join(self.db, self.business, feature, hold))

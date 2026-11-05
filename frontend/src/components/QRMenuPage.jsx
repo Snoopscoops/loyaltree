@@ -1,6 +1,6 @@
 import React, { useEffect, useId, useRef, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
-import { filterMenuItems, groupMenuCategories, menuItemAvailable, menuItemPrice, toggleMenuOption, validMenuPayload } from './qrMenuModel'
+import { filterMenuItems, groupMenuCategories, menuItemAvailable, menuItemPrice, toggleMenuOption, validMenuPayload, addCartItem, changeCartQuantity, cartSubtotal, buildMenuOrder } from './qrMenuModel'
 import loyaltyTreeLogo from './logo-192.png'
 import { requestJsonResponse } from './requestTimeout'
 import './qr-menu.css'
@@ -13,10 +13,11 @@ function MenuItemPhoto({ item, available }) {
   </div>
 }
 
-function ItemDetails({ item, available, money, onClose }) {
+function ItemDetails({ item, available, money, onClose, onAdd }) {
   const dialog = useRef(null)
   const titleId = useId()
   const [selected, setSelected] = useState({})
+  const [quantity, setQuantity] = useState(1)
   useEffect(() => { dialog.current?.showModal() }, [])
   return <dialog ref={dialog} className="lt-qr-sheet" aria-labelledby={titleId} onCancel={event => { event.preventDefault(); onClose() }} onClick={event => { if (event.target === dialog.current) onClose() }}>
     <div className="lt-qr-sheet-content">
@@ -26,13 +27,13 @@ function ItemDetails({ item, available, money, onClose }) {
       {item.description && <p className="lt-qr-description">{item.description}</p>}
       {!available && <p className="lt-qr-sold-note">Currently sold out at this location.</p>}
       {(item.modifier_groups || []).map(group => <fieldset key={group.public_id} className="lt-qr-option-group">
-        <legend>{group.name}</legend><p>{group.selection_type === 'single' ? 'Choose one to preview the price' : `Choose your options${group.max_selections > 0 ? ` · up to ${group.max_selections}` : ''}`}</p>
+        <legend>{group.name}</legend><p>{group.selection_type === 'single' ? 'Choose one' : `Choose your options${group.max_selections > 0 ? ` · up to ${group.max_selections}` : ''}`}</p>
         {group.options.map(option => <label key={option.public_id}><span><input type={group.selection_type === 'single' ? 'radio' : 'checkbox'} name={group.public_id} checked={(selected[group.public_id] || []).includes(option.public_id)} onChange={() => setSelected(current => toggleMenuOption(current, group, option.public_id))} />{option.name}</span><span>{option.price_delta ? `${option.price_delta > 0 ? '+' : '−'} ${money(Math.abs(option.price_delta))}` : 'Included'}</span></label>)}
         {selected[group.public_id]?.length > 0 && <button type="button" className="lt-qr-text-button" onClick={() => setSelected(current => ({ ...current, [group.public_id]: [] }))}>Clear selection</button>}
       </fieldset>)}
       <div className="lt-qr-detail-price"><span>Price with selected options</span><strong>{money(menuItemPrice(item, selected))}</strong></div>
-      <p className="lt-qr-browse-note">Browse the menu, then order with our team.</p>
-      <button type="button" className="lt-qr-primary" onClick={onClose}>Back to menu</button>
+      {available && <div className="lt-qr-qty"><button type="button" onClick={() => setQuantity(value => Math.max(1, value - 1))} aria-label="Decrease quantity">−</button><span>{quantity}</span><button type="button" onClick={() => setQuantity(value => Math.min(20, value + 1))} aria-label="Increase quantity">+</button></div>}
+      <button type="button" className="lt-qr-primary" disabled={!available} onClick={() => { onAdd(item, selected, quantity); onClose() }}>{available ? 'Add to cart' : 'Sold out'}</button>
     </div>
   </dialog>
 }
@@ -44,6 +45,9 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   const [failedHero, setFailedHero] = useState(null)
   const [branchId, setBranchId] = useState(initialBranch || data.selected_branch || '')
   const [item, setItem] = useState(null)
+  const [cart, setCart] = useState([])
+  const [cartOpen, setCartOpen] = useState(false)
+  const [order, setOrder] = useState(null)
   const menuHeading = useRef(null)
   const focusHeading = useRef(false)
   const searchInput = useRef(null)
@@ -63,7 +67,14 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   const chooseCategory = id => { focusHeading.current = true; setCategory(id); setSearch(''); setSearchOpen(false) }
   const hasCover = design.show_banner !== false && business.hero_url && failedHero !== business.hero_url
   const theme = { '--qr-primary': design.primary_color || '#0f766e', '--qr-bg': design.background_color || '#f8faf8', '--qr-surface': design.surface_color || '#fff', '--qr-text': design.text_color || '#173f35', '--qr-muted': design.muted_color || '#64748b' }
-  return <div className={`lt-qr-public${preview ? ' lt-qr-is-preview' : ''}`} style={theme}>
+  const count = cart.reduce((sum, line) => sum + line.quantity, 0)
+  const total = cartSubtotal(cart)
+  const addItem = (value, selected = {}, quantity = 1) => {
+    if (!menuItemAvailable(value, branchId)) return
+    setCart(current => addCartItem(current, value, selected, quantity))
+    setOrder(null)
+  }
+  return <div className={`lt-qr-public${preview ? ' lt-qr-is-preview' : ''}${count ? ' lt-qr-has-cart' : ''}`} style={theme}>
     <main className={`lt-qr-page${hasCover ? ' lt-qr-has-cover' : ''}`}>
       {preview && <div className="lt-qr-preview-note">Owner preview · {data.is_published ? 'Published' : 'Not published'}</div>}
       {hasCover && <img className="lt-qr-hero" src={business.hero_url} alt="" onError={() => setFailedHero(business.hero_url)} />}
@@ -89,7 +100,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
           const available = menuItemAvailable(value, branchId)
           return <button type="button" key={value.public_id} className={`lt-qr-item${available ? '' : ' is-sold'}`} onClick={() => setItem(value)} aria-label={`View ${value.name}${available ? '' : ', sold out'}`}>
             <MenuItemPhoto item={value} available={available} />
-            <div className="lt-qr-item-copy"><h3>{value.name}</h3>{design.show_product_description !== false && value.description && <p>{value.description}</p>}<div className="lt-qr-item-bottom"><strong>{money(value.base_price)}</strong><span aria-hidden="true">Details ↗</span></div></div>
+            <div className="lt-qr-item-copy"><h3>{value.name}</h3>{design.show_product_description !== false && value.description && <p>{value.description}</p>}<div className="lt-qr-item-bottom"><strong>{money(value.base_price)}</strong>{available && !(value.modifier_groups || []).length ? <span className="lt-qr-add" onClick={event => { event.stopPropagation(); addItem(value) }}>Add</span> : <span aria-hidden="true">Details ↗</span>}</div></div>
           </button>
         })}</div>
         {!items.length && <div className="lt-qr-empty" role="status"><h3>{search ? 'No matches yet.' : 'More good things are coming.'}</h3><p>{search ? 'Try another search or category.' : 'Check back soon for menu updates.'}</p>{(search || category !== null) && <button type="button" className="lt-qr-text-button" onClick={() => chooseCategory('all')}>Show all items</button>}</div>}
@@ -99,7 +110,16 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
       <footer className="lt-qr-footer"><img src={loyaltyTreeLogo} alt="" /><span>Menu by <strong>Loyalty Tree</strong></span></footer>
       </div>
     </main>
-    {item && <ItemDetails key={item.public_id} item={item} available={menuItemAvailable(item, branchId)} money={money} onClose={() => setItem(null)} />}
+    {item && <ItemDetails key={item.public_id} item={item} available={menuItemAvailable(item, branchId)} money={money} onClose={() => setItem(null)} onAdd={addItem} />}
+    {count > 0 && <div className="lt-qr-cartbar"><div><strong>{count} {count === 1 ? 'item' : 'items'}</strong><span>{money(total)}</span></div><button type="button" onClick={() => setCartOpen(true)}>View cart</button></div>}
+    {cartOpen && <div className="lt-qr-cart" role="dialog" aria-label="Your cart">
+      <div className="lt-qr-cart-card">
+        <div className="lt-qr-cart-head"><h2>Your cart</h2><button type="button" onClick={() => { setCartOpen(false); setOrder(null) }} aria-label="Close cart">×</button></div>
+        {cart.map(line => <div className="lt-qr-cart-line" key={line.key}><div><strong>{line.name}</strong>{line.options.length > 0 && <p>{line.options.map(option => option.name).join(', ')}</p>}<span>{money(line.unit_price * line.quantity)}</span></div><div className="lt-qr-qty"><button type="button" onClick={() => setCart(current => changeCartQuantity(current, line.key, line.quantity - 1))} aria-label={`Decrease ${line.name}`}>−</button><span>{line.quantity}</span><button type="button" onClick={() => setCart(current => changeCartQuantity(current, line.key, line.quantity + 1))} aria-label={`Increase ${line.name}`}>+</button></div></div>)}
+        <div className="lt-qr-cart-total"><span>Total</span><strong>{money(total)}</strong></div>
+        {!order ? <button type="button" className="lt-qr-primary" onClick={() => setOrder(buildMenuOrder({ merchantId: business.public_id, cart, orderId: `ord_${Date.now().toString(36)}` }))}>Checkout</button> : <div className="lt-qr-checkout" role="status"><strong>Payments coming soon</strong><p>This order is saved on this phone only. Nothing has been charged.</p><dl><div><dt>Order</dt><dd>{order.order_id}</dd></div><div><dt>Status</dt><dd>{order.status}</dd></div></dl></div>}
+      </div>
+    </div>}
   </div>
 }
 

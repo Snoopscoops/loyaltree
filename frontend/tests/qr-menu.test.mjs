@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { menuItemAvailable, filterMenuItems, groupMenuCategories, menuItemPrice, toggleMenuOption, validMenuPayload } from '../src/components/qrMenuModel.js'
+import { menuItemAvailable, filterMenuItems, groupMenuCategories, menuItemPrice, toggleMenuOption, validMenuPayload, addCartItem, changeCartQuantity, cartSubtotal, buildMenuOrder, digitalMenuHref } from '../src/components/qrMenuModel.js'
 import { createFixtureTransport, fixtureSlug } from '../dev/owner-dashboard-fixtures.js'
 const size={public_id:'size',selection_type:'single',max_selections:1,options:[{public_id:'small',price_delta:0},{public_id:'large',price_delta:25}]}
 const extras={public_id:'extras',selection_type:'multiple',max_selections:1,options:[{public_id:'oat',price_delta:20},{public_id:'syrup',price_delta:10}]}
@@ -64,4 +64,31 @@ test('fixture supports browse-only publication, shared catalog edits and unpubli
 test('malformed public responses are rejected before rendering customer content',()=>{
   for(const body of [null,{}, {business:{public_id:'test',name:'Cafe'}}]) assert.equal(validMenuPayload(body),false)
   assert.equal(validMenuPayload({business:{public_id:'test',name:'Cafe'},items:[],categories:[],branches:[]}),true)
+})
+
+test('join page hides the menu until it is published, then points at the existing menu',()=>{
+  assert.equal(digitalMenuHref(null,'nfc9277'),'')
+  assert.equal(digitalMenuHref({digital_menu_published:false,public_id:'nfc9277'},'nfc9277'),'')
+  assert.equal(digitalMenuHref({public_id:'nfc9277'},'nfc9277'),'')
+  assert.equal(digitalMenuHref({digital_menu_published:true,public_id:'nfc9277'},'old-slug'),'/menu/nfc9277')
+})
+
+test('cart keeps quantities, refuses sold-out items, and builds a pending order',()=>{
+  const latte={public_id:'latte',name:'Latte',base_price:120,modifier_groups:[]}
+  const sold={public_id:'bun',name:'Bun',base_price:50,is_available:false}
+  let cart=addCartItem([],latte)
+  cart=addCartItem(cart,latte)
+  cart=addCartItem(cart,sold)
+  assert.equal(cart.length,1)
+  assert.equal(cart[0].quantity,2)
+  assert.equal(cartSubtotal(cart),240)
+  cart=changeCartQuantity(cart,cart[0].key,0)
+  assert.deepEqual(cart,[])
+  cart=addCartItem([],latte,{},3)
+  const order=buildMenuOrder({merchantId:'nfc9277',cart,orderId:'ord_test'})
+  assert.equal(order.order_id,'ord_test')
+  assert.equal(order.merchant_id,'nfc9277')
+  assert.equal(order.status,'pending_payment')
+  assert.equal(order.subtotal,360)
+  assert.equal(order.items[0].line_total,360)
 })

@@ -25,9 +25,9 @@ except ImportError:
     from wallet_class_publish import upsert_loyalty_class
 
 try:
-    from .qr_menu import register_qr_menu_routes
+    from .qr_menu import register_qr_menu_routes, published_for_join
 except ImportError:
-    from qr_menu import register_qr_menu_routes
+    from qr_menu import register_qr_menu_routes, published_for_join
 
 try:
     from .customer_demographics import register_customer_demographics_routes
@@ -39534,6 +39534,7 @@ async def public_business_join_config(public_id: str):
         'employee_attendance_enabled': bool(program.get('employee_attendance_enabled')),
         'employee_time_tracking_enabled': bool(program.get('employee_time_tracking_enabled')),
         'customer_agreement': _public_customer_agreement(program),
+        'digital_menu_published': published_for_join(supabase, business, business_has_plan_feature, billing_hold),
     }
 
 @app.get("/api/v1/customer/{customer_public_id}/wallet-pass")
