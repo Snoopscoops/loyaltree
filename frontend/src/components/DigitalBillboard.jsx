@@ -172,9 +172,16 @@ export default function DigitalBillboard({ API_BASE, user, active = true }) {
   return (
     <section className={form.enabled ? 'lt-billboard is-on' : 'lt-billboard is-off'} aria-label="Digital Billboard">
       <header className="lt-billboard-head">
-        <p className="lt-kicker">Digital Billboard</p>
-        <h1>Nearby alerts</h1>
-        <p>Turn this off any time. Members only get an alert while it is on and a pin is saved.</p>
+        <div>
+          <p className="lt-kicker">Digital Billboard</p>
+          <h1>Nearby alerts</h1>
+          <p>A member walking past a saved pin can see this. It stays quiet while the switch is off.</p>
+        </div>
+        <div className="lt-alert-preview" aria-hidden="true">
+          <span>{form.enabled ? 'Showing' : 'Hidden'}</span>
+          <strong>{form.message || 'You are near us. Open your Loyalty Tree card.'}</strong>
+          <em>Within {form.radius_meters} m</em>
+        </div>
       </header>
 
       <div className="lt-power">
@@ -215,7 +222,7 @@ export default function DigitalBillboard({ API_BASE, user, active = true }) {
         {(form.pins || []).map((pin, index) => (
           <article className="lt-pin" key={index}>
             <div className="lt-pin-top">
-              <span>Location {index + 1}{hasPin(pin) ? '' : ' · not placed'}</span>
+              <div><span>Location {index + 1}</span><em className={hasPin(pin) ? 'is-placed' : ''}>{hasPin(pin) ? 'Placed' : 'Not placed'}</em></div>
               <button type="button" className="lt-text-btn" onClick={() => { if (window.confirm('Remove this location?')) patch({ pins: form.pins.filter((_, pinIndex) => pinIndex !== index) }) }}>Remove</button>
             </div>
             <label className="lt-field">Branch
