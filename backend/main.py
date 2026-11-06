@@ -50840,26 +50840,24 @@ def _highlighted_businesses(region):
     return rows
 
 
-def _apple_location(pin, config, label):
-    near = " ".join(str(label or "You're near us").split())
-    message = " ".join(str(pin.get("message") or config.get("message") or "").split())
-    generic = message.lower() in {
+def _apple_nearby_text(message, fallback):
+    """The iPhone lock screen uses the merchant's line, not a prefixed version of it."""
+    text = " ".join(str(message or "").split())
+    generic = text.lower() in {
         "",
         "you're near us. open your loyaltytree card.",
         "you are near us. open your loyalty tree card.",
         "you're near us. open your loyalty tree card.",
     }
-    if generic:
-        text = near
-    else:
-        text = f"{near}. {message}"
-        if len(text) > 120:
-            text = message
-    text = text[:120]
+    shown = " ".join(str(fallback or "You're near us").split()) if generic else text
+    return shown[:120]
+
+
+def _apple_location(pin, config, label):
     return {
         "latitude": float(pin["latitude"]),
         "longitude": float(pin["longitude"]),
-        "relevantText": text,
+        "relevantText": _apple_nearby_text(pin.get("message") or config.get("message"), label),
         "maxDistance": int(config.get("radius_meters") or GEOFENCE_MIN_RADIUS_METERS),
     }
 
