@@ -17,6 +17,17 @@ function detailOf(data, fallback) {
   return typeof data?.detail === 'string' ? data.detail : fallback
 }
 
+function appleLockScreenLine(message) {
+  const text = String(message || '').replace(/\s+/g, ' ').trim()
+  const generic = [
+    '',
+    "you're near us. open your loyaltytree card.",
+    "you are near us. open your loyalty tree card.",
+    "you're near us. open your loyalty tree card.",
+  ].includes(text.toLowerCase())
+  return generic ? 'You’re near {branch name}' : text
+}
+
 function hasPin(pin) {
   return pin && pin.latitude !== '' && pin.latitude != null && pin.longitude !== '' && pin.longitude != null
 }
@@ -199,9 +210,10 @@ export default function DigitalBillboard({ API_BASE, user, active = true }) {
       </div>
 
       <div className="lt-billboard-card">
-        <label className="lt-field">What the iPhone says
+        <label className="lt-field">Message on iPhone
           <input maxLength={120} value={form.message} onChange={e => patch({ message: e.target.value })} />
         </label>
+        <p className="lt-quiet">This exact line shows on the iPhone lock screen: “{appleLockScreenLine(form.message)}”. {String(form.message || '').length}/120. Android still uses Google’s short nearby notice.</p>
         <label className="lt-field">How close
           <div className="lt-distance">
             <input type="range" min={minRadius} max={maxRadius} step="10" value={form.radius_meters} onChange={e => patch({ radius_meters: Number(e.target.value) })} />
