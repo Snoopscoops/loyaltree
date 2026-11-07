@@ -50966,6 +50966,22 @@ def get_geofence_config(public_id: str, authorization: str = Header(default=''))
     }
 
 
+def _refresh_saved_geofence_passes(business: dict) -> int:
+    """Ask saved Apple cards to download again after nearby alerts are switched."""
+    if not supabase or not business.get('id'):
+        return 0
+    try:
+        customers = supabase.table('customers').select('public_id').eq('business_id', business.get('id')).limit(5000).execute().data or []
+    except Exception as exc:
+        print(f'GEOFENCE pass refresh lookup error: {exc}')
+        return 0
+    public_ids = [row.get('public_id') for row in customers if row.get('public_id')]
+    _mark_apple_pass_dirty(public_ids)
+    sent = _push_apple_wallet_to_customer_public_ids(public_ids, business=business)
+    log_event('geofence_power', 'info', business_slug=business.get('public_id'), enabled=int(bool((_geofence_load(business) or {}).get('enabled'))), apple_targets=len(public_ids), apple_pushes=sent)
+    return sent
+
+
 @app.put('/api/v1/business/{public_id}/geofence')
 def save_geofence_config(public_id: str, payload: GeofenceConfigUpdate, authorization: str = Header(default='')):
     require_owner_session(public_id, authorization)
@@ -51007,6 +51023,7 @@ def save_geofence_config(public_id: str, payload: GeofenceConfigUpdate, authoriz
         'pins': pins,
         'updated_at': datetime.utcnow().isoformat(),
     }
+    was_on = bool(_geofence_load(business).get('enabled'))
     try:
         supabase.table('businesses').update({'geofence_config': config}).eq('id', business.get('id')).execute()
     except Exception as exc:
@@ -51016,6 +51033,8 @@ def save_geofence_config(public_id: str, payload: GeofenceConfigUpdate, authoriz
         sync_google_geofence_locations(business)
     except Exception as exc:
         print(f'GEOFENCE Google class update warning: {exc}')
+    if was_on != bool(config.get('enabled')):
+        _refresh_saved_geofence_passes(business)
     return _geofence_public(config, branches)
 
 
