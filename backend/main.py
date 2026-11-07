@@ -7805,7 +7805,11 @@ def google_merchant_locations(business: dict) -> list:
             continue
         if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
             continue
-        locations.append({'latitude': round(latitude, 6), 'longitude': round(longitude, 6)})
+        try:
+            from .geofence_rearm import daily_google_pin
+        except ImportError:
+            from geofence_rearm import daily_google_pin
+        locations.append(daily_google_pin(latitude, longitude))
         if len(locations) >= 10:
             break
     return locations
@@ -41613,9 +41617,47 @@ async def _lt_benefits_worker():
         await asyncio.sleep(20)
 
 
+def rearm_google_nearby_alerts():
+    """Give Google a slightly new pin so a later visit can alert again."""
+    if not supabase:
+        return 0
+    try:
+        from .geofence_rearm import businesses_with_nearby_alerts
+    except ImportError:
+        from geofence_rearm import businesses_with_nearby_alerts
+    try:
+        rows = supabase.table('businesses').select('public_id,geofence_config').limit(300).execute().data or []
+    except Exception as exc:
+        log_event('geofence_rearm', 'warning', reason='lookup_failed', error_type=type(exc).__name__)
+        return 0
+    refreshed = 0
+    for row in businesses_with_nearby_alerts(rows):
+        business = safe_get_business(row.get('public_id'))
+        if not business:
+            continue
+        try:
+            sync_google_geofence_locations(business)
+            refreshed += 1
+        except Exception as exc:
+            log_event('geofence_rearm', 'warning', business_slug=row.get('public_id'), reason='sync_failed', error_type=type(exc).__name__)
+    log_event('geofence_rearm', 'info', businesses=refreshed)
+    return refreshed
+
+
+async def _geofence_rearm_loop():
+    await asyncio.sleep(120)
+    while True:
+        try:
+            await asyncio.to_thread(rearm_google_nearby_alerts)
+        except Exception as exc:
+            log_event('geofence_rearm_failed', 'warning', error_type=type(exc).__name__)
+        await asyncio.sleep(24 * 60 * 60)
+
+
 @app.on_event('startup')
 async def start_wallet_queue_worker():
     app.state.wallet_worker = asyncio.create_task(wallet_queue_worker())
+    app.state.geofence_rearm_worker = asyncio.create_task(_geofence_rearm_loop())
     app.state.wallet_burst_sampler = asyncio.create_task(wallet_bursts.run())
     if lt_benefits_enabled():
         app.state.lt_benefits_worker = asyncio.create_task(_lt_benefits_worker())
