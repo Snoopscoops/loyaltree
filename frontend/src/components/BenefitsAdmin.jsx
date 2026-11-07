@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { benefitDate, benefitNumber, benefitSettingsPayload } from './benefitsManagementModel'
+import { benefitDate, benefitNumber, benefitSettingsPayload, benefitMoney } from './benefitsManagementModel'
 import { BenefitField, BenefitMessage, BenefitMetric, useBenefitsRequest } from './BenefitsShared'
 import './benefits-management.css'
 
@@ -13,6 +13,7 @@ function AdminBenefitsContent({ API_BASE = '', token, authFetch }) {
   const request = useBenefitsRequest({ API_BASE, token, authFetch, relativeAuth: true })
   const [settings, setSettings] = useState(null), [form, setForm] = useState({ enabled: false, pesos_per_point: '500', max_points_per_transaction: '' })
   const [businesses, setBusinesses] = useState([]), [approvalBusy, setApprovalBusy] = useState('')
+  const [offers, setOffers] = useState(null)
   const [loading, setLoading] = useState(true), [saving, setSaving] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState(''), [reload, setReload] = useState(0)
   const alive = useRef(true), mutation = useRef(null)
   useEffect(() => { alive.current = true; return () => { alive.current = false; mutation.current?.abort() } }, [])
@@ -26,6 +27,9 @@ function AdminBenefitsContent({ API_BASE = '', token, authFetch }) {
     request('/api/v1/admin/lt-benefits/businesses', { signal: controller.signal }).then(data => {
       if (!controller.signal.aborted && data && Array.isArray(data.businesses)) setBusinesses(data.businesses)
     }).catch(failure => { if (!controller.signal.aborted) setError(failure.message) })
+    request('/api/v1/admin/lt-benefits/offers', { signal: controller.signal }).then(data => {
+      if (!controller.signal.aborted && data && Array.isArray(data.businesses)) setOffers(data)
+    }).catch(() => { if (!controller.signal.aborted) setOffers({ business_count: 0, offer_count: 0, businesses: [] }) })
     return () => controller.abort()
   }, [request, reload])
   const save = async event => {
@@ -69,6 +73,12 @@ function AdminBenefitsContent({ API_BASE = '', token, authFetch }) {
       </form>
       <section className="lt-benefit-panel"><header><div><h3>Approve a business</h3><p>Benefits stay Coming soon until you approve that business. Approve one business first so you can test it. Everyone else stays Coming soon.</p></div></header>
         {businesses.length ? <div className="lt-benefit-table-wrap"><table><thead><tr><th>Business</th><th>Benefits</th><th></th></tr></thead><tbody>{businesses.map(row => <tr key={row.public_id}><td><strong>{row.name}</strong><small>{row.public_id}</small></td><td>{row.approved ? 'Live' : 'Coming soon'}</td><td><button type="button" disabled={!!approvalBusy} onClick={() => setApproval(row.public_id, !row.approved)}>{approvalBusy === row.public_id ? 'Saving…' : row.approved ? 'Set coming soon' : 'Approve'}</button></td></tr>)}</tbody></table></div> : <p className="lt-benefit-empty">No businesses to approve yet.</p>}
+      </section>
+      <section className="lt-benefit-panel"><header><div><h3>Discounts and freebies</h3><p>Businesses that already set a coupon. Compile this before launch. Drafts are included.</p></div></header>
+        {!offers ? <p className="lt-benefit-empty">Loading offers…</p> : !offers.businesses.length ? <p className="lt-benefit-empty">No business has set a discount or freebie yet.</p> : <>
+          <div className="lt-benefit-metrics"><BenefitMetric label="Businesses" value={benefitNumber(offers.business_count)} detail="With at least one offer"/><BenefitMetric label="Offers" value={benefitNumber(offers.offer_count)} detail="Draft, active, and paused"/></div>
+          <div className="lt-benefit-table-wrap"><table><thead><tr><th>Business</th><th>Offer</th><th>Value</th><th>Points</th><th>Status</th></tr></thead><tbody>{offers.businesses.flatMap(business => business.offers.map(offer => <tr key={offer.id}><td><strong>{business.business_name}</strong><small>{business.business_slug}</small></td><td><strong>{offer.title}</strong><small>{offer.category}</small></td><td>{benefitMoney(offer.discount_centavos)}</td><td>{benefitNumber(offer.points_cost)}</td><td><span className={`lt-benefit-status is-${offer.status}`}>{offer.status}</span></td></tr>))}</tbody></table></div>
+        </>}
       </section>
     </>}
   </section>
