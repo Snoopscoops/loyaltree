@@ -11,7 +11,16 @@ class WalletClassPublishTests(unittest.TestCase):
         with httpx.Client(transport=httpx.MockTransport(handler)) as client:
             return upsert_loyalty_class(client,CLASS,'test-token')
 
-    def test_first_create_timeout_after_commit_recovers_the_same_class(self):
+    def test_update_omits_review_status_that_google_rejects(self):
+        bodies=[]
+        def handler(request):
+            bodies.append((request.method, json.loads(request.content)))
+            return httpx.Response(200, json=CLASS)
+        payload={**CLASS, 'reviewStatus': 'APPROVED'}
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            response,_=upsert_loyalty_class(client, payload, 'test-token')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(bodies, [('PUT', CLASS)])
         stored,methods={},[]
         def handler(request):
             methods.append(request.method)

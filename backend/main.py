@@ -7871,6 +7871,14 @@ def verify_google_geofence_locations(business: dict) -> list:
                 stored = None
                 error_code = None
                 error_message = None
+                if response.status_code == 404:
+                    log_event('geofence_google_verify', 'info',
+                        business_slug=slug, class_id=class_id, status=404,
+                        sent=len(sent), stored=None, matched=0,
+                        benefits_class=class_id.endswith(lt_wallet.GOOGLE_CLASS_SUFFIX),
+                        reason='missing_class')
+                    results.append({'status': 404, 'sent': len(sent), 'stored': None, 'matched': False, 'error_code': 'missing_class'})
+                    continue
                 if response.status_code == 200:
                     try:
                         stored = len((response.json() or {}).get('merchantLocations') or [])
@@ -7916,6 +7924,13 @@ def sync_google_geofence_locations(business: dict) -> int:
                     params={'updateMask': 'merchantLocations'},
                     json={'merchantLocations': locations},
                 )
+                if response.status_code == 404:
+                    log_event('geofence_google_class', 'info',
+                        business_slug=slug, class_id=class_id, status=404,
+                        locations=len(locations),
+                        benefits_class=class_id.endswith(lt_wallet.GOOGLE_CLASS_SUFFIX),
+                        reason='missing_class')
+                    continue
                 error_code, error_message = (None, None) if response.status_code == 200 else _google_wallet_error(response)
                 log_event('geofence_google_class', 'info' if response.status_code == 200 else 'warning',
                     business_slug=slug, class_id=class_id, status=response.status_code,
@@ -8631,14 +8646,22 @@ async def republish_wallet_class_and_refresh(business: dict, program: dict):
                                 background_color_override=target_color,
                                 vip_tier_name=tier_name,
                             )
+                            update_body = dict(loyalty_class)
+                            update_body.pop('reviewStatus', None)
                             if lt_wallet.is_google_class(target_id):
                                 resp, _ = upsert_loyalty_class(client, loyalty_class, access_token)
                             else:
                                 resp = client.put(
                                     f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{target_id}',
                                     headers={"Authorization": f"Bearer {access_token}"},
-                                    json=loyalty_class
+                                    json=update_body
                                 )
+                                if resp.status_code == 404:
+                                    resp = client.post(
+                                        'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass',
+                                        headers={"Authorization": f"Bearer {access_token}"},
+                                        json=loyalty_class
+                                    )
                             print(f"WALLET SYNC: class publish {target_id} -> {resp.status_code}")
 
                 # Class publication uses synchronous pooled HTTP. Keep it off
@@ -15516,7 +15539,7 @@ def public_community_stats(response: Response):
     def stale_or_unavailable(retry_after=30):
         # A stale result is still aggregate-only; do not cache a failed refresh
         # as fresh or expose database messages to anonymous visitors.
-        if cached is not None and now_ts - float(_COMMUNITY_STATS_CACHE.get("saved_at") or 0) <= 1800:
+        if cached is not None and now_ts - float(_COMMUNITY_STATS_CACHE.get("saved_at") or 0) <= 6 * 60 * 60:
             response.headers["Cache-Control"] = "public, max-age=30"
             return cached
         raise HTTPException(status_code=503, detail="Community totals temporarily unavailable", headers={"Retry-After": str(retry_after), "Cache-Control": "no-store"})
@@ -33909,10 +33932,12 @@ async def create_or_update_cl_wallet_class(public_id: str, authorization: str = 
     try:
         import httpx
         with pooled_client() as client:
+            update_body = dict(loyalty_class)
+            update_body.pop('reviewStatus', None)
             resp = client.put(
                 f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}',
                 headers={"Authorization": f"Bearer {access_token}"},
-                json=loyalty_class
+                json=update_body
             )
             result = parse_response(resp)
             if resp.status_code == 404:
