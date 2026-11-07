@@ -25,7 +25,7 @@
 .lt-owner-refresh .lt-owner-nav-label { min-width:0; }
 .lt-owner-refresh .lt-owner-chevron { margin-left:auto; width:12px!important; transition:transform .15s; }
 .lt-owner-refresh .lt-owner-chevron.is-open { transform:rotate(180deg); }
-.lt-owner-refresh .lt-owner-advanced { margin: 4px 0 8px; padding: 4px; border: 0; border-radius: 12px; background: #ffffff0d; }
+.lt-owner-refresh .lt-owner-advanced { margin-top:2px; padding-left:7px; border-left:1px solid #ffffff1a; margin-left:12px; }
 .lt-owner-refresh .lt-owner-advanced[hidden] { display:none; }
 .lt-owner-refresh .lt-owner-nav-extra { font-size:11px; min-height:35px; padding-left:9px; }
 .lt-owner-refresh .lt-owner-sidebar-footer { flex-shrink:0; margin-top:auto; padding-top:21px; }
@@ -266,4 +266,38 @@
   .lt-owner-refresh .lt-customer-segments h2 { font-size:19px; }
   .lt-owner-refresh .lt-customer-segment-body { flex-direction:column; gap:10px; }
   .lt-owner-refresh .lt-customer-segment-body svg { width:190px; }
+}
+
+.lt-home-analytics { margin-top:10px; border:0; background:transparent; color:#0f766e; font-weight:700; cursor:pointer; padding:0; }
+.lt-owner-refresh .lt-owner-submenu { display:flex; flex-direction:column; gap:2px; margin:2px 0 8px; padding:4px; border-radius:10px; background:#ffffff0d; }
+.lt-owner-refresh .lt-owner-submenu[hidden] { display:none; }
+.lt-owner-refresh .lt-owner-nav-extra.is-featured { color:#f4f7e8; }
+.lt-owner-refresh .lt-owner-feature-mark { margin-left:auto; font-size:8px; letter-spacing:.04em; text-transform:uppercase; color:#d7e5c5; background:#ffffff14; border-radius:999px; padding:2px 6px; }
+.lt-home-attention:empty { display:none; }
+.lt-home-attention { display:flex; flex-direction:column; gap:8px; margin-bottom:14px; }
+.lt-home-attention button { text-align:left; border:1px solid #efd5a5; background:#fff8e9; color:#8d6026; border-radius:10px; padding:10px 12px; font-weight:650; cursor:pointer; }
+.lt-home-qr { display:grid; grid-template-columns:minmax(0,1fr) 148px; gap:14px 18px; align-items:center; background:#fff; border:1px solid var(--lt-line); border-radius:14px; padding:18px; margin-bottom:14px; }
+.lt-home-qr p { margin:0 0 6px; font-size:10px; letter-spacing:.12em; font-weight:700; color:#0f766e; }
+.lt-home-qr h2 { margin:0 0 8px; font-size:20px; line-height:1.3; letter-spacing:-.4px; color:#173f35; }
+.lt-home-qr strong, .lt-home-qr span { display:block; font-size:13px; color:#3d5248; }
+.lt-home-qr img, .lt-home-qr-empty { width:148px; height:148px; border-radius:12px; background:#f7faf8; border:1px solid #e4eee8; object-fit:contain; }
+.lt-home-qr-empty { display:grid; place-items:center; text-align:center; font-size:12px; padding:12px; }
+.lt-home-qr-actions { grid-column:1 / -1; display:flex; flex-wrap:wrap; gap:8px; }
+.lt-home-qr-actions button { border:1px solid #d5e3db; background:#fff; color:#173f35; border-radius:10px; padding:10px 14px; font-weight:700; cursor:pointer; }
+.lt-home-qr-actions button:first-child { background:#173f35; color:#fff; border-color:#173f35; }
+.lt-home-qr-actions button:disabled { opacity:.45; cursor:not-allowed; }
+.lt-home-features { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin-bottom:16px; }
+.lt-home-features button { text-align:left; background:#173f35; color:#f4f7f0; border:0; border-radius:14px; padding:14px; min-height:112px; cursor:pointer; }
+.lt-home-features strong { display:block; font-size:15px; margin-bottom:6px; }
+.lt-home-features span { display:block; font-size:12px; line-height:1.45; color:#d5e3db; }
+@media (max-width:900px) {
+  .lt-home-features { grid-template-columns:1fr 1fr; }
+}
+@media (max-width:700px) {
+  .lt-owner-refresh .lt-owner-metrics.is-three { grid-template-columns:1fr!important; }
+  .lt-home-qr { grid-template-columns:1fr; }
+  .lt-home-qr img, .lt-home-qr-empty { width:min(180px,100%); height:auto; aspect-ratio:1; }
+  .lt-home-features { grid-template-columns:1fr; }
+  .lt-home-qr-actions button { flex:1 1 140px; }
+  .lt-owner-refresh .lt-owner-mobile-bottom > button { min-width:0; flex:1; font-size:9px; }
 }
