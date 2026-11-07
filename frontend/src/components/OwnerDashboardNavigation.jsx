@@ -41,9 +41,9 @@ const tabTitles = {
   tree: 'Overview', customers: 'Customers', program: 'Loyalty card', analytics: 'Analytics', announcements: 'Announcements', billboard: 'Digital Billboard', staff: 'Team & locations',
   qrmenu: 'QR Menu', orderahead: 'Order Ahead', giftcards: 'Gift cards', ltbenefits: 'LT Rewards', pos: 'Integrations', campaigns: 'Campaigns',
   satisfaction: 'Satisfaction', billing: 'Billing', referrals: 'Referrals', security: 'Transactions & security',
-  walletqueue: 'Wallet queue', crm: 'Customer segments', retention: 'Retention', operations: 'Branch operations',
+  walletqueue: 'Wallet queue', crm: 'Customer segments', retention: 'Retention', operations: 'Branch operations', advanced: 'Advanced tools',
 }
-const advancedTabs = ['security', 'walletqueue', 'crm', 'retention', 'operations']
+const advancedTabs = ['advanced', 'security', 'walletqueue', 'crm', 'retention', 'operations']
 
 export default function OwnerDashboardNavigation({
   activeTab, onNavigate, onAnalytics, onAnnouncements, onSetup, onSupport, onScan, onShare,
@@ -119,8 +119,9 @@ export default function OwnerDashboardNavigation({
         <div className="lt-owner-nav-section">OPERATE</div>
         {item('staff', 'Team & locations', 'team')}{item('qrmenu', 'QR Menu', 'scan')}{orderAheadEnabled && item('orderahead', 'Order Ahead', 'bag')}
         {item('giftcards', 'Gift cards', 'gift')}{item('pos', 'Integrations', 'plug')}
-        <button type="button" className={`lt-owner-nav-item lt-owner-advanced-toggle${advancedTabs.includes(activeTab) ? ' is-active' : ''}`} onClick={() => setAdvancedOpen(value => !value)} aria-expanded={advancedOpen} aria-controls={advancedId} aria-label="Advanced tools" title="Advanced tools"><Icon name="more"/><span className="lt-owner-nav-label">Advanced tools</span><Icon name="down" className={advancedOpen ? 'lt-owner-chevron is-open' : 'lt-owner-chevron'}/></button>
+        <button type="button" className={`lt-owner-nav-item lt-owner-advanced-toggle${advancedTabs.includes(activeTab) ? ' is-active' : ''}`} onClick={() => setAdvancedOpen(value => { const next = !value; if (next) navigateTo('advanced'); return next })} aria-expanded={advancedOpen} aria-controls={advancedId} aria-label="Advanced tools" title="Advanced tools"><Icon name="more"/><span className="lt-owner-nav-label">Advanced tools</span><Icon name="down" className={advancedOpen ? 'lt-owner-chevron is-open' : 'lt-owner-chevron'}/></button>
         <div id={advancedId} className="lt-owner-advanced" hidden={!advancedOpen}>
+          {item('advanced', 'Overview', 'home', undefined, true)}
           {item('security', 'Transactions & security', 'security', undefined, true)}{item('walletqueue', 'Wallet queue', 'wallet', undefined, true)}
           {item('crm', 'Customer segments', 'segments', undefined, true)}{item('retention', 'Retention', 'retention', undefined, true)}{item('operations', 'Branch operations', 'branches', undefined, true)}
         </div>

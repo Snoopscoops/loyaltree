@@ -25,7 +25,7 @@
 .lt-owner-refresh .lt-owner-nav-label { min-width:0; }
 .lt-owner-refresh .lt-owner-chevron { margin-left:auto; width:12px!important; transition:transform .15s; }
 .lt-owner-refresh .lt-owner-chevron.is-open { transform:rotate(180deg); }
-.lt-owner-refresh .lt-owner-advanced { margin-top:2px; padding-left:7px; border-left:1px solid #ffffff1a; margin-left:12px; }
+.lt-owner-refresh .lt-owner-advanced { margin: 4px 0 8px; padding: 4px; border: 0; border-radius: 12px; background: #ffffff0d; }
 .lt-owner-refresh .lt-owner-advanced[hidden] { display:none; }
 .lt-owner-refresh .lt-owner-nav-extra { font-size:11px; min-height:35px; padding-left:9px; }
 .lt-owner-refresh .lt-owner-sidebar-footer { flex-shrink:0; margin-top:auto; padding-top:21px; }
