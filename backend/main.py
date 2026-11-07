@@ -2604,7 +2604,7 @@ class LoyaltyConfig(BaseModel):
     stamp_rewards: Optional[List[StampRewardMilestone]] = None
     stamp_once_per_day: bool = False
     # Points for a stamp when no purchase amount is typed. 1 LT Point = 500 pesos.
-    lt_points_per_stamp: float = Field(default=0.5, ge=0, le=100)
+    lt_points_per_stamp: float = Field(default=1, ge=0, le=100)
     stamp_reset_after_final: bool = True
     primary_color: str = '#3b82f6'
     reward_expiry_days: int = Field(default=30, ge=1)
@@ -9237,14 +9237,14 @@ def _lt_require_staff(public_id: str, authorization: str):
 
 
 def _lt_stamp_spend(program, amount_spent):
-    """Typed spend wins. A bare stamp uses the business rate. Standard is 0.5, and 1 point is 500 pesos."""
+    """Typed spend wins. A bare stamp uses the business rate. Standard is 1 LT Point, and 1 point is 500 pesos."""
     if amount_spent is not None:
         return amount_spent
     raw = (program or {}).get('lt_points_per_stamp')
     try:
-        points = 0.5 if raw is None else float(raw)
+        points = 1.0 if raw is None else float(raw)
     except (TypeError, ValueError):
-        points = 0.5
+        points = 1.0
     if points != points or points <= 0:
         return None
     return round(min(points, 100.0) * 500, 2)
@@ -9284,11 +9284,28 @@ def _lt_award_audit_purchase(audit_row, metadata=None, customer=None, business=N
             audit_row.get('idempotency_key') or audit_row.get('transaction_id') or audit_row.get('id'))
         info['lt_purchase_source'] = source
         info['lt_purchase_currency'] = info.get('lt_purchase_currency') or business_currency(business)
-        result = _lt_benefits.earn(customer['public_id'], business['id'], 'purchase', source,
+        action = audit_row.get('action')
+        is_stamp = action in ('stamp_add', 'tier_stamp')
+        # Stamp LT Points are once a day per business. The stamp itself still goes through.
+        if is_stamp and _lt_stamp_earned_today(customer['public_id'], business['id']):
+            info['lt_points_status'] = 'skipped_daily'
+            info['lt_points_reason'] = 'one_stamp_point_per_day'
+            info['lt_points_processed'] = True
+            supabase.table('transaction_audit').update({'metadata': info}).eq('id', audit_row['id']).execute()
+            return {'status': 'skipped_daily'}
+        source_type = 'stamp' if is_stamp else 'purchase'
+        result = _lt_benefits.earn(customer['public_id'], business['id'], source_type, source,
                                     int(info['lt_amount_centavos']), currency=info['lt_purchase_currency'])
         info['lt_points_status'] = result.get('status')
         info['lt_points_reason'] = result.get('reason')
         info['lt_points_processed'] = result.get('status') in ('earned', 'replay', 'unlinked', 'skipped_currency')
+        # A points-card sale also gets the standard 1 LT Point, still once a day.
+        if action in ('points_sale', 'tier_points_sale') and not _lt_stamp_earned_today(customer['public_id'], business['id']):
+            stamp_spend = _lt_stamp_spend(None, None)
+            if stamp_spend:
+                stamp = _lt_benefits.earn(customer['public_id'], business['id'], 'stamp', f"{source}-stamp",
+                                           lt_transactions.centavos(stamp_spend), currency=info['lt_purchase_currency'])
+                info['lt_stamp_status'] = stamp.get('status')
         if result.get('status') == 'needs_review':
             log_event('lt_points_review_required', 'warning', business_id=business['id'], audit_id=audit_row['id'])
         supabase.table('transaction_audit').update({'metadata': info}).eq('id', audit_row['id']).execute()
@@ -24744,7 +24761,7 @@ async def get_loyalty_config(public_id: str, response: Response, program_id: Opt
             "reward_name": "Free Service",
             "stamp_rewards": [{"id": "legacy-final", "stamps": 8, "reward_name": "Free Service"}],
             "stamp_once_per_day": False,
-            "lt_points_per_stamp": 0.5,
+            "lt_points_per_stamp": 1,
             "stamp_reset_after_final": True,
             "primary_color": "#3b82f6",
             "reward_expiry_days": 30,
@@ -28309,6 +28326,26 @@ def stamped_today(business_id: int, customer_id: int) -> bool:
         print(f"STAMP DAILY LIMIT lookup error: {e}")
         # Fail closed when the business explicitly enabled the rule.
         raise HTTPException(status_code=503, detail="Could not verify today's stamp limit. Please try again.")
+
+
+def _lt_stamp_earned_today(customer_public_id, business_id) -> bool:
+    """True when this customer already earned a stamp LT Point at this business today."""
+    today = datetime.utcnow().date()
+    start = datetime.combine(today, datetime.min.time()).isoformat()
+    end = datetime.combine(today + timedelta(days=1), datetime.min.time()).isoformat()
+    try:
+        rows = (
+            supabase.table('ltb_purchases').select('id')
+            .eq('customer_public_id', str(customer_public_id))
+            .eq('business_id', str(business_id))
+            .eq('source_type', 'stamp')
+            .gte('created_at', start).lt('created_at', end).limit(1).execute()
+        )
+        return bool(rows.data)
+    except Exception as exc:
+        log_event('lt_stamp_daily_lookup_failed', 'warning', error_type=type(exc).__name__,
+                  business_id=business_id)
+        return False
 
 
 def tier_stamped_today(business_id: int, customer_id: int) -> bool:
