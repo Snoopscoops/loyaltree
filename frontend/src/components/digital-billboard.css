@@ -2,8 +2,9 @@
 .lt-kicker { margin: 0; color: #8a7044; font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; }
 .lt-billboard-head h1 { margin: 4px 0 0; font-size: 32px; letter-spacing: -0.04em; }
 .lt-billboard-head p { margin: 8px 0 0; color: #4b6358; font-size: 15px; line-height: 1.5; max-width: 38rem; }
-.lt-power { display: flex; align-items: center; gap: 16px; padding: 18px; background: #fff; border: 1px solid #e4eee8; border-radius: 20px; }
+.lt-power { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 18px; background: #fff; border: 1px solid #e4eee8; border-radius: 20px; }
 .lt-billboard.is-on .lt-power { border-color: #173f35; }
+.lt-step { margin: 0 0 6px; color: #8a7044; font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
 .lt-power b { display: block; font-size: 22px; letter-spacing: -0.03em; }
 .lt-toggle { width: 64px; height: 36px; border: 0; border-radius: 999px; background: #d5e0da; padding: 3px; cursor: pointer; flex: none; }
 .lt-toggle span { display: block; width: 30px; height: 30px; border-radius: 50%; background: white; box-shadow: 0 1px 2px #0002; transition: transform .18s ease; }
@@ -38,6 +39,7 @@
 .lt-status.bad { color: #9f2d2d; }
 .lt-locked { background: #f7faf8; border: 1px solid #e4eee8; border-radius: 18px; padding: 18px; color: #3d5248; }
 @media (max-width: 640px) {
-  .lt-billboard-facts { grid-template-columns: 1fr; }
+  .lt-power { align-items: stretch; flex-direction: column; }
+  .lt-power .lt-primary, .lt-power .lt-secondary { width: 100%; }
   .lt-billboard-head h1 { font-size: 28px; }
 }

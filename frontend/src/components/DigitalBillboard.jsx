@@ -85,10 +85,10 @@ export default function DigitalBillboard({ API_BASE, user, active = true }) {
 
   const pinLimit = Math.min(form?.limits?.max_pins || 1, (form?.branches || []).length || 1)
 
-  const save = async () => {
-    if (!form?.feature_enabled) return
-    if (form.enabled && !(form.pins || []).some(hasPin)) {
-      setStatus('Add a branch pin before turning this on.')
+  const save = async (next = form) => {
+    if (!next?.feature_enabled) return
+    if (next.enabled && !(next.pins || []).some(hasPin)) {
+      setStatus('Add a location before turning alerts on.')
       return
     }
     setSaving(true)
@@ -98,15 +98,15 @@ export default function DigitalBillboard({ API_BASE, user, active = true }) {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          enabled: !!form.enabled,
-          message: form.message,
-          radius_meters: Number(form.radius_meters),
-          max_per_day: Number(form.max_per_day),
-          max_per_week: Number(form.max_per_week),
-          pins: (form.pins || []).filter(hasPin).map(pin => ({
+          enabled: !!next.enabled,
+          message: next.message,
+          radius_meters: Number(next.radius_meters),
+          max_per_day: Number(next.max_per_day),
+          max_per_week: Number(next.max_per_week),
+          pins: (next.pins || []).filter(hasPin).map(pin => ({
             branch_public_id: pin.branch_public_id || '',
             label: pin.label || '',
-            message: form.message || '',
+            message: next.message || '',
             latitude: Number(pin.latitude),
             longitude: Number(pin.longitude),
           })),
@@ -116,9 +116,9 @@ export default function DigitalBillboard({ API_BASE, user, active = true }) {
       if (!res.ok) throw new Error(detailOf(data, 'Could not save'))
       setForm(current => ({ ...current, ...data, branches: data.branches || current.branches, limits: data.limits || current.limits }))
       setDirty(false)
-      setStatus(form.enabled
-        ? 'Saved. Nearby alerts are on. Cards pick this up the next time they update.'
-        : 'Saved. Nearby alerts are off. Pins stay here if you turn it on again.')
+      setStatus(next.enabled
+        ? 'Alerts are on. Saved cards pick this up the next time they refresh.'
+        : 'Alerts are off. Saved cards drop the pin the next time they refresh.')
     } catch (err) {
       setStatus(err.message || 'Could not save')
     }
@@ -126,8 +126,8 @@ export default function DigitalBillboard({ API_BASE, user, active = true }) {
   }
 
   const sendTest = async () => {
-    if (!form?.enabled) { setStatus('Turn nearby alerts on, then save, before sending a test.'); return }
-    if (dirty) { setStatus('Save first, then send a test.'); return }
+    if (!form?.enabled) { setStatus('Turn nearby alerts on before sending a test.'); return }
+    if (dirty) { setStatus('Save the message and locations first, then send a test.'); return }
     setStatus('Sending a test to saved cards...')
     try {
       const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/geofence/test`, { method: 'POST' })
@@ -177,53 +177,44 @@ export default function DigitalBillboard({ API_BASE, user, active = true }) {
   const powerCopy = !form.enabled
     ? 'No nearby alerts. Your pins stay saved.'
     : placed
-      ? 'People near a saved pin can get an alert after you save.'
-      : 'Add a pin before this can alert anyone.'
+      ? 'People near a saved pin can get an alert.'
+      : 'Add a location before this can alert anyone.'
 
   return (
     <section className={form.enabled ? 'lt-billboard is-on' : 'lt-billboard is-off'} aria-label="Digital Billboard">
       <header className="lt-billboard-head">
         <p className="lt-kicker">Digital Billboard</p>
         <h1>Nearby alerts</h1>
-        <p>Turn this off any time. Members only get an alert while it is on and a pin is saved.</p>
+        <p>Three steps. Turn off saves by itself.</p>
       </header>
 
       <div className="lt-power">
-        <button
-          type="button"
-          role="switch"
-          aria-checked={form.enabled}
-          className={form.enabled ? 'lt-toggle on' : 'lt-toggle'}
-          onClick={() => patch({ enabled: !form.enabled })}
-        >
-          <span />
-        </button>
         <div>
-          <b>{form.enabled ? 'On' : 'Off'}</b>
+          <p className="lt-step">1 · On or off</p>
+          <b>{form.enabled ? 'Alerts are on' : 'Alerts are off'}</b>
           <div className="lt-quiet">{powerCopy}</div>
         </div>
-      </div>
-
-      <div className="lt-billboard-facts">
-        <div><strong>iPhone</strong><span>Can show your message, inside {form.radius_meters} m.</span></div>
-        <div><strong>Android</strong><span>Google shows a short “you’re nearby” notice.</span></div>
+        <button type="button" className={form.enabled ? 'lt-secondary' : 'lt-primary'} disabled={saving} onClick={() => save({ ...form, enabled: !form.enabled })}>
+          {saving ? 'Saving...' : form.enabled ? 'Turn off' : 'Turn on'}
+        </button>
       </div>
 
       <div className="lt-billboard-card">
+        <p className="lt-step">2 · What people see</p>
         <label className="lt-field">Message on iPhone
           <input maxLength={120} value={form.message} onChange={e => patch({ message: e.target.value })} />
         </label>
-        <p className="lt-quiet">This exact line shows on the iPhone lock screen: “{appleLockScreenLine(form.message)}”. {String(form.message || '').length}/120. Android still uses Google’s short nearby notice.</p>
-        <label className="lt-field">How close
+        <p className="lt-quiet">Lock screen: “{appleLockScreenLine(form.message)}”. {String(form.message || '').length}/120. Android only says someone is nearby.</p>
+        <label className="lt-field">How close, up to 150 m
           <div className="lt-distance">
             <input type="range" min={minRadius} max={maxRadius} step="10" value={form.radius_meters} onChange={e => patch({ radius_meters: Number(e.target.value) })} />
             <span>{form.radius_meters} m</span>
           </div>
         </label>
-        <p className="lt-quiet">Up to 150 meters. One pin per branch, up to {pinLimit}.</p>
       </div>
 
       <div className="lt-pins">
+        <p className="lt-step">3 · Where · {placed} of {pinLimit} placed</p>
         {(form.pins || []).map((pin, index) => (
           <article className="lt-pin" key={index}>
             <div className="lt-pin-top">
@@ -250,11 +241,11 @@ export default function DigitalBillboard({ API_BASE, user, active = true }) {
 
       <div className="lt-savebar">
         <button type="button" className="lt-secondary" disabled={(form.pins || []).length >= pinLimit} onClick={() => patch({ pins: [...form.pins, { branch_public_id: form.branches[0]?.public_id || '', label: '', message: form.message, latitude: '', longitude: '' }] })}>Add a location</button>
-        <button type="button" className="lt-primary" disabled={saving || !dirty} onClick={save}>{saving ? 'Saving...' : 'Save'}</button>
-        <button type="button" className="lt-secondary" disabled={!form.enabled || dirty} onClick={sendTest}>Send a test</button>
-        {dirty && <span className="lt-quiet">Not saved yet.</span>}
+        <button type="button" className="lt-primary" disabled={saving || !dirty} onClick={() => save()}>{saving ? 'Saving...' : 'Save message and locations'}</button>
+        <button type="button" className="lt-secondary" disabled={!form.enabled || dirty || saving} onClick={sendTest}>Send a test</button>
+        {dirty && <span className="lt-quiet">Message or locations are not saved yet.</span>}
       </div>
-      {status && <p className={status.startsWith('Saved') || status.startsWith('Test sent') || status.startsWith('Pin placed') ? 'lt-status good' : 'lt-status bad'}>{status}</p>}
+      {status && <p className={status.startsWith('Alerts are') || status.startsWith('Test sent') || status.startsWith('Pin placed') ? 'lt-status good' : 'lt-status bad'}>{status}</p>}
     </section>
   )
 }
