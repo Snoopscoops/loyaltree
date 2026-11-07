@@ -2604,7 +2604,7 @@ class LoyaltyConfig(BaseModel):
     stamp_rewards: Optional[List[StampRewardMilestone]] = None
     stamp_once_per_day: bool = False
     # Points for a stamp when no purchase amount is typed. 1 LT Point = 500 pesos.
-    lt_points_per_stamp: float = Field(default=0.5, ge=0, le=100)
+    lt_points_per_stamp: float = Field(default=1, ge=0, le=100)
     stamp_reset_after_final: bool = True
     primary_color: str = '#3b82f6'
     reward_expiry_days: int = Field(default=30, ge=1)
@@ -9237,14 +9237,14 @@ def _lt_require_staff(public_id: str, authorization: str):
 
 
 def _lt_stamp_spend(program, amount_spent):
-    """Typed spend wins. A bare stamp uses the business rate. Standard is 0.5, and 1 point is 500 pesos."""
+    """Typed spend wins. A bare stamp uses the business rate. Standard is 1 LT Point, and 1 point is 500 pesos."""
     if amount_spent is not None:
         return amount_spent
     raw = (program or {}).get('lt_points_per_stamp')
     try:
-        points = 0.5 if raw is None else float(raw)
+        points = 1.0 if raw is None else float(raw)
     except (TypeError, ValueError):
-        points = 0.5
+        points = 1.0
     if points != points or points <= 0:
         return None
     return round(min(points, 100.0) * 500, 2)
@@ -9289,6 +9289,13 @@ def _lt_award_audit_purchase(audit_row, metadata=None, customer=None, business=N
         info['lt_points_status'] = result.get('status')
         info['lt_points_reason'] = result.get('reason')
         info['lt_points_processed'] = result.get('status') in ('earned', 'replay', 'unlinked', 'skipped_currency')
+        # A points-card sale is also a stamp. Give the standard 1 LT Point on top of the purchase.
+        if audit_row.get('action') in ('points_sale', 'tier_points_sale'):
+            stamp_spend = _lt_stamp_spend(None, None)
+            if stamp_spend:
+                stamp = _lt_benefits.earn(customer['public_id'], business['id'], 'stamp', f"{source}-stamp",
+                                           lt_transactions.centavos(stamp_spend), currency=info['lt_purchase_currency'])
+                info['lt_stamp_status'] = stamp.get('status')
         if result.get('status') == 'needs_review':
             log_event('lt_points_review_required', 'warning', business_id=business['id'], audit_id=audit_row['id'])
         supabase.table('transaction_audit').update({'metadata': info}).eq('id', audit_row['id']).execute()
@@ -24744,7 +24751,7 @@ async def get_loyalty_config(public_id: str, response: Response, program_id: Opt
             "reward_name": "Free Service",
             "stamp_rewards": [{"id": "legacy-final", "stamps": 8, "reward_name": "Free Service"}],
             "stamp_once_per_day": False,
-            "lt_points_per_stamp": 0.5,
+            "lt_points_per_stamp": 1,
             "stamp_reset_after_final": True,
             "primary_color": "#3b82f6",
             "reward_expiry_days": 30,
