@@ -1428,6 +1428,23 @@ def loyaltytree_business_cta_url(source: str, business_public_id: str = '') -> s
         url += f"&biz={quote(str(business_public_id))}"
     return url
 
+def wallet_referral_offer(business: dict, source: str):
+    """The business code, the signup link that carries it, and the line for the pass."""
+    try:
+        from .business_referral_link import referral_pass_line, referral_signup_url
+    except ImportError:
+        from business_referral_link import referral_pass_line, referral_signup_url
+    code = str((business or {}).get('referral_code') or '').strip()
+    if not code and (business or {}).get('id'):
+        try:
+            code = ensure_business_referral_code(business) or ''
+        except Exception:
+            code = ''
+    url = referral_signup_url(FRONTEND_URL, code, source)
+    if not url:
+        url = loyaltytree_business_cta_url(source, (business or {}).get('public_id', ''))
+    return code, url, referral_pass_line(code)
+
 def _password_reset_token_hash(token: str) -> str:
     return hashlib.sha256(str(token or '').encode('utf-8')).hexdigest()
 
@@ -8379,6 +8396,9 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
     order_ahead_action = order_ahead_wallet_action(customer, business)
     custom_wallet_actions = program_wallet_actions(program)
     primary_wallet_action = order_ahead_action or primary_program_wallet_action(program)
+    _referral_code, _referral_url, _referral_line = wallet_referral_offer(business, 'wallet_google')
+    if _referral_code:
+        details.append(('business_referral', 'FOR BUSINESS OWNERS', _referral_line))
 
     primary_is_stamps = loyalty_points_label == 'STAMPS'
     wallet_stamp_balance_text, wallet_stamp_progress_row = wallet_stamp_balance_and_module(
@@ -8422,7 +8442,7 @@ def build_loyalty_object(customer: dict, business: dict, program: dict) -> dict:
                 *[{'uri': action['url'], 'description': f"↗ {action['label']}"} for action in custom_wallet_actions],
                 {'uri': f'{BASE_URL}/feedback/{cust_public_id}', 'description': '⭐ Rate Your Experience'},
                 {'uri': f'{BASE_URL}/wallet/{cust_public_id}', 'description': 'View Rewards / Account'},
-                {'uri': loyaltytree_business_cta_url('wallet_google', business.get('public_id', '')), 'description': 'Integrate your business with LoyaltyTree?'},
+                {'uri': _referral_url, 'description': _referral_line},
             ]
         },
         **({
@@ -10722,11 +10742,12 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
         })
 
     # Soft call-to-action for business owners who see the card. Back of the pass only.
+    _referral_code, _referral_url, _referral_line = wallet_referral_offer(business, 'wallet_apple')
     back_fields.append({
         'key': 'loyaltytree_for_business',
         'label': 'FOR BUSINESS OWNERS',
-        'value': 'Integrate your business with LoyaltyTree? ›',
-        'attributedValue': f'<a href="{loyaltytree_business_cta_url("wallet_apple", business.get("public_id", ""))}">Integrate your business with LoyaltyTree? ›</a>',
+        'value': f'{_referral_line} ›',
+        'attributedValue': f'<a href="{_referral_url}">{_referral_line} ›</a>',
     })
 
     # Membership expiry reminder on Apple Wallet. The daily cron marks the pass
@@ -34366,8 +34387,8 @@ async def customer_join_page(business_public_id: str):
             '</div>'
             '<button type="submit" id="joinButton" disabled>Join &amp; Get Your Card &#127793;</button>'
             '</form></div>'
-            '<div style="text-align:center;margin:18px auto 4px;font-size:12.5px;color:#94a3b8;">Integrate your business with LoyaltyTree? '
-            '<a href="' + html_lib.escape(loyaltytree_business_cta_url('signup', business.get('public_id') or business_public_id), quote=True) + '" target="_blank" rel="noopener" '
+            '<div style="text-align:center;margin:18px auto 4px;font-size:12.5px;color:#94a3b8;">' + html_lib.escape(wallet_referral_offer(business, 'signup')[2]) + ' '
+            '<a href="' + html_lib.escape(wallet_referral_offer(business, 'signup')[1], quote=True) + '" target="_blank" rel="noopener" '
             'style="color:#0f766e;font-weight:700;text-decoration:none;">Learn how &rarr;</a></div>'
             '<script>'
             '(function(){'
