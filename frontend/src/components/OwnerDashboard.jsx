@@ -1,13 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { startVisibilityPolling } from './visibilityPolling'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import OwnerDashboardNavigation from './OwnerDashboardNavigation'
 import BenefitsOwner from './BenefitsOwner'
 import CustomerSegmentsChart from './CustomerSegmentsChart'
 import QRMenuSection from './QRMenuSection'
 import { customerMatchesFilter, overviewMetrics } from './ownerCustomerMetrics'
 import { canUseOwnerDashboardRefresh, ownerDashboardTab } from './ownerDashboardDesign'
+import { ADVANCED_TOOL_IDS, EMPTY_AUDIT_FILTERS, advancedToolFromSearch, dashboardSearchForTab } from './advancedToolsModel'
+import AdvancedTools from './AdvancedTools'
 import './owner-dashboard-refresh.css'
+import './advanced-tools.css'
 import Announcements from './Announcements'
 import DigitalBillboard from './DigitalBillboard'
 import PlatformPromoBanner from './PlatformPromoBanner'
@@ -930,12 +933,13 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
 
   const navigate = useNavigate()
   const location = useLocation()
+  const [searchParams, setSearchParams] = useSearchParams()
   const refreshEnabled = canUseOwnerDashboardRefresh(user, {
     businesses: import.meta.env.VITE_OWNER_DASHBOARD_REFRESH,
     development: import.meta.env.DEV,
     preview: designPreview,
   })
-  const [activeTab, setActiveTab] = useState(() => ownerDashboardTab(location.state?.ownerDashboardTab))
+  const [activeTab, setActiveTab] = useState(() => advancedToolFromSearch(window.location.search) || ownerDashboardTab(location.state?.ownerDashboardTab))
   const [business, setBusiness] = useState(null)
   const [customerSnapshot, setCustomers] = useState([])
   const [customerScope, setCustomerScope] = useState(null)
@@ -1071,16 +1075,20 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
   const [setupKitForm, setSetupKitForm] = useState({recipient_name:'',contact_number:'',delivery_address:'',delivery_instructions:'',logo_url:''})
   const [savingSetupKit, setSavingSetupKit] = useState(false)
   const [mobileHeaderOpen, setMobileHeaderOpen] = useState(false)
-  const [auditTransactions, setAuditTransactions] = useState([])
   const [crmData, setCrmData] = useState({customers:[],segments:{}})
   const [retentionData, setRetentionData] = useState({})
   const [retentionOps, setRetentionOps] = useState([])
   const [opsAnalytics, setOpsAnalytics] = useState({branches:[],cashiers:[],overall:{}})
   const [walletQueue, setWalletQueue] = useState({jobs:[],pending:0,failed:0})
   const [growthLoading, setGrowthLoading] = useState(false)
+  const [growthLoaded, setGrowthLoaded] = useState(false)
+  const [toolErrors, setToolErrors] = useState({})
   const [fraudAlerts, setFraudAlerts] = useState([])
+  const [auditTransactions, setAuditTransactions] = useState([])
+  const [securityLoaded, setSecurityLoaded] = useState(false)
+  const [securityError, setSecurityError] = useState('')
+  const [auditFilters, setAuditFilters] = useState({ ...EMPTY_AUDIT_FILTERS })
   const [securityLoading, setSecurityLoading] = useState(false)
-  const [auditFilters, setAuditFilters] = useState({ status:'', branch_public_id:'', staff_public_id:'', date_from:'', date_to:'' })
 
   // Frontend URL for customer-facing pages
   const FRONTEND_URL = 'https://theloyaltytree.com'
@@ -1805,17 +1813,31 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
         authFetch(`${base}/retention-opportunities`), authFetch(`${base}/operations-analytics?days=30`),
         authFetch(`${base}/wallet-queue?limit=100`)
       ])
-      if (crmR.ok) setCrmData(await crmR.json())
-      if (retR.ok) setRetentionData(await retR.json())
-      if (oppR.ok) setRetentionOps((await oppR.json()).opportunities || [])
-      if (opsR.ok) setOpsAnalytics(await opsR.json())
-      if (walletR.ok) setWalletQueue(await walletR.json())
+      const errors = {}
+      const read = async (response, key) => {
+        const data = await response.json().catch(() => ({}))
+        if (!response.ok) errors[key] = data.detail || 'Could not load this tool.'
+        return response.ok ? data : null
+      }
+      const [crmBody, retentionBody, opportunityBody, operationsBody, walletBody] = await Promise.all([
+        read(crmR, 'crm'), read(retR, 'retention'), read(oppR, 'retention'), read(opsR, 'operations'), read(walletR, 'wallet'),
+      ])
+      if (crmBody) setCrmData(crmBody)
+      if (retentionBody) setRetentionData(retentionBody)
+      if (opportunityBody) setRetentionOps(opportunityBody.opportunities || [])
+      if (operationsBody) setOpsAnalytics(operationsBody)
+      if (walletBody) setWalletQueue(walletBody)
+      setToolErrors(errors)
+      setGrowthLoaded(true)
+    } catch {
+      setToolErrors({ crm: 'Could not load these tools.', retention: 'Could not load these tools.', operations: 'Could not load these tools.', wallet: 'Could not load these tools.' })
     } finally { setGrowthLoading(false) }
   }
 
   const loadTransactionsSecurity = async (filters = auditFilters) => {
     if (!user?.business_slug) return
     setSecurityLoading(true)
+    setSecurityError('')
     try {
       const params = new URLSearchParams({ limit: '300' })
       Object.entries(filters || {}).forEach(([key, value]) => { if (value) params.set(key, value) })
@@ -1825,20 +1847,21 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
       ])
       const auditData = await auditRes.json().catch(() => ({}))
       const alertData = await alertRes.json().catch(() => ({}))
-      setAuditTransactions(auditRes.ok && Array.isArray(auditData.transactions) ? auditData.transactions : [])
-      setFraudAlerts(alertRes.ok && Array.isArray(alertData.alerts) ? alertData.alerts : [])
-      if (!auditRes.ok) setMessage(auditData.detail || 'Could not load transaction audit')
-      else if (!alertRes.ok) setMessage(alertData.detail || 'Could not load security alerts')
-    } catch (err) {
-      setMessage('Could not load transactions & security')
+      if (auditRes.ok && Array.isArray(auditData.transactions)) setAuditTransactions(auditData.transactions)
+      if (alertRes.ok && Array.isArray(alertData.alerts)) setFraudAlerts(alertData.alerts)
+      const problems = [!auditRes.ok && (auditData.detail || 'Could not load transactions'), !alertRes.ok && (alertData.detail || 'Could not load security alerts')].filter(Boolean)
+      setSecurityError(problems.join(' '))
+      setSecurityLoaded(true)
+    } catch {
+      setSecurityError('Could not load transactions & security')
     }
     setSecurityLoading(false)
   }
 
   useEffect(() => {
-    if (activeTab === 'security') loadTransactionsSecurity()
+    if (activeTab === 'security' || activeTab === 'advanced') loadTransactionsSecurity()
     if (activeTab === 'satisfaction') loadSatisfaction()
-    if (['crm','retention','operations','walletqueue'].includes(activeTab)) loadGrowthSuite()
+    if (['crm','retention','operations','walletqueue','advanced'].includes(activeTab)) loadGrowthSuite()
   }, [activeTab])
 
   useEffect(() => {
@@ -2883,7 +2906,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
 
   useEffect(() => {
     if (loading || !refreshEnabled) return
-    if (location.state?.ownerDashboardTab) setActiveTab(ownerDashboardTab(location.state.ownerDashboardTab))
+    if (location.state?.ownerDashboardTab && !advancedToolFromSearch(location.search)) setActiveTab(ownerDashboardTab(location.state.ownerDashboardTab))
     const requestedAction = location.state?.ownerDashboardAction
     if (!requestedAction) return
     const { ownerDashboardAction, ...remainingState } = location.state
@@ -2894,8 +2917,25 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
     if (requestedAction === 'scan') scanCustomer()
     if (requestedAction === 'share') fetchQRImage()
     if (requestedAction === 'install') setShowInstallHelp(true)
-  }, [loading, refreshEnabled, location.key])
+  }, [loading, refreshEnabled, location.state])
 
+  const previousDashboardTab = useRef('tree')
+
+  useEffect(() => {
+    if (!ADVANCED_TOOL_IDS.includes(activeTab)) previousDashboardTab.current = activeTab
+    const current = searchParams.toString()
+    const next = dashboardSearchForTab(current, activeTab).toString()
+    if (next !== current) setSearchParams(next)
+  }, [activeTab, searchParams])
+
+  useEffect(() => {
+    const tool = advancedToolFromSearch(searchParams.toString())
+    if (tool) {
+      if (tool !== activeTab) setActiveTab(tool)
+      return
+    }
+    if (ADVANCED_TOOL_IDS.includes(activeTab)) setActiveTab(previousDashboardTab.current || 'tree')
+  }, [searchParams])
 
   if (loading) return (
     <div style={styles.container}>
@@ -2915,7 +2955,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
     ? 'grow'
     : activeTab === 'program'
     ? 'card'
-    : ['billing','security','walletqueue','referrals'].includes(activeTab)
+    : ['billing','security','walletqueue','referrals','advanced'].includes(activeTab)
     ? 'more'
     : activeTab
 
@@ -3726,84 +3766,33 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
           </div>
         )}
 
-        {activeTab === 'security' && (
-          <div>
-            <div className="lt-owner-section-header" style={styles.sectionHeader}>
-              <div>
-                <h2 className="lt-owner-section-title" style={styles.sectionTitle}>🛡️ Transactions & Security</h2>
-                <p style={{margin:'4px 0 0', color:'#64748b', fontSize:13}}>Review loyalty activity across all card types and investigate unusual patterns. Alerts never block a cashier automatically.</p>
-              </div>
-              <button onClick={() => loadTransactionsSecurity()} disabled={securityLoading} style={styles.addBtn}>{securityLoading ? 'Refreshing…' : '↻ Refresh'}</button>
-            </div>
-
-            <div style={{display:'grid', gridTemplateColumns:isMobile?'1fr':'repeat(3,minmax(0,1fr))', gap:12, marginBottom:18}}>
-              <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:14,padding:16}}><div style={{fontSize:12,color:'#64748b',fontWeight:700}}>TRANSACTIONS SHOWN</div><div style={{fontSize:28,fontWeight:900,color:'#0f172a',marginTop:4}}>{auditTransactions.length}</div></div>
-              <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:14,padding:16}}><div style={{fontSize:12,color:'#64748b',fontWeight:700}}>SECURITY ALERTS · 24H</div><div style={{fontSize:28,fontWeight:900,color:fraudAlerts.length?'#b45309':'#15803d',marginTop:4}}>{fraudAlerts.length}</div></div>
-              <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:14,padding:16}}><div style={{fontSize:12,color:'#64748b',fontWeight:700}}>FAILED SHOWN</div><div style={{fontSize:28,fontWeight:900,color:'#0f172a',marginTop:4}}>{auditTransactions.filter(x=>x.status==='failed').length}</div></div>
-            </div>
-
-            <div style={{background:'#fff7ed',border:'1px solid #fed7aa',borderRadius:14,padding:16,marginBottom:18}}>
-              <div style={{fontWeight:900,color:'#9a3412',marginBottom:8}}>⚠️ Suspicious Activity Review</div>
-              {securityLoading && fraudAlerts.length===0 ? <p style={{margin:0,color:'#64748b'}}>Checking recent activity…</p> : fraudAlerts.length===0 ? (
-                <p style={{margin:0,color:'#166534'}}>✓ No suspicious patterns detected in the last 24 hours.</p>
-              ) : fraudAlerts.map((a,i)=>(
-                <div key={`${a.type}-${i}`} style={{background:'white',border:'1px solid #fed7aa',borderRadius:10,padding:'10px 12px',marginTop:8}}>
-                  <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}><b style={{color:'#1e293b'}}>{a.title}</b><span style={{fontSize:10,fontWeight:900,padding:'3px 7px',borderRadius:999,background:a.severity==='high'?'#fee2e2':'#fef3c7',color:a.severity==='high'?'#991b1b':'#92400e'}}>{String(a.severity||'').toUpperCase()}</span></div>
-                  <div style={{fontSize:12,color:'#64748b',marginTop:4}}>{a.message}</div>
-                </div>
-              ))}
-            </div>
-
-            <div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:14,padding:14,marginBottom:14}}>
-              <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'repeat(5,minmax(0,1fr))',gap:8}}>
-                <select value={auditFilters.status} onChange={e=>setAuditFilters({...auditFilters,status:e.target.value})} style={styles.input}><option value="">All statuses</option><option value="success">Success</option><option value="failed">Failed</option><option value="processing">Processing</option></select>
-                <select value={auditFilters.branch_public_id} onChange={e=>setAuditFilters({...auditFilters,branch_public_id:e.target.value})} style={styles.input}><option value="">Overall · All branches</option>{branches.map(b=><option key={b.public_id} value={b.public_id}>{b.name}</option>)}</select>
-                <select value={auditFilters.staff_public_id} onChange={e=>setAuditFilters({...auditFilters,staff_public_id:e.target.value})} style={styles.input}><option value="">All cashiers</option>{staff.map(x=><option key={x.public_id} value={x.public_id}>{x.name}</option>)}</select>
-                <input type="date" value={auditFilters.date_from} onChange={e=>setAuditFilters({...auditFilters,date_from:e.target.value})} style={styles.input}/>
-                <input type="date" value={auditFilters.date_to} onChange={e=>setAuditFilters({...auditFilters,date_to:e.target.value})} style={styles.input}/>
-              </div>
-              <div style={{display:'flex',gap:8,marginTop:8,flexWrap:'wrap'}}><button onClick={()=>loadTransactionsSecurity(auditFilters)} style={styles.addBtn}>Apply Filters</button><button onClick={()=>{const clean={status:'',branch_public_id:'',staff_public_id:'',date_from:'',date_to:''};setAuditFilters(clean);loadTransactionsSecurity(clean)}} style={{...styles.viewCardBtn,background:'white'}}>Clear</button></div>
-            </div>
-
-            <div style={{display:'grid',gap:9}}>
-              {auditTransactions.length===0 && !securityLoading && <div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:12,padding:20,color:'#64748b'}}>No transactions match these filters.</div>}
-              {auditTransactions.map((tx,i)=>(
-                <div key={tx.transaction_id||tx.id||i} style={{background:'white',border:'1px solid #e2e8f0',borderRadius:12,padding:'12px 14px'}}>
-                  <div style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-start',flexWrap:'wrap'}}>
-                    <div><div style={{fontWeight:850,color:'#0f172a'}}>{String(tx.action||'transaction').replaceAll('_',' ')}</div><div style={{fontSize:12,color:'#64748b',marginTop:3}}>{tx.customer_name||'No customer'} · {tx.staff_name||tx.actor_type||'System'}{tx.branch_name?` · ${tx.branch_name}`:''}</div></div>
-                    <span style={{fontSize:11,fontWeight:800,padding:'4px 8px',borderRadius:999,background:tx.status==='success'?'#dcfce7':tx.status==='failed'?'#fee2e2':'#fef3c7',color:tx.status==='success'?'#166534':tx.status==='failed'?'#991b1b':'#92400e'}}>{tx.status||'unknown'}</span>
-                  </div>
-                  <div style={{display:'flex',gap:14,flexWrap:'wrap',fontSize:11,color:'#64748b',marginTop:8}}><span>{tx.created_at?new Date(tx.created_at).toLocaleString():'—'}</span>{tx.delta!==null&&tx.delta!==undefined&&<span>Change: {Number(tx.delta)>0?'+':''}{tx.delta}</span>}{tx.balance_before!==null&&tx.balance_before!==undefined&&<span>Balance: {tx.balance_before} → {tx.balance_after??'—'}</span>}{tx.reason&&<span>Reason: {tx.reason}</span>}</div>
-                  {tx.transaction_id&&<div style={{fontSize:10,color:'#94a3b8',marginTop:7,wordBreak:'break-all'}}>Transaction ID: {tx.transaction_id}</div>}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {activeTab === 'walletqueue' && (
-          <div style={styles.section}><div className="lt-owner-section-header" style={styles.sectionHeader}><h2 className="lt-owner-section-title" style={styles.sectionTitle}>👛 Wallet Queue</h2><button onClick={loadGrowthSuite} style={styles.addBtn}>↻ Refresh</button></div>
-            <div style={styles.statsGrid}><div style={styles.statCard}><div style={styles.statValue}>{walletQueue.pending||0}</div><div style={styles.statLabel}>Pending / Processing</div></div><div style={styles.statCard}><div style={styles.statValue}>{walletQueue.failed||0}</div><div style={styles.statLabel}>Failed</div></div></div>
-            {(walletQueue.jobs||[]).slice(0,50).map(j=><div key={j.id} style={{background:'white',padding:12,border:'1px solid #e2e8f0',borderRadius:10,marginBottom:8}}><b>Job #{j.id}</b> · {j.reason} · <b>{j.status}</b> · attempts {j.attempts}/{j.max_attempts}{j.last_error&&<div style={{color:'#b91c1c',fontSize:12,marginTop:4}}>{j.last_error}</div>}</div>)}
-          </div>
-        )}
-        {activeTab === 'crm' && (
-          <div style={styles.section}><div className="lt-owner-section-header" style={styles.sectionHeader}><h2 className="lt-owner-section-title" style={styles.sectionTitle}>👥 Customer CRM</h2><button onClick={loadGrowthSuite} style={styles.addBtn}>↻ Refresh</button></div>
-            <div style={styles.statsGrid}>{Object.entries(crmData.segments||{}).map(([k,v])=><div style={styles.statCard} key={k}><div style={styles.statValue}>{v}</div><div style={styles.statLabel}>{k.replaceAll('_',' ')}</div></div>)}</div>
-            {(crmData.customers||[]).map(c=><div key={c.public_id} style={{background:'white',padding:12,border:'1px solid #e2e8f0',borderRadius:10,marginBottom:8}}><b>{c.name||c.email||'Customer'}</b><div style={{fontSize:13,color:'#64748b'}}>Segment: {c.crm?.segment?.replaceAll('_',' ')} · Transactions: {c.crm?.total_transactions||0} · Last activity: {c.crm?.days_since_last_activity ?? '—'} days ago</div></div>)}
-          </div>
-        )}
-        {activeTab === 'retention' && (
-          <div style={styles.section}><div className="lt-owner-section-header" style={styles.sectionHeader}><h2 className="lt-owner-section-title" style={styles.sectionTitle}>🔁 Retention Analytics & Opportunities</h2><button onClick={loadGrowthSuite} style={styles.addBtn}>↻ Refresh</button></div>
-            <div style={styles.statsGrid}><div style={styles.statCard}><div style={styles.statValue}>{retentionData.repeat_customer_rate||0}%</div><div style={styles.statLabel}>Repeat customer rate</div></div><div style={styles.statCard}><div style={styles.statValue}>{retentionData.retention_30_rate||0}%</div><div style={styles.statLabel}>Active within 30 days</div></div><div style={styles.statCard}><div style={styles.statValue}>{retentionData.average_days_between_activity ?? '—'}</div><div style={styles.statLabel}>Avg days between activity</div></div><div style={styles.statCard}><div style={styles.statValue}>{retentionOps.length}</div><div style={styles.statLabel}>Retention opportunities</div></div></div>
-            {retentionOps.map((o,i)=><div key={i} style={{background:'white',padding:12,border:'1px solid #e2e8f0',borderRadius:10,marginBottom:8}}><b>{o.customer_name||'Customer'}</b> · {o.type.replaceAll('_',' ')}<div style={{fontSize:13,color:'#64748b',marginTop:3}}>{o.suggested_message}</div></div>)}
-          </div>
-        )}
-        {activeTab === 'operations' && (
-          <div style={styles.section}><div className="lt-owner-section-header" style={styles.sectionHeader}><h2 className="lt-owner-section-title" style={styles.sectionTitle}>📈 Branch / Cashier Analytics</h2><button onClick={loadGrowthSuite} style={styles.addBtn}>↻ Refresh</button></div>
-            <h3>Branches — last 30 days</h3>{(opsAnalytics.branches||[]).map(x=><div key={x.id} style={{background:'white',padding:12,border:'1px solid #e2e8f0',borderRadius:10,marginBottom:8}}><b>{x.name}</b> · {x.transactions} transactions · {x.adjustments} adjustments · {x.failed} failed</div>)}
-            <h3 style={{marginTop:20}}>Cashiers — last 30 days</h3>{(opsAnalytics.cashiers||[]).map(x=><div key={x.id} style={{background:'white',padding:12,border:'1px solid #e2e8f0',borderRadius:10,marginBottom:8}}><b>{x.name}</b> · {x.transactions} transactions · {x.adjustments} adjustments · {x.failed} failed</div>)}
-          </div>
+        {ADVANCED_TOOL_IDS.includes(activeTab) && (
+          <AdvancedTools
+            tool={activeTab}
+            businessName={business?.name || user?.business_name}
+            programLabel={viewingAllPrograms ? 'All programs' : (selectedProgramSummary?.program_name || selectedProgramSummary?.name || 'This program')}
+            onOpen={setActiveTab}
+            securityLoading={securityLoading}
+            securityLoaded={securityLoaded}
+            securityError={securityError}
+            alerts={fraudAlerts}
+            transactions={auditTransactions}
+            filters={auditFilters}
+            branches={branches}
+            staff={staff}
+            onFilters={setAuditFilters}
+            onApply={loadTransactionsSecurity}
+            onReset={() => { setAuditFilters({ ...EMPTY_AUDIT_FILTERS }); loadTransactionsSecurity(EMPTY_AUDIT_FILTERS) }}
+            growthLoading={growthLoading}
+            growthLoaded={growthLoaded}
+            toolErrors={toolErrors}
+            wallet={walletQueue}
+            crm={crmData}
+            retention={retentionData}
+            opportunities={retentionOps}
+            operations={opsAnalytics}
+            onRefreshGrowth={loadGrowthSuite}
+          />
         )}
 
         {activeTab === 'qrmenu' && <QRMenuSection API_BASE={API_BASE} user={user} business={business} authFetch={authFetch} onUpgrade={() => setActiveTab('billing')}
