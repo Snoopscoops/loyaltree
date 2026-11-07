@@ -637,6 +637,49 @@ def register_lt_benefits_routes(app, *, db, get_business, get_card_context, requ
         service.invalidate()
         return result
 
+    @app.get("/api/v1/admin/lt-benefits/offers")
+    def admin_offers(request: Request):
+        """Compile list of merchant discounts and freebies before launch."""
+        service.require_admin(request)
+        try:
+            rows = (
+                service.db.table('ltb_offers')
+                .select('id,business_id,business_slug,business_name,title,discount_centavos,points_cost,status,category,total_quantity,claimed_count,created_at')
+                .order('business_name')
+                .order('created_at', desc=True)
+                .limit(500)
+                .execute()
+                .data or []
+            )
+        except Exception as exc:
+            raise HTTPException(503, 'Loyalty Tree offers are not ready yet.') from exc
+        grouped = {}
+        for row in rows:
+            key = str(row.get('business_id') or row.get('business_slug') or '')
+            bucket = grouped.setdefault(key, {
+                'business_id': row.get('business_id'),
+                'business_slug': row.get('business_slug'),
+                'business_name': row.get('business_name') or 'Business',
+                'offers': [],
+            })
+            bucket['offers'].append({
+                'id': row.get('id'),
+                'title': row.get('title') or 'Offer',
+                'discount_centavos': row.get('discount_centavos') or 0,
+                'points_cost': row.get('points_cost') or 0,
+                'status': row.get('status') or 'draft',
+                'category': row.get('category') or 'other',
+                'total_quantity': row.get('total_quantity') or 0,
+                'claimed_count': row.get('claimed_count') or 0,
+                'created_at': row.get('created_at'),
+            })
+        businesses = sorted(grouped.values(), key=lambda item: (item['business_name'] or '').lower())
+        return {
+            'business_count': len(businesses),
+            'offer_count': len(rows),
+            'businesses': businesses,
+        }
+
     @app.get("/api/v1/admin/lt-benefits/settings")
     def admin_settings(request: Request):
         service.require_admin(request)
