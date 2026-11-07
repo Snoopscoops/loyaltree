@@ -1,8 +1,8 @@
 import React, { useEffect, useId, useRef, useState } from 'react'
 import './owner-dashboard-refresh.css'
 import loyaltyTreeLogo from './logo-192.png'
+import { OWNER_SECTIONS, sectionForTab, visibleItems } from './ownerHomeNav'
 
-// Presentation only. Existing dashboard callbacks own navigation and all actions.
 function Icon({ name, className = '' }) {
   const paths = {
     home: <><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1Z"/><path d="M9 21v-8h6v8"/></>,
@@ -38,26 +38,25 @@ function Icon({ name, className = '' }) {
   return <svg className={`lt-owner-icon ${className}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name] || paths.card}</svg>
 }
 const tabTitles = {
-  tree: 'Overview', customers: 'Customers', program: 'Loyalty card', analytics: 'Analytics', announcements: 'Announcements', billboard: 'Digital Billboard', staff: 'Team & locations',
-  qrmenu: 'QR Menu', orderahead: 'Order Ahead', giftcards: 'Gift cards', ltbenefits: 'LT Rewards', pos: 'Integrations', campaigns: 'Campaigns',
+  tree: 'Home', customers: 'Customers', program: 'Loyalty card', analytics: 'Analytics', announcements: 'Notifications', billboard: 'Digital Billboard', staff: 'Team & locations',
+  qrmenu: 'Digital Menu', orderahead: 'Order Ahead', giftcards: 'Gift cards', ltbenefits: 'LT Points', pos: 'Integrations', campaigns: 'Campaigns',
   satisfaction: 'Satisfaction', billing: 'Billing', referrals: 'Referrals', security: 'Transactions & security',
   walletqueue: 'Wallet queue', crm: 'Customer segments', retention: 'Retention', operations: 'Branch operations', advanced: 'Advanced tools',
 }
-const advancedTabs = ['advanced', 'security', 'walletqueue', 'crm', 'retention', 'operations']
 
 export default function OwnerDashboardNavigation({
-  activeTab, onNavigate, onAnalytics, onAnnouncements, onSetup, onSupport, onScan, onShare,
+  activeTab, onNavigate, onAnalytics, onAnnouncements, onSetup, onSupport, onScan,
   onInstall, onLogout, businessName, ownerName, planLabel, needsRenewal, renewalText,
   orderAheadEnabled, isStandaloneApp,
 }) {
+  const currentSection = sectionForTab(activeTab).id
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.matchMedia('(max-width: 700px)').matches)
-  const [advancedOpen, setAdvancedOpen] = useState(() => advancedTabs.includes(activeTab))
+  const [openSection, setOpenSection] = useState(currentSection)
   const sidebarRef = useRef(null)
   const launcherRef = useRef(null)
   const closeButtonRef = useRef(null)
   const sidebarId = useId()
-  const advancedId = useId()
   const name = businessName || 'Your business'
   const initials = (ownerName || name).trim().split(/\s+/).slice(0, 2).map(part => part[0]).join('').toUpperCase()
   useEffect(() => {
@@ -66,7 +65,7 @@ export default function OwnerDashboardNavigation({
     media.addEventListener('change', update)
     return () => media.removeEventListener('change', update)
   }, [])
-  useEffect(() => { if (advancedTabs.includes(activeTab)) setAdvancedOpen(true) }, [activeTab])
+  useEffect(() => { setOpenSection(currentSection) }, [currentSection])
   const closeDrawer = () => {
     setDrawerOpen(false)
     if (launcherRef.current?.isConnected) launcherRef.current.focus()
@@ -74,6 +73,14 @@ export default function OwnerDashboardNavigation({
   const openDrawer = event => { launcherRef.current = event.currentTarget; setDrawerOpen(true) }
   const act = callback => { if (drawerOpen) closeDrawer(); callback?.() }
   const navigateTo = tab => act(() => onNavigate?.(tab))
+  const runItem = entry => {
+    if (entry.action === 'analytics') return act(onAnalytics)
+    if (entry.action === 'announcements') return act(onAnnouncements)
+    if (entry.action === 'setup') return act(onSetup)
+    if (entry.action === 'support') return act(onSupport)
+    if (entry.action === 'scan') return act(onScan)
+    navigateTo(entry.id)
+  }
   useEffect(() => {
     if (!isMobile || !drawerOpen) return
     const previousOverflow = document.body.style.overflow
@@ -93,43 +100,35 @@ export default function OwnerDashboardNavigation({
     document.addEventListener('keydown', onKeyDown)
     return () => { document.removeEventListener('keydown', onKeyDown); document.body.style.overflow = previousOverflow }
   }, [isMobile, drawerOpen])
-  const item = (id, label, icon, callback, extra = false) => <button
-    key={id} type="button" className={`lt-owner-nav-item${activeTab === id ? ' is-active' : ''}${extra ? ' lt-owner-nav-extra' : ''}`}
-    onClick={callback || (() => navigateTo(id))} aria-current={activeTab === id ? 'page' : undefined} aria-label={label} title={label}
-  ><Icon name={icon}/><span className="lt-owner-nav-label">{label}</span>{id === 'billing' && needsRenewal && <span className="lt-owner-renewal-dot" aria-label="Renewal due"/>}</button>
   return <>
     {isMobile && drawerOpen && <button type="button" className="lt-owner-sidebar-backdrop" onClick={closeDrawer} tabIndex={-1} aria-label="Close navigation"/>}
     <aside ref={sidebarRef} id={sidebarId} className={`lt-owner-sidebar${drawerOpen ? ' is-open' : ''}`}
       role={isMobile && drawerOpen ? 'dialog' : undefined} aria-modal={isMobile && drawerOpen ? 'true' : undefined}
       aria-label="Owner navigation" aria-hidden={isMobile && !drawerOpen ? 'true' : undefined} inert={isMobile && !drawerOpen ? '' : undefined}>
       <div className="lt-owner-brand-row">
-        <button type="button" className="lt-owner-brand" onClick={() => navigateTo('tree')} aria-label="Loyalty Tree overview"><img className="lt-owner-brand-logo" src={loyaltyTreeLogo} alt=""/><span className="lt-owner-brand-word">Loyalty Tree<small>BUSINESS WORKSPACE</small></span></button>
+        <button type="button" className="lt-owner-brand" onClick={() => navigateTo('tree')} aria-label="Loyalty Tree home"><img className="lt-owner-brand-logo" src={loyaltyTreeLogo} alt=""/><span className="lt-owner-brand-word">Loyalty Tree<small>BUSINESS WORKSPACE</small></span></button>
         <button type="button" ref={closeButtonRef} className="lt-owner-drawer-close" onClick={closeDrawer} aria-label="Close navigation"><Icon name="close"/></button>
       </div>
       <div className="lt-owner-workspace" title={name}><span className="lt-owner-workspace-monogram">{name.trim().slice(0, 1).toUpperCase()}</span><div><strong>{name}</strong><span>Owner dashboard</span></div></div>
       <nav className="lt-owner-nav" aria-label="Business dashboard">
-        <div className="lt-owner-nav-section">WORKSPACE</div>
-        {item('tree', 'Overview', 'home')}{item('customers', 'Customers', 'people')}{item('program', 'Loyalty card', 'card')}
-        {item('analytics', 'Analytics', 'chart', () => act(onAnalytics))}
-        <div className="lt-owner-nav-section">GROW</div>
-        {item('announcements', 'Announcements', 'announcement', () => act(onAnnouncements))}
-        {item('billboard', 'Digital Billboard', 'billboard')}
-        {item('ltbenefits', 'LT Rewards', 'gift')}
-        {item('campaigns', 'Campaigns', 'campaign')}{item('satisfaction', 'Satisfaction', 'star')}
-        <div className="lt-owner-nav-section">OPERATE</div>
-        {item('staff', 'Team & locations', 'team')}{item('qrmenu', 'QR Menu', 'scan')}{orderAheadEnabled && item('orderahead', 'Order Ahead', 'bag')}
-        {item('giftcards', 'Gift cards', 'gift')}{item('pos', 'Integrations', 'plug')}
-        <button type="button" className={`lt-owner-nav-item lt-owner-advanced-toggle${advancedTabs.includes(activeTab) ? ' is-active' : ''}`} onClick={() => setAdvancedOpen(value => { const next = !value; if (next) navigateTo('advanced'); return next })} aria-expanded={advancedOpen} aria-controls={advancedId} aria-label="Advanced tools" title="Advanced tools"><Icon name="more"/><span className="lt-owner-nav-label">Advanced tools</span><Icon name="down" className={advancedOpen ? 'lt-owner-chevron is-open' : 'lt-owner-chevron'}/></button>
-        <div id={advancedId} className="lt-owner-advanced" hidden={!advancedOpen}>
-          {item('advanced', 'Overview', 'home', undefined, true)}
-          {item('security', 'Transactions & security', 'security', undefined, true)}{item('walletqueue', 'Wallet queue', 'wallet', undefined, true)}
-          {item('crm', 'Customer segments', 'segments', undefined, true)}{item('retention', 'Retention', 'retention', undefined, true)}{item('operations', 'Branch operations', 'branches', undefined, true)}
-        </div>
+        {OWNER_SECTIONS.map(section => {
+          const items = visibleItems(section, { orderAheadEnabled })
+          const open = openSection === section.id
+          const panelId = `${sidebarId}-${section.id}`
+          return <div key={section.id} className="lt-owner-section">
+            <button type="button" className={`lt-owner-nav-item${currentSection === section.id ? ' is-active' : ''}`} aria-expanded={open} aria-controls={panelId} onClick={() => setOpenSection(open ? '' : section.id)}>
+              <Icon name={section.icon}/><span className="lt-owner-nav-label">{section.label}</span><Icon name="down" className={open ? 'lt-owner-chevron is-open' : 'lt-owner-chevron'}/>
+            </button>
+            <div id={panelId} className="lt-owner-submenu" hidden={!open}>
+              {items.map(entry => <button key={entry.id} type="button" className={`lt-owner-nav-item lt-owner-nav-extra${activeTab === entry.id ? ' is-active' : ''}${entry.featured ? ' is-featured' : ''}`} onClick={() => runItem(entry)} aria-current={activeTab === entry.id ? 'page' : undefined}>
+                <span className="lt-owner-nav-label">{entry.label}</span>{entry.featured && <span className="lt-owner-feature-mark">Featured</span>}{entry.id === 'billing' && needsRenewal && <span className="lt-owner-renewal-dot" aria-label="Renewal due"/>}
+              </button>)}
+            </div>
+          </div>
+        })}
       </nav>
       <div className="lt-owner-sidebar-footer">
         {planLabel && <div className="lt-owner-plan"><span>YOUR PLAN</span><strong>{planLabel}</strong><button type="button" onClick={() => navigateTo('billing')}>Manage plan <Icon name="chevron"/></button></div>}
-        {item('billing', 'Billing', 'billing')}{item('referrals', 'Referrals', 'referrals')}
-        {item('setup', 'Setup guide', 'setup', () => act(onSetup))}{item('support', 'Help & support', 'help', () => act(onSupport))}
         {onInstall && <button type="button" className="lt-owner-nav-item lt-owner-install" disabled={isStandaloneApp} onClick={() => act(onInstall)} aria-label={isStandaloneApp ? 'App installed' : 'Add to Home Screen'} title={isStandaloneApp ? 'App installed' : 'Add to Home Screen'}><Icon name="install"/><span className="lt-owner-nav-label">{isStandaloneApp ? 'App installed' : 'Add to Home Screen'}</span></button>}
         <button type="button" className="lt-owner-nav-item lt-owner-logout" onClick={() => act(onLogout)} aria-label="Log out" title="Log out"><Icon name="logout"/><span className="lt-owner-nav-label">Log out</span></button>
       </div>
@@ -137,20 +136,17 @@ export default function OwnerDashboardNavigation({
     <header className="lt-owner-topbar">
       <div className="lt-owner-breadcrumbs">
         <button type="button" className="lt-owner-menu-button" onClick={openDrawer} aria-label="Open dashboard navigation" aria-expanded={drawerOpen} aria-controls={sidebarId}><Icon name="menu"/></button>
-        <span className="lt-owner-breadcrumb-business" title={name}>{name}</span><Icon name="chevron"/><strong>{tabTitles[activeTab] || 'Overview'}</strong>
+        <span className="lt-owner-breadcrumb-business" title={name}>{name}</span><Icon name="chevron"/><strong>{tabTitles[activeTab] || 'Home'}</strong>
       </div>
       <div className="lt-owner-top-actions">
         {needsRenewal && <button type="button" className="lt-owner-renewal" onClick={() => navigateTo('billing')}>{renewalText || 'Renew your subscription'}</button>}
-        <button type="button" className="lt-owner-top-icon" onClick={() => act(onShare)} title="Share customer join QR" aria-label="Share customer join QR"><Icon name="share"/></button>
         <div className="lt-owner-profile"><span className="lt-owner-avatar" aria-hidden="true">{initials}</span><div><strong>{ownerName || 'Business owner'}</strong><span>Owner</span></div></div>
       </div>
     </header>
     <nav className="lt-owner-mobile-bottom" aria-label="Quick navigation">
-      <button type="button" className={activeTab === 'tree' ? 'is-active' : ''} onClick={() => navigateTo('tree')} aria-current={activeTab === 'tree' ? 'page' : undefined}><Icon name="home"/><span>Home</span></button>
-      <button type="button" className={activeTab === 'customers' ? 'is-active' : ''} onClick={() => navigateTo('customers')} aria-current={activeTab === 'customers' ? 'page' : undefined}><Icon name="people"/><span>Customers</span></button>
-      <button type="button" className="lt-owner-mobile-scan" onClick={() => act(onScan)} aria-label="Scan customer card"><Icon name="scan"/><span>Scan</span></button>
-      <button type="button" className={activeTab === 'analytics' ? 'is-active' : ''} aria-current={activeTab === 'analytics' ? 'page' : undefined} onClick={() => act(onAnalytics)}><Icon name="chart"/><span>Analytics</span></button>
-      <button type="button" className={drawerOpen ? 'is-active' : ''} onClick={openDrawer} aria-label="More dashboard navigation" aria-expanded={drawerOpen} aria-controls={sidebarId}><Icon name="more"/><span>More</span></button>
+      {OWNER_SECTIONS.map(section => <button key={section.id} type="button" className={currentSection === section.id ? 'is-active' : ''} aria-current={currentSection === section.id ? 'page' : undefined} onClick={() => { setOpenSection(section.id); runItem(section.items[0]) }}>
+        <Icon name={section.icon}/><span>{section.label === 'Orders & Menu' ? 'Orders' : section.label}</span>
+      </button>)}
     </nav>
   </>
 }

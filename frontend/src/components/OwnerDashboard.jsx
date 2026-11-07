@@ -6,6 +6,7 @@ import BenefitsOwner from './BenefitsOwner'
 import CustomerSegmentsChart from './CustomerSegmentsChart'
 import QRMenuSection from './QRMenuSection'
 import { customerMatchesFilter, overviewMetrics } from './ownerCustomerMetrics'
+import { homeAttention, homeSummaryMetrics, HOME_FEATURES, joinQrImageUrl, showSetupRecommendation } from './ownerHomeNav'
 import { canUseOwnerDashboardRefresh, ownerDashboardTab } from './ownerDashboardDesign'
 import { ADVANCED_TOOL_IDS, EMPTY_AUDIT_FILTERS, advancedToolFromSearch, dashboardSearchForTab } from './advancedToolsModel'
 import AdvancedTools from './AdvancedTools'
@@ -1132,12 +1133,12 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
     : (user?.business_slug || '')
   const selectedJoinUrl = viewingAllPrograms ? '' : `${FRONTEND_URL}/join/${selectedJoinSlug}`
   const nfcJoinUrl = user?.business_slug ? `${FRONTEND_URL}/join/${user.business_slug}` : ''
-  const copyJoinLink = async (url = nfcJoinUrl) => {
+  const copyJoinLink = async (url = nfcJoinUrl, purpose = 'nfc') => {
     const value = String(url || '').trim()
     if (!value) return
     try {
       await navigator.clipboard.writeText(value)
-      setMessage('Join link copied. Paste it into your NFC tag.')
+      setMessage(purpose === 'join' ? 'Join link copied.' : 'Join link copied. Paste it into your NFC tag.')
     } catch (_) {
       setMessage('Select the join link and copy it manually.')
     }
@@ -2999,7 +3000,6 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
           onSetup={() => { setOnboardingStep(0); setShowOnboarding(true) }}
           onSupport={contactLoyaltyTreeSupport}
           onScan={scanCustomer}
-          onShare={fetchQRImage}
           onInstall={handleAddToHomeScreen}
           onLogout={onLogout}
           businessName={business?.business_name || business?.name || user?.business_name}
@@ -3214,7 +3214,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
 
       {/* Professional dashboard summary */}
       <section className="lt-owner-summary" style={{...styles.dashboardShell,...(isTablet?styles.dashboardShellTablet:{}),...(isMobile?styles.dashboardShellMobile:{})}}>
-        <div className="lt-owner-heading" style={{...styles.dashboardHero,...(isTablet?styles.dashboardHeroTablet:{}),...(isMobile?styles.dashboardHeroMobile:{})}}>
+        {!refreshEnabled && <div className="lt-owner-heading" style={{...styles.dashboardHero,...(isTablet?styles.dashboardHeroTablet:{}),...(isMobile?styles.dashboardHeroMobile:{})}}>
           <div className="lt-owner-hero-tree" style={{...styles.heroTreeWrap,...(isTablet?styles.heroTreeWrapTablet:{}),...(isMobile?styles.heroTreeWrapMobile:{})}} aria-hidden="true">
             <div style={styles.heroTreeGlow}></div>
             <div style={styles.heroTree}>🌳</div>
@@ -3252,11 +3252,10 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
             </button>
             <button onClick={fetchQRImage} style={{...styles.secondaryActionBtn, borderColor: '#99f6e4', color: '#0f766e'}}>🔗 Share Join QR</button>
           </div>
-        </div>
+        </div>}
 
-        {refreshEnabled && stats?.activity_missing_sources?.length > 0 && <p role="status" className="lt-owner-metric-hint">Visit metrics use the available history. Some older activity sources are unavailable.</p>}
-        <div className="lt-owner-metrics" style={{...styles.metricsGrid,...(isTablet?styles.metricsGridTablet:{}),...(isMobile?styles.metricsGridMobile:{})}}>
-          {(refreshEnabled ? overviewMetrics(stats, customers, customersAvailable) : viewingAllPrograms
+        <div className={`lt-owner-metrics${refreshEnabled ? ' is-three' : ''}`} style={{...styles.metricsGrid,...(isTablet?styles.metricsGridTablet:{}),...(isMobile?styles.metricsGridMobile:{})}}>
+          {(refreshEnabled ? homeSummaryMetrics(overviewMetrics(stats, customers, customersAvailable)) : viewingAllPrograms
             ? [
                 { value: customers.length, label: 'Card Memberships', hint: 'Memberships across all active programs' },
                 { value: programs.length, label: 'Active Programs', hint: 'Cards currently configured for this business' },
@@ -3314,6 +3313,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
             </article>
           ))}
         </div>
+        {refreshEnabled && <button type="button" className="lt-home-analytics" onClick={() => { markAnalyticsChecked(); openAnalytics() }}>See all metrics</button>}
 
         {/* Navigation Tabs */}
         <nav className="lt-owner-legacy-nav" style={{...styles.tabs,...(isTablet?styles.tabsTablet:{}),...(isMobile?styles.tabsMobile:{})}} aria-label="Owner dashboard sections">
@@ -3378,15 +3378,42 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
       <div className="lt-owner-content" style={{...styles.content,...(isTablet?styles.contentTablet:{}),...(isMobile?styles.contentMobile:{})}}>
         {activeTab === 'tree' && (
           <div className="lt-owner-overview" style={styles.treeTab}>
-            <div className="lt-owner-industry" style={styles.industryInsight}>
+            {showSetupRecommendation({ program, requested: false }) && <div className="lt-owner-industry" style={styles.industryInsight}>
               <div style={styles.industryInsightIcon}>{industry.icon}</div>
               <div>
                 <div style={styles.industryInsightLabel}>{industry.label} setup</div>
                 <strong style={styles.industryInsightTitle}>Recommended: {industry.recommend}</strong>
                 <div style={styles.industryInsightText}>Focus analytics: {industry.focus}.</div>
               </div>
+            </div>}
+            {refreshEnabled && <div className="lt-home-attention" role="status">
+              {homeAttention({
+                needsRenewal,
+                renewalText: subStatus === 'expired' ? 'Subscription expired. Renew to keep cards active.' : `Renews in ${subscription?.days_left ?? ''} days.`,
+                rewardsReady: stats?.rewards_ready ?? unlockedRewards,
+                activityMissing: stats?.activity_missing_sources?.length > 0,
+              }).map(item => <button type="button" key={item.id} onClick={() => item.tab === 'analytics' ? openAnalytics() : setActiveTab(item.tab)}>{item.text}</button>)}
+            </div>}
+            <section className="lt-home-qr" aria-label="Customer join QR">
+              <div>
+                <p>CUSTOMER JOIN QR</p>
+                <h2>Customers scan this to join your loyalty program.</h2>
+                <strong>{user?.business_name || 'Your business'}</strong>
+                <span>{viewingAllPrograms ? 'Select one program to show its QR.' : (selectedProgramSummary?.program_name || program?.program_name || 'Loyalty program')}</span>
+              </div>
+              {selectedJoinUrl ? <img src={joinQrImageUrl(selectedJoinUrl)} alt={`Join QR for ${selectedProgramSummary?.program_name || user?.business_name || 'this program'}`} /> : <div className="lt-home-qr-empty">Select one program</div>}
+              <div className="lt-home-qr-actions">
+                <button type="button" onClick={fetchQRImage} disabled={!selectedJoinUrl}>View QR</button>
+                <button type="button" onClick={() => { if (!selectedJoinUrl) return; const link = document.createElement('a'); link.href = joinQrImageUrl(selectedJoinUrl, 600); link.download = `${user?.business_name || 'business'}-join-qr.png`; document.body.appendChild(link); link.click(); link.remove() }} disabled={!selectedJoinUrl}>Download QR</button>
+                <button type="button" onClick={() => copyJoinLink(selectedJoinUrl, 'join')} disabled={!selectedJoinUrl}>Copy join link</button>
+              </div>
+            </section>
+            <div className="lt-home-features" aria-label="Featured tools">
+              {HOME_FEATURES.map(feature => <button type="button" key={feature.id} onClick={() => feature.action === 'announcements' ? (setShowAnnouncements(true), markAnnouncementsChecked()) : setActiveTab(feature.tab)}>
+                <strong>{feature.label}</strong><span>{feature.text}</span>
+              </button>)}
             </div>
-            <div className="lt-owner-actions" onKeyDown={refreshEnabled ? e => { if (e.target.getAttribute('role') === 'button' && ['Enter', ' '].includes(e.key)) { e.preventDefault(); e.target.click() } } : undefined} style={{...styles.actionCards,...(isTablet?styles.actionCardsTablet:{}),...(isMobile?styles.actionCardsMobile:{})}}>
+            {!refreshEnabled && <div className="lt-owner-actions" onKeyDown={refreshEnabled ? e => { if (e.target.getAttribute('role') === 'button' && ['Enter', ' '].includes(e.key)) { e.preventDefault(); e.target.click() } } : undefined} style={{...styles.actionCards,...(isTablet?styles.actionCardsTablet:{}),...(isMobile?styles.actionCardsMobile:{})}}>
               <div className="lt-owner-action" role={refreshEnabled ? 'button' : undefined} tabIndex={refreshEnabled ? 0 : undefined} style={{...styles.actionCard,...(isTablet?styles.actionCardTablet:{}), borderColor: cardExperience.border}} onClick={() => setActiveTab('customers')}>
                 <div style={styles.actionIcon}>{cardExperience.customerIcon}</div>
                 <h3>View {cardExperience.customerLabel}</h3>
@@ -3407,7 +3434,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
                 <h3>Share Join Link</h3>
                 <p>Get the customer signup QR code</p>
               </div>
-            </div>
+            </div>}
 
             {setupKit && <section style={styles.setupKitPanel}>
               <div style={styles.setupKitHeader}>
