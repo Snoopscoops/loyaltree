@@ -109,10 +109,12 @@ class BenefitsRouteTests(unittest.TestCase):
                                ('/auth/verify', dict(challenge_id=OFFER_ID,code='123456')),
                                ('/link', dict(customer_public_id='card-30',card_token='signed-card-proof',consent=True)),
                                (f'/offers/{OFFER_ID}/claim', {})]:
-                self.assertEqual(client.post('/api/v1/benefits'+path,json=body,headers=self.auth).status_code,503)
+                self.assertEqual(client.post('/api/v1/benefits'+path,json=body,headers=self.auth).status_code,409)
             for path in ('/offers','/me'):
-                self.assertEqual(client.get('/api/v1/benefits'+path,headers=self.auth).status_code,503)
-            self.assertEqual(service.earn('card-30',10,'receipt','sale',50000)['status'],'disabled')
+                self.assertEqual(client.get('/api/v1/benefits'+path,headers=self.auth).status_code,409)
+            self.assertEqual(service.earn('card-30',10,'receipt','sale',50000), {})
+            self.assertEqual(db.calls[-1][0], 'earn')
+            db.calls.clear()
             self.assertIsNone(service.provision_customer(dict(id=30,public_id='card-30',email='synthetic@example.invalid',lt_benefits_card_enabled=True),dict(id=10)))
             self.assertIsNone(service.wallet_projection('card-30'))
             self.assertEqual(service.process_wallet_jobs(lambda *_: True),0)

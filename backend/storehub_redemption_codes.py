@@ -230,10 +230,17 @@ class RedemptionCodeService:
 
     async def run_once(self, limit=5):
         for _ in range(min(20, max(1, limit))):
-            rows = await asyncio.to_thread(self.rpc, 'pos_claim_redemption_codes', {'p_limit': 1})
+            try:
+                rows = await asyncio.to_thread(self.rpc, 'pos_claim_redemption_codes', {'p_limit': 1})
+            except Exception as exc:
+                self.log('redemption_code_claim_failed', error_type=type(exc).__name__, error=str(exc)[:300])
+                break
             if not rows:
                 break
-            code = rows[0]
+            code = rows[0] if isinstance(rows, list) else None
+            if not isinstance(code, dict):
+                self.log('redemption_code_claim_failed', error_type='bad_claim', error='Claim did not return a code')
+                break
             try:
                 if code['status'] == 'redeemed' or code.get('void_detected'):
                     await asyncio.to_thread(self.reverse, code, None)
@@ -284,5 +291,5 @@ async def periodic_redemption_codes(factory, interval_seconds=30, log=None):
             await factory().run_once()
         except Exception as exc:
             if log:
-                log('redemption_code_worker_failed', error=str(exc)[:500])
+                log('redemption_code_worker_failed', error_type=type(exc).__name__, error=str(exc)[:500])
         await asyncio.sleep(max(15, interval_seconds))

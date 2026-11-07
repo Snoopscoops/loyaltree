@@ -22,6 +22,14 @@ def parse_google_response(response):
         return {'raw_response': response.text[:2000]}
 
 
+def class_write_body(loyalty_class, creating):
+    """Google rejects reviewStatus on an update of a class it already approved."""
+    body = dict(loyalty_class)
+    if not creating:
+        body.pop('reviewStatus', None)
+    return body
+
+
 def upsert_loyalty_class(client, loyalty_class, access_token):
     # Validate without authorization headers before Google is allowed to fetch
     # the image. Render-hosted dynamic logo endpoints caused cold-start 502s.
@@ -30,14 +38,15 @@ def upsert_loyalty_class(client, loyalty_class, access_token):
     headers = {'Authorization': f'Bearer {access_token}'}
 
     def write_current_design():
-        response = client.put(target_url, headers=headers, json=loyalty_class,
+        update_body = class_write_body(loyalty_class, creating=False)
+        response = client.put(target_url, headers=headers, json=update_body,
                               timeout=httpx.Timeout(45.0, connect=10.0, pool=10.0))
         if response.status_code == 404:
-            response = client.post(CLASS_URL, headers=headers, json=loyalty_class,
+            response = client.post(CLASS_URL, headers=headers, json=class_write_body(loyalty_class, creating=True),
                                    timeout=httpx.Timeout(45.0, connect=10.0, pool=10.0))
             if response.status_code == 409:
                 # A concurrent publish or delayed insert created this exact ID.
-                response = client.put(target_url, headers=headers, json=loyalty_class,
+                response = client.put(target_url, headers=headers, json=update_body,
                                       timeout=httpx.Timeout(45.0, connect=10.0, pool=10.0))
         return response
 
