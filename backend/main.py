@@ -7942,8 +7942,8 @@ def sync_google_geofence_locations(business: dict) -> int:
                 response = client.patch(
                     f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}',
                     headers={'Authorization': f'Bearer {access_token}'},
-                    params={'updateMask': 'merchantLocations'},
-                    json={'merchantLocations': locations},
+                    params={'updateMask': 'merchantLocations,reviewStatus'},
+                    json={'merchantLocations': locations, 'reviewStatus': 'UNDER_REVIEW'},
                 )
                 if response.status_code == 404:
                     log_event('geofence_google_class', 'info',
@@ -8671,7 +8671,7 @@ async def republish_wallet_class_and_refresh(business: dict, program: dict):
                                 vip_tier_name=tier_name,
                             )
                             update_body = dict(loyalty_class)
-                            update_body.pop('reviewStatus', None)
+                            update_body['reviewStatus'] = 'UNDER_REVIEW'
                             if lt_wallet.is_google_class(target_id):
                                 resp, _ = upsert_loyalty_class(client, loyalty_class, access_token)
                             else:
@@ -33958,7 +33958,7 @@ async def create_or_update_cl_wallet_class(public_id: str, authorization: str = 
         import httpx
         with pooled_client() as client:
             update_body = dict(loyalty_class)
-            update_body.pop('reviewStatus', None)
+            update_body['reviewStatus'] = 'UNDER_REVIEW'
             resp = client.put(
                 f'https://walletobjects.googleapis.com/walletobjects/v1/loyaltyClass/{class_id}',
                 headers={"Authorization": f"Bearer {access_token}"},

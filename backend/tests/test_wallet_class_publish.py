@@ -11,7 +11,7 @@ class WalletClassPublishTests(unittest.TestCase):
         with httpx.Client(transport=httpx.MockTransport(handler)) as client:
             return upsert_loyalty_class(client,CLASS,'test-token')
 
-    def test_update_omits_review_status_that_google_rejects(self):
+    def test_update_sends_under_review_instead_of_approved(self):
         bodies=[]
         def handler(request):
             bodies.append((request.method, json.loads(request.content)))
@@ -20,7 +20,7 @@ class WalletClassPublishTests(unittest.TestCase):
         with httpx.Client(transport=httpx.MockTransport(handler)) as client:
             response,_=upsert_loyalty_class(client, payload, 'test-token')
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(bodies, [('PUT', CLASS)])
+        self.assertEqual(bodies, [('PUT', {**CLASS, 'reviewStatus': 'UNDER_REVIEW'})])
         stored,methods={},[]
         def handler(request):
             methods.append(request.method)
@@ -34,7 +34,7 @@ class WalletClassPublishTests(unittest.TestCase):
         self.assertEqual(response.status_code,200)
         self.assertEqual(result['id'],CLASS['id'])
         self.assertEqual(methods,['PUT','POST','GET','PUT'])
-        self.assertEqual(stored,CLASS)
+        self.assertEqual(stored,{**CLASS, 'reviewStatus': 'UNDER_REVIEW'})
 
     def test_create_timeout_before_commit_retries_only_the_same_id(self):
         ids,methods=[],[]
