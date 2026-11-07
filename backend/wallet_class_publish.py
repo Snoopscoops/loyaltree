@@ -23,10 +23,9 @@ def parse_google_response(response):
 
 
 def class_write_body(loyalty_class, creating):
-    """Google rejects reviewStatus on an update of a class it already approved."""
+    """Updates must send UNDER_REVIEW. Google rejects a missing status and rejects APPROVED."""
     body = dict(loyalty_class)
-    if not creating:
-        body.pop('reviewStatus', None)
+    body['reviewStatus'] = 'UNDER_REVIEW'
     return body
 
 
