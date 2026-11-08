@@ -6306,6 +6306,36 @@ def find_business_duplicate(email: Optional[str], phone: Optional[str]) -> Optio
         return None
     return None
 
+def find_existing_program_member(
+    business_id: int,
+    phone: Optional[str],
+    email: Optional[str],
+    program_id: Optional[int] = None,
+) -> Optional[dict]:
+    """Return the card already in this program. Other businesses are free."""
+    if not supabase:
+        return None
+    phone = (phone or '').strip()
+    email = (email or '').strip()
+    try:
+        def scoped_query():
+            q = supabase.table('customers').select('id,public_id,name,phone,email').eq('business_id', business_id)
+            if program_id is not None:
+                q = q.eq('program_id', int(program_id))
+            return q
+        if phone:
+            rows = scoped_query().eq('phone', phone).limit(1).execute().data or []
+            if rows:
+                return rows[0]
+        if email:
+            rows = scoped_query().ilike('email', email).limit(1).execute().data or []
+            if rows:
+                return rows[0]
+    except Exception:
+        return None
+    return None
+
+
 def find_customer_duplicate(
     business_id: int,
     phone: Optional[str],
@@ -34591,14 +34621,19 @@ async def customer_signup(business_public_id: str, signup: CustomerSignup, backg
     signup_age_bracket = signup.age_bracket or _age_to_bracket(signup.age)
     signup_gender = signup.gender if signup.gender in GENDER_OPTIONS else None
 
-    dup_field = find_customer_duplicate(
+    existing_member = find_existing_program_member(
         business.get('id'), signup.phone, signup.email, program_id=program.get('id')
     )
-    if dup_field:
-        raise HTTPException(
-            status_code=400,
-            detail=f"This {dup_field} is already enrolled in this rewards program."
-        )
+    if existing_member:
+        return {
+            "public_id": existing_member.get("public_id"),
+            "name": existing_member.get("name") or signup.name,
+            "message": "You already have this card. Add it to your wallet.",
+            "already_enrolled": True,
+            "program_public_id": program.get("public_id") if program else None,
+            "welcome_reward": None,
+            "tier0_coupons_issued": [],
+        }
 
     customer_public_id = generate_public_id()
     identity_id = find_or_create_customer_identity(business.get('id'), signup)

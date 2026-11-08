@@ -396,10 +396,10 @@ function CustomerJoin({ API_BASE }) {
       if (res.ok) {
         setCustomerId(data.public_id)
         setWelcomeRewardIssued(data.welcome_reward || null)
-        if (form.email.trim() && !rememberedPhone()) {
-          await requestOtp()
-        } else {
+        if (data.already_enrolled || !form.email.trim() || rememberedPhone()) {
           setSubmitted(true)
+        } else {
+          await requestOtp()
         }
       } else {
         setError(data.detail || 'Something went wrong')
