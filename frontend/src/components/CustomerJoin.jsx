@@ -427,13 +427,22 @@ function CustomerJoin({ API_BASE }) {
         <main style={styles.qrMain}>
           <div style={styles.qrEyebrow}>LoyaltyTree</div>
           <h1 style={styles.qrTitle}>{businessName}</h1>
-          <p style={styles.qrHint}>One card for this business. One LT Points balance across every card that uses the same email.</p>
           {pubmat && <img src={pubmat} alt="" style={styles.qrPubmat} />}
-          <div style={styles.qrBenefits}>
-            <span style={styles.qrLabel}>LT Points</span>
-            <span style={styles.qrCardTitle}>Shared across businesses</span>
-            <p style={styles.qrCopy}>Stamps stay on this card. LT Points sit beside them. Same email connects every card. Verify once, then this phone is remembered for 6 months.</p>
-          </div>
+          {benefitsLive
+            ? <a href={`/benefits?business=${encodeURIComponent(businessInfo?.public_id || businessSlug || '')}`} style={styles.qrBenefits}>
+                <span style={styles.qrLabel}>Benefits</span>
+                <span style={styles.qrCardRow}>
+                  <span style={styles.qrCardTitle}>LT Benefits</span>
+                  <span style={styles.qrArrowLight}>→</span>
+                </span>
+              </a>
+            : <div style={styles.qrBenefits}>
+                <span style={styles.qrLabel}>Benefits</span>
+                <span style={styles.qrCardRow}>
+                  <span style={styles.qrCardTitle}>LT Benefits</span>
+                  <span style={styles.qrSoon}>Coming soon</span>
+                </span>
+              </div>}
           <button type="button" onClick={() => setJoining(true)} style={styles.qrJoin}>
             <span style={styles.qrLabelDark}>This business</span>
             <span style={styles.qrCardRow}>
