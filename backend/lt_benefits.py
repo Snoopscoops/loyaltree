@@ -6,7 +6,7 @@ functions are synchronous so FastAPI runs SDK/email calls outside its event loop
 from __future__ import annotations
 
 from collections import OrderedDict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import hashlib
 import hmac
 import html
@@ -636,6 +636,54 @@ def register_lt_benefits_routes(app, *, db, get_business, get_card_context, requ
             key=_key(idempotency_key), request_hash=_canonical_hash(dict(coupon_id=str(coupon_id), **data)))
         service.invalidate()
         return result
+
+    @app.get("/api/v1/benefits/phone-remember")
+    def phone_remember(email: str = Query(""), phone: str = Query("")):
+        """Returning customers skip OTP for 6 months on the same phone and email."""
+        normalized_email = str(email or "").strip().lower()
+        normalized_phone = re.sub(r"\D", "", str(phone or ""))
+        if not normalized_email or not normalized_phone:
+            return {"remembered": False}
+        try:
+            rows = (
+                service.db.table("ltb_phone_remembers")
+                .select("verified_at")
+                .eq("email", normalized_email)
+                .eq("phone", normalized_phone)
+                .limit(1)
+                .execute()
+                .data or []
+            )
+        except Exception:
+            return {"remembered": False}
+        if not rows:
+            return {"remembered": False}
+        verified_at = rows[0].get("verified_at")
+        if not verified_at:
+            return {"remembered": False}
+        try:
+            verified = datetime.fromisoformat(str(verified_at).replace("Z", "+00:00"))
+        except ValueError:
+            return {"remembered": False}
+        remembered = datetime.now(verified.tzinfo) - verified < timedelta(days=180)
+        return {"remembered": remembered, "verified_at": verified_at}
+
+    @app.post("/api/v1/benefits/phone-remember")
+    def save_phone_remember(body: dict, authorization: str = Header("")):
+        """Save a verified phone for 6 months after a successful email OTP."""
+        member, _ = service.member(authorization)
+        email = str(body.get("email") or member.get("email") or "").strip().lower()
+        phone = re.sub(r"\D", "", str(body.get("phone") or ""))
+        if not email or not phone:
+            raise HTTPException(422, "Email and phone are required.")
+        try:
+            service.db.table("ltb_phone_remembers").upsert(
+                {"email": email, "phone": phone, "verified_at": datetime.now(timezone.utc).isoformat()},
+                on_conflict="email,phone",
+            ).execute()
+        except Exception:
+            raise HTTPException(503, "Phone remember is not ready yet.")
+        return {"saved": True}
 
     @app.get("/api/v1/admin/lt-benefits/offers")
     def admin_offers(request: Request):
