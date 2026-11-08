@@ -34390,7 +34390,7 @@ async def customer_join_page(business_public_id: str):
                '<p style="font-size:12px;color:#64748b;">Use the same email across participating businesses for Loyalty Tree Points. Verify by email code to connect your cards.</p>'
                if lt_benefits_public_launch_enabled() else
                '<input type="email" id="email" placeholder="Email (optional)" autocomplete="email">'
-               '<p style="font-size:12px;color:#64748b;">Loyalty Tree Points — Coming soon. Your business loyalty card works as usual.</p>') +
+               '<p style="font-size:12px;color:#64748b;">Your business loyalty card works as usual.</p>') +
             '<label style="display:block;text-align:left;font-size:13px;color:#64748b;margin-bottom:6px;">Birthday month/day</label>'
             '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;"><input type="number" id="birthdayMonth" min="1" max="12" placeholder="Month"><input type="number" id="birthdayDay" min="1" max="31" placeholder="Day"></div>'
             '<div style="font-size:11px;color:#64748b;margin:-2px 0 10px;">Birth year is not collected.</div>'
