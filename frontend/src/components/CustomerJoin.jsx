@@ -124,6 +124,7 @@ function CustomerJoin({ API_BASE }) {
   const [otpChallenge, setOtpChallenge] = useState('')
   const [otpBusy, setOtpBusy] = useState(false)
   const [otpToken, setOtpToken] = useState('')
+  const [submitted, setSubmitted] = useState(false)
   const [customerId, setCustomerId] = useState('')
   const [welcomeRewardIssued, setWelcomeRewardIssued] = useState(null)
   const [error, setError] = useState('')
