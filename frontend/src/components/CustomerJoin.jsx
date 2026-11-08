@@ -541,7 +541,7 @@ function CustomerJoin({ API_BASE }) {
               <span style={{fontSize:20}}>◫</span>
               Add to Wallet
             </button>
-            {!isEmployeeExperience && <p style={{fontSize:13,lineHeight:1.6,color:'#64748b'}}>{benefitsReady ? <>Want your shared LT Points and coupons? <a href={`/benefits?business=${encodeURIComponent(businessSlug || '')}`}>Open Loyalty Tree Benefits</a> and verify your email.</> : <>Loyalty Tree Points — <a href={`/benefits?business=${encodeURIComponent(businessSlug || '')}`}>Coming soon</a>.</>} Your business loyalty card is ready to use.</p>}
+            {!isEmployeeExperience && benefitsReady && <p style={{fontSize:13,lineHeight:1.6,color:'#64748b'}}>Want your shared LT Points and coupons? <a href={`/benefits?business=${encodeURIComponent(businessSlug || '')}`}>Open Loyalty Tree Benefits</a> and verify your email. Your business loyalty card is ready to use.</p>}
 
             {walletChoiceOpen && (
               <div style={styles.walletChooser}>
