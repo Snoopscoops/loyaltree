@@ -119,7 +119,11 @@ function CustomerJoin({ API_BASE }) {
     employee_position: '',
     employee_start_date: '',
   })
-  const [submitted, setSubmitted] = useState(false)
+  const [otpStep, setOtpStep] = useState(false)
+  const [otpCode, setOtpCode] = useState('')
+  const [otpChallenge, setOtpChallenge] = useState('')
+  const [otpBusy, setOtpBusy] = useState(false)
+  const [otpToken, setOtpToken] = useState('')
   const [customerId, setCustomerId] = useState('')
   const [welcomeRewardIssued, setWelcomeRewardIssued] = useState(null)
   const [error, setError] = useState('')
@@ -142,6 +146,52 @@ function CustomerJoin({ API_BASE }) {
   const customerAgreement = businessInfo?.customer_agreement?.enabled === true ? businessInfo.customer_agreement : null
   const agreementRequiresSignature = customerAgreement?.mode === 'signature'
   const agreementComplete = !customerAgreement || (agreementAccepted && (!agreementRequiresSignature || Boolean(agreementSignature)))
+
+  const phoneRememberKey = 'lt_phone_remember_v1'
+  const rememberedPhone = () => {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(phoneRememberKey) || 'null')
+      if (!saved?.phone || !saved?.email || !saved?.verified_at) return false
+      const same = saved.phone === form.phone.replace(/\D/g, '') && saved.email === form.email.trim().toLowerCase()
+      const fresh = Date.now() - Date.parse(saved.verified_at) < 180 * 24 * 60 * 60 * 1000
+      return same && fresh
+    } catch { return false }
+  }
+  const saveRememberedPhone = (token) => {
+    const payload = { phone: form.phone.replace(/\D/g, ''), email: form.email.trim().toLowerCase(), verified_at: new Date().toISOString() }
+    try { window.localStorage.setItem(phoneRememberKey, JSON.stringify(payload)) } catch {}
+    if (token) fetch(`${API_BASE}/api/v1/benefits/phone-remember`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(payload) }).catch(() => {})
+  }
+  const requestOtp = async () => {
+    setOtpBusy(true); setError('')
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/benefits/auth/email/request-code`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: form.email.trim(), consent: true }) })
+      const data = await res.json()
+      if (!res.ok || !data.challenge_id) throw new Error(data.detail || 'Could not send the code.')
+      setOtpChallenge(data.challenge_id)
+      setOtpStep(true)
+    } catch (failure) {
+      setError(failure.message || 'Could not send the code.')
+    }
+    setOtpBusy(false)
+  }
+  const verifyOtp = async event => {
+    event.preventDefault()
+    if (otpCode.length !== 6 || otpBusy) return
+    setOtpBusy(true); setError('')
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/benefits/auth/verify`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ challenge_id: otpChallenge, code: otpCode }) })
+      const data = await res.json()
+      if (!res.ok || !data.access_token) throw new Error(data.detail || 'That code is not valid.')
+      setOtpToken(data.access_token)
+      saveRememberedPhone(data.access_token)
+      setOtpStep(false)
+      setSubmitted(true)
+    } catch (failure) {
+      setError(failure.message || 'That code is not valid.')
+    }
+    setOtpBusy(false)
+  }
 
   const rewardSummary = (() => {
     if (!businessInfo) return null
@@ -345,7 +395,11 @@ function CustomerJoin({ API_BASE }) {
       if (res.ok) {
         setCustomerId(data.public_id)
         setWelcomeRewardIssued(data.welcome_reward || null)
-        setSubmitted(true)
+        if (form.email.trim() && !rememberedPhone()) {
+          await requestOtp()
+        } else {
+          setSubmitted(true)
+        }
       } else {
         setError(data.detail || 'Something went wrong')
       }
@@ -365,26 +419,20 @@ function CustomerJoin({ API_BASE }) {
 
   if (!submitted && !joining && !isEmployeeExperience) {
     const businessName = businessInfo?.name || 'LoyaltyTree'
-    const benefitsHref = `/benefits?business=${encodeURIComponent(businessInfo?.public_id || businessSlug || '')}`
     const menuHref = digitalMenuHref(businessInfo, businessSlug)
-    const benefitsBody = (
-      <>
-        <span style={styles.qrLabel}>Benefits</span>
-        <span style={styles.qrCardRow}>
-          <span style={styles.qrCardTitle}>Loyalty Tree benefits</span>
-          {benefitsLive ? <span style={styles.qrArrowLight}>→</span> : <span style={styles.qrSoon}>Coming soon</span>}
-        </span>
-      </>
-    )
+    const pubmat = businessInfo?.hero_image_url || businessInfo?.logo_url
     return (
       <div style={styles.qrPage}>
         <main style={styles.qrMain}>
           <div style={styles.qrEyebrow}>LoyaltyTree</div>
           <h1 style={styles.qrTitle}>{businessName}</h1>
-          <p style={styles.qrHint}>Choose one.</p>
-          {benefitsLive
-            ? <a href={benefitsHref} style={styles.qrBenefits}>{benefitsBody}</a>
-            : <div style={styles.qrBenefits}>{benefitsBody}</div>}
+          <p style={styles.qrHint}>One card for this business. One LT Points balance across every card that uses the same email.</p>
+          {pubmat && <img src={pubmat} alt="" style={styles.qrPubmat} />}
+          <div style={styles.qrBenefits}>
+            <span style={styles.qrLabel}>LT Points</span>
+            <span style={styles.qrCardTitle}>Shared across businesses</span>
+            <p style={styles.qrCopy}>Stamps stay on this card. LT Points sit beside them. Same email connects every card. Verify once, then this phone is remembered for 6 months.</p>
+          </div>
           <button type="button" onClick={() => setJoining(true)} style={styles.qrJoin}>
             <span style={styles.qrLabelDark}>This business</span>
             <span style={styles.qrCardRow}>
@@ -400,6 +448,23 @@ function CustomerJoin({ API_BASE }) {
             </span>
           </a>}
           <p style={styles.qrFoot}>Apple Wallet · Google Wallet</p>
+        </main>
+      </div>
+    )
+  }
+
+  if (otpStep) {
+    return (
+      <div style={styles.qrPage}>
+        <main style={styles.qrMain}>
+          <div style={styles.qrEyebrow}>Verify email</div>
+          <h1 style={styles.qrTitle}>One code.</h1>
+          <p style={styles.qrHint}>Enter the 6-digit code sent to {form.email}. This connects your LT Points. This phone is remembered for 6 months.</p>
+          <form onSubmit={verifyOtp}>
+            <input inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={otpCode} onChange={e => setOtpCode(e.target.value.replace(/\D/g, ''))} placeholder="000000" style={{...styles.input, fontSize: 24, letterSpacing: 8, textAlign: 'center'}} />
+            {error && <div style={{color:'#f4c7c7', marginTop: 12}}>{error}</div>}
+            <button type="submit" disabled={otpBusy || otpCode.length !== 6} style={{...styles.qrJoin, marginTop: 18}}>{otpBusy ? 'Verifying…' : 'Connect LT Points'}</button>
+          </form>
         </main>
       </div>
     )
@@ -916,9 +981,11 @@ const styles = {
   qrTitle: { margin: '16px 0 8px', color: '#fff', fontSize: 'clamp(40px, 10vw, 52px)', lineHeight: 1.05, letterSpacing: '-2px', fontWeight: 750 },
   qrHint: { margin: '0 0 28px', color: '#d5e2db', fontSize: 16 },
   qrBenefits: {
-    display: 'flex', flexDirection: 'column', gap: 22, textAlign: 'left', textDecoration: 'none', color: '#fff',
+    display: 'flex', flexDirection: 'column', gap: 10, textAlign: 'left', textDecoration: 'none', color: '#fff',
     border: '1px solid #d7b578', borderRadius: 16, background: '#0c4a40', padding: '18px 18px 16px', marginBottom: 14,
   },
+  qrPubmat: { width: '100%', height: 180, objectFit: 'cover', borderRadius: 16, margin: '8px 0 16px', display: 'block' },
+  qrCopy: { margin: 0, color: '#d5e2db', fontSize: 14, lineHeight: 1.55 },
   qrLabel: { color: '#d7b578', fontSize: 11, fontWeight: 750, letterSpacing: '1.6px', textTransform: 'uppercase' },
   qrLabelDark: { color: '#8b7047', fontSize: 11, fontWeight: 750, letterSpacing: '1.6px', textTransform: 'uppercase' },
   qrCardRow: { display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12 },

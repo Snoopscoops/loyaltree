@@ -39589,6 +39589,7 @@ async def public_business_join_config(public_id: str):
         # The join page is for a specific card/program, so its logo should
         # match that card. Business logo remains the fallback.
         'logo_url': program.get('program_logo_url') or business.get('logo_url'),
+        'hero_image_url': program.get('hero_image_url'),
         'business_type': normalize_business_type(business.get('business_type')),
         'category': category,
         'card_type': program.get('card_type', 'stamp'),
