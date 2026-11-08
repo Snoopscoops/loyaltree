@@ -105,253 +105,69 @@ function LoginPage({ API_BASE, onLogin }) {
   }
 
   return (
-    <div style={styles.container}>
-      <div style={styles.card}>
-        <div style={styles.brand}>
-          <img src={logo256} alt="LoyaltyTree" style={styles.logo} />
-          <h1 style={styles.title}>LoyaltyTree</h1>
-          <p style={styles.tagline}>Where businesses grow with customers</p>
-        </div>
-
-        {!resetToken && !forgotMode && sessionExpired && !error && !pendingNotice && (
-          <div style={styles.sessionNotice}>Your session expired. Please sign in again.</div>
-        )}
+    <div style={styles.shell}>
+      <section style={styles.left}>
+        <div style={styles.brand}><img src={logo256} alt="" style={styles.mark} /> LoyaltyTree</div>
+        <h1 style={styles.hero}>Your cards.<br />One LT Points balance.</h1>
+        <p style={styles.heroCopy}>Customers scan a QR. No app. The same email connects every business card to one shared balance.</p>
+        <div style={styles.proof}><div><strong>61</strong><span>businesses on board</span></div><div><strong>8,000+</strong><span>wallet cards</span></div><div><strong>₱350</strong><span>from month two</span></div></div>
+      </section>
+      <section style={styles.right}>
+        <div style={styles.switchTop}>New business? <Link to="/signup" style={styles.link}>Create account</Link></div>
+        <h2 style={styles.heading}>{resetToken ? 'New password' : forgotMode ? 'Reset password' : 'Sign in'}</h2>
+        <p style={styles.sub}>{resetToken ? 'Use at least 8 characters. This link works once.' : forgotMode ? 'We’ll email a reset link if the account exists.' : 'Business dashboard. Not the customer wallet.'}</p>
+        {!resetToken && !forgotMode && sessionExpired && !error && !pendingNotice && <div style={styles.notice}>Your session expired. Please sign in again.</div>}
         {error && <div style={styles.error}>{error}</div>}
-        {pendingNotice && !resetToken && !forgotMode && <div style={styles.pendingNotice}>⏳ {pendingNotice}</div>}
-        {resetNotice && <div style={styles.sessionNotice}>{resetNotice}</div>}
-
+        {pendingNotice && !resetToken && !forgotMode && <div style={styles.pending}>{pendingNotice}</div>}
+        {resetNotice && <div style={styles.notice}>{resetNotice}</div>}
         {resetToken ? (
           <form onSubmit={confirmPasswordReset} style={styles.form}>
-            <div style={styles.resetHeading}>Create a new password</div>
-            <p style={styles.resetCopy}>Use at least 8 characters. This reset link can only be used once.</p>
-            <input
-              style={styles.input}
-              type="password"
-              placeholder="New password"
-              value={resetForm.password}
-              onChange={e => setResetForm({...resetForm, password: e.target.value})}
-              minLength={8}
-              autoComplete="new-password"
-              required
-            />
-            <input
-              style={styles.input}
-              type="password"
-              placeholder="Confirm new password"
-              value={resetForm.confirmPassword}
-              onChange={e => setResetForm({...resetForm, confirmPassword: e.target.value})}
-              minLength={8}
-              autoComplete="new-password"
-              required
-            />
-            <button type="submit" style={styles.btn} disabled={loading}>
-              {loading ? 'Updating...' : 'Reset Password'}
-            </button>
-            <button type="button" style={styles.textButton} onClick={() => navigate('/login', { replace: true })}>
-              Back to sign in
-            </button>
+            <label style={styles.label}>New password<input style={styles.input} type="password" value={resetForm.password} onChange={e => setResetForm({...resetForm, password: e.target.value})} minLength={8} autoComplete="new-password" required /></label>
+            <label style={styles.label}>Confirm password<input style={styles.input} type="password" value={resetForm.confirmPassword} onChange={e => setResetForm({...resetForm, confirmPassword: e.target.value})} minLength={8} autoComplete="new-password" required /></label>
+            <button type="submit" style={styles.btn} disabled={loading}>{loading ? 'Updating…' : 'Reset password'}</button>
+            <button type="button" style={styles.textButton} onClick={() => navigate('/login', { replace: true })}>Back to sign in</button>
           </form>
         ) : forgotMode ? (
           <form onSubmit={requestPasswordReset} style={styles.form}>
-            <div style={styles.resetHeading}>Forgot your password?</div>
-            <p style={styles.resetCopy}>Enter the registered business email. We’ll send a secure reset link if the account exists.</p>
-            <input
-              style={styles.input}
-              type="email"
-              placeholder="Registered business email"
-              value={resetEmail}
-              onChange={e => setResetEmail(e.target.value)}
-              autoComplete="email"
-              required
-            />
-            <button type="submit" style={styles.btn} disabled={loading}>
-              {loading ? 'Sending...' : 'Send Reset Link'}
-            </button>
-            <button type="button" style={styles.textButton} onClick={() => { setForgotMode(false); setError(''); setResetNotice('') }}>
-              Back to sign in
-            </button>
+            <label style={styles.label}>Business email<input style={styles.input} type="email" value={resetEmail} onChange={e => setResetEmail(e.target.value)} autoComplete="email" required /></label>
+            <button type="submit" style={styles.btn} disabled={loading}>{loading ? 'Sending…' : 'Send reset link'}</button>
+            <button type="button" style={styles.textButton} onClick={() => { setForgotMode(false); setError(''); setResetNotice('') }}>Back to sign in</button>
           </form>
         ) : (
           <form onSubmit={handleLogin} style={styles.form}>
-            <input
-              style={styles.input}
-              type="email"
-              placeholder="Email"
-              value={form.email}
-              onChange={e => setForm({...form, email: e.target.value})}
-              autoComplete="email"
-              required
-            />
-            <input
-              style={styles.input}
-              type="password"
-              placeholder="Password"
-              value={form.password}
-              onChange={e => setForm({...form, password: e.target.value})}
-              autoComplete="current-password"
-              required
-            />
-            <button type="button" style={styles.forgotButton} onClick={() => { setForgotMode(true); setResetEmail(form.email); setError(''); setPendingNotice(''); setResetNotice('') }}>
-              Forgot password?
-            </button>
-            <button type="submit" style={styles.btn} disabled={loading}>
-              {loading ? 'Growing...' : '🌱 Sign In'}
-            </button>
-            <p style={styles.switch}>
-              New here? <Link to="/signup" style={styles.link}>Plant your tree</Link>
-            </p>
+            <label style={styles.label}>Email<input style={styles.input} type="email" value={form.email} onChange={e => setForm({...form, email: e.target.value})} autoComplete="email" required /></label>
+            <label style={styles.label}>Password<input style={styles.input} type="password" value={form.password} onChange={e => setForm({...form, password: e.target.value})} autoComplete="current-password" required /></label>
+            <button type="button" style={styles.forgotButton} onClick={() => { setForgotMode(true); setResetEmail(form.email); setError(''); setPendingNotice(''); setResetNotice('') }}>Forgot password</button>
+            <button type="submit" style={styles.btn} disabled={loading}>{loading ? 'Signing in…' : 'Sign in'}</button>
           </form>
         )}
-      </div>
+      </section>
     </div>
   )
 }
 
 const styles = {
-  container: {
-    minHeight: '100vh',
-    background: 'linear-gradient(135deg, #f0fdf4 0%, #d1fae5 50%, #a7f3d0 100%)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 20,
-    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-  },
-  card: {
-    background: 'white',
-    borderRadius: 24,
-    padding: '32px 24px',
-    width: '100%',
-    maxWidth: 400,
-    boxSizing: 'border-box',
-    boxShadow: '0 20px 60px rgba(0,0,0,0.1)',
-  },
-  brand: {
-    textAlign: 'center',
-    marginBottom: 32,
-  },
-  logo: {
-    width: 72,
-    height: 72,
-    borderRadius: '50%',
-    display: 'block',
-    margin: '0 auto 8px',
-  },
-  title: {
-    margin: 0,
-    fontSize: 28,
-    fontWeight: 700,
-    color: '#0f766e',
-  },
-  tagline: {
-    margin: '8px 0 0 0',
-    fontSize: 14,
-    color: '#0d9488',
-  },
-  error: {
-    background: '#fee2e2',
-    color: '#991b1b',
-    padding: 12,
-    borderRadius: 10,
-    fontSize: 13,
-    marginBottom: 16,
-    textAlign: 'center',
-  },
-  sessionNotice: {
-    background: '#ecfeff',
-    color: '#115e59',
-    padding: 12,
-    borderRadius: 10,
-    fontSize: 13,
-    marginBottom: 16,
-    textAlign: 'center',
-    lineHeight: 1.5,
-    border: '1px solid #99f6e4',
-  },
-  pendingNotice: {
-    background: '#fef3c7',
-    color: '#92400e',
-    padding: 12,
-    borderRadius: 10,
-    fontSize: 13,
-    marginBottom: 16,
-    textAlign: 'center',
-    lineHeight: 1.5,
-  },
-  form: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 12,
-  },
-  input: {
-    padding: '14px 16px',
-    border: '2px solid #e2e8f0',
-    borderRadius: 12,
-    fontSize: 16,
-    outline: 'none',
-    transition: 'border-color 0.2s',
-    boxSizing: 'border-box',
-    width: '100%',
-  },
-  btn: {
-    padding: '16px',
-    background: '#0d9488',
-    color: 'white',
-    border: 'none',
-    borderRadius: 12,
-    fontSize: 16,
-    fontWeight: 600,
-    cursor: 'pointer',
-    marginTop: 4,
-  },
-  forgotButton: {
-    alignSelf: 'flex-end',
-    background: 'none',
-    border: 'none',
-    color: '#0d9488',
-    fontSize: 13,
-    fontWeight: 650,
-    cursor: 'pointer',
-    padding: '0 2px 2px',
-  },
-  textButton: {
-    background: 'none',
-    border: 'none',
-    color: '#64748b',
-    fontSize: 13,
-    fontWeight: 600,
-    cursor: 'pointer',
-    padding: '6px 0 0',
-  },
-  resetHeading: {
-    fontSize: 20,
-    fontWeight: 750,
-    color: '#0f172a',
-    textAlign: 'center',
-  },
-  resetCopy: {
-    margin: '-2px 0 4px',
-    color: '#64748b',
-    fontSize: 13,
-    lineHeight: 1.5,
-    textAlign: 'center',
-  },
-  switch: {
-    textAlign: 'center',
-    fontSize: 14,
-    color: '#64748b',
-    margin: '8px 0 0 0',
-  },
-  link: {
-    background: 'none',
-    border: 'none',
-    color: '#0d9488',
-    fontWeight: 600,
-    cursor: 'pointer',
-    fontSize: 14,
-    padding: 0,
-    textDecoration: 'none',
-  },
+  shell: { minHeight: '100vh', display: 'grid', gridTemplateColumns: '1.05fr .95fr', fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif', color: '#102d28', background: '#f8f6ef' },
+  left: { background: '#073f36', color: '#fff', padding: '36px 48px', display: 'flex', flexDirection: 'column' },
+  brand: { display: 'flex', alignItems: 'center', gap: 10, fontWeight: 700 },
+  mark: { width: 28, height: 28, borderRadius: '50%' },
+  hero: { margin: '72px 0 12px', fontSize: 'clamp(40px, 5vw, 58px)', lineHeight: .98, letterSpacing: '-1.6px', fontWeight: 700, maxWidth: 520 },
+  heroCopy: { margin: 0, maxWidth: 420, color: '#d5e2db', fontSize: 17, lineHeight: 1.55 },
+  proof: { marginTop: 'auto', display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 18, paddingTop: 48 },
+  right: { padding: '36px 56px', display: 'flex', flexDirection: 'column' },
+  switchTop: { marginLeft: 'auto', fontSize: 14, color: '#5d726a' },
+  heading: { margin: '56px 0 8px', fontSize: 32, letterSpacing: '-.8px' },
+  sub: { margin: '0 0 28px', color: '#5d726a', fontSize: 15 },
+  form: { display: 'grid', gap: 14, maxWidth: 420 },
+  label: { display: 'grid', gap: 6, fontSize: 13, fontWeight: 650 },
+  input: { height: 46, border: '1px solid #e4eee8', borderRadius: 10, padding: '0 14px', font: 'inherit', background: '#fff', color: '#102d28' },
+  btn: { height: 48, border: 0, borderRadius: 10, background: '#073f36', color: '#fff', font: 'inherit', fontWeight: 700, cursor: 'pointer' },
+  forgotButton: { border: 0, background: 'none', color: '#073f36', font: 'inherit', fontWeight: 650, cursor: 'pointer', padding: 0, textAlign: 'left' },
+  textButton: { border: 0, background: 'none', color: '#5d726a', font: 'inherit', fontWeight: 650, cursor: 'pointer', padding: 0, textAlign: 'left' },
+  link: { color: '#073f36', fontWeight: 700, textDecoration: 'none' },
+  error: { color: '#9f2d2d', fontSize: 13, fontWeight: 650 },
+  notice: { color: '#166534', fontSize: 13, fontWeight: 650 },
+  pending: { color: '#8b7047', fontSize: 13, fontWeight: 650 },
 }
 
 export default LoginPage
