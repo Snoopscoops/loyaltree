@@ -106,7 +106,7 @@ function LoginPage({ API_BASE, onLogin }) {
 
   return (
     <div className="lt-auth-shell" style={styles.shell}>
-      <style>{`@media(max-width:760px){.lt-auth-shell{grid-template-columns:1fr!important}.lt-auth-left{display:none!important}.lt-auth-mobile-brand{display:flex!important}.lt-auth-right{padding:28px 20px 40px!important}.lt-auth-heading{margin-top:28px!important}.lt-auth-form,.lt-auth-form input{width:100%!important;max-width:none!important;box-sizing:border-box}.lt-auth-form input{font-size:16px}}`}</style>
+      <style>{`html,body{overflow-x:hidden}@media(max-width:760px){.lt-auth-shell{grid-template-columns:1fr!important;width:100%!important;overflow-x:hidden!important}.lt-auth-left{display:none!important}.lt-auth-mobile-brand{display:flex!important}.lt-auth-right{padding:20px 16px 36px!important;width:100%!important;min-width:0!important;box-sizing:border-box!important}.lt-auth-top{display:flex!important;flex-direction:column!important;align-items:flex-start!important;gap:8px!important;width:100%!important}.lt-auth-switch{margin-left:0!important;white-space:normal!important}.lt-auth-heading{margin-top:22px!important}.lt-auth-form{width:100%!important;max-width:none!important}.lt-auth-form input,.lt-auth-form button{width:100%!important;max-width:100%!important;box-sizing:border-box!important}.lt-auth-form input{font-size:16px}}`}</style>
       <section className="lt-auth-left" style={styles.left}>
         <div style={styles.brand}><img src={logo256} alt="" style={styles.mark} /> LoyaltyTree</div>
         <h1 style={styles.hero}>Your cards.<br />One LT Points balance.</h1>
@@ -114,8 +114,10 @@ function LoginPage({ API_BASE, onLogin }) {
         <div style={styles.proof}><div><strong>61</strong><span>businesses on board</span></div><div><strong>8,000+</strong><span>wallet cards</span></div><div><strong>₱350</strong><span>from month two</span></div></div>
       </section>
       <section className="lt-auth-right" style={styles.right}>
-        <div className="lt-auth-mobile-brand" style={styles.mobileBrand}><img src={logo256} alt="" style={styles.mark} /> LoyaltyTree</div>
-        <div style={styles.switchTop}>New business? <Link to="/signup" style={styles.link}>Create account</Link></div>
+        <div className="lt-auth-top">
+          <div className="lt-auth-mobile-brand" style={styles.mobileBrand}><img src={logo256} alt="" style={styles.mark} /> LoyaltyTree</div>
+          <div className="lt-auth-switch" style={styles.switchTop}>New business? <Link to="/signup" style={styles.link}>Create account</Link></div>
+        </div>
         <h2 className="lt-auth-heading" style={styles.heading}>{resetToken ? 'New password' : forgotMode ? 'Reset password' : 'Sign in'}</h2>
         <p style={styles.sub}>{resetToken ? 'Use at least 8 characters. This link works once.' : forgotMode ? 'We’ll email a reset link if the account exists.' : 'Business dashboard. Not the customer wallet.'}</p>
         {!resetToken && !forgotMode && sessionExpired && !error && !pendingNotice && <div style={styles.notice}>Your session expired. Please sign in again.</div>}
