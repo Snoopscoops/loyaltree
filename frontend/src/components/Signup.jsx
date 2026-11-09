@@ -467,13 +467,13 @@ function Signup({ API_BASE }) {
   }
 
   const steps=['Apply','Business Profile','Logo', pricingContext.setup_kit_available ? 'Plan + PR Kit' : 'Plan','Review + Sign',couponPreview||activeTrial?'Start trial':'Pay']
-  return <div style={styles.page}><style>{`@media(max-width:720px){.lt-signup-shell{grid-template-columns:1fr!important}.lt-signup-side{display:none!important}.lt-signup-main{padding:28px 20px!important}.lt-signup-two{grid-template-columns:1fr!important}.lt-signup-plans{grid-template-columns:1fr!important}.lt-agreement-summary{grid-template-columns:1fr!important}}`}</style><div className="lt-signup-shell" style={styles.shell}>
+  return <div style={styles.page}><style>{`@media(max-width:760px){.lt-signup-shell{grid-template-columns:1fr!important}.lt-signup-side{display:none!important}.lt-signup-main{padding:24px 16px 40px!important}.lt-signup-two{grid-template-columns:1fr!important}.lt-signup-plans{grid-template-columns:1fr!important}.lt-agreement-summary{grid-template-columns:1fr!important}.lt-signup-main h1{font-size:28px!important}.lt-signup-main input,.lt-signup-main select,.lt-signup-main textarea{font-size:16px!important;width:100%!important;box-sizing:border-box}.lt-signup-actions{flex-direction:column-reverse!important}.lt-signup-actions button{width:100%!important}}`}</style><div className="lt-signup-shell" style={styles.shell}>
     <aside className="lt-signup-side" style={styles.sidebar}>
       <img src={logo128} alt="LoyaltyTree" style={styles.logo}/><div style={styles.brand}>LoyaltyTree</div>
       <h2 style={styles.sideTitle}>Your cards.<br />One LT Points balance.</h2><p style={styles.sideCopy}>Customers scan a QR. No app. The same email connects every business card to one shared balance.</p>
       <div style={styles.stepList}>{steps.map((label,i)=>{const n=i+1,active=n===wizardStep,done=n<wizardStep;return <div key={label} style={{...styles.stepItem,...(active?styles.stepActive:{})}}><span style={{...styles.stepDot,...(done?styles.stepDone:{}),...(active?styles.stepDotActive:{})}}>{done?'✓':n}</span><span>{label}</span></div>})}</div>
     </aside>
-    <main className="lt-signup-main" style={styles.main}>
+    <main className="lt-signup-main" className="lt-signup-main" style={styles.main}>
       <div style={styles.mobileProgress}>Step {wizardStep} of 6 · {steps[wizardStep-1]}</div>
       {wizardStep===1&&<section><p style={styles.eyebrow}>1 · APPLY</p><h1 style={styles.title}>Create your business</h1><p style={styles.subtitle}>First month free for the first 100 businesses.</p>
         <div style={styles.referralOffer}><strong>Refer a business, get a free 1 month in your LoyaltyTree subscription.</strong><span>After you join, share your business code. The free month is added when the business you refer pays.</span></div>
@@ -561,8 +561,8 @@ function Signup({ API_BASE }) {
           :<div style={styles.error}>The account was not created. Go back to Review + Sign and try again.</div>}
       </section>}
       {error&&<div style={styles.error}>{error}</div>}
-      {wizardStep<5&&<div style={styles.actions}>{wizardStep>1?<button type="button" onClick={back} style={styles.secondary}>← Back</button>:<span/>}<button type="button" onClick={next} disabled={logoUpload.uploading} style={styles.primary}>Continue →</button></div>}
-      {wizardStep===5&&<div style={styles.actions}><button type="button" onClick={back} disabled={loading} style={styles.secondary}>← Back</button><span/></div>}
+      {wizardStep<5&&<div className="lt-signup-actions" style={styles.actions}>{wizardStep>1?<button type="button" onClick={back} style={styles.secondary}>← Back</button>:<span/>}<button type="button" onClick={next} disabled={logoUpload.uploading} style={styles.primary}>Continue →</button></div>}
+      {wizardStep===5&&<div className="lt-signup-actions" style={styles.actions}><button type="button" onClick={back} disabled={loading} style={styles.secondary}>← Back</button><span/></div>}
       <p style={styles.footer}>Already have an account? <Link to="/login" style={{color:'#0f766e',fontWeight:800}}>Sign in</Link></p>
     </main>
   </div></div>
