@@ -274,9 +274,11 @@ class LTBenefitsService:
         return bool(value()) if callable(value) else bool(value) if value is not None else public_launch_enabled()
 
     def _command(self, action, **data):
-        if action in {'provision', 'auth_request', 'auth_verify', 'link', 'session', 'me', 'catalog',
+        if action in {'auth_request', 'auth_verify', 'link', 'session', 'me', 'catalog',
                       'claim', 'cashier_customer', 'use', 'wallet_projection', 'wallet_jobs_claim'} and not self.public_launch_enabled():
-            raise HTTPException(409, 'Loyalty Tree Points is coming soon. Your business loyalty card keeps working.')
+            raise HTTPException(409, 'Loyalty Tree Benefits is coming soon.')
+        if action == 'provision' and not self.public_launch_enabled():
+            return None
         try:
             result = self.db.rpc("ltb_identity_command", {"p_action": action, "p_data": data}).execute().data
         except Exception as exc:
@@ -382,6 +384,8 @@ class LTBenefitsService:
         return self._request_code(card['email'], card, request)
 
     def request_email_code(self, body, request):
+        if not self.public_launch_enabled():
+            return dict(skipped=True, coming_soon=True, message='Loyalty Tree Benefits is coming soon.')
         self.ready()
         return self._request_code(normalize_email(body.email), {'kind': 'email'}, request)
 

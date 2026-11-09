@@ -396,7 +396,7 @@ function CustomerJoin({ API_BASE }) {
       if (res.ok) {
         setCustomerId(data.public_id)
         setWelcomeRewardIssued(data.welcome_reward || null)
-        if (data.already_enrolled || !form.email.trim() || rememberedPhone()) {
+        if (data.already_enrolled || !benefitsLive || !form.email.trim() || rememberedPhone()) {
           setSubmitted(true)
         } else {
           await requestOtp()
