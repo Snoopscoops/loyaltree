@@ -104,16 +104,17 @@ function LoginPage({ API_BASE, onLogin }) {
     setLoading(false)
   }
 
+  const narrow = typeof window !== 'undefined' && window.matchMedia('(max-width: 760px)').matches
   return (
-    <div className="lt-auth-shell" style={styles.shell}>
-      <style>{`@media(max-width:760px){.lt-auth-shell{grid-template-columns:1fr!important}.lt-auth-left{display:none!important}.lt-auth-mobile-brand{display:flex!important}.lt-auth-right{padding:28px 20px 40px!important}.lt-auth-heading{margin-top:28px!important}.lt-auth-form,.lt-auth-form input{width:100%!important;max-width:none!important;box-sizing:border-box}.lt-auth-form input{font-size:16px}}`}</style>
-      <section className="lt-auth-left" style={styles.left}>
+    <div className="lt-auth-shell" style={{...styles.shell, ...(narrow ? {gridTemplateColumns: '1fr', overflowX: 'hidden'} : {})}}>
+      <style>{`html,body{overflow-x:hidden}@media(max-width:760px){.lt-auth-shell{grid-template-columns:1fr!important;overflow-x:hidden!important;width:100%!important}.lt-auth-left{display:none!important}.lt-auth-mobile-brand{display:flex!important}.lt-auth-right{padding:28px 20px 40px!important;width:100%!important;min-width:0!important}.lt-auth-heading{margin-top:28px!important}.lt-auth-form,.lt-auth-form input{width:100%!important;max-width:none!important;box-sizing:border-box}.lt-auth-form input{font-size:16px}}`}</style>
+      {!narrow && <section className="lt-auth-left" style={styles.left}>
         <div style={styles.brand}><img src={logo256} alt="" style={styles.mark} /> LoyaltyTree</div>
         <h1 style={styles.hero}>Your cards.<br />One LT Points balance.</h1>
         <p style={styles.heroCopy}>Customers scan a QR. No app. The same email connects every business card to one shared balance.</p>
         <div style={styles.proof}><div><strong>61</strong><span>businesses on board</span></div><div><strong>8,000+</strong><span>wallet cards</span></div><div><strong>₱350</strong><span>from month two</span></div></div>
-      </section>
-      <section className="lt-auth-right" style={styles.right}>
+      </section>}
+      <section className="lt-auth-right" style={{...styles.right, ...(narrow ? {padding: '28px 20px 40px', width: '100%', minWidth: 0} : {})}}>
         <div className="lt-auth-mobile-brand" style={styles.mobileBrand}><img src={logo256} alt="" style={styles.mark} /> LoyaltyTree</div>
         <div style={styles.switchTop}>New business? <Link to="/signup" style={styles.link}>Create account</Link></div>
         <h2 className="lt-auth-heading" style={styles.heading}>{resetToken ? 'New password' : forgotMode ? 'Reset password' : 'Sign in'}</h2>
