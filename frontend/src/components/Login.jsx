@@ -111,7 +111,6 @@ function LoginPage({ API_BASE, onLogin }) {
         <div style={styles.brand}><img src={logo256} alt="" style={styles.mark} /> LoyaltyTree</div>
         <h1 style={styles.hero}>Your cards.<br />One LT Points balance.</h1>
         <p style={styles.heroCopy}>Customers scan a QR. No app. The same email connects every business card to one shared balance.</p>
-        <div style={styles.proof}><div><strong>61</strong><span>businesses on board</span></div><div><strong>8,000+</strong><span>wallet cards</span></div><div><strong>₱350</strong><span>from month two</span></div></div>
       </section>
       <section className="lt-auth-right" style={styles.right}>
         <div className="lt-auth-top">
@@ -158,7 +157,6 @@ const styles = {
   mark: { width: 28, height: 28, borderRadius: '50%' },
   hero: { margin: '72px 0 12px', fontSize: 'clamp(40px, 5vw, 58px)', lineHeight: .98, letterSpacing: '-1.6px', fontWeight: 700, maxWidth: 520 },
   heroCopy: { margin: 0, maxWidth: 420, color: '#d5e2db', fontSize: 17, lineHeight: 1.55 },
-  proof: { marginTop: 'auto', display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 18, paddingTop: 48 },
   right: { padding: '36px 56px', display: 'flex', flexDirection: 'column' },
   switchTop: { marginLeft: 'auto', fontSize: 14, color: '#5d726a' },
   heading: { margin: '56px 0 8px', fontSize: 32, letterSpacing: '-.8px' },
