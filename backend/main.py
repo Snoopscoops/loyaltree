@@ -44149,6 +44149,32 @@ async def owner_void_gift_card(public_id: str, identifier: str, background_tasks
     return {'gift_card': serialize_gift_card(updated)}
 
 
+@app.delete('/api/v1/business/{public_id}/gift-cards/{identifier}')
+async def owner_delete_gift_card(public_id: str, identifier: str, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    gift = safe_get_gift_card(identifier, business.get('id'))
+    if not gift:
+        raise HTTPException(status_code=404, detail='Gift Card not found')
+    gift_id = gift.get('id')
+    serial = f"gift-{gift.get('public_id')}"
+    for table, column, value in (
+        ('gift_card_redemptions', 'gift_card_id', gift_id),
+        ('apple_wallet_registrations', 'serial_number', serial),
+    ):
+        try:
+            supabase.table(table).delete().eq(column, value).execute()
+        except Exception:
+            pass
+    try:
+        supabase.table('gift_cards').delete().eq('id', gift_id).eq('business_id', business.get('id')).execute()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=friendly_db_error(e))
+    return {'deleted': True, 'public_id': gift.get('public_id'), 'code': gift.get('code')}
+
+
 @app.get('/api/v1/gift-card/{gift_public_id}')
 async def public_gift_card_json(gift_public_id: str):
     gift = safe_get_gift_card(gift_public_id)
