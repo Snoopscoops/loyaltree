@@ -129,6 +129,14 @@ function GiftCards({ API_BASE, user, enabled = true, plan = '' }) {
     setMessage(`${card.code} deleted.`); load()
   }
 
+  const deleteBatch = async batch => {
+    if (!window.confirm(`Delete the whole “${batch.name}” batch and all ${batch.quantity} gift cards? This cannot be undone.`)) return
+    const res = await api(`/api/v1/business/${user.business_slug}/gift-card-batches/${batch.public_id}`, { method: 'DELETE' })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) return setError(data.detail || 'Could not delete this batch')
+    setMessage(`${batch.name} deleted.`); load()
+  }
+
   const copyLink = async card => {
     const url = `${API_BASE}/gift/${card.public_id}`
     await navigator.clipboard.writeText(url)
@@ -213,7 +221,7 @@ function GiftCards({ API_BASE, user, enabled = true, plan = '' }) {
 
     <section style={S.section}>
       <h3 style={S.h3}>Batches & printing</h3><p style={S.muted}>Printed batches use the exact QR inventory stored in LoyaltyTree.</p>
-      <div style={S.batchGrid}>{batches.map(b => { const inactive=batchUnactivatedCount(b); return <div key={b.public_id} style={S.batchCard}><div style={S.batchTop}><b>{b.name}</b><span style={S.badge}>{b.quantity} cards</span></div><div style={S.small}>{b.gift_type === 'amount' ? `${money(b.face_value)} each` : `${b.item_quantity} × ${b.item_name}`}</div><div style={S.small}>Print: {b.print_option === 'loyaltytree' ? 'Loyalty Tree requested' : b.print_option === 'self' ? 'Self print' : 'Digital'}</div>{inactive>0&&<div style={S.small}><b>{inactive}</b> still unactivated</div>}<div style={S.rowActions}><button style={S.tiny} onClick={()=>download(b,'manifest')}>Manifest</button>{b.print_option !== 'digital'&&<button style={S.tinyPrimary} onClick={()=>download(b,'print')}>Print PDF</button>}{inactive>0&&<button disabled={!!bulkActivating} style={S.activateAllSmall} onClick={()=>activateAll(b)}>{bulkActivating===b.public_id?'Activating…':`Activate All (${inactive})`}</button>}</div></div> })}</div>
+      <div style={S.batchGrid}>{batches.map(b => { const inactive=batchUnactivatedCount(b); return <div key={b.public_id} style={S.batchCard}><div style={S.batchTop}><b>{b.name}</b><span style={S.badge}>{b.quantity} cards</span></div><div style={S.small}>{b.gift_type === 'amount' ? `${money(b.face_value)} each` : `${b.item_quantity} × ${b.item_name}`}</div><div style={S.small}>Print: {b.print_option === 'loyaltytree' ? 'Loyalty Tree requested' : b.print_option === 'self' ? 'Self print' : 'Digital'}</div>{inactive>0&&<div style={S.small}><b>{inactive}</b> still unactivated</div>}<div style={S.rowActions}><button style={S.tiny} onClick={()=>download(b,'manifest')}>Manifest</button>{b.print_option !== 'digital'&&<button style={S.tinyPrimary} onClick={()=>download(b,'print')}>Print PDF</button>}{inactive>0&&<button disabled={!!bulkActivating} style={S.activateAllSmall} onClick={()=>activateAll(b)}>{bulkActivating===b.public_id?'Activating…':`Activate All (${inactive})`}</button>}<button style={S.tinyDanger} onClick={()=>deleteBatch(b)}>Delete batch</button></div></div> })}</div>
       {!!printRequests.length && <div style={{marginTop:18}}><b>Printing requests</b>{printRequests.map(r=><div key={r.public_id} style={S.requestRow}><span>{r.public_id}</span><span>{String(r.status||'requested').replaceAll('_',' ')}</span></div>)}</div>}
     </section>
   </div>

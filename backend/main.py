@@ -43840,6 +43840,43 @@ async def list_gift_card_batches(public_id: str, authorization: str = Header(def
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
 
+@app.delete('/api/v1/business/{public_id}/gift-card-batches/{batch_public_id}')
+async def owner_delete_gift_card_batch(public_id: str, batch_public_id: str, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    batch = safe_get_gift_batch(batch_public_id, business.get('id'))
+    if not batch:
+        raise HTTPException(status_code=404, detail='Gift Card batch not found')
+    cards = supabase.table('gift_cards').select('id,public_id').eq('batch_id', batch.get('id')).eq('business_id', business.get('id')).execute().data or []
+    ids = [row.get('id') for row in cards if row.get('id') is not None]
+    serials = [f"gift-{row.get('public_id')}" for row in cards if row.get('public_id')]
+    if ids:
+        try:
+            supabase.table('gift_card_redemptions').delete().in_('gift_card_id', ids).execute()
+        except Exception:
+            pass
+    if serials:
+        try:
+            supabase.table('apple_wallet_registrations').delete().in_('serial_number', serials).execute()
+        except Exception:
+            pass
+    for table, column in (
+        ('gift_card_print_requests', 'batch_id'),
+        ('gift_cards', 'batch_id'),
+    ):
+        try:
+            supabase.table(table).delete().eq(column, batch.get('id')).eq('business_id', business.get('id')).execute()
+        except Exception:
+            supabase.table(table).delete().eq(column, batch.get('id')).execute()
+    try:
+        supabase.table('gift_card_batches').delete().eq('id', batch.get('id')).eq('business_id', business.get('id')).execute()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=friendly_db_error(e))
+    return {'deleted': True, 'public_id': batch.get('public_id'), 'name': batch.get('name'), 'cards_removed': len(cards)}
+
+
 @app.post('/api/v1/business/{public_id}/gift-card-batches')
 async def create_gift_card_batch(public_id: str, req: GiftCardBatchCreate, authorization: str = Header(default='')):
     require_owner_session(public_id, authorization)
