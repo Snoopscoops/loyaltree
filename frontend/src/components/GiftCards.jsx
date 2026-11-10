@@ -121,6 +121,14 @@ function GiftCards({ API_BASE, user, enabled = true, plan = '' }) {
     setMessage(`${card.code} voided.`); load()
   }
 
+  const deleteCard = async card => {
+    if (!window.confirm(`Delete ${card.code}? It will be removed from your list and can no longer be redeemed.`)) return
+    const res = await api(`/api/v1/business/${user.business_slug}/gift-cards/${card.public_id}`, { method: 'DELETE' })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) return setError(data.detail || 'Could not delete Gift Card')
+    setMessage(`${card.code} deleted.`); load()
+  }
+
   const copyLink = async card => {
     const url = `${API_BASE}/gift/${card.public_id}`
     await navigator.clipboard.writeText(url)
@@ -198,7 +206,7 @@ function GiftCards({ API_BASE, user, enabled = true, plan = '' }) {
     <section style={S.section}>
       <div style={S.sectionHead}><div><h3 style={S.h3}>Gift Card inventory</h3><p style={S.muted}>Every QR maps to one server-side balance or item quantity. First claim locks the card to one claimant; first Wallet choice locks Apple or Google for V1.</p></div><div style={S.rowActions}>{unactivatedCount>0&&<button disabled={!!bulkActivating} style={S.activateAll} onClick={()=>activateAll()}>{bulkActivating==='all'?'Activating…':`Activate All (${unactivatedCount})`}</button>}<select style={S.filter} value={filter} onChange={e=>setFilter(e.target.value)}><option value="all">All statuses</option>{Object.entries(STATUS_LABELS).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select></div></div>
       <div style={S.tableWrap}><table style={S.table}><thead><tr><th>Gift Card</th><th>Status</th><th>Original</th><th>Remaining</th><th>Actions</th></tr></thead><tbody>
-        {filtered.map(c => <tr key={c.public_id}><td><b>{c.name}</b><div style={S.code}>{c.code}</div></td><td><span style={S.status}>{STATUS_LABELS[c.status] || c.status}</span>{c.wallet_platform&&<div style={S.code}>Wallet: {String(c.wallet_platform).toUpperCase()}</div>}</td><td>{c.gift_type==='amount'?money(c.original_amount):`${c.original_quantity} × ${c.item_name}`}</td><td><b>{c.gift_type==='amount'?money(c.remaining_amount):`${c.remaining_quantity} / ${c.original_quantity}`}</b></td><td><div style={S.rowActions}><button onClick={()=>window.open(`${API_BASE}/gift/${c.public_id}`,'_blank')} style={S.tiny}>Open</button><button onClick={()=>copyLink(c)} style={S.tiny}>Copy link</button>{c.status==='unactivated'&&<button onClick={()=>markSold(c)} style={S.tinyPrimary}>Mark Sold / Issue</button>}{!['redeemed','voided','expired'].includes(c.status)&&<button onClick={()=>voidCard(c)} style={S.tinyDanger}>Void</button>}</div></td></tr>)}
+        {filtered.map(c => <tr key={c.public_id}><td><b>{c.name}</b><div style={S.code}>{c.code}</div></td><td><span style={S.status}>{STATUS_LABELS[c.status] || c.status}</span>{c.wallet_platform&&<div style={S.code}>Wallet: {String(c.wallet_platform).toUpperCase()}</div>}</td><td>{c.gift_type==='amount'?money(c.original_amount):`${c.original_quantity} × ${c.item_name}`}</td><td><b>{c.gift_type==='amount'?money(c.remaining_amount):`${c.remaining_quantity} / ${c.original_quantity}`}</b></td><td><div style={S.rowActions}><button onClick={()=>window.open(`${API_BASE}/gift/${c.public_id}`,'_blank')} style={S.tiny}>Open</button><button onClick={()=>copyLink(c)} style={S.tiny}>Copy link</button>{c.status==='unactivated'&&<button onClick={()=>markSold(c)} style={S.tinyPrimary}>Mark Sold / Issue</button>}{!['redeemed','voided','expired'].includes(c.status)&&<button onClick={()=>voidCard(c)} style={S.tinyDanger}>Void</button>}<button onClick={()=>deleteCard(c)} style={S.tinyDanger}>Delete</button></div></td></tr>)}
         {!filtered.length && <tr><td colSpan="5" style={S.empty}>No Gift Cards in this view.</td></tr>}
       </tbody></table></div>
     </section>
