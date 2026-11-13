@@ -3595,6 +3595,53 @@ def normalize_google_review_url(value: Optional[str], *, strict: bool = False) -
     return raw
 
 
+
+def public_google_review_links(business, program):
+    """Review buttons for the public join page.
+
+    Growth and Pro only. One saved link becomes one button. Different branch
+    links become one button each. Identical links stay one button.
+    """
+    if not business or not get_plan_features(business.get('plan')).get('google_review_prompt'):
+        return []
+    found = []
+    if supabase and business.get('id') is not None:
+        try:
+            rows = (
+                supabase.table('branches')
+                .select('name,google_review_url,is_active')
+                .eq('business_id', business.get('id'))
+                .execute()
+                .data or []
+            )
+        except Exception as exc:
+            print(f"GOOGLE REVIEW public lookup warning: {exc}")
+            rows = []
+        for row in rows:
+            if row.get('is_active') is False:
+                continue
+            url = normalize_google_review_url(row.get('google_review_url'))
+            if not url:
+                continue
+            found.append((str(row.get('name') or '').strip(), url))
+    fallback = normalize_google_review_url((program or {}).get('google_review_url'))
+    if fallback and all(url != fallback for _, url in found):
+        found.append(('', fallback))
+    unique = []
+    for name, url in found:
+        if any(existing == url for _, existing in unique):
+            continue
+        unique.append((name, url))
+    if not unique:
+        return []
+    if len(unique) == 1:
+        return [{'label': 'Leave a Google review', 'url': unique[0][1]}]
+    return [
+        {'label': f"Review {name}" if name else 'Leave a Google review', 'url': url}
+        for name, url in unique
+    ]
+
+
 def google_review_url_for_redemption(
     business: Optional[dict],
     program: Optional[dict],
