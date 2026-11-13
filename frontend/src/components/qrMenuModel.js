@@ -1,5 +1,9 @@
+export function menuItemOfferedAt(item, branchId) {
+  if (!branchId || branchId === 'all') return true
+  return !(item.unavailable_branch_public_ids || []).includes(branchId)
+}
 export function menuItemAvailable(item, branchId) {
-  return item.is_available !== false && !(item.unavailable_branch_public_ids || []).includes(branchId)
+  return item.is_available !== false && menuItemOfferedAt(item, branchId)
 }
 export function filterMenuItems(items, category, search) {
   const needle = search.trim().toLocaleLowerCase()
@@ -8,13 +12,13 @@ export function filterMenuItems(items, category, search) {
 }
 export function groupMenuCategories(categories, items, branchId) {
   const grouped = categories.map(category => {
-    const members = items.filter(item => item.category_public_id === category.public_id)
+    const members = items.filter(item => item.category_public_id === category.public_id && menuItemOfferedAt(item, branchId))
     const photo = members.find(item => item.image_url && menuItemAvailable(item, branchId)) || members.find(item => item.image_url)
     return { ...category, items: members, image_url: photo?.image_url || '' }
   }).filter(category => category.items.length)
   if (!grouped.length) return []
   const knownIds = new Set(categories.map(category => category.public_id))
-  const others = items.filter(item => !knownIds.has(item.category_public_id))
+  const others = items.filter(item => !knownIds.has(item.category_public_id) && menuItemOfferedAt(item, branchId))
   if (others.length) grouped.push({ public_id: '__uncategorized__', name: 'More favorites', items: others, image_url: others.find(item => item.image_url)?.image_url || '' })
   return grouped
 }
