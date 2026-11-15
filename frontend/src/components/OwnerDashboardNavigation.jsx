@@ -38,7 +38,7 @@ function Icon({ name, className = '' }) {
   return <svg className={`lt-owner-icon ${className}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name] || paths.card}</svg>
 }
 const tabTitles = {
-  tree: 'Home', customers: 'Customers', program: 'Loyalty card', analytics: 'Analytics', announcements: 'Notifications', billboard: 'Digital Billboard', staff: 'Team & locations',
+  tree: 'Home', customers: 'Customers', program: 'Loyalty card', analytics: 'Analytics', announcements: 'Notifications', billboard: 'Digital Billboard', customerdash: 'Customer dashboard', staff: 'Team & locations',
   qrmenu: 'Digital Menu', orderahead: 'Order Ahead', giftcards: 'Gift cards', ltbenefits: 'LT Points', pos: 'Integrations', campaigns: 'Campaigns',
   satisfaction: 'Satisfaction', billing: 'Billing', referrals: 'Referrals', security: 'Transactions & security',
   walletqueue: 'Wallet queue', crm: 'Customer segments', retention: 'Retention', operations: 'Branch operations', advanced: 'Advanced tools',

@@ -14,6 +14,7 @@ import './owner-dashboard-refresh.css'
 import './advanced-tools.css'
 import Announcements from './Announcements'
 import DigitalBillboard from './DigitalBillboard'
+import CustomerDashboard from './CustomerDashboard'
 import PlatformPromoBanner from './PlatformPromoBanner'
 import LoyaltyCardCustomizer from './LoyaltyCardCustomizer'
 import GiftCards from './GiftCards'
@@ -3406,6 +3407,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
                 <button type="button" onClick={fetchQRImage} disabled={!selectedJoinUrl}>View QR</button>
                 <button type="button" onClick={() => { if (!selectedJoinUrl) return; const link = document.createElement('a'); link.href = joinQrImageUrl(selectedJoinUrl, 600); link.download = `${user?.business_name || 'business'}-join-qr.png`; document.body.appendChild(link); link.click(); link.remove() }} disabled={!selectedJoinUrl}>Download QR</button>
                 <button type="button" onClick={() => copyJoinLink(selectedJoinUrl, 'join')} disabled={!selectedJoinUrl}>Copy join link</button>
+                <button type="button" onClick={() => setActiveTab('customerdash')}>Customer dashboard</button>
               </div>
             </section>
             <div className="lt-home-features" aria-label="Featured tools">
@@ -4220,6 +4222,8 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
         {activeTab === 'ltbenefits' && <BenefitsOwner API_BASE={API_BASE} businessSlug={user.business_slug} ownerToken={user.token} authFetch={authFetch} />}
 
         {activeTab === 'billboard' && <DigitalBillboard API_BASE={API_BASE} user={user} active={activeTab === 'billboard'} />}
+
+        {activeTab === 'customerdash' && <CustomerDashboard API_BASE={API_BASE} user={user} onOpen={setActiveTab} />}
 
         {activeTab === 'campaigns' && (
           <Campaigns

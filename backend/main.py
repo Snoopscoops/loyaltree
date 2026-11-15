@@ -39653,6 +39653,64 @@ async def announcement_detail_page(business_public_id: str, announcement_id: str
 
 # WALLET PASS (Google + Apple)
 
+
+def guest_page_form(raw):
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+
+    def https(value, limit):
+        text = str(value or '').strip()
+        return text[:limit] if text.lower().startswith('https://') else ''
+
+    links = []
+    for item in list(raw.get('links') or [])[:4]:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get('label') or '').strip()[:40]
+        url = https(item.get('url'), 300)
+        if label and url:
+            links.append({'label': label, 'url': url})
+    return {
+        'cover_url': https(raw.get('cover_url'), 500),
+        'wifi_published': bool(raw.get('wifi_published')),
+        'wifi_name': str(raw.get('wifi_name') or '').strip()[:80],
+        'wifi_password': str(raw.get('wifi_password') or '').strip()[:80],
+        'socials_published': bool(raw.get('socials_published')),
+        'links': links,
+        'review_url': https(raw.get('review_url'), 300),
+    }
+
+
+@app.get("/api/v1/business/{public_id}/guest-page")
+async def get_business_guest_page(public_id: str, authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    return guest_page_form(business.get('guest_page') or {})
+
+
+@app.post("/api/v1/business/{public_id}/guest-page")
+async def save_business_guest_page(public_id: str, payload: dict, authorization: str = Header(default='')):
+    await asyncio.to_thread(require_owner_session, public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    saved = guest_page_form(payload)
+    try:
+        supabase.table('businesses').update({'guest_page': saved}).eq('id', business.get('id')).execute()
+    except Exception as e:
+        if 'guest_page' in str(e).lower():
+            raise HTTPException(status_code=503, detail='Run the customer dashboard SQL in Supabase first.')
+        raise HTTPException(status_code=500, detail=friendly_db_error(e))
+    return saved
+
+
 @app.get("/api/v1/public/business/{public_id}/join-config")
 async def public_business_join_config(public_id: str):
     business_public_id, program_public_id = split_program_join_slug(public_id)
@@ -39663,6 +39721,7 @@ async def public_business_join_config(public_id: str):
     if program_public_id and not program:
         raise HTTPException(status_code=404, detail='Program not found')
     category = business_category_meta(business.get('business_type'))
+    guest = guest_page_form(business.get('guest_page') or {})
     return {
         'public_id': business.get('public_id'),
         'program_public_id': program.get('public_id'),
@@ -39671,7 +39730,7 @@ async def public_business_join_config(public_id: str):
         # The join page is for a specific card/program, so its logo should
         # match that card. Business logo remains the fallback.
         'logo_url': program.get('program_logo_url') or business.get('logo_url'),
-        'hero_image_url': program.get('hero_image_url'),
+        'hero_image_url': guest_page_form(business.get('guest_page') or {}).get('cover_url') or program.get('hero_image_url') or business.get('showroom_hero_image_url'),
         'business_type': normalize_business_type(business.get('business_type')),
         'category': category,
         'card_type': program.get('card_type', 'stamp'),
@@ -39704,6 +39763,16 @@ async def public_business_join_config(public_id: str):
         'employee_attendance_enabled': bool(program.get('employee_attendance_enabled')),
         'employee_time_tracking_enabled': bool(program.get('employee_time_tracking_enabled')),
         'customer_agreement': _public_customer_agreement(program),
+        'guest_wifi': {
+            'published': bool(guest['wifi_published'] and guest['wifi_name']),
+            'name': guest['wifi_name'],
+            'password': guest['wifi_password'],
+        },
+        'guest_socials': {
+            'published': bool(guest['socials_published'] and (guest['links'] or guest['review_url'])),
+            'links': guest['links'],
+            'review_url': guest['review_url'],
+        },
         'digital_menu_published': published_for_join(supabase, business, business_has_plan_feature, billing_hold),
     }
 

@@ -1,6 +1,7 @@
 export const OWNER_SECTIONS = Object.freeze([
   { id: 'home', label: 'Home', icon: 'home', items: [
     { id: 'tree', label: 'Home' },
+    { id: 'customerdash', label: 'Customer dashboard' },
     { id: 'analytics', label: 'Analytics', action: 'analytics' },
   ]},
   { id: 'customers', label: 'Customers', icon: 'people', items: [
