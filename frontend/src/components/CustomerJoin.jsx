@@ -370,69 +370,54 @@ function CustomerJoin({ API_BASE }) {
     const wifi = businessInfo?.guest_wifi?.published ? businessInfo.guest_wifi : null
     const socials = businessInfo?.guest_socials?.published ? businessInfo.guest_socials : null
     const menuHref = `/menu/${encodeURIComponent(slug)}`
+    const chevron = (
+      <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" style={{ display: 'block' }}>
+        <path d="M5 2.5 L9.5 7 L5 11.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    )
     return (
       <div style={styles.guestPage}>
         <main style={styles.guestMain}>
-          <header style={styles.guestBrand}>
-            <svg width="32" height="32" viewBox="0 0 100 100" aria-hidden="true">
-              <circle cx="50" cy="50" r="46" fill="#DDF7EA" stroke="#7BCAA7" strokeWidth="7"></circle>
-              <path d="M50 78 V56 M50 56 L39 42 M50 56 L61 42" stroke="#55341D" strokeWidth="6.5" strokeLinecap="round"></path>
-              <circle cx="34" cy="53" r="6" fill="#0F7F7C"></circle>
-              <circle cx="50" cy="53" r="6" fill="#0F7F7C"></circle>
-              <circle cx="66" cy="53" r="6" fill="#0F7F7C"></circle>
-              <circle cx="26" cy="38" r="6" fill="#0F766E"></circle>
-              <circle cx="42" cy="38" r="6" fill="#0F766E"></circle>
-              <circle cx="58" cy="38" r="6" fill="#0F766E"></circle>
-              <circle cx="74" cy="38" r="6" fill="#0F766E"></circle>
-              <circle cx="26" cy="23" r="6" fill="#FDB601"></circle>
-              <circle cx="42" cy="23" r="6" fill="#FDB601"></circle>
-              <circle cx="58" cy="23" r="6" fill="#FDB601"></circle>
-              <circle cx="74" cy="23" r="6" fill="#FDB601"></circle>
-            </svg>
-            <span style={styles.guestWord}>LoyaltyTree</span>
-          </header>
-          <p style={styles.guestEyebrow}>Digital loyalty. Real connections.</p>
-          <div style={styles.guestIdentity}>
+          <header style={styles.guestIdentity}>
             {logo
               ? <img src={logo} alt="" style={styles.guestLogo} />
               : <div style={styles.guestMark}>{businessName.slice(0, 1)}</div>}
-            <div>
+            <div style={styles.guestCopy}>
               <h1 style={styles.guestName}>{businessName}</h1>
               {place ? <p style={styles.guestPlace}>{place}</p> : null}
             </div>
-          </div>
-          <div style={styles.guestRule}></div>
-          <section style={{...styles.guestBanner, ...(cover ? null : styles.guestBannerEmpty)}}>
-            {cover ? <img src={cover} alt="" style={styles.guestCover} /> : null}
-            <div style={styles.guestShade}></div>
-            <h2 style={styles.guestBannerName}>{businessName}</h2>
-          </section>
+          </header>
+          {cover ? (
+            <section style={styles.guestBanner}>
+              <img src={cover} alt="" style={styles.guestCover} />
+            </section>
+          ) : null}
           <section style={styles.guestCards}>
             <button type="button" onClick={() => setJoining(true)} style={styles.guestJoin}>
-              <span>
+              <span style={styles.guestCopy}>
                 <span style={styles.guestKicker}>Member rewards <span style={styles.guestPill}>No app needed</span></span>
                 <strong style={styles.guestJoinTitle}>Join the loyalty card</strong>
                 <span style={styles.guestHint}>Save the stamp card to Apple and Google Wallet</span>
               </span>
-              <span style={styles.guestJoinArrow}>→</span>
+              <span style={styles.guestJoinArrow}>{chevron}</span>
             </button>
             {menuPublished && (
               <a href={menuHref} style={styles.guestCard}>
-                <span>
+                <span style={styles.guestCopy}>
                   <span style={styles.guestKickerMuted}>Menu and booking</span>
                   <strong style={styles.guestCardTitle}>Digital menu</strong>
                 </span>
-                <span style={styles.guestArrow}>→</span>
+                <span style={styles.guestArrow}>{chevron}</span>
               </a>
             )}
             {wifi && (
               <a href="#wifi" style={styles.guestCard}>
-                <span>
+                <span style={styles.guestCopy}>
                   <span style={styles.guestKickerMuted}>Guest wi-fi</span>
                   <strong style={styles.guestCardTitle}>Wifi</strong>
                   <span style={styles.guestHint}>{wifi.name}{wifi.password ? ` · ${wifi.password}` : ''}</span>
                 </span>
-                <span style={styles.guestArrow}>→</span>
+                <span style={styles.guestArrow}>{chevron}</span>
               </a>
             )}
             {socials && (
@@ -969,34 +954,35 @@ const styles = {
     fontFamily: 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
     backgroundImage: 'radial-gradient(at 10% 0%, rgba(221,247,234,.7) 0, transparent 42%)',
   },
-  guestMain: { width: '100%', maxWidth: 440, margin: '0 auto', padding: '18px 20px 28px' },
+  guestMain: { width: '100%', maxWidth: 440, margin: '0 auto', padding: '22px 20px 32px', boxSizing: 'border-box' },
   guestBrand: { display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0 14px' },
   guestWord: { fontWeight: 900, letterSpacing: '-0.04em', color: '#0f172a', fontSize: 20 },
   guestEyebrow: { margin: 0, fontSize: 10, fontWeight: 800, letterSpacing: '.14em', textTransform: 'uppercase', color: '#0f766e' },
-  guestIdentity: { display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 },
-  guestLogo: { width: 44, height: 44, borderRadius: 16, objectFit: 'cover', border: '2px solid rgba(123,202,167,.5)', background: '#ddf7ea' },
-  guestMark: { width: 44, height: 44, borderRadius: 16, display: 'grid', placeItems: 'center', background: '#ddf7ea', border: '2px solid rgba(123,202,167,.5)', color: '#0f766e', fontWeight: 800, flexShrink: 0 },
-  guestName: { margin: 0, fontSize: 24, fontWeight: 900, letterSpacing: '-0.04em', color: '#0f172a', lineHeight: 1.1 },
+  guestIdentity: { display: 'flex', alignItems: 'center', gap: 14, margin: '4px 0 18px' },
+  guestLogo: { width: 72, height: 72, borderRadius: 22, objectFit: 'cover', border: '1px solid rgba(123,202,167,.7)', background: '#ddf7ea', flexShrink: 0 },
+  guestMark: { width: 72, height: 72, borderRadius: 22, display: 'grid', placeItems: 'center', background: '#ddf7ea', border: '1px solid rgba(123,202,167,.7)', color: '#0f766e', fontWeight: 800, fontSize: 28, flexShrink: 0 },
+  guestName: { margin: 0, fontSize: 30, fontWeight: 900, letterSpacing: '-0.045em', color: '#0f172a', lineHeight: 1.05 },
   guestPlace: { margin: '2px 0 0', fontSize: 11, fontWeight: 600, color: '#64748b' },
   guestRule: { height: 4, margin: '12px 0 16px', borderRadius: 99, background: 'linear-gradient(90deg, #0f766e, #7bcaa7, transparent)', opacity: .5 },
-  guestBanner: { position: 'relative', height: 168, borderRadius: 18, overflow: 'hidden', border: '1px solid rgba(123,202,167,.45)', boxShadow: '0 20px 35px -10px rgba(15,118,110,.28)' },
+  guestBanner: { position: 'relative', width: '100%', maxWidth: '100%', boxSizing: 'border-box', height: 168, margin: '0 0 16px', borderRadius: 18, overflow: 'hidden', border: '1px solid rgba(123,202,167,.45)' },
   guestBannerEmpty: { background: 'linear-gradient(135deg, #073f36, #0f766e 55%, #0d9488)' },
   guestCover: { width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center', display: 'block' },
   guestShade: { position: 'absolute', inset: 0, background: 'linear-gradient(180deg, rgba(7,63,54,.12), rgba(7,63,54,.72))' },
   guestBannerName: { position: 'absolute', left: 16, right: 16, bottom: 14, margin: 0, color: '#fff', fontSize: 22, fontWeight: 900, letterSpacing: '-0.03em', lineHeight: 1.15 },
   guestCards: { display: 'flex', flexDirection: 'column', gap: 12, marginTop: 16 },
+  guestCopy: { flex: '1 1 auto', minWidth: 0 },
   guestJoin: {
-    width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, textAlign: 'left',
-    borderRadius: 18, padding: 16, cursor: 'pointer', fontFamily: 'inherit',
-    background: '#ddf7ea', border: '2px solid rgba(15,118,110,.3)', boxShadow: '0 10px 25px -5px rgba(15,118,110,.08)',
+    width: '100%', boxSizing: 'border-box', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, textAlign: 'left',
+    borderRadius: 18, padding: '15px 16px', cursor: 'pointer', fontFamily: 'inherit',
+    background: '#ddf7ea', border: '1px solid rgba(15,118,110,.28)',
   },
   guestCard: {
-    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, textDecoration: 'none', color: 'inherit',
-    borderRadius: 18, padding: 16, background: '#fff', border: '1px solid rgba(123,202,167,.5)', boxShadow: '0 10px 25px -5px rgba(15,118,110,.08)',
+    width: '100%', boxSizing: 'border-box', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, textDecoration: 'none', color: 'inherit',
+    borderRadius: 18, padding: '15px 16px', background: '#fff', border: '1px solid rgba(123,202,167,.5)',
   },
   guestSoon: {
-    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
-    borderRadius: 18, padding: 16, background: '#fff', border: '1px solid rgba(123,202,167,.35)',
+    width: '100%', boxSizing: 'border-box', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14,
+    borderRadius: 18, padding: '15px 16px', background: '#fff', border: '1px solid rgba(123,202,167,.35)',
   },
   guestKicker: { display: 'block', fontSize: 10, fontWeight: 800, letterSpacing: '.14em', textTransform: 'uppercase', color: '#0f766e' },
   guestKickerMuted: { display: 'block', fontSize: 10, fontWeight: 800, letterSpacing: '.14em', textTransform: 'uppercase', color: '#64748b' },
@@ -1006,9 +992,9 @@ const styles = {
   guestCardTitle: { display: 'block', marginTop: 4, fontSize: 16, fontWeight: 900, letterSpacing: '-0.03em', color: '#0f172a' },
   guestHint: { display: 'block', marginTop: 4, fontSize: 12, fontWeight: 400, color: '#475569' },
   guestLinks: { display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 },
-  guestJoinArrow: { width: 44, height: 44, borderRadius: 99, background: '#0f766e', color: '#fff', display: 'grid', placeItems: 'center', flexShrink: 0, fontSize: 18 },
-  guestArrow: { width: 36, height: 36, borderRadius: 99, background: '#f1f5f9', color: '#0f766e', border: '1px solid #e2e8f0', display: 'grid', placeItems: 'center', flexShrink: 0 },
-  guestFooter: { marginTop: 18, background: '#073f36', color: '#fff', textAlign: 'center', borderRadius: 12, padding: '10px 12px', fontSize: 9, letterSpacing: '.08em', fontWeight: 600, textTransform: 'uppercase' },
+  guestJoinArrow: { width: 28, height: 28, borderRadius: 99, border: '1px solid rgba(15,118,110,.35)', color: '#0f766e', background: 'rgba(255,255,255,.7)', display: 'grid', placeItems: 'center', flexShrink: 0 },
+  guestArrow: { width: 28, height: 28, borderRadius: 99, border: '1px solid #e2e8f0', color: '#64748b', background: '#fff', display: 'grid', placeItems: 'center', flexShrink: 0 },
+  guestFooter: { width: '100%', boxSizing: 'border-box', marginTop: 18, background: '#073f36', color: '#fff', textAlign: 'center', borderRadius: 12, padding: '10px 12px', fontSize: 9, letterSpacing: '.08em', fontWeight: 600, textTransform: 'uppercase' },
   qrPage: {
     minHeight: '100vh', background: '#073f36', color: '#fff', boxSizing: 'border-box',
     padding: '28px 22px 36px', fontFamily: 'Inter, Arial, sans-serif',
