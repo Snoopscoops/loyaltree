@@ -75,7 +75,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
         <div className="lt-qr-cafe-title">
           {business.logo_url && <img className="lt-qr-cafe-logo" src={business.logo_url} alt="" />}
           <h1>{business.name}</h1>
-          {branches.length > 1 && <div className="lt-qr-cafe-branches" role="group" aria-label="Location">{branches.map(value => <button type="button" key={value.public_id} aria-pressed={branchId === value.public_id} onClick={() => chooseBranch(value.public_id)}>{value.name}</button>)}</div>}
+          <div className="lt-qr-cafe-side">{branches.length > 1 && <div className="lt-qr-cafe-branches" role="group" aria-label="Location">{branches.map(value => <button type="button" key={value.public_id} aria-pressed={branchId === value.public_id} onClick={() => chooseBranch(value.public_id)}>{value.name}</button>)}</div>}{business.join_url && <a className="lt-qr-card-link" href={business.join_url}>Connect loyalty card</a>}</div>
         </div>
         {(data.actions || []).length > 0 && <div className="lt-qr-cafe-actions">{data.actions.map(action => <a key={action.id} href={action.url} target="_blank" rel="noreferrer" className={action.id === 'book' ? 'is-book' : ''}><strong>{action.label}</strong>{action.note ? <span>{action.note}</span> : null}</a>)}</div>}
         <label className="lt-qr-cafe-search">
@@ -116,7 +116,6 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
           {!items.length && <div className="lt-qr-empty" role="status"><h3>{search ? 'No matches yet.' : 'Nothing in this category.'}</h3><p>{search ? 'Try another word.' : 'Check another category.'}</p></div>}
         </section>
       </div>
-      {business.join_url && <a className="lt-qr-card-link" href={business.join_url}>Connect loyalty card</a>}
       <footer className="lt-qr-footer"><img src={loyaltyTreeLogo} alt="" /><span>Menu by <strong>Loyalty Tree</strong></span></footer>
     </main>
     {item && <ItemDetails key={item.public_id} item={item} available={menuItemAvailable(item, branchId)} money={money} onClose={() => setItem(null)} onAdd={addItem} />}
