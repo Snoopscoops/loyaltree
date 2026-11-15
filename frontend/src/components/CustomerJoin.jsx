@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { readBenefitsSession } from './benefitsModel'
-import { digitalMenuHref } from './qrMenuModel'
 import { requestJsonResponse } from './requestTimeout'
 
 const EMPLOYEE_POSITION_OPTIONS = [
@@ -101,8 +100,8 @@ function SignaturePad({ value, onChange, color = '#0f766e' }) {
 function CustomerJoin({ API_BASE }) {
   const { businessSlug } = useParams()
   const [benefitsConfig, setBenefitsConfig] = useState(null)
-  const [benefitsLive, setBenefitsLive] = useState(false)
   const [joining, setJoining] = useState(false)
+  const [menuPublished, setMenuPublished] = useState(false)
   const benefitsReady = benefitsConfig?.public_launch === true && benefitsConfig.enabled === true && benefitsConfig.available === true
   const benefitsEmailRequired = benefitsConfig?.public_launch === true
   const [form, setForm] = useState({
@@ -119,11 +118,6 @@ function CustomerJoin({ API_BASE }) {
     employee_position: '',
     employee_start_date: '',
   })
-  const [otpStep, setOtpStep] = useState(false)
-  const [otpCode, setOtpCode] = useState('')
-  const [otpChallenge, setOtpChallenge] = useState('')
-  const [otpBusy, setOtpBusy] = useState(false)
-  const [otpToken, setOtpToken] = useState('')
   const [submitted, setSubmitted] = useState(false)
   const [customerId, setCustomerId] = useState('')
   const [welcomeRewardIssued, setWelcomeRewardIssued] = useState(null)
@@ -147,52 +141,6 @@ function CustomerJoin({ API_BASE }) {
   const customerAgreement = businessInfo?.customer_agreement?.enabled === true ? businessInfo.customer_agreement : null
   const agreementRequiresSignature = customerAgreement?.mode === 'signature'
   const agreementComplete = !customerAgreement || (agreementAccepted && (!agreementRequiresSignature || Boolean(agreementSignature)))
-
-  const phoneRememberKey = 'lt_phone_remember_v1'
-  const rememberedPhone = () => {
-    try {
-      const saved = JSON.parse(window.localStorage.getItem(phoneRememberKey) || 'null')
-      if (!saved?.phone || !saved?.email || !saved?.verified_at) return false
-      const same = saved.phone === form.phone.replace(/\D/g, '') && saved.email === form.email.trim().toLowerCase()
-      const fresh = Date.now() - Date.parse(saved.verified_at) < 180 * 24 * 60 * 60 * 1000
-      return same && fresh
-    } catch { return false }
-  }
-  const saveRememberedPhone = (token) => {
-    const payload = { phone: form.phone.replace(/\D/g, ''), email: form.email.trim().toLowerCase(), verified_at: new Date().toISOString() }
-    try { window.localStorage.setItem(phoneRememberKey, JSON.stringify(payload)) } catch {}
-    if (token) fetch(`${API_BASE}/api/v1/benefits/phone-remember`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(payload) }).catch(() => {})
-  }
-  const requestOtp = async () => {
-    setOtpBusy(true); setError('')
-    try {
-      const res = await fetch(`${API_BASE}/api/v1/benefits/auth/email/request-code`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: form.email.trim(), consent: true }) })
-      const data = await res.json()
-      if (!res.ok || !data.challenge_id) throw new Error(data.detail || 'Could not send the code.')
-      setOtpChallenge(data.challenge_id)
-      setOtpStep(true)
-    } catch (failure) {
-      setError(failure.message || 'Could not send the code.')
-    }
-    setOtpBusy(false)
-  }
-  const verifyOtp = async event => {
-    event.preventDefault()
-    if (otpCode.length !== 6 || otpBusy) return
-    setOtpBusy(true); setError('')
-    try {
-      const res = await fetch(`${API_BASE}/api/v1/benefits/auth/verify`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ challenge_id: otpChallenge, code: otpCode }) })
-      const data = await res.json()
-      if (!res.ok || !data.access_token) throw new Error(data.detail || 'That code is not valid.')
-      setOtpToken(data.access_token)
-      saveRememberedPhone(data.access_token)
-      setOtpStep(false)
-      setSubmitted(true)
-    } catch (failure) {
-      setError(failure.message || 'That code is not valid.')
-    }
-    setOtpBusy(false)
-  }
 
   const rewardSummary = (() => {
     if (!businessInfo) return null
@@ -286,10 +234,9 @@ function CustomerJoin({ API_BASE }) {
     const slug = businessInfo?.public_id || businessSlug
     if (!slug) return
     const controller = new AbortController()
-    fetch(`${API_BASE}/api/v1/benefits/business-status?business=${encodeURIComponent(slug)}`, {signal:controller.signal, cache:'no-store'})
-      .then(r => r.ok ? r.json() : null)
-      .then(data => { if (!controller.signal.aborted) setBenefitsLive(data?.approved === true) })
-      .catch(() => { if (!controller.signal.aborted) setBenefitsLive(false) })
+    fetch(`${API_BASE}/api/v1/public/menu/${encodeURIComponent(slug)}`, { signal: controller.signal, cache: 'no-store' })
+      .then(response => { if (!controller.signal.aborted) setMenuPublished(response.ok) })
+      .catch(() => { if (!controller.signal.aborted) setMenuPublished(false) })
     return () => controller.abort()
   }, [API_BASE, businessSlug, businessInfo?.public_id])
 
@@ -396,11 +343,7 @@ function CustomerJoin({ API_BASE }) {
       if (res.ok) {
         setCustomerId(data.public_id)
         setWelcomeRewardIssued(data.welcome_reward || null)
-        if (data.already_enrolled || !benefitsLive || !form.email.trim() || rememberedPhone()) {
-          setSubmitted(true)
-        } else {
-          await requestOtp()
-        }
+        setSubmitted(true)
       } else {
         setError(data.detail || 'Something went wrong')
       }
@@ -420,61 +363,100 @@ function CustomerJoin({ API_BASE }) {
 
   if (!submitted && !joining && !isEmployeeExperience) {
     const businessName = businessInfo?.name || 'LoyaltyTree'
-    const menuHref = digitalMenuHref(businessInfo, businessSlug)
-    const pubmat = businessInfo?.hero_image_url || businessInfo?.logo_url
+    const slug = businessInfo?.public_id || businessSlug || ''
+    const cover = businessInfo?.hero_image_url || ''
+    const logo = businessInfo?.logo_url || ''
+    const place = businessInfo?.category?.label || ''
+    const wifi = businessInfo?.guest_wifi?.published ? businessInfo.guest_wifi : null
+    const socials = businessInfo?.guest_socials?.published ? businessInfo.guest_socials : null
+    const menuHref = `/menu/${encodeURIComponent(slug)}`
     return (
-      <div style={styles.qrPage}>
-        <main style={styles.qrMain}>
-          <div style={styles.qrEyebrow}>LoyaltyTree</div>
-          <h1 style={styles.qrTitle}>{businessName}</h1>
-          {pubmat && <img src={pubmat} alt="" style={styles.qrPubmat} />}
-          {benefitsLive
-            ? <a href={`/benefits?business=${encodeURIComponent(businessInfo?.public_id || businessSlug || '')}`} style={styles.qrBenefits}>
-                <span style={styles.qrLabel}>Benefits</span>
-                <span style={styles.qrCardRow}>
-                  <span style={styles.qrCardTitle}>LT Benefits</span>
-                  <span style={styles.qrArrowLight}>→</span>
+      <div style={styles.guestPage}>
+        <main style={styles.guestMain}>
+          <header style={styles.guestBrand}>
+            <svg width="32" height="32" viewBox="0 0 100 100" aria-hidden="true">
+              <circle cx="50" cy="50" r="46" fill="#DDF7EA" stroke="#7BCAA7" strokeWidth="7"></circle>
+              <path d="M50 78 V56 M50 56 L39 42 M50 56 L61 42" stroke="#55341D" strokeWidth="6.5" strokeLinecap="round"></path>
+              <circle cx="34" cy="53" r="6" fill="#0F7F7C"></circle>
+              <circle cx="50" cy="53" r="6" fill="#0F7F7C"></circle>
+              <circle cx="66" cy="53" r="6" fill="#0F7F7C"></circle>
+              <circle cx="26" cy="38" r="6" fill="#0F766E"></circle>
+              <circle cx="42" cy="38" r="6" fill="#0F766E"></circle>
+              <circle cx="58" cy="38" r="6" fill="#0F766E"></circle>
+              <circle cx="74" cy="38" r="6" fill="#0F766E"></circle>
+              <circle cx="26" cy="23" r="6" fill="#FDB601"></circle>
+              <circle cx="42" cy="23" r="6" fill="#FDB601"></circle>
+              <circle cx="58" cy="23" r="6" fill="#FDB601"></circle>
+              <circle cx="74" cy="23" r="6" fill="#FDB601"></circle>
+            </svg>
+            <span style={styles.guestWord}>LoyaltyTree</span>
+          </header>
+          <p style={styles.guestEyebrow}>Digital loyalty. Real connections.</p>
+          <div style={styles.guestIdentity}>
+            {logo
+              ? <img src={logo} alt="" style={styles.guestLogo} />
+              : <div style={styles.guestMark}>{businessName.slice(0, 1)}</div>}
+            <div>
+              <h1 style={styles.guestName}>{businessName}</h1>
+              {place ? <p style={styles.guestPlace}>{place}</p> : null}
+            </div>
+          </div>
+          <div style={styles.guestRule}></div>
+          <section style={{...styles.guestBanner, ...(cover ? null : styles.guestBannerEmpty)}}>
+            {cover ? <img src={cover} alt="" style={styles.guestCover} /> : null}
+            <div style={styles.guestShade}></div>
+            <h2 style={styles.guestBannerName}>{businessName}</h2>
+          </section>
+          <section style={styles.guestCards}>
+            <button type="button" onClick={() => setJoining(true)} style={styles.guestJoin}>
+              <span>
+                <span style={styles.guestKicker}>Member rewards <span style={styles.guestPill}>No app needed</span></span>
+                <strong style={styles.guestJoinTitle}>Join the loyalty card</strong>
+                <span style={styles.guestHint}>Save the stamp card to Apple and Google Wallet</span>
+              </span>
+              <span style={styles.guestJoinArrow}>→</span>
+            </button>
+            {menuPublished && (
+              <a href={menuHref} style={styles.guestCard}>
+                <span>
+                  <span style={styles.guestKickerMuted}>Menu and booking</span>
+                  <strong style={styles.guestCardTitle}>Digital menu</strong>
                 </span>
+                <span style={styles.guestArrow}>→</span>
               </a>
-            : <div style={styles.qrBenefits}>
-                <span style={styles.qrLabel}>Benefits</span>
-                <span style={styles.qrCardRow}>
-                  <span style={styles.qrCardTitle}>LT Benefits</span>
-                  <span style={styles.qrSoon}>Coming soon</span>
+            )}
+            {wifi && (
+              <a href="#wifi" style={styles.guestCard}>
+                <span>
+                  <span style={styles.guestKickerMuted}>Guest wi-fi</span>
+                  <strong style={styles.guestCardTitle}>Wifi</strong>
+                  <span style={styles.guestHint}>{wifi.name}{wifi.password ? ` · ${wifi.password}` : ''}</span>
                 </span>
-              </div>}
-          <button type="button" onClick={() => setJoining(true)} style={styles.qrJoin}>
-            <span style={styles.qrLabelDark}>This business</span>
-            <span style={styles.qrCardRow}>
-              <span style={styles.qrJoinTitle}>Join the loyalty card</span>
-              <span style={styles.qrArrow}>→</span>
-            </span>
-          </button>
-          {menuHref && <a href={menuHref} style={styles.qrMenu}>
-            <span style={styles.qrLabel}>Menu</span>
-            <span style={styles.qrCardRow}>
-              <span style={styles.qrCardTitle}>View Digital Menu</span>
-              <span style={styles.qrArrowLight}>→</span>
-            </span>
-          </a>}
-          <p style={styles.qrFoot}>Apple Wallet · Google Wallet</p>
-        </main>
-      </div>
-    )
-  }
-
-  if (otpStep) {
-    return (
-      <div style={styles.qrPage}>
-        <main style={styles.qrMain}>
-          <div style={styles.qrEyebrow}>Verify email</div>
-          <h1 style={styles.qrTitle}>One code.</h1>
-          <p style={styles.qrHint}>Enter the 6-digit code sent to {form.email}. This connects your LT Points. This phone is remembered for 6 months.</p>
-          <form onSubmit={verifyOtp}>
-            <input inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={otpCode} onChange={e => setOtpCode(e.target.value.replace(/\D/g, ''))} placeholder="000000" style={{...styles.input, fontSize: 24, letterSpacing: 8, textAlign: 'center'}} />
-            {error && <div style={{color:'#f4c7c7', marginTop: 12}}>{error}</div>}
-            <button type="submit" disabled={otpBusy || otpCode.length !== 6} style={{...styles.qrJoin, marginTop: 18}}>{otpBusy ? 'Verifying…' : 'Connect LT Points'}</button>
-          </form>
+                <span style={styles.guestArrow}>→</span>
+              </a>
+            )}
+            {socials && (
+              <div style={styles.guestCard}>
+                <span>
+                  <span style={styles.guestKickerMuted}>Feedback and community</span>
+                  <strong style={styles.guestCardTitle}>Socials and leave a review</strong>
+                  <span style={styles.guestLinks}>
+                    {(socials.links || []).map(link => (
+                      <a key={link.url} href={link.url} target="_blank" rel="noopener noreferrer">{link.label || 'Social'}</a>
+                    ))}
+                    {socials.review_url ? <a href={socials.review_url} target="_blank" rel="noopener noreferrer">Leave a review</a> : null}
+                  </span>
+                </span>
+              </div>
+            )}
+            <div style={styles.guestSoon}>
+              <span>
+                <span style={styles.guestKickerMuted}>Loyalty Tree <span style={styles.guestSoonPill}>Coming soon</span></span>
+                <strong style={styles.guestCardTitle}>LT Benefits</strong>
+              </span>
+            </div>
+          </section>
+          <footer style={styles.guestFooter}>Powered by <strong>LoyaltyTree</strong></footer>
         </main>
       </div>
     )
@@ -541,7 +523,7 @@ function CustomerJoin({ API_BASE }) {
               <span style={{fontSize:20}}>◫</span>
               Add to Wallet
             </button>
-            {!isEmployeeExperience && benefitsReady && <p style={{fontSize:13,lineHeight:1.6,color:'#64748b'}}>Want your shared LT Points and coupons? <a href={`/benefits?business=${encodeURIComponent(businessSlug || '')}`}>Open Loyalty Tree Benefits</a> and verify your email. Your business loyalty card is ready to use.</p>}
+            {!isEmployeeExperience && <p style={{fontSize:13,lineHeight:1.6,color:'#64748b'}}>{benefitsReady ? <>Want your shared LT Points and coupons? <a href={`/benefits?business=${encodeURIComponent(businessSlug || '')}`}>Open Loyalty Tree Benefits</a> and verify your email.</> : <>Loyalty Tree Points — <a href={`/benefits?business=${encodeURIComponent(businessSlug || '')}`}>Coming soon</a>.</>} Your business loyalty card is ready to use.</p>}
 
             {walletChoiceOpen && (
               <div style={styles.walletChooser}>
@@ -982,6 +964,51 @@ const styles = {
     color: '#0f172a',
     boxSizing: 'border-box',
   },
+  guestPage: {
+    minHeight: '100vh', boxSizing: 'border-box', background: '#f8fcfa', color: '#475569',
+    fontFamily: 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+    backgroundImage: 'radial-gradient(at 10% 0%, rgba(221,247,234,.7) 0, transparent 42%)',
+  },
+  guestMain: { width: '100%', maxWidth: 440, margin: '0 auto', padding: '18px 20px 28px' },
+  guestBrand: { display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0 14px' },
+  guestWord: { fontWeight: 900, letterSpacing: '-0.04em', color: '#0f172a', fontSize: 20 },
+  guestEyebrow: { margin: 0, fontSize: 10, fontWeight: 800, letterSpacing: '.14em', textTransform: 'uppercase', color: '#0f766e' },
+  guestIdentity: { display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 },
+  guestLogo: { width: 44, height: 44, borderRadius: 16, objectFit: 'cover', border: '2px solid rgba(123,202,167,.5)', background: '#ddf7ea' },
+  guestMark: { width: 44, height: 44, borderRadius: 16, display: 'grid', placeItems: 'center', background: '#ddf7ea', border: '2px solid rgba(123,202,167,.5)', color: '#0f766e', fontWeight: 800, flexShrink: 0 },
+  guestName: { margin: 0, fontSize: 24, fontWeight: 900, letterSpacing: '-0.04em', color: '#0f172a', lineHeight: 1.1 },
+  guestPlace: { margin: '2px 0 0', fontSize: 11, fontWeight: 600, color: '#64748b' },
+  guestRule: { height: 4, margin: '12px 0 16px', borderRadius: 99, background: 'linear-gradient(90deg, #0f766e, #7bcaa7, transparent)', opacity: .5 },
+  guestBanner: { position: 'relative', height: 168, borderRadius: 18, overflow: 'hidden', border: '1px solid rgba(123,202,167,.45)', boxShadow: '0 20px 35px -10px rgba(15,118,110,.28)' },
+  guestBannerEmpty: { background: 'linear-gradient(135deg, #073f36, #0f766e 55%, #0d9488)' },
+  guestCover: { width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center', display: 'block' },
+  guestShade: { position: 'absolute', inset: 0, background: 'linear-gradient(180deg, rgba(7,63,54,.12), rgba(7,63,54,.72))' },
+  guestBannerName: { position: 'absolute', left: 16, right: 16, bottom: 14, margin: 0, color: '#fff', fontSize: 22, fontWeight: 900, letterSpacing: '-0.03em', lineHeight: 1.15 },
+  guestCards: { display: 'flex', flexDirection: 'column', gap: 12, marginTop: 16 },
+  guestJoin: {
+    width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, textAlign: 'left',
+    borderRadius: 18, padding: 16, cursor: 'pointer', fontFamily: 'inherit',
+    background: '#ddf7ea', border: '2px solid rgba(15,118,110,.3)', boxShadow: '0 10px 25px -5px rgba(15,118,110,.08)',
+  },
+  guestCard: {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, textDecoration: 'none', color: 'inherit',
+    borderRadius: 18, padding: 16, background: '#fff', border: '1px solid rgba(123,202,167,.5)', boxShadow: '0 10px 25px -5px rgba(15,118,110,.08)',
+  },
+  guestSoon: {
+    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+    borderRadius: 18, padding: 16, background: '#fff', border: '1px solid rgba(123,202,167,.35)',
+  },
+  guestKicker: { display: 'block', fontSize: 10, fontWeight: 800, letterSpacing: '.14em', textTransform: 'uppercase', color: '#0f766e' },
+  guestKickerMuted: { display: 'block', fontSize: 10, fontWeight: 800, letterSpacing: '.14em', textTransform: 'uppercase', color: '#64748b' },
+  guestPill: { marginLeft: 8, padding: '2px 8px', borderRadius: 99, background: '#0f766e', color: '#fff', letterSpacing: 0, fontSize: 9 },
+  guestSoonPill: { marginLeft: 8, padding: '2px 8px', borderRadius: 99, background: '#fdb601', color: '#0f172a', letterSpacing: 0, fontSize: 9 },
+  guestJoinTitle: { display: 'block', marginTop: 4, fontSize: 20, fontWeight: 900, letterSpacing: '-0.04em', color: '#0f172a' },
+  guestCardTitle: { display: 'block', marginTop: 4, fontSize: 16, fontWeight: 900, letterSpacing: '-0.03em', color: '#0f172a' },
+  guestHint: { display: 'block', marginTop: 4, fontSize: 12, fontWeight: 400, color: '#475569' },
+  guestLinks: { display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 },
+  guestJoinArrow: { width: 44, height: 44, borderRadius: 99, background: '#0f766e', color: '#fff', display: 'grid', placeItems: 'center', flexShrink: 0, fontSize: 18 },
+  guestArrow: { width: 36, height: 36, borderRadius: 99, background: '#f1f5f9', color: '#0f766e', border: '1px solid #e2e8f0', display: 'grid', placeItems: 'center', flexShrink: 0 },
+  guestFooter: { marginTop: 18, background: '#073f36', color: '#fff', textAlign: 'center', borderRadius: 12, padding: '10px 12px', fontSize: 9, letterSpacing: '.08em', fontWeight: 600, textTransform: 'uppercase' },
   qrPage: {
     minHeight: '100vh', background: '#073f36', color: '#fff', boxSizing: 'border-box',
     padding: '28px 22px 36px', fontFamily: 'Inter, Arial, sans-serif',
@@ -991,11 +1018,9 @@ const styles = {
   qrTitle: { margin: '16px 0 8px', color: '#fff', fontSize: 'clamp(40px, 10vw, 52px)', lineHeight: 1.05, letterSpacing: '-2px', fontWeight: 750 },
   qrHint: { margin: '0 0 28px', color: '#d5e2db', fontSize: 16 },
   qrBenefits: {
-    display: 'flex', flexDirection: 'column', gap: 10, textAlign: 'left', textDecoration: 'none', color: '#fff',
+    display: 'flex', flexDirection: 'column', gap: 22, textAlign: 'left', textDecoration: 'none', color: '#fff',
     border: '1px solid #d7b578', borderRadius: 16, background: '#0c4a40', padding: '18px 18px 16px', marginBottom: 14,
   },
-  qrPubmat: { width: '100%', height: 180, objectFit: 'cover', borderRadius: 16, margin: '8px 0 16px', display: 'block' },
-  qrCopy: { margin: 0, color: '#d5e2db', fontSize: 14, lineHeight: 1.55 },
   qrLabel: { color: '#d7b578', fontSize: 11, fontWeight: 750, letterSpacing: '1.6px', textTransform: 'uppercase' },
   qrLabelDark: { color: '#8b7047', fontSize: 11, fontWeight: 750, letterSpacing: '1.6px', textTransform: 'uppercase' },
   qrCardRow: { display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12 },
@@ -1005,10 +1030,6 @@ const styles = {
   qrJoin: {
     width: '100%', display: 'flex', flexDirection: 'column', gap: 22, textAlign: 'left', cursor: 'pointer',
     border: 'none', borderRadius: 16, background: '#f8f6ef', color: '#102d28', padding: '18px 18px 20px', fontFamily: 'inherit',
-  },
-  qrMenu: {
-    display: 'flex', flexDirection: 'column', gap: 22, textAlign: 'left', textDecoration: 'none', color: '#fff',
-    border: '1px solid rgba(255,255,255,.22)', borderRadius: 16, background: 'transparent', padding: '18px 18px 16px', marginTop: 14,
   },
   qrJoinTitle: { fontSize: 22, fontWeight: 700, letterSpacing: '-.4px', lineHeight: 1.2 },
   qrArrow: { color: '#073f36', fontSize: 22, lineHeight: 1 },
