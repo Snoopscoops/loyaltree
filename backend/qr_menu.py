@@ -1,6 +1,7 @@
 """Public, browse-only menus backed by the existing Order Ahead catalog."""
 from datetime import datetime, timezone
 from math import isfinite
+import json
 from urllib.parse import quote, urlencode, urlsplit
 
 from fastapi import Header, HTTPException, Query
@@ -81,6 +82,30 @@ def published_for_join(db, business, has_feature, on_hold) -> bool:
     return bool(rows and rows[0].get('is_published'))
 
 
+def menu_actions(business):
+    raw = business.get('guest_page') or {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            raw = {}
+    if not isinstance(raw, dict):
+        return []
+
+    def https(value):
+        text = str(value or '').strip()
+        return text if text.lower().startswith('https://') and len(text) <= 300 else ''
+
+    actions = []
+    book = https(raw.get('book_url'))
+    if raw.get('book_published') and book:
+        note = str(raw.get('book_note') or 'Events and space').strip()[:40]
+        actions.append(dict(id='book', label='Book our place', note=note, url=book))
+    reserve = https(raw.get('reserve_url'))
+    if raw.get('reserve_published') and reserve:
+        actions.append(dict(id='reserve', label='Reserve a table', note='', url=reserve))
+    return actions
+
 def menu_link(frontend_url, public_id, branch=None):
     url = f"{frontend_url.rstrip('/')}/menu/{quote(str(public_id), safe='')}"
     return url + ('?' + urlencode({'branch': branch}) if branch else '')
@@ -134,6 +159,7 @@ def register_qr_menu_routes(app, *, db, get_business, require_owner, has_feature
                 'primary_color','background_color','surface_color','text_color','muted_color','product_layout',
                 'category_style','logo_shape','show_banner','show_product_description')},
             selected_branch=branch or (catalog['branches'][0]['public_id'] if len(catalog['branches']) == 1 else None),
+            actions=menu_actions(business),
             is_published=bool(state.get('is_published')), updated_at=state.get('updated_at'))
 
     @app.get('/api/v1/business/{public_id}/qr-menu')

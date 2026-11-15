@@ -39,10 +39,8 @@ function ItemDetails({ item, available, money, onClose, onAdd }) {
 }
 
 export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchChange }) {
-  const [category, setCategory] = useState(null)
+  const [category, setCategory] = useState('all')
   const [search, setSearch] = useState('')
-  const [searchOpen, setSearchOpen] = useState(false)
-  const [failedHero, setFailedHero] = useState(null)
   const [branchId, setBranchId] = useState(initialBranch || data.selected_branch || '')
   const [item, setItem] = useState(null)
   const [cart, setCart] = useState([])
@@ -50,23 +48,19 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   const [order, setOrder] = useState(null)
   const menuHeading = useRef(null)
   const focusHeading = useRef(false)
-  const searchInput = useRef(null)
-  const design = data.design || {}
   const business = data.business
   const branches = data.branches || []
   const branch = branches.find(value => value.public_id === branchId)
   const chooseBranch = id => { setBranchId(id); setItem(null); onBranchChange?.(id) }
   useEffect(() => { if (initialBranch !== undefined) setBranchId(initialBranch || data.selected_branch || '') }, [initialBranch, data.selected_branch])
-  useEffect(() => { if (focusHeading.current) { menuHeading.current?.focus({ preventScroll: true }); menuHeading.current?.scrollIntoView({ block: 'start' }); focusHeading.current = false } }, [category])
-  useEffect(() => { if (searchOpen) searchInput.current?.focus() }, [searchOpen])
+  useEffect(() => { if (focusHeading.current) { menuHeading.current?.focus({ preventScroll: true }); focusHeading.current = false } }, [category, search])
   const money = value => new Intl.NumberFormat(undefined, { style: 'currency', currency: business.currency || 'PHP' }).format(value)
   const groups = groupMenuCategories(data.categories || [], data.items || [], branchId)
   const selectedCategory = groups.find(value => value.public_id === category)
-  const showCategoryTiles = category === null && !search.trim() && groups.length > 0
-  const items = filterMenuItems(category && category !== 'all' ? selectedCategory?.items || [] : data.items || [], 'all', search)
-  const chooseCategory = id => { focusHeading.current = true; setCategory(id); setSearch(''); setSearchOpen(false) }
-  const hasCover = design.show_banner !== false && business.hero_url && failedHero !== business.hero_url
-  const theme = { '--qr-primary': design.primary_color || '#0f766e', '--qr-bg': design.background_color || '#f8faf8', '--qr-surface': design.surface_color || '#fff', '--qr-text': design.text_color || '#173f35', '--qr-muted': design.muted_color || '#64748b' }
+  const catalog = category && category !== 'all' ? selectedCategory?.items || [] : groups.flatMap(value => value.items)
+  const items = filterMenuItems(catalog, 'all', search)
+  const categoryName = Object.fromEntries(groups.flatMap(value => value.items.map(entry => [entry.public_id, value.name])))
+  const chooseCategory = id => { focusHeading.current = true; setCategory(id) }
   const count = cart.reduce((sum, line) => sum + line.quantity, 0)
   const total = cartSubtotal(cart)
   const addItem = (value, selected = {}, quantity = 1) => {
@@ -74,48 +68,58 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
     setCart(current => addCartItem(current, value, selected, quantity))
     setOrder(null)
   }
-  return <div className={`lt-qr-public${preview ? ' lt-qr-is-preview' : ''}${count ? ' lt-qr-has-cart' : ''}`} style={theme}>
-    <main className={`lt-qr-page${hasCover ? ' lt-qr-has-cover' : ''}`}>
+  const needsBranch = branches.length > 1 && !branchId
+  return <div className={`lt-qr-public lt-qr-cafe${preview ? ' lt-qr-is-preview' : ''}${count ? ' lt-qr-has-cart' : ''}`}>
+    <main className="lt-qr-page">
       {preview && <div className="lt-qr-preview-note">Owner preview · {data.is_published ? 'Published' : 'Not published'}</div>}
-      {hasCover && <img className="lt-qr-hero" src={business.hero_url} alt="" onError={() => setFailedHero(business.hero_url)} />}
-      <div className="lt-qr-menu-shell">
-      <header className="lt-qr-brand">
-        {business.logo_url ? <img className="lt-qr-logo" src={business.logo_url} alt="" style={{ borderRadius: design.logo_shape === 'circle' ? '50%' : design.logo_shape === 'square' ? 4 : '50%' }} /> : <span className="lt-qr-monogram" aria-hidden="true">{business.name.slice(0, 1)}</span>}
-        <div className="lt-qr-brand-copy"><h1>{business.name}</h1><p className="lt-qr-subtitle">{branch && branches.length < 2 ? branch.name : 'Menu'}</p></div>
-        <button type="button" className="lt-qr-search-toggle" aria-expanded={searchOpen} aria-label={searchOpen ? 'Close search' : 'Search menu'} onClick={() => { setSearchOpen(value => !value); setSearch('') }}>{searchOpen ? '×' : '⌕'}</button>
-      </header>
-      {branches.length > 1 && <label className="lt-qr-branch-select">Location<select aria-label="Menu location" value={branchId} onChange={event => chooseBranch(event.target.value)}><option value="">Choose a location</option>{branches.map(value => <option key={value.public_id} value={value.public_id}>{value.name}</option>)}</select></label>}
-      {branches.length > 1 && !branchId ? <section className="lt-qr-location-prompt"><h2>Find your local favorites.</h2><p>Choose a location to see its menu and availability.</p>{branches.map(value => <button type="button" key={value.public_id} onClick={() => chooseBranch(value.public_id)}><strong>{value.name}</strong><span>{value.address || 'View menu'} →</span></button>)}</section> : <>
-        {branch?.address && <p className="lt-qr-address">{branch.address}</p>}
-        <div className="lt-qr-section-label">
-          <div>{category !== null && groups.length > 0 && <button type="button" className="lt-qr-back" onClick={() => chooseCategory(null)}>← All categories</button>}<h2 ref={menuHeading} tabIndex={-1}>{showCategoryTiles ? 'Browse menu' : search.trim() ? 'Search results' : selectedCategory?.name || 'Our menu'}</h2></div>
+      <header className="lt-qr-cafe-head">
+        <div className="lt-qr-cafe-title">
+          <h1>{business.name}</h1>
+          {branches.length > 1 && <div className="lt-qr-cafe-branches" role="group" aria-label="Location">{branches.map(value => <button type="button" key={value.public_id} aria-pressed={branchId === value.public_id} onClick={() => chooseBranch(value.public_id)}>{value.name}</button>)}</div>}
         </div>
-        {(searchOpen || (!showCategoryTiles && groups.length > 0)) && <div className="lt-qr-browse-tools">
-          {searchOpen && <label className="lt-qr-search"><span aria-hidden="true">⌕</span><input ref={searchInput} type="search" aria-label="Search menu" placeholder="Find something you’ll love" value={search} onChange={event => setSearch(event.target.value)} /></label>}
-          {!showCategoryTiles && groups.length > 0 && <nav className={`lt-qr-categories lt-qr-categories-${design.category_style || 'pills'}`} aria-label="Menu categories">{[{ public_id: 'all', name: 'All items' }, ...groups].map(value => <button type="button" key={value.public_id} aria-pressed={category === value.public_id} onClick={() => chooseCategory(value.public_id)}>{value.name}</button>)}</nav>}
-        </div>}
-        {showCategoryTiles ? <div className="lt-qr-category-grid">{groups.map(value => <button type="button" key={value.public_id} className="lt-qr-category-tile" onClick={() => chooseCategory(value.public_id)} aria-label={`Browse ${value.name}, ${value.items.length} ${value.items.length === 1 ? 'item' : 'items'}`}><MenuItemPhoto item={value} available /><span>{value.name}</span></button>)}</div> : <>
-        <p className="lt-qr-result-count">{items.length} {items.length === 1 ? 'item' : 'items'}</p>
-        <div className="lt-qr-items">{items.map(value => {
-          const available = menuItemAvailable(value, branchId)
-          const canAdd = available && !(value.modifier_groups || []).length
-          return <article key={value.public_id} className={`lt-qr-item${available ? '' : ' is-sold'}`}>
-            <button type="button" className="lt-qr-item-open" onClick={() => setItem(value)} aria-label={`View ${value.name}${available ? '' : ', sold out'}`}>
-              <MenuItemPhoto item={value} available={available} />
-              <div className="lt-qr-item-copy"><h3>{value.name}</h3>{design.show_product_description !== false && value.description && <p>{value.description}</p>}<strong>{money(value.base_price)}</strong></div>
-            </button>
-            {canAdd ? <button type="button" className="lt-qr-add" onClick={() => addItem(value)} aria-label={`Add ${value.name}`}>+</button> : <button type="button" className="lt-qr-details" onClick={() => setItem(value)}>{available ? 'Choose' : 'Sold out'}</button>}
-          </article>
-        })}</div>
-        {!items.length && <div className="lt-qr-empty" role="status"><h3>{search ? 'No matches yet.' : 'More good things are coming.'}</h3><p>{search ? 'Try another search or category.' : 'Check back soon for menu updates.'}</p>{(search || category !== null) && <button type="button" className="lt-qr-text-button" onClick={() => chooseCategory('all')}>Show all items</button>}</div>}
-        </>}
-        <aside className="lt-qr-loyalty"><div><strong>A little loyalty goes a long way.</strong><p>Discover this business’s loyalty program.</p></div><a href={business.join_url}>Join Loyalty Tree →</a></aside>
-      </>}
+        {(data.actions || []).length > 0 && <div className="lt-qr-cafe-actions">{data.actions.map(action => <a key={action.id} href={action.url} target="_blank" rel="noreferrer" className={action.id === 'book' ? 'is-book' : ''}><strong>{action.label}</strong>{action.note ? <span>{action.note}</span> : null}</a>)}</div>}
+        <label className="lt-qr-cafe-search">
+          <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" strokeWidth="2"/><path d="M16.5 16.5 L21 21" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
+          <input type="search" aria-label="Search menu" placeholder="Search the menu" value={search} onChange={event => setSearch(event.target.value)} />
+        </label>
+      </header>
+      {needsBranch ? <section className="lt-qr-location-prompt"><h2>Choose a location</h2><p>The menu can change by branch.</p>{branches.map(value => <button type="button" key={value.public_id} onClick={() => chooseBranch(value.public_id)}><strong>{value.name}</strong><span>{value.address || 'View menu'}</span></button>)}</section> : <div className="lt-qr-cafe-split">
+        <nav className="lt-qr-rail" aria-label="Menu categories">
+          <button type="button" aria-pressed={category === 'all'} onClick={() => chooseCategory('all')}><strong>All</strong><span>{groups.reduce((sum, value) => sum + value.items.length, 0)}</span></button>
+          {groups.map(value => <button type="button" key={value.public_id} aria-pressed={category === value.public_id} onClick={() => chooseCategory(value.public_id)}><strong>{value.name}</strong><span>{value.items.length}</span></button>)}
+        </nav>
+        <section className="lt-qr-stream" aria-label="Menu items">
+          <h2 className="lt-qr-sr" ref={menuHeading} tabIndex={-1}>{search.trim() ? 'Search results' : selectedCategory?.name || 'All items'}</h2>
+          {items.map(value => {
+            const available = menuItemAvailable(value, branchId)
+            const canAdd = available && !(value.modifier_groups || []).length
+            const line = cart.find(entry => entry.key === `${value.public_id}|`)
+            return <article key={value.public_id} className={`lt-qr-dish${line ? ' is-in' : ''}${available ? '' : ' is-sold'}`}>
+              <div className="lt-qr-dish-top">
+                <button type="button" className="lt-qr-dish-photo" onClick={() => setItem(value)} aria-label={`View ${value.name}${available ? '' : ', sold out'}`}>
+                  <MenuItemPhoto item={value} available={available} />
+                </button>
+                <div className="lt-qr-dish-copy">
+                  <p className="lt-qr-dish-cat">{categoryName[value.public_id] || 'Menu'}</p>
+                  <h3>{value.name}</h3>
+                  {value.description && <p>{value.description}</p>}
+                </div>
+              </div>
+              <div className="lt-qr-dish-row">
+                <div><span>Price</span><strong>{money(value.base_price)}</strong></div>
+                {canAdd && line ? <div className="lt-qr-step"><button type="button" onClick={() => setCart(current => changeCartQuantity(current, line.key, line.quantity - 1))} aria-label={`Decrease ${value.name}`}>−</button><span>{line.quantity}</span><button type="button" onClick={() => setCart(current => changeCartQuantity(current, line.key, line.quantity + 1))} aria-label={`Increase ${value.name}`}>+</button></div>
+                  : canAdd ? <button type="button" className="lt-qr-add-pill" onClick={() => addItem(value)}>+ Add</button>
+                  : <button type="button" className="lt-qr-add-pill" disabled={!available} onClick={() => available && setItem(value)}>{available ? 'Choose' : 'Sold out'}</button>}
+              </div>
+            </article>
+          })}
+          {!items.length && <div className="lt-qr-empty" role="status"><h3>{search ? 'No matches yet.' : 'Nothing in this category.'}</h3><p>{search ? 'Try another word.' : 'Check another category.'}</p></div>}
+        </section>
+      </div>}
       <footer className="lt-qr-footer"><img src={loyaltyTreeLogo} alt="" /><span>Menu by <strong>Loyalty Tree</strong></span></footer>
-      </div>
     </main>
     {item && <ItemDetails key={item.public_id} item={item} available={menuItemAvailable(item, branchId)} money={money} onClose={() => setItem(null)} onAdd={addItem} />}
-    {count > 0 && <div className="lt-qr-cartbar"><div><strong>{count} {count === 1 ? 'item' : 'items'}</strong><span>{money(total)}</span></div><button type="button" onClick={() => setCartOpen(true)}>View cart</button></div>}
+    {count > 0 && <div className="lt-qr-dock"><div className="lt-qr-dock-card"><div className="lt-qr-dock-count" aria-hidden="true">{count}</div><div><span>{count} {count === 1 ? 'item' : 'items'}</span><strong>{money(total)}</strong></div><button type="button" onClick={() => setCartOpen(true)}>Review & Pay</button></div></div>}
     {cartOpen && <div className="lt-qr-cart" role="dialog" aria-label="Your cart">
       <div className="lt-qr-cart-card">
         <div className="lt-qr-cart-head"><h2>Your cart</h2><button type="button" onClick={() => { setCartOpen(false); setOrder(null) }} aria-label="Close cart">×</button></div>
@@ -126,7 +130,6 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
     </div>}
   </div>
 }
-
 export default function QRMenuPage({ API_BASE }) {
   const { businessId } = useParams()
   const [params, setParams] = useSearchParams()

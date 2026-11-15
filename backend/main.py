@@ -39683,6 +39683,11 @@ def guest_page_form(raw):
         'socials_published': bool(raw.get('socials_published')),
         'links': links,
         'review_url': https(raw.get('review_url'), 300),
+        'book_published': bool(raw.get('book_published')),
+        'book_url': https(raw.get('book_url'), 300),
+        'book_note': str(raw.get('book_note') or '').strip()[:40],
+        'reserve_published': bool(raw.get('reserve_published')),
+        'reserve_url': https(raw.get('reserve_url'), 300),
     }
 
 

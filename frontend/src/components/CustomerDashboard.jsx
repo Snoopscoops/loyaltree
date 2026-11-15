@@ -11,6 +11,11 @@ const EMPTY = {
   instagram_url: '',
   facebook_url: '',
   review_url: '',
+  book_published: false,
+  book_url: '',
+  book_note: '',
+  reserve_published: false,
+  reserve_url: '',
 }
 
 function socialKind(link) {
@@ -188,6 +193,41 @@ export default function CustomerDashboard({ API_BASE, user, onOpen }) {
           <input value={form.review_url} onChange={e => patch({ review_url: e.target.value })} placeholder="https://g.page/..." />
         </label>
         <p className="lt-quiet">Leave one blank to hide it. Customers see a logo, not a text link.</p>
+      </div>
+
+      <div className="lt-billboard-card">
+        <p className="lt-step">4 · Book our place</p>
+        <div className="lt-power" style={{ marginTop: 12 }}>
+          <div>
+            <b>{form.book_published ? 'Shown on the menu' : 'Hidden'}</b>
+            <div className="lt-quiet">Opens your events or venue page. Use a link that starts with https://</div>
+          </div>
+          <button type="button" className={form.book_published ? 'lt-secondary' : 'lt-primary'} onClick={() => patch({ book_published: !form.book_published })}>
+            {form.book_published ? 'Hide' : 'Show'}
+          </button>
+        </div>
+        <label className="lt-field">Link
+          <input value={form.book_url} onChange={e => patch({ book_url: e.target.value })} placeholder="https://..." />
+        </label>
+        <label className="lt-field">Short note
+          <input maxLength={40} value={form.book_note} onChange={e => patch({ book_note: e.target.value })} placeholder="Events and space" />
+        </label>
+      </div>
+
+      <div className="lt-billboard-card">
+        <p className="lt-step">5 · Reserve a table</p>
+        <div className="lt-power" style={{ marginTop: 12 }}>
+          <div>
+            <b>{form.reserve_published ? 'Shown on the menu' : 'Hidden'}</b>
+            <div className="lt-quiet">Opens your reservation page.</div>
+          </div>
+          <button type="button" className={form.reserve_published ? 'lt-secondary' : 'lt-primary'} onClick={() => patch({ reserve_published: !form.reserve_published })}>
+            {form.reserve_published ? 'Hide' : 'Show'}
+          </button>
+        </div>
+        <label className="lt-field">Link
+          <input value={form.reserve_url} onChange={e => patch({ reserve_url: e.target.value })} placeholder="https://..." />
+        </label>
       </div>
 
       <div className="lt-billboard-card">
