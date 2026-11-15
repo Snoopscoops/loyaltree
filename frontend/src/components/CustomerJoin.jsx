@@ -375,10 +375,14 @@ function CustomerJoin({ API_BASE }) {
         <path d="M5 2.5 L9.5 7 L5 11.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
       </svg>
     )
+    const socialText = link => `${link?.label || ''} ${link?.url || ''}`.toLowerCase()
+    const instagram = (socials?.links || []).find(link => socialText(link).includes('instagram'))
+    const facebook = (socials?.links || []).find(link => /facebook|fb\.com|fb\.me/.test(socialText(link)))
+    const reviewUrl = socials?.review_url || ''
     return (
       <div style={styles.guestPage}>
         <main style={styles.guestMain}>
-          <header style={styles.guestIdentity}>
+          <div style={styles.guestIdentity}>
             {logo
               ? <img src={logo} alt="" style={styles.guestLogo} />
               : <div style={styles.guestMark}>{businessName.slice(0, 1)}</div>}
@@ -386,7 +390,7 @@ function CustomerJoin({ API_BASE }) {
               <h1 style={styles.guestName}>{businessName}</h1>
               {place ? <p style={styles.guestPlace}>{place}</p> : null}
             </div>
-          </header>
+          </div>
           {cover ? (
             <section style={styles.guestBanner}>
               <img src={cover} alt="" style={styles.guestCover} />
@@ -406,30 +410,40 @@ function CustomerJoin({ API_BASE }) {
                 <span style={styles.guestCopy}>
                   <span style={styles.guestKickerMuted}>Menu and booking</span>
                   <strong style={styles.guestCardTitle}>Digital menu</strong>
+                  <span style={styles.guestHint}>See the menu or book our place.</span>
                 </span>
                 <span style={styles.guestArrow}>{chevron}</span>
               </a>
             )}
             {wifi && (
-              <a href="#wifi" style={styles.guestCard}>
+              <div style={styles.guestCard}>
                 <span style={styles.guestCopy}>
                   <span style={styles.guestKickerMuted}>Guest wi-fi</span>
                   <strong style={styles.guestCardTitle}>Wifi</strong>
                   <span style={styles.guestHint}>{wifi.name}{wifi.password ? ` · ${wifi.password}` : ''}</span>
                 </span>
-                <span style={styles.guestArrow}>{chevron}</span>
-              </a>
+              </div>
             )}
-            {socials && (
+            {(instagram || facebook || reviewUrl) && (
               <div style={styles.guestCard}>
-                <span>
-                  <span style={styles.guestKickerMuted}>Feedback and community</span>
-                  <strong style={styles.guestCardTitle}>Socials and leave a review</strong>
-                  <span style={styles.guestLinks}>
-                    {(socials.links || []).map(link => (
-                      <a key={link.url} href={link.url} target="_blank" rel="noopener noreferrer">{link.label || 'Social'}</a>
-                    ))}
-                    {socials.review_url ? <a href={socials.review_url} target="_blank" rel="noopener noreferrer">Leave a review</a> : null}
+                <span style={styles.guestCopy}>
+                  <span style={styles.guestKickerMuted}>Follow and review</span>
+                  <span style={styles.guestSocialRow}>
+                    {instagram ? (
+                      <a href={instagram.url} target="_blank" rel="noopener noreferrer" aria-label="Instagram" style={{...styles.guestSocial, background: 'radial-gradient(circle at 30% 30%, #feda75, #d62976 55%, #4f5bd5)'}}>
+                        <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="5" fill="none" stroke="#fff" strokeWidth="1.8"/><circle cx="12" cy="12" r="3.4" fill="none" stroke="#fff" strokeWidth="1.8"/><circle cx="17.2" cy="6.8" r="1" fill="#fff"/></svg>
+                      </a>
+                    ) : null}
+                    {facebook ? (
+                      <a href={facebook.url} target="_blank" rel="noopener noreferrer" aria-label="Facebook" style={{...styles.guestSocial, background: '#1877F2'}}>
+                        <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="#fff" d="M14.2 8.5h2.3V5.7h-2.3c-1.9 0-3.4 1.5-3.4 3.4v1.7H8.6v2.8h2.2V20h2.8v-6.4h2.3l.7-2.8h-3v-1.2c0-.6.4-1.1 1-1.1z"/></svg>
+                      </a>
+                    ) : null}
+                    {reviewUrl ? (
+                      <a href={reviewUrl} target="_blank" rel="noopener noreferrer" aria-label="Google review" style={{...styles.guestSocial, background: '#fff', border: '1px solid #e2e8f0'}}>
+                        <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="#4285F4" d="M21.6 12.2c0-.7-.1-1.4-.2-2H12v3.8h5.4c-.2 1.2-.9 2.3-2 3v2.5h3.2c1.9-1.7 3-4.3 3-7.3z"/><path fill="#34A853" d="M12 22c2.7 0 5-0.9 6.6-2.5l-3.2-2.5c-.9.6-2 1-3.4 1-2.6 0-4.8-1.8-5.6-4.1H3.1v2.6C4.7 19.8 8.1 22 12 22z"/><path fill="#FBBC05" d="M6.4 13.9c-.2-.6-.3-1.2-.3-1.9s.1-1.3.3-1.9V7.5H3.1C2.4 8.9 2 10.4 2 12s.4 3.1 1.1 4.5l3.3-2.6z"/><path fill="#EA4335" d="M12 6.1c1.5 0 2.8.5 3.8 1.5l2.8-2.8C16.9 3.1 14.7 2 12 2 8.1 2 4.7 4.2 3.1 7.5l3.3 2.6C7.2 7.8 9.4 6.1 12 6.1z"/></svg>
+                      </a>
+                    ) : null}
                   </span>
                 </span>
               </div>
@@ -950,7 +964,7 @@ const styles = {
     boxSizing: 'border-box',
   },
   guestPage: {
-    minHeight: '100vh', boxSizing: 'border-box', background: '#f8fcfa', color: '#475569',
+    minHeight: '100vh', boxSizing: 'border-box', background: '#f8fcfa', color: '#475569', overflowX: 'hidden',
     fontFamily: 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
     backgroundImage: 'radial-gradient(at 10% 0%, rgba(221,247,234,.7) 0, transparent 42%)',
   },
@@ -958,10 +972,10 @@ const styles = {
   guestBrand: { display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0 14px' },
   guestWord: { fontWeight: 900, letterSpacing: '-0.04em', color: '#0f172a', fontSize: 20 },
   guestEyebrow: { margin: 0, fontSize: 10, fontWeight: 800, letterSpacing: '.14em', textTransform: 'uppercase', color: '#0f766e' },
-  guestIdentity: { display: 'flex', alignItems: 'center', gap: 14, margin: '4px 0 18px' },
+  guestIdentity: { display: 'flex', alignItems: 'center', gap: 14, margin: '4px 0 18px', width: '100%', minWidth: 0 },
   guestLogo: { width: 72, height: 72, borderRadius: 22, objectFit: 'cover', border: '1px solid rgba(123,202,167,.7)', background: '#ddf7ea', flexShrink: 0 },
   guestMark: { width: 72, height: 72, borderRadius: 22, display: 'grid', placeItems: 'center', background: '#ddf7ea', border: '1px solid rgba(123,202,167,.7)', color: '#0f766e', fontWeight: 800, fontSize: 28, flexShrink: 0 },
-  guestName: { margin: 0, fontSize: 30, fontWeight: 900, letterSpacing: '-0.045em', color: '#0f172a', lineHeight: 1.05 },
+  guestName: { margin: 0, fontSize: 26, fontWeight: 900, letterSpacing: '-0.04em', color: '#0f172a', lineHeight: 1.05, overflowWrap: 'anywhere' },
   guestPlace: { margin: '2px 0 0', fontSize: 11, fontWeight: 600, color: '#64748b' },
   guestRule: { height: 4, margin: '12px 0 16px', borderRadius: 99, background: 'linear-gradient(90deg, #0f766e, #7bcaa7, transparent)', opacity: .5 },
   guestBanner: { position: 'relative', width: '100%', maxWidth: '100%', boxSizing: 'border-box', height: 168, margin: '0 0 16px', borderRadius: 18, overflow: 'hidden', border: '1px solid rgba(123,202,167,.45)' },
@@ -992,6 +1006,8 @@ const styles = {
   guestCardTitle: { display: 'block', marginTop: 4, fontSize: 16, fontWeight: 900, letterSpacing: '-0.03em', color: '#0f172a' },
   guestHint: { display: 'block', marginTop: 4, fontSize: 12, fontWeight: 400, color: '#475569' },
   guestLinks: { display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 },
+  guestSocialRow: { display: 'flex', gap: 10, marginTop: 12 },
+  guestSocial: { width: 42, height: 42, borderRadius: 14, display: 'grid', placeItems: 'center', textDecoration: 'none', flexShrink: 0 },
   guestJoinArrow: { width: 28, height: 28, borderRadius: 99, border: '1px solid rgba(15,118,110,.35)', color: '#0f766e', background: 'rgba(255,255,255,.7)', display: 'grid', placeItems: 'center', flexShrink: 0 },
   guestArrow: { width: 28, height: 28, borderRadius: 99, border: '1px solid #e2e8f0', color: '#64748b', background: '#fff', display: 'grid', placeItems: 'center', flexShrink: 0 },
   guestFooter: { width: '100%', boxSizing: 'border-box', marginTop: 18, background: '#073f36', color: '#fff', textAlign: 'center', borderRadius: 12, padding: '10px 12px', fontSize: 9, letterSpacing: '.08em', fontWeight: 600, textTransform: 'uppercase' },

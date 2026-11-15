@@ -7,8 +7,33 @@ const EMPTY = {
   wifi_name: '',
   wifi_password: '',
   socials_published: false,
-  links: [{ label: '', url: '' }],
+  links: [],
+  instagram_url: '',
+  facebook_url: '',
   review_url: '',
+}
+
+function socialKind(link) {
+  const text = `${link?.label || ''} ${link?.url || ''}`.toLowerCase()
+  if (text.includes('instagram')) return 'instagram'
+  if (text.includes('facebook') || text.includes('fb.com') || text.includes('fb.me')) return 'facebook'
+  return ''
+}
+
+function socialFields(data) {
+  const links = Array.isArray(data?.links) ? data.links : []
+  const pick = kind => links.find(link => socialKind(link) && socialKind(link) === kind)?.url || ''
+  return { instagram_url: pick('instagram'), facebook_url: pick('facebook') }
+}
+
+function socialPayload(form) {
+  const links = []
+  const instagram = String(form.instagram_url || '').trim()
+  const facebook = String(form.facebook_url || '').trim()
+  if (instagram) links.push({ label: 'Instagram', url: instagram })
+  if (facebook) links.push({ label: 'Facebook', url: facebook })
+  const { instagram_url, facebook_url, ...rest } = form
+  return { ...rest, links }
 }
 
 function detailOf(data, fallback) {
@@ -36,7 +61,8 @@ export default function CustomerDashboard({ API_BASE, user, onOpen }) {
       setForm({
         ...EMPTY,
         ...data,
-        links: Array.isArray(data.links) && data.links.length ? data.links : [{ label: '', url: '' }],
+        links: Array.isArray(data.links) ? data.links : [],
+        ...socialFields(data),
       })
       setDirty(false)
     } catch (err) {
@@ -84,11 +110,11 @@ export default function CustomerDashboard({ API_BASE, user, onOpen }) {
       const res = await authFetch(`${API_BASE}/api/v1/business/${user.business_slug}/guest-page`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form),
+        body: JSON.stringify(socialPayload(form)),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(detailOf(data, 'Could not save'))
-      setForm({ ...EMPTY, ...data, links: data.links?.length ? data.links : [{ label: '', url: '' }] })
+      setForm({ ...EMPTY, ...data, links: data.links || [], ...socialFields(data) })
       setDirty(false)
       setStatus('Saved. Customers will see this the next time they scan.')
     } catch (err) {
@@ -100,10 +126,6 @@ export default function CustomerDashboard({ API_BASE, user, onOpen }) {
 
   if (error) return <section className="lt-billboard"><p className="lt-status bad">{error}</p><button className="lt-secondary" onClick={load}>Try again</button></section>
   if (!form) return <section className="lt-billboard"><p className="lt-quiet">Loading customer dashboard...</p></section>
-
-  const setLink = (index, key, value) => patch({
-    links: form.links.map((link, linkIndex) => linkIndex === index ? { ...link, [key]: value } : link),
-  })
 
   return (
     <section className="lt-billboard" aria-label="Customer dashboard">
@@ -156,23 +178,16 @@ export default function CustomerDashboard({ API_BASE, user, onOpen }) {
             {form.socials_published ? 'Hide' : 'Show'}
           </button>
         </div>
-        {form.links.map((link, index) => (
-          <div key={index}>
-            <label className="lt-field">Name
-              <input maxLength={40} value={link.label} onChange={e => setLink(index, 'label', e.target.value)} placeholder="Facebook" />
-            </label>
-            <label className="lt-field">Link
-              <input value={link.url} onChange={e => setLink(index, 'url', e.target.value)} placeholder="https://" />
-            </label>
-            {form.links.length > 1 ? <button type="button" className="lt-text-btn" onClick={() => patch({ links: form.links.filter((_, linkIndex) => linkIndex !== index) })}>Remove</button> : null}
-          </div>
-        ))}
-        <div className="lt-actions">
-          <button type="button" className="lt-secondary" disabled={form.links.length >= 4} onClick={() => patch({ links: [...form.links, { label: '', url: '' }] })}>Add a link</button>
-        </div>
-        <label className="lt-field">Review link
+        <label className="lt-field">Instagram
+          <input value={form.instagram_url} onChange={e => patch({ instagram_url: e.target.value })} placeholder="https://instagram.com/yourplace" />
+        </label>
+        <label className="lt-field">Facebook
+          <input value={form.facebook_url} onChange={e => patch({ facebook_url: e.target.value })} placeholder="https://facebook.com/yourplace" />
+        </label>
+        <label className="lt-field">Google review
           <input value={form.review_url} onChange={e => patch({ review_url: e.target.value })} placeholder="https://g.page/..." />
         </label>
+        <p className="lt-quiet">Leave one blank to hide it. Customers see a logo, not a text link.</p>
       </div>
 
       <div className="lt-billboard-card">
