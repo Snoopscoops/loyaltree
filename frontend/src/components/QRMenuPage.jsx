@@ -51,7 +51,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   const business = data.business
   const branches = data.branches || []
   const branch = branches.find(value => value.public_id === branchId)
-  const chooseBranch = id => { setBranchId(id); setItem(null); onBranchChange?.(id) }
+  const chooseBranch = id => { const next = branchId === id ? '' : id; setBranchId(next); setItem(null); onBranchChange?.(next) }
   useEffect(() => { if (initialBranch !== undefined) setBranchId(initialBranch || data.selected_branch || '') }, [initialBranch, data.selected_branch])
   useEffect(() => { if (focusHeading.current) { menuHeading.current?.focus({ preventScroll: true }); focusHeading.current = false } }, [category, search])
   const money = value => new Intl.NumberFormat(undefined, { style: 'currency', currency: business.currency || 'PHP' }).format(value)
@@ -68,12 +68,12 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
     setCart(current => addCartItem(current, value, selected, quantity))
     setOrder(null)
   }
-  const needsBranch = branches.length > 1 && !branchId
   return <div className={`lt-qr-public lt-qr-cafe${preview ? ' lt-qr-is-preview' : ''}${count ? ' lt-qr-has-cart' : ''}`}>
     <main className="lt-qr-page">
       {preview && <div className="lt-qr-preview-note">Owner preview · {data.is_published ? 'Published' : 'Not published'}</div>}
       <header className="lt-qr-cafe-head">
         <div className="lt-qr-cafe-title">
+          {business.logo_url && <img className="lt-qr-cafe-logo" src={business.logo_url} alt="" />}
           <h1>{business.name}</h1>
           {branches.length > 1 && <div className="lt-qr-cafe-branches" role="group" aria-label="Location">{branches.map(value => <button type="button" key={value.public_id} aria-pressed={branchId === value.public_id} onClick={() => chooseBranch(value.public_id)}>{value.name}</button>)}</div>}
         </div>
@@ -83,7 +83,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
           <input type="search" aria-label="Search menu" placeholder="Search the menu" value={search} onChange={event => setSearch(event.target.value)} />
         </label>
       </header>
-      {needsBranch ? <section className="lt-qr-location-prompt"><h2>Choose a location</h2><p>The menu can change by branch.</p>{branches.map(value => <button type="button" key={value.public_id} onClick={() => chooseBranch(value.public_id)}><strong>{value.name}</strong><span>{value.address || 'View menu'}</span></button>)}</section> : <div className="lt-qr-cafe-split">
+      <div className="lt-qr-cafe-split">
         <nav className="lt-qr-rail" aria-label="Menu categories">
           <button type="button" aria-pressed={category === 'all'} onClick={() => chooseCategory('all')}><strong>All</strong><span>{groups.reduce((sum, value) => sum + value.items.length, 0)}</span></button>
           {groups.map(value => <button type="button" key={value.public_id} aria-pressed={category === value.public_id} onClick={() => chooseCategory(value.public_id)}><strong>{value.name}</strong><span>{value.items.length}</span></button>)}

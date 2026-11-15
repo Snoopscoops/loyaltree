@@ -16,10 +16,9 @@ export function groupMenuCategories(categories, items, branchId) {
     const photo = members.find(item => item.image_url && menuItemAvailable(item, branchId)) || members.find(item => item.image_url)
     return { ...category, items: members, image_url: photo?.image_url || '' }
   }).filter(category => category.items.length)
-  if (!grouped.length) return []
   const knownIds = new Set(categories.map(category => category.public_id))
   const others = items.filter(item => !knownIds.has(item.category_public_id) && menuItemOfferedAt(item, branchId))
-  if (others.length) grouped.push({ public_id: '__uncategorized__', name: 'More favorites', items: others, image_url: others.find(item => item.image_url)?.image_url || '' })
+  if (others.length) grouped.push({ public_id: '__uncategorized__', name: grouped.length ? 'More' : 'Menu', items: others, image_url: others.find(item => item.image_url)?.image_url || '' })
   return grouped
 }
 export function toggleMenuOption(selected, group, optionId) {
