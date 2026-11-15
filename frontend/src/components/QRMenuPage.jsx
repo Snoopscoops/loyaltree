@@ -115,7 +115,8 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
           })}
           {!items.length && <div className="lt-qr-empty" role="status"><h3>{search ? 'No matches yet.' : 'Nothing in this category.'}</h3><p>{search ? 'Try another word.' : 'Check another category.'}</p></div>}
         </section>
-      </div>}
+      </div>
+      {business.join_url && <a className="lt-qr-card-link" href={business.join_url}>Connect loyalty card</a>}
       <footer className="lt-qr-footer"><img src={loyaltyTreeLogo} alt="" /><span>Menu by <strong>Loyalty Tree</strong></span></footer>
     </main>
     {item && <ItemDetails key={item.public_id} item={item} available={menuItemAvailable(item, branchId)} money={money} onClose={() => setItem(null)} onAdd={addItem} />}
