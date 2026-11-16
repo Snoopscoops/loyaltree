@@ -87,13 +87,17 @@ function MenuCardLink({ apiBase, business }) {
     setCard(null); setChallenge(''); setCode(''); setNote('')
   }
   return <>
-    <button type="button" className="lt-qr-card-link" onClick={() => setOpen(value => !value)}>{card ? `Connected · ${card.name.split(' ')[0]}` : 'Connect loyalty card'}</button>
-    {open && <form className="lt-qr-card-panel" onSubmit={submit}>
-      {card ? <><strong>This phone is connected as {card.name}.</strong><p className="lt-qr-card-note">{card.email_masked}. It stays connected for 6 months.</p><button type="button" className="lt-qr-card-link" onClick={forget}>Use a different email</button></>
-        : !challenge ? <><label>Email on your loyalty card<input type="email" autoComplete="email" required value={email} onChange={event => setEmail(event.target.value)} /></label><button className="lt-qr-card-link" disabled={busy}>{busy ? 'Sending…' : 'Send code'}</button><p className="lt-qr-card-note">No card yet? <a href={business.join_url}>Join this business</a></p></>
-        : <><label>Code from your email<input inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} required value={code} onChange={event => setCode(event.target.value)} /></label><button className="lt-qr-card-link" disabled={busy}>{busy ? 'Checking…' : 'Connect card'}</button></>}
-      {note && <p className="lt-qr-card-note" role="status">{note}</p>}
-    </form>}
+    <button type="button" className="lt-qr-card-link" onClick={() => setOpen(true)}>{card ? `Connected · ${card.name.split(' ')[0]}` : 'Connect card'}</button>
+    {open && React.createPortal(<div className="lt-qr-card-pop" onClick={() => setOpen(false)}>
+      <form className="lt-qr-card-pop-card" role="dialog" aria-label="Connect loyalty card" onClick={event => event.stopPropagation()} onSubmit={submit}>
+        <button type="button" className="lt-qr-card-pop-x" onClick={() => setOpen(false)} aria-label="Close">×</button>
+        <h2>{card ? 'Card connected' : 'Connect card'}</h2>
+        {card ? <><p>{card.name}<br />{card.email_masked}</p><button type="button" className="lt-qr-card-link" onClick={forget}>Use another email</button></>
+          : !challenge ? <><input type="email" aria-label="Email" autoComplete="email" required placeholder="Email on your card" value={email} onChange={event => setEmail(event.target.value)} /><button className="lt-qr-card-link" disabled={busy}>{busy ? 'Sending…' : 'Send code'}</button>{business.join_url && <a href={business.join_url}>No card yet? Join</a>}</>
+          : <><input inputMode="numeric" aria-label="Code" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} required placeholder="6-digit code" value={code} onChange={event => setCode(event.target.value)} /><button className="lt-qr-card-link" disabled={busy}>{busy ? 'Checking…' : 'Connect'}</button></>}
+        {note && <p role="status">{note}</p>}
+      </form>
+    </div>, document.body)}
   </>
 }
 
