@@ -313,3 +313,21 @@
   .lt-qb-card { flex-direction: column; }
 }
 
+.lt-qb-form .lt-qb-checks label,
+.lt-qb-form label.lt-qb-mini {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  text-align: left;
+  gap: 10px;
+  margin: 0;
+  min-height: 44px;
+}
+.lt-qb-form .lt-qb-checks label input,
+.lt-qb-form label.lt-qb-mini input {
+  margin: 0;
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
