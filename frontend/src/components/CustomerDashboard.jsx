@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import './digital-billboard.css'
+import './customer-dashboard.css'
 
 const EMPTY = {
   cover_url: '',
@@ -43,6 +43,18 @@ function socialPayload(form) {
 
 function detailOf(data, fallback) {
   return typeof data?.detail === 'string' ? data.detail : fallback
+}
+
+function StatusBox({ on, onText, offText, detail, onToggle }) {
+  return (
+    <div className="lt-cd-status">
+      <div>
+        <b>{on ? onText : offText}</b>
+        <span>{detail}</span>
+      </div>
+      <button type="button" className={on ? 'lt-cd-outline' : 'lt-cd-show'} onClick={onToggle}>{on ? 'Hide' : 'Show'}</button>
+    </div>
+  )
 }
 
 export default function CustomerDashboard({ API_BASE, user, onOpen }) {
@@ -129,122 +141,118 @@ export default function CustomerDashboard({ API_BASE, user, onOpen }) {
     }
   }
 
-  if (error) return <section className="lt-billboard"><p className="lt-status bad">{error}</p><button className="lt-secondary" onClick={load}>Try again</button></section>
-  if (!form) return <section className="lt-billboard"><p className="lt-quiet">Loading customer dashboard...</p></section>
+  if (error) return <section className="lt-cd"><p className="lt-cd-status-line bad">{error}</p><button className="lt-cd-retry" onClick={load}>Try again</button></section>
+  if (!form) return <section className="lt-cd"><p className="lt-cd-hint">Loading customer dashboard...</p></section>
+
+  const good = status.startsWith('Saved') || status.startsWith('Photo added')
 
   return (
-    <section className="lt-billboard" aria-label="Customer dashboard">
-      <header className="lt-billboard-head">
-        <p className="lt-kicker">Customer dashboard</p>
+    <section className="lt-cd" aria-label="Customer dashboard">
+      <header className="lt-cd-head">
+        <p className="lt-cd-kicker">Customer dashboard</p>
         <h1>What people see after they scan</h1>
         <p>Edit one part at a time. Digital Menu, Digital Billboard, and LT Points stay in their own pages.</p>
       </header>
 
-      <div className="lt-billboard-card">
-        <p className="lt-step">1 · Cover photo</p>
-        <p className="lt-quiet">The wide photo at the top of the scan page. Leave it empty to use the loyalty card photo.</p>
-        {form.cover_url ? <img src={form.cover_url} alt="" style={{ width: '100%', height: 160, objectFit: 'cover', borderRadius: 14, marginTop: 12 }} /> : null}
-        <div className="lt-actions">
-          <label className="lt-secondary" style={{ display: 'inline-block' }}>
+      <section className="lt-cd-card">
+        <h2 className="lt-cd-step">1 · Cover photo</h2>
+        <p className="lt-cd-note">The wide photo at the top of the scan page. Leave it empty to use the loyalty card photo.</p>
+        {form.cover_url
+          ? <img className="lt-cd-cover" src={form.cover_url} alt="" />
+          : <div className="lt-cd-cover lt-cd-cover-empty">No cover photo yet. The loyalty card photo will be used.</div>}
+        <div className="lt-cd-row">
+          <label className="lt-cd-file">
             {form.cover_url ? 'Replace photo' : 'Add photo'}
-            <input type="file" accept="image/*" hidden onChange={e => { uploadCover(e.target.files?.[0]); e.target.value = '' }} />
+            <input type="file" accept="image/*" hidden disabled={saving} onChange={e => { uploadCover(e.target.files?.[0]); e.target.value = '' }} />
           </label>
-          {form.cover_url ? <button type="button" className="lt-text-btn" onClick={() => patch({ cover_url: '' })}>Remove</button> : null}
+          {form.cover_url ? <button type="button" className="lt-cd-remove" onClick={() => patch({ cover_url: '' })}>Remove</button> : null}
         </div>
-      </div>
+      </section>
 
-      <div className="lt-billboard-card">
-        <p className="lt-step">2 · Wi-Fi</p>
-        <div className="lt-power" style={{ marginTop: 12 }}>
-          <div>
-            <b>{form.wifi_published ? 'Shown on the scan page' : 'Hidden'}</b>
-            <div className="lt-quiet">Anyone who scans the QR can see the password.</div>
-          </div>
-          <button type="button" className={form.wifi_published ? 'lt-secondary' : 'lt-primary'} onClick={() => patch({ wifi_published: !form.wifi_published })}>
-            {form.wifi_published ? 'Hide' : 'Show'}
-          </button>
-        </div>
-        <label className="lt-field">Network name
+      <section className="lt-cd-card">
+        <h2 className="lt-cd-step">2 · Wi-Fi</h2>
+        <StatusBox
+          on={form.wifi_published}
+          onText="Shown on the scan page"
+          offText="Hidden"
+          detail="Anyone who scans the QR can see the password."
+          onToggle={() => patch({ wifi_published: !form.wifi_published })}
+        />
+        <label className="lt-cd-field">Network name
           <input maxLength={80} value={form.wifi_name} onChange={e => patch({ wifi_name: e.target.value })} placeholder="Cafe Wi-Fi" />
         </label>
-        <label className="lt-field">Password
+        <label className="lt-cd-field">Password
           <input maxLength={80} value={form.wifi_password} onChange={e => patch({ wifi_password: e.target.value })} placeholder="Optional" />
         </label>
-      </div>
+      </section>
 
-      <div className="lt-billboard-card">
-        <p className="lt-step">3 · Socials and reviews</p>
-        <div className="lt-power" style={{ marginTop: 12 }}>
-          <div>
-            <b>{form.socials_published ? 'Shown on the scan page' : 'Hidden'}</b>
-            <div className="lt-quiet">Use full links that start with https://</div>
-          </div>
-          <button type="button" className={form.socials_published ? 'lt-secondary' : 'lt-primary'} onClick={() => patch({ socials_published: !form.socials_published })}>
-            {form.socials_published ? 'Hide' : 'Show'}
-          </button>
-        </div>
-        <label className="lt-field">Instagram
+      <section className="lt-cd-card">
+        <h2 className="lt-cd-step">3 · Socials and reviews</h2>
+        <StatusBox
+          on={form.socials_published}
+          onText="Shown on the scan page"
+          offText="Hidden"
+          detail="Use full links that start with https://"
+          onToggle={() => patch({ socials_published: !form.socials_published })}
+        />
+        <label className="lt-cd-field">Instagram
           <input value={form.instagram_url} onChange={e => patch({ instagram_url: e.target.value })} placeholder="https://instagram.com/yourplace" />
         </label>
-        <label className="lt-field">Facebook
+        <label className="lt-cd-field">Facebook
           <input value={form.facebook_url} onChange={e => patch({ facebook_url: e.target.value })} placeholder="https://facebook.com/yourplace" />
         </label>
-        <label className="lt-field">Google review
+        <label className="lt-cd-field">Google review
           <input value={form.review_url} onChange={e => patch({ review_url: e.target.value })} placeholder="https://g.page/..." />
         </label>
-        <p className="lt-quiet">Leave one blank to hide it. Customers see a logo, not a text link.</p>
-      </div>
+        <p className="lt-cd-hint">Leave one blank to hide it. Customers see a logo, not a text link.</p>
+      </section>
 
-      <div className="lt-billboard-card">
-        <p className="lt-step">4 · Book our place</p>
-        <div className="lt-power" style={{ marginTop: 12 }}>
-          <div>
-            <b>{form.book_published ? 'Shown on the menu' : 'Hidden'}</b>
-            <div className="lt-quiet">Opens your events or venue page. Use a link that starts with https://</div>
-          </div>
-          <button type="button" className={form.book_published ? 'lt-secondary' : 'lt-primary'} onClick={() => patch({ book_published: !form.book_published })}>
-            {form.book_published ? 'Hide' : 'Show'}
-          </button>
-        </div>
-        <label className="lt-field">Link
+      <section className="lt-cd-card">
+        <h2 className="lt-cd-step">4 · Book our place</h2>
+        <StatusBox
+          on={form.book_published}
+          onText="Shown on the menu"
+          offText="Hidden"
+          detail="Opens your events or venue page. Use a link that starts with https://"
+          onToggle={() => patch({ book_published: !form.book_published })}
+        />
+        <label className="lt-cd-field">Link
           <input value={form.book_url} onChange={e => patch({ book_url: e.target.value })} placeholder="https://..." />
         </label>
-        <label className="lt-field">Short note
+        <label className="lt-cd-field">Short note
           <input maxLength={40} value={form.book_note} onChange={e => patch({ book_note: e.target.value })} placeholder="Events and space" />
         </label>
-      </div>
+      </section>
 
-      <div className="lt-billboard-card">
-        <p className="lt-step">5 · Reserve a table</p>
-        <div className="lt-power" style={{ marginTop: 12 }}>
-          <div>
-            <b>{form.reserve_published ? 'Shown on the menu' : 'Hidden'}</b>
-            <div className="lt-quiet">Opens your reservation page.</div>
-          </div>
-          <button type="button" className={form.reserve_published ? 'lt-secondary' : 'lt-primary'} onClick={() => patch({ reserve_published: !form.reserve_published })}>
-            {form.reserve_published ? 'Hide' : 'Show'}
-          </button>
-        </div>
-        <label className="lt-field">Link
+      <section className="lt-cd-card">
+        <h2 className="lt-cd-step">5 · Reserve a table</h2>
+        <StatusBox
+          on={form.reserve_published}
+          onText="Shown on the menu"
+          offText="Hidden"
+          detail="Opens your reservation page."
+          onToggle={() => patch({ reserve_published: !form.reserve_published })}
+        />
+        <label className="lt-cd-field">Link
           <input value={form.reserve_url} onChange={e => patch({ reserve_url: e.target.value })} placeholder="https://..." />
         </label>
-      </div>
+      </section>
 
-      <div className="lt-billboard-card">
-        <p className="lt-step">Already on the scan page</p>
-        <div className="lt-actions">
-          <button type="button" className="lt-secondary" onClick={() => onOpen?.('qrmenu')}>Digital Menu</button>
-          <button type="button" className="lt-secondary" onClick={() => onOpen?.('billboard')}>Digital Billboard</button>
-          <button type="button" className="lt-secondary" onClick={() => onOpen?.('ltbenefits')}>LT Points</button>
+      <section className="lt-cd-card">
+        <h2 className="lt-cd-step">Already on the scan page</h2>
+        <div className="lt-cd-pills">
+          <button type="button" className="lt-cd-pill" onClick={() => onOpen?.('qrmenu')}>Digital Menu</button>
+          <button type="button" className="lt-cd-pill" onClick={() => onOpen?.('billboard')}>Digital Billboard</button>
+          <button type="button" className="lt-cd-pill" onClick={() => onOpen?.('ltbenefits')}>LT Points</button>
         </div>
-        <p className="lt-quiet">The loyalty card button is always there. LT Benefits stays coming soon until you launch it.</p>
-      </div>
+        <p className="lt-cd-hint">The loyalty card button is always there. LT Benefits stays coming soon until you launch it.</p>
+      </section>
 
-      <div className="lt-savebar">
-        <button type="button" className="lt-primary" disabled={saving || !dirty} onClick={save}>{saving ? 'Saving...' : 'Save customer dashboard'}</button>
-        {dirty ? <span className="lt-quiet">Not saved yet.</span> : null}
+      <div>
+        <button type="button" className="lt-cd-save" disabled={saving || !dirty} onClick={save}>{saving ? 'Saving...' : 'Save customer dashboard'}</button>
+        {dirty ? <p className="lt-cd-hint">Not saved yet.</p> : null}
       </div>
-      {status ? <p className={status.startsWith('Saved') || status.startsWith('Photo added') ? 'lt-status good' : 'lt-status bad'}>{status}</p> : null}
+      {status ? <p className={good ? 'lt-cd-status-line good' : 'lt-cd-status-line bad'}>{status}</p> : null}
     </section>
   )
 }
