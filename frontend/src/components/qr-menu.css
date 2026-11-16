@@ -228,3 +228,11 @@
 .lt-qr-card-banner form > button { border:0; border-radius:999px; background:#084c42; color:#fff; min-height:40px; font-size:13px; font-weight:800; }
 .lt-qr-card-banner-x { position:absolute; top:8px; right:8px; width:28px; height:28px; border:0; border-radius:999px; background:#f1f5f9; color:#334155; font-size:18px; }
 .lt-qr-card-banner { position:fixed; }
+
+.lt-qr-pay { display:grid; gap:8px; margin-top:10px; }
+.lt-qr-pay p { margin:0; color:#64748b; font-size:12px; }
+.lt-qr-pay strong { color:#084c42; font-size:18px; }
+.lt-qr-pay-choices { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.lt-qr-pay-choices button { border:1px solid #e2e8f0; background:#fff; color:#084c42; border-radius:12px; min-height:40px; font-size:13px; font-weight:800; }
+.lt-qr-pay-choices button[aria-pressed=true] { background:#084c42; color:#fff; border-color:#084c42; }
+.lt-qr-pay input { width:100%; border:1px solid #e2e8f0; border-radius:12px; padding:10px; font-size:16px; background:#f8fafc; color:#0f172a; }
