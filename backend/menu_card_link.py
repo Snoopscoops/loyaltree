@@ -116,4 +116,16 @@ def register_menu_card_routes(app, *, db, get_business, has_feature, on_hold, se
         payload = read_token(parts[1], "session")
         if payload.get("business_public_id") != str(business["public_id"]):
             raise HTTPException(401, "Connect your loyalty card.")
-        return dict(name=payload.get("name") or "Loyalty card", email_masked=mask_email(payload.get("email") or ""))
+        name = str(payload.get("name") or "").strip()
+        customer_public_id = str(payload.get("customer_public_id") or "")
+        if customer_public_id:
+            try:
+                rows = db.table("customers").select("name").eq("business_id", business["id"]).eq("public_id", customer_public_id).limit(1).execute().data or []
+            except Exception:
+                rows = []
+            live = str((rows[0].get("name") if rows else "") or "").strip()
+            if live:
+                name = live
+        if name == "Loyalty card":
+            name = ""
+        return dict(name=name, email_masked=mask_email(payload.get("email") or ""))
