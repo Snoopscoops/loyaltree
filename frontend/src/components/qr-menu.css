@@ -219,3 +219,12 @@
 .lt-qr-card-pop-card input { width:100%; border:1px solid #e2e8f0; border-radius:12px; padding:10px; font-size:16px; background:#f8fafc; color:#0f172a; }
 .lt-qr-card-pop-card .lt-qr-card-link { width:100%; border:0; }
 .lt-qr-card-pop-x { position:absolute; top:8px; right:8px; width:28px; height:28px; border:0; border-radius:999px; background:#f1f5f9; color:#334155; font-size:18px; }
+
+.lt-qr-card-banner { position:fixed; left:12px; right:12px; bottom:calc(12px + env(safe-area-inset-bottom)); z-index:70; width:min(420px,calc(100% - 24px)); margin:0 auto; padding:14px; border-radius:18px; background:#fff; box-shadow:0 16px 40px #0b1f1a40; }
+.lt-qr-card-banner form { display:grid; gap:8px; }
+.lt-qr-card-banner strong { color:#084c42; font-size:14px; padding-right:28px; }
+.lt-qr-card-banner p { margin:0; color:#64748b; font-size:12px; }
+.lt-qr-card-banner input { width:100%; border:1px solid #e2e8f0; border-radius:12px; padding:10px; font-size:16px; background:#f8fafc; color:#0f172a; }
+.lt-qr-card-banner form > button { border:0; border-radius:999px; background:#084c42; color:#fff; min-height:40px; font-size:13px; font-weight:800; }
+.lt-qr-card-banner-x { position:absolute; top:8px; right:8px; width:28px; height:28px; border:0; border-radius:999px; background:#f1f5f9; color:#334155; font-size:18px; }
+.lt-qr-card-banner { position:fixed; }

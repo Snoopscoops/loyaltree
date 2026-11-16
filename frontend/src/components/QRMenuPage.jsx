@@ -88,16 +88,16 @@ function MenuCardLink({ apiBase, business }) {
   }
   return <>
     <button type="button" className="lt-qr-card-link" onClick={() => setOpen(true)}>{card ? `Connected · ${card.name.split(' ')[0]}` : 'Connect card'}</button>
-    {open && React.createPortal(<div className="lt-qr-card-pop" onClick={() => setOpen(false)}>
-      <form className="lt-qr-card-pop-card" role="dialog" aria-label="Connect loyalty card" onClick={event => event.stopPropagation()} onSubmit={submit}>
-        <button type="button" className="lt-qr-card-pop-x" onClick={() => setOpen(false)} aria-label="Close">×</button>
-        <h2>{card ? 'Card connected' : 'Connect card'}</h2>
-        {card ? <><p>{card.name}<br />{card.email_masked}</p><button type="button" className="lt-qr-card-link" onClick={forget}>Use another email</button></>
-          : !challenge ? <><input type="email" aria-label="Email" autoComplete="email" required placeholder="Email on your card" value={email} onChange={event => setEmail(event.target.value)} /><button className="lt-qr-card-link" disabled={busy}>{busy ? 'Sending…' : 'Send code'}</button>{business.join_url && <a href={business.join_url}>No card yet? Join</a>}</>
-          : <><input inputMode="numeric" aria-label="Code" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} required placeholder="6-digit code" value={code} onChange={event => setCode(event.target.value)} /><button className="lt-qr-card-link" disabled={busy}>{busy ? 'Checking…' : 'Connect'}</button></>}
+    {open && <div className="lt-qr-card-banner" role="dialog" aria-label="Connect loyalty card">
+      <form onSubmit={submit}>
+        <button type="button" className="lt-qr-card-banner-x" onClick={() => setOpen(false)} aria-label="Close">×</button>
+        <strong>{card ? 'Card connected' : challenge ? 'Enter the code' : 'Connect card'}</strong>
+        {card ? <><p>{card.name} · {card.email_masked}</p><button type="button" onClick={forget}>Use another email</button></>
+          : !challenge ? <><input type="email" aria-label="Email" autoComplete="email" required placeholder="Email on your card" value={email} onChange={event => setEmail(event.target.value)} /><button disabled={busy}>{busy ? 'Sending…' : 'Send code'}</button></>
+          : <><input inputMode="numeric" aria-label="Code" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} required placeholder="6-digit code" value={code} onChange={event => setCode(event.target.value)} /><button disabled={busy}>{busy ? 'Checking…' : 'Connect'}</button></>}
         {note && <p role="status">{note}</p>}
       </form>
-    </div>, document.body)}
+    </div>}
   </>
 }
 
