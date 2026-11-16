@@ -236,3 +236,5 @@
 .lt-qr-pay-choices button { border:1px solid #e2e8f0; background:#fff; color:#084c42; border-radius:12px; min-height:40px; font-size:13px; font-weight:800; }
 .lt-qr-pay-choices button[aria-pressed=true] { background:#084c42; color:#fff; border-color:#084c42; }
 .lt-qr-pay input { width:100%; border:1px solid #e2e8f0; border-radius:12px; padding:10px; font-size:16px; background:#f8fafc; color:#0f172a; }
+
+.lt-qr-pay select { width:100%; border:1px solid #e2e8f0; border-radius:12px; padding:10px; font-size:16px; background:#f8fafc; color:#0f172a; }

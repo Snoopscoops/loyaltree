@@ -83,7 +83,7 @@ function MenuCardLink({ apiBase, business }) {
     finally { setBusy(false) }
   }
   const forget = () => {
-    try { localStorage.removeItem(storageKey) } catch { /* ignore */ }
+    try { localStorage.removeItem(storageKey); localStorage.removeItem(`lt-menu-card-name:${business.public_id}`) } catch { /* ignore */ }
     setCard(null); setChallenge(''); setCode(''); setNote('')
   }
   return <>
@@ -99,6 +99,20 @@ function MenuCardLink({ apiBase, business }) {
       </form>
     </div>}
   </>
+}
+
+function pickupSlots() {
+  const now = new Date()
+  const start = new Date(now)
+  start.setSeconds(0, 0)
+  const remainder = start.getMinutes() % 15
+  start.setMinutes(start.getMinutes() + (remainder === 0 ? 15 : 15 - remainder))
+  if (start.getTime() - now.getTime() < 15 * 60 * 1000) start.setMinutes(start.getMinutes() + 15)
+  return Array.from({ length: 24 }, (_, index) => {
+    const slot = new Date(start.getTime() + index * 15 * 60 * 1000)
+    const value = `${slot.getFullYear()}-${String(slot.getMonth() + 1).padStart(2, '0')}-${String(slot.getDate()).padStart(2, '0')}T${String(slot.getHours()).padStart(2, '0')}:${String(slot.getMinutes()).padStart(2, '0')}`
+    return { value, label: slot.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) }
+  })
 }
 
 export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchChange, apiBase = '' }) {
@@ -193,10 +207,10 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
         <div className="lt-qr-cart-head"><h2>Your cart</h2><button type="button" onClick={() => { setCartOpen(false); setOrder(null); setPayStep('') }} aria-label="Close cart">×</button></div>
         {cart.map(line => <div className="lt-qr-cart-line" key={line.key}><div><strong>{line.name}</strong>{line.options.length > 0 && <p>{line.options.map(option => option.name).join(', ')}</p>}<span>{money(line.unit_price * line.quantity)}</span></div><div className="lt-qr-qty"><button type="button" onClick={() => setCart(current => changeCartQuantity(current, line.key, line.quantity - 1))} aria-label={`Decrease ${line.name}`}>−</button><span>{line.quantity}</span><button type="button" onClick={() => setCart(current => changeCartQuantity(current, line.key, line.quantity + 1))} aria-label={`Increase ${line.name}`}>+</button></div></div>)}
         <div className="lt-qr-cart-total"><span>Total</span><strong>{money(total)}</strong></div>
-        {!payStep && <button type="button" className="lt-qr-primary" onClick={() => { let saved = ''; try { saved = localStorage.getItem(`lt-menu-card-name:${business.public_id}`) || '' } catch { saved = '' } setBuyerName(current => current || saved); setPayStep('service') }}>Checkout</button>}
-        {payStep === 'service' && <div className="lt-qr-pay"><p>How will you get this?</p><div className="lt-qr-pay-choices"><button type="button" aria-pressed={service === 'dine-in'} onClick={() => setService('dine-in')}>Dine in</button><button type="button" aria-pressed={service === 'pickup'} onClick={() => setService('pickup')}>Pick up later</button></div>{service === 'dine-in' ? <input aria-label="Table number" placeholder="Table number, optional" value={tableNo} onChange={event => setTableNo(event.target.value)} /> : <input type="datetime-local" aria-label="Pick up time" value={pickupAt} onChange={event => setPickupAt(event.target.value)} />}<input aria-label="Buyer name" placeholder="Your name" value={buyerName} onChange={event => setBuyerName(event.target.value)} /><button type="button" className="lt-qr-primary" disabled={!buyerName.trim() || (service === 'pickup' && !pickupAt)} onClick={() => setPayStep('payment')}>Continue to payment</button></div>}
-        {payStep === 'payment' && <div className="lt-qr-pay"><p>{service === 'dine-in' ? `Dine in${tableNo.trim() ? ` · Table ${tableNo.trim()}` : ''}` : `Pick up later · ${new Date(pickupAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`}</p><p>{buyerName.trim()}</p><strong>{money(total)}</strong><button type="button" className="lt-qr-primary" onClick={() => { const stamp = Date.now().toString(36).toUpperCase(); setOrder({ ...buildMenuOrder({ merchantId: business.public_id, cart, orderId: `LT-${stamp}` }), buyer_name: buyerName.trim(), service, table_no: tableNo.trim(), pickup_at: pickupAt, payment_reference: `REF-${stamp.slice(-6)}`, status: 'awaiting_payment' }); setPayStep('done') }}>Pay</button><button type="button" className="lt-qr-text-button" onClick={() => setPayStep('service')}>Back</button></div>}
-        {payStep === 'done' && order && <div className="lt-qr-checkout" role="status"><strong>Order received</strong><dl><div><dt>Order number</dt><dd>{order.order_id}</dd></div><div><dt>Payment reference</dt><dd>{order.payment_reference}</dd></div><div><dt>Buyer</dt><dd>{order.buyer_name}</dd></div></dl><p>{order.service === 'dine-in' ? `Dine in${order.table_no ? ` · Table ${order.table_no}` : ''}` : 'Pick up later'}. Nothing has been charged yet.</p></div>}
+        {!payStep && <button type="button" className="lt-qr-primary" onClick={() => { let saved = ''; try { saved = localStorage.getItem(`lt-menu-card-name:${business.public_id}`) || '' } catch { saved = '' } setBuyerName(saved); setPayStep('service') }}>Checkout</button>}
+        {payStep === 'service' && <div className="lt-qr-pay"><p>How will you get this?</p><div className="lt-qr-pay-choices"><button type="button" aria-pressed={service === 'dine-in'} onClick={() => setService('dine-in')}>Dine in</button><button type="button" aria-pressed={service === 'pickup'} onClick={() => { const first = pickupSlots()[0]; setService('pickup'); setPickupAt(current => current || first?.value || '') }}>Pick up later</button></div>{service === 'dine-in' ? <input aria-label="Table number" placeholder="Table number, optional" value={tableNo} onChange={event => setTableNo(event.target.value)} /> : <select aria-label="Pick up time" value={pickupAt} onChange={event => setPickupAt(event.target.value)}><option value="">Choose a time</option>{pickupSlots().map(slot => <option key={slot.value} value={slot.value}>{slot.label}</option>)}</select>}{buyerName ? <p>{buyerName}</p> : <input aria-label="Your name" placeholder="Your name, optional" value={buyerName} onChange={event => setBuyerName(event.target.value)} />}<button type="button" className="lt-qr-primary" disabled={service === 'pickup' && !pickupAt} onClick={() => setPayStep('payment')}>Continue to payment</button></div>}
+        {payStep === 'payment' && <div className="lt-qr-pay"><p>{service === 'dine-in' ? `Dine in${tableNo.trim() ? ` · Table ${tableNo.trim()}` : ''}` : `Pick up later · ${pickupSlots().find(slot => slot.value === pickupAt)?.label || ''}`}</p>{buyerName.trim() && <p>{buyerName.trim()}</p>}<strong>{money(total)}</strong><button type="button" className="lt-qr-primary" onClick={() => { const stamp = Date.now().toString(36).toUpperCase(); const slot = pickupSlots().find(item => item.value === pickupAt); setOrder({ ...buildMenuOrder({ merchantId: business.public_id, cart, orderId: `LT-${stamp}` }), buyer_name: buyerName.trim(), service, table_no: tableNo.trim(), pickup_at: pickupAt, pickup_label: slot?.label || '', payment_reference: `REF-${stamp.slice(-6)}`, status: 'awaiting_payment' }); setPayStep('done') }}>Pay</button><button type="button" className="lt-qr-text-button" onClick={() => setPayStep('service')}>Back</button></div>}
+        {payStep === 'done' && order && <div className="lt-qr-checkout" role="status"><strong>Order received</strong><dl><div><dt>Order number</dt><dd>{order.order_id}</dd></div><div><dt>Payment reference</dt><dd>{order.payment_reference}</dd></div><div><dt>Buyer</dt><dd>{order.buyer_name || '—'}</dd></div></dl><p>{order.service === 'dine-in' ? `Dine in${order.table_no ? ` · Table ${order.table_no}` : ''}` : `Pick up later${order.pickup_label ? ` · ${order.pickup_label}` : ''}`}. Nothing has been charged yet.</p></div>}
       </div>
     </div>}
   </div>
