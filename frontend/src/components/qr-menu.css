@@ -200,3 +200,13 @@
 .lt-qr-is-preview.lt-qr-cafe .lt-qr-cafe-head { position:sticky; }
 .lt-qr-is-preview.lt-qr-cafe .lt-qr-rail { top:8px; max-height:420px; }
 .lt-qr-is-preview.lt-qr-cafe .lt-qr-dock { position:sticky; bottom:8px; }
+
+.lt-qr-cafe-side { width:158px; max-width:158px; }
+.lt-qr-branch-drop { display:block; width:100%; }
+.lt-qr-branch-drop select { width:100%; border:1px solid #e2e8f0; background:#f8fafc; color:#084c42; border-radius:12px; padding:8px 6px; font:inherit; font-size:12px; font-weight:800; }
+.lt-qr-card-panel { margin:10px 16px 0; padding:12px; border:1px solid #e2e8f0; border-radius:16px; background:#f8fafc; }
+.lt-qr-card-panel label { display:grid; gap:6px; font-size:12px; font-weight:700; color:#334155; }
+.lt-qr-card-panel input { width:100%; border:1px solid #e2e8f0; border-radius:12px; padding:10px; font-size:16px; background:#fff; color:#0f172a; }
+.lt-qr-card-panel .lt-qr-card-link { width:100%; margin-top:8px; border:0; }
+.lt-qr-card-note { margin:8px 0 0; color:#64748b; font-size:12px; }
+.lt-qr-card-panel a { color:#084c42; font-weight:800; }

@@ -51535,6 +51535,14 @@ register_qr_menu_routes(app, db=supabase, get_business=safe_get_business,
     require_owner=require_owner_session, has_feature=business_has_plan_feature,
     on_hold=billing_hold, menu_snapshot=_oa_menu_snapshot, branding=_qr_menu_branding,
     frontend_url=FRONTEND_URL or 'https://theloyaltytree.com')
+
+try:
+    from .menu_card_link import register_menu_card_routes
+except ImportError:
+    from menu_card_link import register_menu_card_routes
+register_menu_card_routes(app, db=supabase, get_business=safe_get_business,
+    has_feature=business_has_plan_feature, on_hold=billing_hold, send_email=send_email,
+    frontend_url=FRONTEND_URL or 'https://theloyaltytree.com')
 try:
     from .menu_payments import register_menu_payment_routes
 except ImportError:

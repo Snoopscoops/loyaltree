@@ -38,7 +38,66 @@ function ItemDetails({ item, available, money, onClose, onAdd }) {
   </dialog>
 }
 
-export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchChange }) {
+
+function MenuCardLink({ apiBase, business }) {
+  const storageKey = `lt-menu-card:${business.public_id}`
+  const [open, setOpen] = React.useState(false)
+  const [email, setEmail] = React.useState('')
+  const [code, setCode] = React.useState('')
+  const [challenge, setChallenge] = React.useState('')
+  const [card, setCard] = React.useState(null)
+  const [note, setNote] = React.useState('')
+  const [busy, setBusy] = React.useState(false)
+  React.useEffect(() => {
+    let saved = ''
+    try { saved = localStorage.getItem(storageKey) || '' } catch { saved = '' }
+    if (!saved) return undefined
+    let active = true
+    fetch(`${apiBase}/api/v1/public/menu/${encodeURIComponent(business.public_id)}/card`, { headers: { Authorization: `Bearer ${saved}` }, cache: 'no-store' })
+      .then(response => response.ok ? response.json() : Promise.reject())
+      .then(body => { if (active) setCard(body) })
+      .catch(() => { try { localStorage.removeItem(storageKey) } catch { /* ignore */ } })
+    return () => { active = false }
+  }, [apiBase, business.public_id, storageKey])
+  const post = async (path, body) => {
+    const response = await fetch(`${apiBase}/api/v1/public/menu/${encodeURIComponent(business.public_id)}/card/${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : 'Try again.')
+    return payload
+  }
+  const submit = async event => {
+    event.preventDefault()
+    setBusy(true); setNote('')
+    try {
+      if (!challenge) {
+        const result = await post('request', { email })
+        setChallenge(result.challenge)
+        setNote(`Code sent to ${result.email_masked}.`)
+      } else {
+        const result = await post('verify', { challenge, code })
+        try { localStorage.setItem(storageKey, result.token) } catch { /* ignore */ }
+        setCard({ name: result.name, email_masked: result.email_masked })
+        setOpen(false)
+      }
+    } catch (error) { setNote(error.message) }
+    finally { setBusy(false) }
+  }
+  const forget = () => {
+    try { localStorage.removeItem(storageKey) } catch { /* ignore */ }
+    setCard(null); setChallenge(''); setCode(''); setNote('')
+  }
+  return <>
+    <button type="button" className="lt-qr-card-link" onClick={() => setOpen(value => !value)}>{card ? `Connected · ${card.name.split(' ')[0]}` : 'Connect loyalty card'}</button>
+    {open && <form className="lt-qr-card-panel" onSubmit={submit}>
+      {card ? <><strong>This phone is connected as {card.name}.</strong><p className="lt-qr-card-note">{card.email_masked}. It stays connected for 6 months.</p><button type="button" className="lt-qr-card-link" onClick={forget}>Use a different email</button></>
+        : !challenge ? <><label>Email on your loyalty card<input type="email" autoComplete="email" required value={email} onChange={event => setEmail(event.target.value)} /></label><button className="lt-qr-card-link" disabled={busy}>{busy ? 'Sending…' : 'Send code'}</button><p className="lt-qr-card-note">No card yet? <a href={business.join_url}>Join this business</a></p></>
+        : <><label>Code from your email<input inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} required value={code} onChange={event => setCode(event.target.value)} /></label><button className="lt-qr-card-link" disabled={busy}>{busy ? 'Checking…' : 'Connect card'}</button></>}
+      {note && <p className="lt-qr-card-note" role="status">{note}</p>}
+    </form>}
+  </>
+}
+
+export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchChange, apiBase = '' }) {
   const [category, setCategory] = useState('all')
   const [search, setSearch] = useState('')
   const [branchId, setBranchId] = useState(initialBranch || data.selected_branch || '')
@@ -51,7 +110,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   const business = data.business
   const branches = data.branches || []
   const branch = branches.find(value => value.public_id === branchId)
-  const chooseBranch = id => { const next = branchId === id ? '' : id; setBranchId(next); setItem(null); onBranchChange?.(next) }
+  const chooseBranch = id => { setBranchId(id); setItem(null); onBranchChange?.(id) }
   useEffect(() => { if (initialBranch !== undefined) setBranchId(initialBranch || data.selected_branch || '') }, [initialBranch, data.selected_branch])
   useEffect(() => { if (focusHeading.current) { menuHeading.current?.focus({ preventScroll: true }); focusHeading.current = false } }, [category, search])
   const money = value => new Intl.NumberFormat(undefined, { style: 'currency', currency: business.currency || 'PHP' }).format(value)
@@ -75,7 +134,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
         <div className="lt-qr-cafe-title">
           {business.logo_url && <img className="lt-qr-cafe-logo" src={business.logo_url} alt="" />}
           <h1>{business.name}</h1>
-          <div className="lt-qr-cafe-side">{branches.length > 1 && <div className="lt-qr-cafe-branches" role="group" aria-label="Location">{branches.map(value => <button type="button" key={value.public_id} aria-pressed={branchId === value.public_id} onClick={() => chooseBranch(value.public_id)}>{value.name}</button>)}</div>}{business.join_url && <a className="lt-qr-card-link" href={business.join_url}>Connect loyalty card</a>}</div>
+          <div className="lt-qr-cafe-side">{branches.length > 1 && <label className="lt-qr-branch-drop"><select aria-label="Branch" value={branchId} onChange={event => chooseBranch(event.target.value)}><option value="">All branches</option>{branches.map(value => <option key={value.public_id} value={value.public_id}>{value.name}</option>)}</select></label>}{apiBase ? <MenuCardLink apiBase={apiBase} business={business} /> : business.join_url && <a className="lt-qr-card-link" href={business.join_url}>Connect loyalty card</a>}</div>
         </div>
         {(data.actions || []).length > 0 && <div className="lt-qr-cafe-actions">{data.actions.map(action => <a key={action.id} href={action.url} target="_blank" rel="noreferrer" className={action.id === 'book' ? 'is-book' : ''}><strong>{action.label}</strong>{action.note ? <span>{action.note}</span> : null}</a>)}</div>}
         <label className="lt-qr-cafe-search">
@@ -152,5 +211,5 @@ export default function QRMenuPage({ API_BASE }) {
   if (error) return <main className="lt-qr-message-page"><h1>Menu unavailable</h1><p role="alert">{error}</p><button type="button" onClick={() => setAttempt(value => value + 1)}>Try again</button></main>
   if (!data) return <main className="lt-qr-message-page" role="status"><p>Getting the menu ready…</p></main>
   if (branch && !data.branches.some(value => value.public_id === branch)) return <main className="lt-qr-message-page"><h1>Location unavailable</h1><p>This location is no longer available.</p><button type="button" onClick={() => setParams({})}>Choose another location</button></main>
-  return <QRMenuBrowser data={data} initialBranch={branch} onBranchChange={value => setParams(value ? { branch: value } : {})} />
+  return <QRMenuBrowser data={data} apiBase={API_BASE} initialBranch={branch} onBranchChange={value => setParams(value ? { branch: value } : {})} />
 }
