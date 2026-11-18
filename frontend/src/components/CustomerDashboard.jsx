@@ -241,11 +241,11 @@ export default function CustomerDashboard({ API_BASE, user, onOpen }) {
       <section className="lt-cd-card">
         <h2 className="lt-cd-step">Already on the scan page</h2>
         <div className="lt-cd-pills">
-          <button type="button" className="lt-cd-pill" onClick={() => onOpen?.('qrmenu', { add: true })}>Digital Menu</button>
+          <button type="button" className="lt-cd-pill" onClick={() => onOpen?.('qrmenu')}>Digital Menu</button>
           <button type="button" className="lt-cd-pill" onClick={() => onOpen?.('billboard')}>Digital Billboard</button>
           <button type="button" className="lt-cd-pill" onClick={() => onOpen?.('ltbenefits')}>LT Points</button>
         </div>
-        <p className="lt-cd-hint">The loyalty card button is always there. Digital Menu opens the add-item steps, and you can come back to this page.</p>
+        <p className="lt-cd-hint">The loyalty card button is always there. LT Benefits stays coming soon until you launch it.</p>
       </section>
 
       <div>

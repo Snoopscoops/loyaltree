@@ -81,7 +81,7 @@ export default function QRMenuSection({ API_BASE, user, business, authFetch, ren
       </div>
       {tab === 'builder' && <>
         <div className="lt-qr-sync"><p>This is your shared live catalog. Saved changes also appear in <b>Order Ahead</b> wherever it is enabled.</p></div>
-        <div className="lt-qr-catalog-editor">{renderBuilder(() => { setPreview(null) }, { published: !!setup.is_published, onPreview: () => chooseTab('preview') })}</div>
+        <div className="lt-qr-catalog-editor">{renderBuilder(() => { setPreview(null) })}</div>
       </>}
       {tab === 'preview' && <div className="lt-qr-preview-frame"><p className="lt-qr-preview-caption">What customers see</p>{preview ? <QRMenuBrowser data={preview} preview /> : !error && <p className="lt-qr-preview-caption" role="status">Loading customer preview…</p>}</div>}
       {tab === 'share' && <MenuPaymentsSetup API_BASE={API_BASE} slug={slug} authFetch={authFetch} />}
