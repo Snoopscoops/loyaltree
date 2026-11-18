@@ -331,3 +331,49 @@
   width: 16px;
   height: 16px;
 }
+.lt-mi { background: #fff; border-radius: 16px; padding: 20px; box-shadow: 0 8px 24px -4px #073f3614; }
+.lt-mi-kicker { margin: 0; color: #0f766e; font-size: 12px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+.lt-mi h3 { margin: 4px 0 0; font-size: 22px; letter-spacing: -0.03em; }
+.lt-mi-back { display: inline-block; margin-bottom: 8px; border: 0; background: transparent; color: #005c55; font-weight: 800; padding: 0; cursor: pointer; }
+.lt-mi-bars { display: flex; gap: 5px; margin: 12px 0 8px; }
+.lt-mi-bars span { height: 6px; flex: 1; border-radius: 99px; background: #e2e8f0; }
+.lt-mi-bars span.is-on { background: #0f766e; }
+.lt-mi-note, .lt-mi-inherit, .lt-mi-done p { margin: 8px 0 0; color: #3e4947; font-size: 14px; line-height: 1.45; font-weight: 500; }
+.lt-mi-layout { display: grid; grid-template-columns: minmax(0,1fr) 168px; gap: 16px; align-items: start; }
+.lt-mi label { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; font-size: 14px; font-weight: 800; }
+.lt-mi input { width: 100%; border: 0; background: #f2f3ff; border-radius: 12px; padding: 10px 14px; font: inherit; font-weight: 500; color: #131b2e; box-sizing: border-box; }
+.lt-mi input:focus { outline: 2px solid #0f766e; }
+.lt-mi-sections { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.lt-mi-sections button { border: 0; background: #eaedff; color: #131b2e; border-radius: 999px; padding: 8px 12px; font-weight: 800; cursor: pointer; }
+.lt-mi-sections button[aria-pressed="true"] { background: #005c55; color: #fff; }
+.lt-mi-price { position: relative; display: block; }
+.lt-mi-price i { position: absolute; left: 12px; top: 10px; font-style: normal; font-weight: 800; color: #131b2e; }
+.lt-mi-price input { padding-left: 42px; font-weight: 700; }
+.lt-mi-live { border: 1px solid #e2e8f0; border-radius: 16px; overflow: hidden; background: #fff; }
+.lt-mi-live img, .lt-mi-live > b, .lt-mi-photo img, .lt-mi-photo > b { width: 100%; aspect-ratio: 1; object-fit: cover; display: grid; place-items: center; color: #fff; font-size: 28px; }
+.lt-mi-live > b, .lt-mi-photo > b { display: grid; }
+.lt-mi-live div { padding: 10px 12px; }
+.lt-mi-live strong, .lt-mi-live span, .lt-mi-live em, .lt-mi-live p { display: block; }
+.lt-mi-live span { color: #0f766e; font-size: 12px; font-weight: 800; margin-top: 2px; }
+.lt-mi-live em { font-style: normal; font-weight: 800; margin-top: 6px; }
+.lt-mi-live p { margin: 4px 0 0; color: #3e4947; font-size: 12px; }
+.lt-mi-photo { display: flex; gap: 12px; align-items: center; margin-top: 12px; }
+.lt-mi-photo img, .lt-mi-photo > b { width: 88px; height: 88px; aspect-ratio: auto; border-radius: 12px; flex: none; }
+.lt-mi-file { display: inline-block; border: 1px solid #cbd5e1; background: #fff; border-radius: 12px; padding: 8px 12px; cursor: pointer; }
+.lt-mi-remove { border: 0; background: transparent; color: #ba1a1a; font-weight: 700; cursor: pointer; }
+.lt-mi-inherit { background: #eaedff; border-radius: 12px; padding: 12px 14px; }
+.lt-mi-checks { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+.lt-mi-checks label { flex-direction: row; align-items: center; gap: 8px; margin: 0; background: #f2f3ff; border-radius: 12px; padding: 10px; font-weight: 700; }
+.lt-mi-checks input { width: 16px; height: 16px; flex: none; }
+.lt-mi-actions, .lt-mi-stack { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.lt-mi-next, .lt-mi-skip { border: 0; border-radius: 12px; padding: 12px 14px; font-weight: 800; cursor: pointer; }
+.lt-mi-next { background: #005c55; color: #fff; flex: 1; }
+.lt-mi-skip { background: #eaedff; color: #131b2e; }
+.lt-mi-next:disabled, .lt-mi-skip:disabled { opacity: 0.45; cursor: not-allowed; }
+.lt-mi-error { margin: 0 0 8px; color: #9f2d2d; font-size: 13px; font-weight: 700; }
+.lt-mi-done { background: #f0fdfa; border: 1px solid #99f6e4; border-radius: 14px; padding: 14px; }
+.lt-mi-stack { flex-direction: column; }
+.lt-mi-stack .lt-mi-next, .lt-mi-stack .lt-mi-skip { width: 100%; }
+@media (max-width: 700px) {
+  .lt-mi-layout, .lt-mi-checks { grid-template-columns: 1fr; }
+}
