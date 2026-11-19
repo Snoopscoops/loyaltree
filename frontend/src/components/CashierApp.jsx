@@ -95,16 +95,19 @@ function CashierApp({ API_BASE }) {
   const hasPendingNfcTap = !!pendingNfcToken
   const hasPendingGiftScan = !!pendingGiftId
 
-  // Keep a verified cashier signed in for this browser session only. This lets
-  // the next Gift Card scan go straight to Redeem without asking for the same
-  // credentials again. We never store the cashier PIN.
+  // One login lasts 12 hours on this phone. sessionStorage was wiped every
+  // time the stamp tab closed, so cashiers had to sign in again for each stamp.
+  // The PIN is never stored.
   const restoredCashierSession = (() => {
     if (ownerState) return null
     try {
-      const raw = sessionStorage.getItem('loyaltree_cashier_session')
+      const raw = localStorage.getItem('loyaltree_cashier_session')
       if (!raw) return null
       const saved = JSON.parse(raw)
-      if (!saved?.businessSlug || !saved?.sessionToken || !saved?.staffName) return null
+      if (!saved?.businessSlug || !saved?.sessionToken || !saved?.staffName || !saved?.expiresAt || Date.now() > saved.expiresAt) {
+        localStorage.removeItem('loyaltree_cashier_session')
+        return null
+      }
       if (nfcBusinessSlug && saved.businessSlug !== nfcBusinessSlug) return null
       return saved
     } catch (_) {
@@ -923,7 +926,7 @@ function CashierApp({ API_BASE }) {
       })
       const data = await res.json().catch(() => ({}))
       if (res.status === 401 || res.status === 403) {
-        try { sessionStorage.removeItem('loyaltree_cashier_session') } catch (_) {}
+        try { localStorage.removeItem('loyaltree_cashier_session') } catch (_) {}
         setSessionToken('')
         setStaffName('')
         throw new Error('Cashier session expired. Please log in again.')
@@ -1119,11 +1122,13 @@ function CashierApp({ API_BASE }) {
           setSessionToken(data.session_token)
           setStaffPin('')
           try {
-            sessionStorage.setItem('loyaltree_cashier_session', JSON.stringify({
+            const hours = Number(data.expires_in_hours) || 12
+            localStorage.setItem('loyaltree_cashier_session', JSON.stringify({
               businessSlug: cleanSlug,
               staffEmail: cleanEmail,
               staffName: verifiedName,
               sessionToken: data.session_token,
+              expiresAt: Date.now() + hours * 3600 * 1000,
             }))
           } catch (_) {}
         } else {
@@ -1336,7 +1341,7 @@ function CashierApp({ API_BASE }) {
             navigate('/dashboard')
             return
           }
-          try { sessionStorage.removeItem('loyaltree_cashier_session') } catch (_) {}
+          try { localStorage.removeItem('loyaltree_cashier_session') } catch (_) {}
           setBusinessSlug('')
           setStaffPin('')
           setStaffEmail('')
