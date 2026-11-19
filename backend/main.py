@@ -34603,13 +34603,10 @@ async def customer_join_page(business_public_id: str):
 
 @app.post("/api/v1/join/{business_public_id}")
 async def customer_signup(business_public_id: str, signup: CustomerSignup, background_tasks: BackgroundTasks, authorization: str = Header(default='')):
-    if str(signup.email or '').strip() or lt_benefits_public_launch_enabled():
-        try:
-            signup.email = normalize_lt_email(signup.email)
-        except ValueError:
-            raise HTTPException(status_code=422, detail='A valid email is required for Loyalty Tree Points.') from None
-    else:
-        signup.email = None  # Coming Soon preserves optional merchant onboarding.
+    try:
+        signup.email = normalize_lt_email(signup.email)
+    except ValueError:
+        raise HTTPException(status_code=422, detail='A valid email is required.') from None
     if not signup.privacy_consent:
         raise HTTPException(
             status_code=400,

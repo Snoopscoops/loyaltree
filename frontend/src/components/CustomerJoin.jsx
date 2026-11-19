@@ -313,6 +313,11 @@ function CustomerJoin({ API_BASE }) {
       setError('Birthday month and day are required.')
       return
     }
+    const email = form.email.trim()
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 320) {
+      setError('A valid email is required.')
+      return
+    }
     setLoading(true)
     try {
       const benefitsSession = benefitsReady ? readBenefitsSession({ getItem: key => window.localStorage.getItem(key) }) : null
@@ -324,7 +329,7 @@ function CustomerJoin({ API_BASE }) {
           address: form.address || null,
           age_bracket: isEmployeeExperience ? null : (form.age_bracket || null),
           phone: form.phone,
-          email: form.email.trim() || null,
+          email,
           birthday_month: parseInt(form.birthday_month, 10),
           birthday_day: parseInt(form.birthday_day, 10),
           occupation: isEmployeeExperience ? null : (form.occupation || null),
@@ -713,7 +718,7 @@ function CustomerJoin({ API_BASE }) {
               )}
 
               <div style={styles.inputGroup}>
-                <label style={styles.label}>Email {!benefitsEmailRequired && <span style={styles.optional}>optional</span>}</label>
+                <label style={styles.label}>Email</label>
                 <input
                   placeholder="you@email.com"
                   value={form.email}
@@ -722,7 +727,7 @@ function CustomerJoin({ API_BASE }) {
                   type="email"
                   autoComplete="email"
                   maxLength={320}
-                  required={benefitsEmailRequired}
+                  required
                 />
                 {benefitsEmailRequired && <div style={{fontSize:12,color:'#64748b',marginTop:6,lineHeight:1.5}}>For Loyalty Tree Points: use the same email across participating businesses. Verify once by email code to connect your eligible cards and shared balance.</div>}
               </div>
