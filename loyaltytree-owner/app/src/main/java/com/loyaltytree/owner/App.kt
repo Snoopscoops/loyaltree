@@ -760,6 +760,15 @@ private fun OrderCard(store: CounterStore, order: LiveOrder) {
             Text(order.number, color = Forest, fontWeight = FontWeight.Bold, fontSize = 18.sp)
             Text(order.status.replaceFirstChar { it.uppercase() }, color = if (order.status == "cancelled") Bad else Forest, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
         }
+        // When the order was placed (Philippine time). "5 min ago" refreshes every 30 seconds.
+        val now by androidx.compose.runtime.produceState(System.currentTimeMillis()) {
+            while (true) {
+                kotlinx.coroutines.delay(30_000)
+                value = System.currentTimeMillis()
+            }
+        }
+        val placed = OrderTime.label(order.createdAt, now)
+        if (placed.isNotBlank()) Text("Ordered $placed", color = Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
         if (order.payment == "pending") Text("Unpaid · confirm the test payment on the menu", color = Bad, fontSize = 13.sp)
         val unpaid = order.payment == "unpaid"
         val awaitingCash = order.source == "menu" && order.paymentMethod == "cash" && unpaid && order.status != "cancelled"
