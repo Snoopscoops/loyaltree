@@ -358,7 +358,10 @@ class MainWiringTest(unittest.TestCase):
             'friendly_db_error': str,
             '_menu_counter_order_public': lambda row: {'public_id': row.get('public_id')},
             '_menu_order_push': lambda business, order: self.pushed.append((business, order)),
+            # owner-v8: the loyalty card refresh is queued next to the push.
+            '_menu_order_wallet': type('W', (), {'order_placed': staticmethod(lambda business, order: self.placed.append(order))}),
         }
+        self.placed = []
         exec(compile(ast.Module(body=[node], type_ignores=[]), 'main.py', 'exec'), scope)
         return scope['public_place_menu_order']
 
@@ -376,8 +379,9 @@ class MainWiringTest(unittest.TestCase):
         result = asyncio.run(handler('biz', Req(), tasks))
         self.assertTrue(result['success'])
         self.assertEqual(self.pushed, [])  # not sent before the response
-        self.assertEqual(len(tasks.tasks), 1)
+        self.assertEqual(len(tasks.tasks), 2)  # owner phones (v6) + customer's card (v8)
         asyncio.run(tasks())
+        self.assertEqual(self.placed[0]['order_number'], '123')
         business, order = self.pushed[0]
         self.assertEqual((order['branch_public_id'], order['branch_name'], order['order_number']), ('bgc', 'BGC', '123'))
 

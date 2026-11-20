@@ -10720,6 +10720,9 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
 
     order_ahead_action = order_ahead_wallet_action(customer, business)
     order_ahead_status_field = _oa_apple_order_status_field(customer, business)
+    if not order_ahead_status_field:
+        # owner-v8 menu_order_wallet: Digital Menu order status on the card (CURRENT ORDER).
+        order_ahead_status_field = _menu_order_wallet_field(customer, business)
     custom_wallet_actions = program_wallet_actions(program)
 
     def _apple_custom_action_fields():
@@ -10823,6 +10826,8 @@ def build_apple_pass_json(customer: dict, business: dict, program: dict, announc
             })
             if order_ahead_status_field:
                 back_fields.insert(-1, order_ahead_status_field)
+        elif order_ahead_status_field:
+            back_fields.insert(-1, order_ahead_status_field)
         if ann_message.strip() and ann_message.strip() != announcement_value:
             back_fields.append({'key': 'announcement_detail', 'label': ' ', 'value': ann_message.strip()[:1000]})
 
@@ -18878,6 +18883,7 @@ async def public_place_menu_order(public_id: str, request: Request, background_t
         raise HTTPException(status_code=503, detail=f'Menu orders are not ready yet: {friendly_db_error(e)}')
     # owner-v6 menu_order_push: ring the owner / branch phones after the response (never blocks the order).
     background_tasks.add_task(_menu_order_push, dict(business), {**row, **saved})
+    background_tasks.add_task(_menu_order_wallet.order_placed, dict(business), {**row, **saved})
     return {'success': True, 'order': _menu_counter_order_public(saved)}
 
 
@@ -18941,7 +18947,7 @@ async def owner_list_menu_orders(public_id: str, authorization: str = Header(def
 
 
 @app.patch('/api/v1/business/{public_id}/menu-orders/{order_public_id}/status')
-async def owner_update_menu_order_status(public_id: str, order_public_id: str, request: Request, authorization: str = Header(default='')):
+async def owner_update_menu_order_status(public_id: str, order_public_id: str, request: Request, background_tasks: BackgroundTasks, authorization: str = Header(default='')):
     business, order_scope = await asyncio.to_thread(_menu_order_operator, public_id, authorization)
     payload = await request.json()
     target = str((payload or {}).get('status') or '')
@@ -18976,6 +18982,8 @@ async def owner_update_menu_order_status(public_id: str, order_public_id: str, r
         raise HTTPException(status_code=503, detail=f'Could not update the order: {friendly_db_error(e)}')
     if not saved:
         raise HTTPException(status_code=404, detail='Order not found')
+    background_tasks.add_task(_menu_order_wallet.status_changed, dict(business), {**(current_order or {}), **saved},
+                              str((current_order or {}).get('status') or ''))
     return {'success': True, 'order': _menu_counter_order_public(saved)}
 
 
@@ -51741,6 +51749,25 @@ except ImportError:
 # New-order push (FCM). Off until FIREBASE_SERVICE_ACCOUNT_JSON is set on Render.
 _menu_order_push = register_menu_order_push_routes(app, db=supabase, operator=_menu_order_operator,
     get_business=safe_get_business)
+try:
+    from .menu_order_wallet import make_menu_order_wallet, apple_field as _menu_order_apple_field
+except ImportError:
+    from menu_order_wallet import make_menu_order_wallet, apple_field as _menu_order_apple_field
+# Digital Menu order steps + points/stamps on the customer's connected card (Apple + Google Wallet).
+_menu_order_wallet = make_menu_order_wallet(db=supabase, get_customer=safe_get_customer,
+    get_program=safe_get_customer_program, uses_points=program_reward_uses_points,
+    uses_stamps=program_reward_uses_stamps, owner_authorization=_pos_internal_owner_authorization,
+    add_points=add_points_sale, add_stamp=add_stamp, points_request=PointsSaleRequest, stamp_request=StampRequest,
+    apple_refresh=_oa_refresh_apple_order_status,
+    google_message=lambda customer, header, body, message_id: send_wallet_object_message(
+        f"{GOOGLE_WALLET_ISSUER_ID}.{customer.get('public_id', '')}", header=header, body=body, message_id=message_id))
+
+
+def _menu_order_wallet_field(customer, business):
+    try:
+        return _menu_order_apple_field(supabase, customer, business)
+    except Exception:
+        return None
 register_menu_card_routes(app, db=supabase, get_business=safe_get_business,
     has_feature=business_has_plan_feature, on_hold=billing_hold, send_email=send_email,
     frontend_url=FRONTEND_URL or 'https://theloyaltytree.com')
