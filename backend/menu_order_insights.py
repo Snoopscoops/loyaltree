@@ -6,12 +6,14 @@ customer fields saved on a loyalty card (age range, gender, occupation, card
 join date) when the buyer connected their card on the menu.
 """
 import calendar
+import csv
+import io
 from collections import Counter, defaultdict
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import re
 
-from fastapi import Header, HTTPException
+from fastapi import Header, HTTPException, Response
 
 try:
     from .customer_demographics import AGE_LABELS, GENDER_LABELS, OCCUPATION_LABELS, age_bracket
@@ -512,6 +514,187 @@ def read_customers(db, business_id, public_ids):
     return found
 
 
+
+# ----------------------------------------------------------------- report ---
+
+PAYMENT_STATUS_LABELS = {'paid': 'Paid', 'paid_test': 'Paid (test)', 'unpaid': 'Waiting for payment'}
+ORDER_STATUS_LABELS = {'new': 'New', 'preparing': 'Preparing', 'ready': 'Ready', 'completed': 'Completed', 'cancelled': 'Cancelled'}
+REPORT_SECTIONS = ('membership', 'tenure', 'age', 'gender', 'occupation', 'time', 'branch')
+
+
+def _clock(when):
+    return f"{(when.hour % 12) or 12}:{when.minute:02d} {'AM' if when.hour < 12 else 'PM'}"
+
+
+def _day_label(day):
+    return f"{day.strftime('%a, %b')} {day.day}, {day.year}"
+
+
+def _peso(value):
+    return f"\u20b1{_money(value):,.2f}"
+
+
+def _customer_label(row):
+    name = ' '.join(str(row.get('buyer_name') or '').split())[:120]
+    if not name or name.lower() == 'customer':
+        return 'Member' if row.get('member_customer_public_id') else 'Walk-in'
+    return name
+
+
+def _item_text(row):
+    return '; '.join(f"{name} x{qty}" for name, qty in _items(row))
+
+
+def _file_part(text):
+    return re.sub(r'[^a-z0-9]+', '-', str(text or '').lower()).strip('-')[:40]
+
+
+def report_filename(business_name, branch_name, start_day, end_day):
+    parts = [_file_part(business_name) or 'loyaltytree', _file_part(branch_name) or 'all-branches', 'sales', start_day.isoformat()]
+    if end_day != start_day:
+        parts.append('to-' + end_day.isoformat())
+    return '-'.join(parts) + '.csv'
+
+
+def sales_report(rows, customers, start_day, end_day, branch='', business_name='', branch_name='', generated_at=None):
+    """A sales report the owner can send to staff: totals, every order, top items, who bought what.
+
+    start_day/end_day are inclusive Manila dates. Demographic groups use the same
+    privacy rule as the Analytics screen (small groups are hidden). No phone or email.
+    Returns {'csv', 'text', 'filename', ...}.
+    """
+    generated_at = (generated_at or datetime.now(MANILA)).astimezone(MANILA)
+    scoped = sorted(filter_branch(rows, branch), key=lambda row: str(row.get('created_at') or ''))
+    live = [row for row in scoped if row.get('status') != 'cancelled']
+    cancelled = [row for row in scoped if row.get('status') == 'cancelled']
+    sales = round(sum(_money(row.get('total')) for row in live), 2)
+    payments = payment_breakdown(live)
+    unpaid_cash = [row for row in live if cash_awaiting_payment(row)]
+    members = [row for row in live if row.get('member_customer_public_id')]
+    insights = order_insights(scoped, customers, end_day, branch, (end_day - start_day).days + 1)
+    items = ranked_items(scoped, 20)
+    scope_label = branch_name or ('All branches' if not branch else 'Branch')
+    when_label = _day_label(start_day) if start_day == end_day else f"{_day_label(start_day)} to {_day_label(end_day)}"
+
+    out = io.StringIO()
+    w = csv.writer(out)
+    w.writerow(['LoyaltyTree sales report'])
+    w.writerow(['Business', business_name or 'Your business'])
+    w.writerow(['Branch', scope_label])
+    w.writerow(['Date', when_label])
+    w.writerow(['Generated', f"{_day_label(generated_at.date())} {_clock(generated_at)} PHT"])
+    w.writerow(['Source', 'Digital menu orders, Manila time (PHT)'])
+    w.writerow([])
+    w.writerow(['SUMMARY'])
+    w.writerow(['Total sales (PHP)', f"{sales:.2f}"])
+    w.writerow(['Orders', len(live)])
+    w.writerow(['Average order (PHP)', f"{(sales / len(live) if live else 0):.2f}"])
+    w.writerow(['Dine in', sum(1 for row in live if row.get('service') == 'dine-in')])
+    w.writerow(['Pickup', sum(1 for row in live if row.get('service') != 'dine-in')])
+    w.writerow(['Card members', len(members)])
+    w.writerow(['Walk-ins', len(live) - len(members)])
+    w.writerow(['Paid orders', payments['paid']['orders'], f"{payments['paid']['sales']:.2f}"])
+    w.writerow(['Cash waiting for payment', len(unpaid_cash), f"{sum(_money(r.get('total')) for r in unpaid_cash):.2f}"])
+    w.writerow(['Cancelled (not in sales)', len(cancelled), f"{sum(_money(r.get('total')) for r in cancelled):.2f}"])
+    w.writerow([])
+    w.writerow(['BY PAYMENT METHOD', 'Orders', 'Sales (PHP)'])
+    for method in payments['by_method']:
+        w.writerow([method['label'], method['orders'], f"{method['sales']:.2f}"])
+    if not payments['by_method']:
+        w.writerow(['No orders'])
+    if not branch:
+        per_branch = defaultdict(lambda: [0, 0.0])
+        names = {}
+        for row in live:
+            names[branch_key(row)] = branch_label(row)
+            per_branch[branch_key(row)][0] += 1
+            per_branch[branch_key(row)][1] += _money(row.get('total'))
+        if len(per_branch) > 1:
+            w.writerow([])
+            w.writerow(['BY BRANCH', 'Orders', 'Sales (PHP)'])
+            for key, (count, amount) in sorted(per_branch.items(), key=lambda kv: -kv[1][1]):
+                w.writerow([names[key], count, f"{amount:.2f}"])
+    w.writerow([])
+    w.writerow(['ORDERS'])
+    w.writerow(['Order no.', 'Date', 'Time', 'Branch', 'Customer', 'Card member', 'Service', 'Items', 'Total (PHP)', 'Payment', 'Payment status', 'Order status'])
+    for row in scoped:
+        placed = parse_when(row.get('created_at'))
+        method = str(row.get('payment_method') or '')
+        w.writerow([
+            row.get('order_number') or '', placed.date().isoformat() if placed else '', _clock(placed) if placed else '',
+            branch_label(row), _customer_label(row), 'Yes' if row.get('member_customer_public_id') else 'No',
+            'Dine in' if row.get('service') == 'dine-in' else 'Pickup', _item_text(row), f"{_money(row.get('total')):.2f}",
+            PAYMENT_METHODS.get(method, 'Not recorded'),
+            PAYMENT_STATUS_LABELS.get(str(row.get('payment_status') or ''), 'Paid' if not row.get('payment_status') else str(row.get('payment_status'))),
+            ORDER_STATUS_LABELS.get(str(row.get('status') or 'new'), str(row.get('status') or '')),
+        ])
+    if not scoped:
+        w.writerow(['No orders for this date.'])
+    w.writerow([])
+    w.writerow(['TOP ITEMS', 'Qty', 'Sales (PHP)'])
+    for item in items:
+        w.writerow([item['name'], item['quantity'], f"{item['sales']:.2f}"])
+    if not items:
+        w.writerow(['No items sold'])
+    w.writerow([])
+    w.writerow(['WHO BOUGHT WHAT', 'Group', 'Orders', 'Share %', 'Bought most'])
+    sections = {section['key']: section for section in insights['sections']}
+    for key in REPORT_SECTIONS:
+        section = sections.get(key)
+        if not section:
+            continue
+        groups = section.get('groups') or []
+        if not groups:
+            w.writerow([section['title'], 'No card data for this date'])
+            continue
+        for group in groups:
+            if not group['orders']:
+                continue
+            if group['hidden']:
+                # Counts are hidden too, so a small group can't be matched to a name in ORDERS.
+                w.writerow([section['title'], group['label'], '', '',
+                            f"Hidden for privacy (needs {MIN_GROUP_ORDERS}+ orders from {MIN_GROUP_MEMBERS}+ people)"])
+                continue
+            most = ', '.join(f"{item['name']} x{item['quantity']}" for item in group['top_items']) or '-'
+            w.writerow([section['title'], group['label'], group['orders'], group['share_percent'], most])
+    w.writerow([])
+    w.writerow(['Notes'])
+    w.writerow(['Age range, gender and occupation come only from loyalty cards connected on the menu.'])
+    w.writerow(['Small groups are hidden so one customer cannot be identified. Weekly or monthly reports show more groups.'])
+    w.writerow(['Phone numbers and emails are not included.'])
+
+    lines = [f"{business_name or 'LoyaltyTree'} · {scope_label}", f"Sales report · {when_label}",
+             f"Sales {_peso(sales)} · {len(live)} {'order' if len(live) == 1 else 'orders'}"
+             + (f" · Avg {_peso(sales / len(live))}" if live else '')]
+    if unpaid_cash:
+        lines.append(f"Cash waiting for payment: {len(unpaid_cash)} ({_peso(sum(_money(r.get('total')) for r in unpaid_cash))})")
+    if cancelled:
+        lines.append(f"Cancelled: {len(cancelled)}")
+    if items:
+        lines.append('Top: ' + ', '.join(f"{item['name']} x{item['quantity']}" for item in items[:3]))
+    lines.append('Full details are in the attached file.')
+    return {
+        'csv': out.getvalue(), 'text': '\n'.join(lines),
+        'filename': report_filename(business_name, branch_name if branch else '', start_day, end_day),
+        'start': start_day.isoformat(), 'end': end_day.isoformat(), 'branch': branch or '',
+        'orders': len(live), 'sales': sales, 'cancelled': len(cancelled),
+    }
+
+
+def _branch_name(db, business_id, branch, rows):
+    if not branch:
+        return ''
+    for row in rows:
+        if branch_key(row) == branch and str(row.get('branch_name') or '').strip():
+            return str(row.get('branch_name')).strip()
+    try:
+        found = (db.table('branches').select('public_id,name').eq('business_id', business_id)
+                 .eq('public_id', branch).limit(1).execute().data or [])
+    except Exception:
+        found = []
+    return str((found[0].get('name') if found else '') or 'Branch')
+
+
 def register_menu_order_insight_routes(app, *, db, get_business, require_owner, friendly_error=str):
     def business_for(public_id, authorization):
         require_owner(public_id, authorization)
@@ -545,6 +728,35 @@ def register_menu_order_insight_routes(app, *, db, get_business, require_owner, 
         except Exception as exc:
             raise HTTPException(status_code=503, detail=f'Menu orders are not ready yet: {friendly_error(exc)}')
         return daily_summary(rows, day, branch.strip())
+
+    @app.get('/api/v1/business/{public_id}/menu-orders/report')
+    def menu_orders_report(public_id: str, date: str = '', branch: str = '', period: str = '', format: str = 'csv',
+                           authorization: str = Header(default='')):
+        """Download a sales report: one day (default today, Manila) or this week / this month."""
+        business = business_for(public_id, authorization)
+        today = datetime.now(MANILA).date()
+        chosen = normalize_period(period)
+        if chosen and not date:
+            start_day, end_day, _, _ = period_days(chosen, today)
+            end_day = end_day - timedelta(days=1)
+        else:
+            try:
+                start_day = end_day = datetime.strptime(date, '%Y-%m-%d').date() if date else today
+            except ValueError:
+                raise HTTPException(status_code=400, detail='Use a date like 2026-11-21.')
+        since, until = manila_range_bounds(start_day, end_day + timedelta(days=1))
+        branch = branch.strip()
+        try:
+            rows = read_orders(db, business['id'], since, until)
+            customers = read_customers(db, business['id'], [row.get('member_customer_public_id') for row in filter_branch(rows, branch)])
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f'Menu orders are not ready yet: {friendly_error(exc)}')
+        report = sales_report(rows, customers, start_day, end_day, branch,
+                              str(business.get('name') or ''), _branch_name(db, business['id'], branch, rows))
+        if str(format or '').lower() == 'json':
+            return report
+        return Response(content=('\ufeff' + report['csv']).encode('utf-8'), media_type='text/csv; charset=utf-8',
+                        headers={'Content-Disposition': f'attachment; filename="{report["filename"]}"', 'Cache-Control': 'no-store'})
 
     @app.patch('/api/v1/business/{public_id}/menu-orders/{order_public_id}/payment')
     def menu_order_mark_paid(public_id: str, order_public_id: str, authorization: str = Header(default='')):

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { readBenefitsSession } from './benefitsModel'
 import { requestJsonResponse } from './requestTimeout'
+import { readKnownCard, rememberJoinedCard, forgetKnownCard, welcomeTitle, cardProgress, sameBusiness } from './joinWelcomeModel'
 
 const EMPLOYEE_POSITION_OPTIONS = [
   'Manager', 'Supervisor / Team Lead', 'Admin / Office Staff', 'Cashier',
@@ -240,6 +241,58 @@ function CustomerJoin({ API_BASE }) {
     return () => controller.abort()
   }, [API_BASE, businessSlug, businessInfo?.public_id])
 
+  // Welcome back: a card for this business is already saved on this phone.
+  const welcomeIds = [businessInfo?.public_id, businessSlug]
+  const [knownCard, setKnownCard] = useState(() => {
+    try { return readKnownCard(window.localStorage, [businessSlug]) } catch { return null }
+  })
+  const [knownProgress, setKnownProgress] = useState(null)
+  useEffect(() => {
+    let storage = null
+    try { storage = window.localStorage } catch { storage = null }
+    const found = readKnownCard(storage, welcomeIds)
+    setKnownCard(found)
+    setKnownProgress(null)
+    if (!found) return undefined
+    const controller = new AbortController()
+    const forget = () => { forgetKnownCard(storage, [found.businessId]); if (!controller.signal.aborted) setKnownCard(null) }
+    const loadCustomer = async (id, name) => {
+      const response = await fetch(`${API_BASE}/api/v1/customer/${encodeURIComponent(id)}`, { signal: controller.signal, cache: 'no-store' })
+      if (response.status === 404) return forget()
+      if (!response.ok) return undefined
+      const payload = await response.json()
+      if (!sameBusiness(payload, welcomeIds)) return forget()
+      if (controller.signal.aborted) return undefined
+      const liveName = String(payload?.customer?.name || name || '')
+      setKnownCard(current => current ? { ...current, customerId: id, name: liveName || current.name } : current)
+      setKnownProgress(cardProgress(payload))
+      return undefined
+    }
+    ;(async () => {
+      try {
+        if (found.customerId) return await loadCustomer(found.customerId, found.name)
+        // Connected on the digital menu: the menu token tells us whose card it is.
+        const response = await fetch(`${API_BASE}/api/v1/public/menu/${encodeURIComponent(found.businessId)}/card`, { headers: { Authorization: `Bearer ${found.token}` }, signal: controller.signal, cache: 'no-store' })
+        if (response.status === 401) return forget()
+        if (!response.ok) return undefined
+        const body = await response.json()
+        if (body.customer_public_id) {
+          rememberJoinedCard(storage, found.businessId, body.customer_public_id, body.name || found.name)
+          return await loadCustomer(body.customer_public_id, body.name || found.name)
+        }
+        if (body.name && !controller.signal.aborted) setKnownCard(current => current ? { ...current, name: body.name } : current)
+      } catch { /* offline: keep the saved welcome */ }
+      return undefined
+    })()
+    return () => controller.abort()
+  }, [API_BASE, businessSlug, businessInfo?.public_id])
+
+  const switchCard = () => {
+    try { forgetKnownCard(window.localStorage, welcomeIds) } catch { /* ignore */ }
+    setKnownCard(null)
+    setKnownProgress(null)
+  }
+
   useEffect(() => {
     if (!submitted || !customerId) return
     setWalletLoading(true)
@@ -347,6 +400,7 @@ function CustomerJoin({ API_BASE }) {
       const data = await res.json()
       if (res.ok) {
         setCustomerId(data.public_id)
+        try { rememberJoinedCard(window.localStorage, businessInfo?.public_id || businessSlug, data.public_id, form.name) } catch { /* storage is optional */ }
         setWelcomeRewardIssued(data.welcome_reward || null)
         setSubmitted(true)
       } else {
@@ -402,14 +456,36 @@ function CustomerJoin({ API_BASE }) {
             </section>
           ) : null}
           <section style={styles.guestCards}>
-            <button type="button" onClick={() => setJoining(true)} style={styles.guestJoin}>
-              <span style={styles.guestCopy}>
-                <span style={styles.guestKicker}>Member rewards <span style={styles.guestPill}>No app needed</span></span>
-                <strong style={styles.guestJoinTitle}>Join the loyalty card</strong>
-                <span style={styles.guestHint}>Save the stamp card to Apple and Google Wallet</span>
-              </span>
-              <span style={styles.guestJoinArrow}>{chevron}</span>
-            </button>
+            {knownCard ? (
+              <div style={styles.guestWelcome}>
+                <span style={styles.guestKicker}>Your loyalty card</span>
+                <strong style={styles.guestJoinTitle}>{welcomeTitle(knownCard.name)}</strong>
+                {knownProgress ? (
+                  <>
+                    <span style={styles.guestWelcomeCount}>{knownProgress.label}</span>
+                    {knownProgress.percent !== null && (
+                      <span style={styles.guestBarTrack} aria-hidden="true"><span style={{ ...styles.guestBarFill, width: `${knownProgress.percent}%` }} /></span>
+                    )}
+                    {knownProgress.note ? <span style={styles.guestHint}>{knownProgress.note}</span> : null}
+                  </>
+                ) : (
+                  <span style={styles.guestHint}>Your card is already connected on this phone.</span>
+                )}
+                {knownCard.customerId ? (
+                  <a href={`${API_BASE}/wallet/${encodeURIComponent(knownCard.customerId)}`} style={styles.guestWelcomeBtn}>View my card</a>
+                ) : null}
+                <button type="button" onClick={switchCard} style={styles.guestNotYou}>Not you? Use another card</button>
+              </div>
+            ) : (
+              <button type="button" onClick={() => setJoining(true)} style={styles.guestJoin}>
+                <span style={styles.guestCopy}>
+                  <span style={styles.guestKicker}>Member rewards <span style={styles.guestPill}>No app needed</span></span>
+                  <strong style={styles.guestJoinTitle}>Join the loyalty card</strong>
+                  <span style={styles.guestHint}>Save the stamp card to Apple and Google Wallet</span>
+                </span>
+                <span style={styles.guestJoinArrow}>{chevron}</span>
+              </button>
+            )}
             {menuPublished && (
               <a href={menuHref} style={styles.guestCard}>
                 <span style={styles.guestCopy}>
@@ -527,7 +603,7 @@ function CustomerJoin({ API_BASE }) {
               <span style={{fontSize:20}}>◫</span>
               Add to Wallet
             </button>
-            {!isEmployeeExperience && <p style={{fontSize:13,lineHeight:1.6,color:'#64748b'}}>{benefitsReady ? <>Want your shared LT Points and coupons? <a href={`/benefits?business=${encodeURIComponent(businessSlug || '')}`}>Open Loyalty Tree Benefits</a> and verify your email.</> : <>Loyalty Tree Points — <a href={`/benefits?business=${encodeURIComponent(businessSlug || '')}`}>Coming soon</a>.</>} Your business loyalty card is ready to use.</p>}
+            {!isEmployeeExperience && <p style={{fontSize:13,lineHeight:1.6,color:'#64748b'}}>{benefitsReady ? <>Want your shared LT Points and coupons? <a href={`/benefits?business=${encodeURIComponent(businessSlug || '')}`}>Open Loyalty Tree Benefits</a> and verify your email.</> : <>Loyalty Tree Points · <a href={`/benefits?business=${encodeURIComponent(businessSlug || '')}`}>Coming soon</a>.</>} Your business loyalty card is ready to use.</p>}
 
             {walletChoiceOpen && (
               <div style={styles.walletChooser}>
@@ -995,6 +1071,15 @@ const styles = {
     borderRadius: 18, padding: '15px 16px', cursor: 'pointer', fontFamily: 'inherit',
     background: '#ddf7ea', border: '1px solid rgba(15,118,110,.28)',
   },
+  guestWelcome: {
+    width: '100%', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2, textAlign: 'left',
+    borderRadius: 18, padding: '15px 16px', background: '#ddf7ea', border: '1px solid rgba(15,118,110,.28)',
+  },
+  guestWelcomeCount: { display: 'block', marginTop: 8, fontSize: 15, fontWeight: 800, color: '#073f36' },
+  guestBarTrack: { display: 'block', width: '100%', height: 8, marginTop: 6, borderRadius: 99, background: 'rgba(15,118,110,.15)', overflow: 'hidden' },
+  guestBarFill: { display: 'block', height: '100%', borderRadius: 99, background: '#0f766e' },
+  guestWelcomeBtn: { display: 'inline-block', marginTop: 12, padding: '10px 16px', borderRadius: 12, background: '#0f766e', color: '#fff', fontSize: 13, fontWeight: 800, textDecoration: 'none' },
+  guestNotYou: { marginTop: 10, padding: 0, border: 0, background: 'none', color: '#475569', fontSize: 12, textDecoration: 'underline', cursor: 'pointer', fontFamily: 'inherit' },
   guestCard: {
     width: '100%', boxSizing: 'border-box', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, textDecoration: 'none', color: 'inherit',
     borderRadius: 18, padding: '15px 16px', background: '#fff', border: '1px solid rgba(123,202,167,.5)',

@@ -376,6 +376,7 @@ private fun OrdersScreen(store: CounterStore) {
             }
         }
         store.daySummary?.let { DaySummaryCard(it, showBranches = store.ordersBranch.isBlank() && store.branches.size > 1) }
+        SalesReportCard(store)
         if (store.ordersNote.isNotBlank()) Text(store.ordersNote, color = Bad, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
         if (current.isEmpty()) Text("No current orders.", color = Muted)
         current.forEach { OrderCard(store, it) }
@@ -423,6 +424,37 @@ private fun BranchChip(title: String, selected: Boolean, onClick: () -> Unit) {
     Box(Modifier.clip(RoundedCornerShape(99.dp)).background(if (selected) Forest else Color.White).border(1.dp, if (selected) Forest else Line, RoundedCornerShape(99.dp)).clickable { tick(view); onClick() }.padding(horizontal = 16.dp, vertical = 9.dp), contentAlignment = Alignment.Center) {
         Text(title, color = if (selected) Color.White else Forest, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1)
     }
+}
+
+@Composable
+private fun SalesReportCard(store: CounterStore) {
+    val context = LocalContext.current
+    val branchName = store.branches.firstOrNull { it.id == store.ordersBranch }?.name
+    Card {
+        Text("SALES REPORT", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        Text("Download a file with every order, totals, top items and who bought what. Send it on Messenger, Viber or email.", color = Muted, fontSize = 13.sp, lineHeight = 18.sp)
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("Today" to "today", "Yesterday" to "yesterday", "This week" to "week", "This month" to "month").forEach { (label, id) ->
+                BranchChip(label, store.reportRange == id) { store.reportRange = id }
+            }
+        }
+        Text(if (branchName != null) branchLabel(branchName) else "All branches", color = Forest, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        Primary(if (store.reportBusy) "Preparing report…" else "Download & share report", enabled = !store.reportBusy) {
+            store.downloadReport { report -> shareReport(context, report) }
+        }
+        if (store.reportNote.isNotBlank()) Text(store.reportNote, color = if (store.reportNote.startsWith("Saved")) Forest else Bad, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+private fun shareReport(context: Context, report: ShareReport) {
+    val send = Intent(Intent.ACTION_SEND).putExtra(Intent.EXTRA_SUBJECT, report.filename.removeSuffix(".csv")).putExtra(Intent.EXTRA_TEXT, report.text)
+    if (report.uri != null) {
+        send.setType("text/csv").putExtra(Intent.EXTRA_STREAM, report.uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        send.clipData = ClipData.newRawUri(report.filename, report.uri)
+    } else {
+        send.setType("text/plain")
+    }
+    runCatching { context.startActivity(Intent.createChooser(send, "Send sales report")) }
 }
 
 @Composable

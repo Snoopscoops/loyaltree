@@ -8,6 +8,7 @@ from backend.menu_order_insights import (
     daily_summary, insert_order, manila_day_bounds, member_from_card_token, missing_column,
     order_insights, payment_breakdown, payment_fields, register_menu_order_insight_routes, resolve_branch, top_items,
     cash_awaiting_payment, kpi_changes, kpis, normalize_period, period_days, period_report, ranked_items, sales_trend, split_period,
+    report_filename, sales_report,
 )
 
 
@@ -327,3 +328,74 @@ class MainSourceTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ReportTests(unittest.TestCase):
+    def rows(self):
+        return [
+            dict(order(1, '2026-11-21T01:05:00+00:00', 250, branch='bgc', branch_name='BGC', member='c1', items=(('Spanish Latte', 2),)),
+                 buyer_name='Ana Cruz', payment_method='qrph', payment_status='paid_test', phone='09171234567'),
+            dict(order(2, '2026-11-21T05:30:00+00:00', 120, service='pickup', branch='main', branch_name='Main', items=(('Americano', 1),)),
+                 buyer_name='Customer', payment_method='cash', payment_status='unpaid'),
+            dict(order(3, '2026-11-21T06:00:00+00:00', 90, status='cancelled', branch='bgc', branch_name='BGC'), buyer_name='Ben'),
+        ]
+
+    def test_report_has_header_totals_orders_items_and_groups(self):
+        customers = [{'public_id': 'c1', 'created_at': '2025-01-01T00:00:00+00:00', 'age_bracket': '25_34', 'gender': 'female'}]
+        made = datetime(2026, 11, 21, 18, 5, tzinfo=timezone.utc)
+        report = sales_report(self.rows(), customers, date(2026, 11, 21), date(2026, 11, 21), '', 'Mirah Krey', '', made)
+        text = report['csv']
+        self.assertIn('Business,Mirah Krey', text)
+        self.assertIn('Branch,All branches', text)
+        self.assertIn('Date,"Sat, Nov 21, 2026"', text)
+        self.assertIn('Generated,"Sun, Nov 22, 2026 2:05 AM PHT"', text)
+        self.assertIn('Total sales (PHP),370.00', text)
+        self.assertIn('Cash waiting for payment,1,120.00', text)
+        self.assertIn('Cancelled (not in sales),1,90.00', text)
+        self.assertIn('LT-1,2026-11-21,9:05 AM,BGC,Ana Cruz,Yes,Dine in,Spanish Latte x2,250.00,GCash / Maya / Bank (QR Ph),Paid (test),New', text)
+        self.assertIn('LT-2,2026-11-21,1:30 PM,Main,Walk-in,No,Pickup,Americano x1,120.00,Cash,Waiting for payment,New', text)
+        self.assertIn('BY BRANCH', text)
+        self.assertIn('Spanish Latte,2,0.00', text)
+        # One member: the age group is listed but its items are hidden for privacy.
+        self.assertIn('By age range,', text)
+        self.assertIn('Hidden for privacy', text)
+        self.assertNotIn('0917', text)
+        self.assertEqual(report['filename'], 'mirah-krey-all-branches-sales-2026-11-21.csv')
+        self.assertIn('Sales \u20b1370.00 · 2 orders', report['text'])
+        self.assertIn('Cash waiting for payment: 1', report['text'])
+
+    def test_branch_report_and_filename(self):
+        report = sales_report(self.rows(), [], date(2026, 11, 21), date(2026, 11, 21), 'bgc', 'Mirah Krey', 'BGC')
+        self.assertEqual((report['orders'], report['sales'], report['cancelled']), (1, 250.0, 1))
+        self.assertNotIn('Americano', report['csv'])
+        self.assertNotIn('BY BRANCH', report['csv'])
+        self.assertEqual(report['filename'], 'mirah-krey-bgc-sales-2026-11-21.csv')
+        self.assertEqual(report_filename('', '', date(2026, 11, 1), date(2026, 11, 21)), 'loyaltytree-all-branches-sales-2026-11-01-to-2026-11-21.csv')
+        empty = sales_report([], [], date(2026, 11, 21), date(2026, 11, 21))
+        self.assertIn('No orders for this date.', empty['csv'])
+
+    def test_report_route_needs_owner_and_returns_csv_or_json(self):
+        today = datetime.now(timezone.utc).isoformat()
+        db = DB({'menu_counter_orders': [dict(order(1, today, 200, branch='bgc', branch_name='BGC'), buyer_name='Ana')], 'customers': [],
+                 'branches': [{'business_id': 1, 'public_id': 'bgc', 'name': 'BGC'}]})
+        app = FastAPI()
+        def owner(public_id, authorization):
+            if authorization != 'Bearer ok':
+                raise HTTPException(401, 'no')
+        register_menu_order_insight_routes(app, db=db, get_business=lambda pid: {'id': 1, 'public_id': pid, 'name': 'Mirah Krey'}, require_owner=owner)
+        client = TestClient(app)
+        auth = {'Authorization': 'Bearer ok'}
+        self.assertEqual(client.get('/api/v1/business/b/menu-orders/report').status_code, 401)
+        self.assertEqual(client.get('/api/v1/business/b/menu-orders/report?date=nope', headers=auth).status_code, 400)
+        response = client.get('/api/v1/business/b/menu-orders/report', headers=auth)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.headers['content-type'].startswith('text/csv'))
+        self.assertIn('attachment; filename="mirah-krey-all-branches-sales-', response.headers['content-disposition'])
+        self.assertTrue(response.content.startswith('\ufeff'.encode('utf-8')))
+        body = client.get('/api/v1/business/b/menu-orders/report?format=json&branch=bgc', headers=auth).json()
+        self.assertEqual((body['orders'], body['sales']), (1, 200.0))
+        self.assertTrue(body['filename'].startswith('mirah-krey-bgc-sales-'))
+        self.assertIn('Ana', body['csv'])
+        week = client.get('/api/v1/business/b/menu-orders/report?format=json&period=week', headers=auth).json()
+        self.assertEqual(week['orders'], 1)
+        self.assertLessEqual(week['start'], week['end'])

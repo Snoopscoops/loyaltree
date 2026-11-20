@@ -63,6 +63,7 @@ data class DaySummary(
     val paid: String = "",
     val unpaid: String = ""
 )
+data class ShareReport(val uri: android.net.Uri?, val filename: String, val text: String)
 data class Cashier(val id: String, val name: String, val email: String, val role: String, val active: Boolean, val branchId: String, val branchName: String)
 data class InsightSection(val id: String, val title: String, val note: String, val rows: List<NamedCount>)
 data class Kpi(val label: String, val value: String, val change: Double?, val inPoints: Boolean = false)
@@ -118,6 +119,9 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     var orderBusy by mutableStateOf("")
     var ordersBranch by mutableStateOf("")
     var daySummary by mutableStateOf<DaySummary?>(null)
+    var reportRange by mutableStateOf("today")
+    var reportBusy by mutableStateOf(false)
+    var reportNote by mutableStateOf("")
     var insights by mutableStateOf<List<InsightSection>>(emptyList())
     var insightsTop by mutableStateOf<List<NamedCount>>(emptyList())
     var insightsNote by mutableStateOf("")
@@ -380,6 +384,70 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
                 }
             }
         )
+    }
+
+    /** Download the sales report (CSV) for the Orders branch filter, then hand it to [done] to share. */
+    fun downloadReport(done: (ShareReport) -> Unit) {
+        val current = session ?: return
+        if (reportBusy) return
+        val query = when (reportRange) {
+            "yesterday" -> {
+                val day = Calendar.getInstance(TimeZone.getTimeZone("Asia/Manila"))
+                day.add(Calendar.DAY_OF_MONTH, -1)
+                "date=${manila(day)}"
+            }
+            "week" -> "period=week"
+            "month" -> "period=month"
+            else -> "date=${manila()}"
+        }
+        val branch = java.net.URLEncoder.encode(ordersBranch, "UTF-8")
+        viewModelScope.launch {
+            reportBusy = true
+            reportNote = ""
+            val result = io { API.get("/api/v1/business/${current.slug}/menu-orders/report?format=json&$query&branch=$branch", current.token) }
+            if (result == null || result.first >= 400) {
+                reportBusy = false
+                reportNote = if (result == null) "Could not reach the server." else API.message(result.second, "The sales report is not ready yet.")
+                return@launch
+            }
+            val json = result.second as? JSONObject
+            val csv = json?.optString("csv").orEmpty()
+            if (json == null || csv.isBlank()) {
+                reportBusy = false
+                reportNote = "The sales report is not ready yet. Update the server first."
+                return@launch
+            }
+            val filename = json.optString("filename").ifBlank { "loyaltytree-sales-${manila()}.csv" }
+            val text = json.optString("text")
+            val uri = io { saveToDownloads(filename, csv) }
+            reportBusy = false
+            reportNote = if (uri != null) "Saved to Downloads/LoyaltyTree: $filename" else "Could not save the file on this phone, so only the summary text is shared."
+            done(ShareReport(uri, filename, text))
+        }
+    }
+
+    /** Saves into Downloads/LoyaltyTree (Android 10+, no storage permission needed). */
+    private fun saveToDownloads(filename: String, csv: String): android.net.Uri? {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q) return null
+        val resolver = getApplication<Application>().contentResolver
+        val values = android.content.ContentValues().apply {
+            put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, filename)
+            put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "text/csv")
+            put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS + "/LoyaltyTree")
+        }
+        val uri = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return null
+        val written = runCatching {
+            resolver.openOutputStream(uri)?.use { stream ->
+                // The BOM makes Excel and Google Sheets show the peso sign correctly.
+                stream.write("\uFEFF$csv".toByteArray(Charsets.UTF_8))
+                true
+            } ?: false
+        }.getOrDefault(false)
+        if (!written) {
+            runCatching { resolver.delete(uri, null, null) }
+            return null
+        }
+        return uri
     }
 
     fun markPaid(id: String) {

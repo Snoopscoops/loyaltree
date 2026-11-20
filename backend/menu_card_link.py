@@ -128,4 +128,5 @@ def register_menu_card_routes(app, *, db, get_business, has_feature, on_hold, se
                 name = live
         if name == "Loyalty card":
             name = ""
-        return dict(name=name, email_masked=mask_email(payload.get("email") or ""))
+        # customer_public_id lets the tap/scan page say "Welcome back" with card progress.
+        return dict(name=name, email_masked=mask_email(payload.get("email") or ""), customer_public_id=customer_public_id)
