@@ -214,7 +214,7 @@ const placedOrder = { ...buildMenuOrder({ merchantId: business.public_id, cart, 
 setOrder(placedOrder);
 const menuBusinessId = placedOrder.merchant_id || placedOrder.merchantId;
 if (menuBusinessId) {
-  fetch(API_BASE + '/api/v1/public/menu/' + encodeURIComponent(menuBusinessId) + '/orders', {
+  fetch(apiBase + '/api/v1/public/menu/' + encodeURIComponent(menuBusinessId) + '/orders', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
