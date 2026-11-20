@@ -1,6 +1,6 @@
 import React, { useEffect, useId, useRef, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
-import { filterMenuItems, groupMenuCategories, menuItemAvailable, menuItemPrice, toggleMenuOption, validMenuPayload, addCartItem, changeCartQuantity, cartSubtotal, buildMenuOrder, sendMenuOrder, pickupTimeLabel, resolveMenuBranch } from './qrMenuModel'
+import { filterMenuItems, groupMenuCategories, menuItemAvailable, menuItemPrice, toggleMenuOption, validMenuPayload, addCartItem, changeCartQuantity, cartSubtotal, buildMenuOrder, sendMenuOrder, pickupTimeLabel, resolveMenuBranch, PAYMENT_METHODS, paymentReceiptLabel } from './qrMenuModel'
 import loyaltyTreeLogo from './logo-192.png'
 import { requestJsonResponse } from './requestTimeout'
 import './qr-menu.css'
@@ -189,6 +189,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState('')
   const [copied, setCopied] = useState(false)
+  const [paymentMethod, setPaymentMethod] = useState('')
   const submittingRef = useRef(false)
   // One order number + payment reference per checkout. A retry after a failed
   // save reuses them so the shop never gets two different orders for one tap.
@@ -277,10 +278,13 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
     setPayStep('service')
   }
 
+  const cardToken = () => { try { return localStorage.getItem(`lt-menu-card:${business.public_id}`) || '' } catch { return '' } }
+
   async function submitOrder() {
     if (submittingRef.current) return
     if (!cart.length) { setSubmitError('Your cart is empty.'); return }
     if (needsBranch) { setSubmitError('Choose your branch first.'); return }
+    if (!PAYMENT_METHODS[paymentMethod]) { setSubmitError('Choose how you’ll pay.'); return }
     if (!apiBase) { setSubmitError('Ordering is not available in preview.'); return }
     if (!pendingIds.current) {
       const stamp = Date.now().toString(36).toUpperCase()
@@ -297,9 +301,11 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
       payment_reference: ids.payment_reference,
       status: 'awaiting_payment',
       lines: cart.map(line => ({ ...line })),
-      // Shown on the receipt. The current server endpoint does not store a branch.
+      // Sent with the order so the owner app can show the branch and member.
       branch_public_id: branchId,
       branch_name: branch?.name || '',
+      card_token: cardToken(),
+      payment_method: paymentMethod,
     }
     submittingRef.current = true
     setSubmitting(true)
@@ -458,13 +464,20 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
               <div><dt>Subtotal</dt><dd>{money(total)}</dd></div>
               <div className="is-total"><dt>Total</dt><dd>{money(total)}</dd></div>
             </dl>
-            <p className="lt-qr-test-note">Test payment. Your order will be sent to the shop.</p>
+            <fieldset className="lt-qr-pay-methods">
+              <legend>How will you pay?</legend>
+              {Object.entries(PAYMENT_METHODS).map(([value, method]) => <label key={value} className={paymentMethod === value ? 'is-on' : ''}>
+                <input type="radio" name="lt-qr-payment" value={value} checked={paymentMethod === value} disabled={submitting} onChange={() => { setPaymentMethod(value); setSubmitError('') }} />
+                <span><strong>{method.label}</strong><small>{method.detail}</small></span>
+              </label>)}
+            </fieldset>
+            <p className="lt-qr-test-note">{paymentMethod === 'cash' ? 'Your order will be sent to the shop. Pay at the counter.' : 'Test payment. Nothing is charged. Your order will be sent to the shop.'}</p>
           </div>}
 
           {step === 'done' && order && <div className="lt-qr-receipt" role="status">
             <span className="lt-qr-receipt-check" aria-hidden="true"><CheckIcon size={34} /></span>
             <h3>Order sent to {business.name}</h3>
-            <p className="lt-qr-receipt-sub">The shop has received your order.</p>
+            <p className="lt-qr-receipt-sub">{order.payment_method === 'cash' ? 'The shop has received your order. Pay at the counter.' : 'The shop has received your order.'}</p>
             <div className="lt-qr-receipt-number">
               <span>Order number</span>
               <strong>{order.order_number}</strong>
@@ -475,7 +488,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
               {order.branch_name && branches.length > 1 && <div><dt>Branch</dt><dd>{order.branch_name}</dd></div>}
               <div><dt>Order type</dt><dd>{serviceLine(order.service, order.table_no, order.pickup_label)}</dd></div>
               <div><dt>Name</dt><dd>{order.buyer_name || '—'}</dd></div>
-              <div><dt>Payment</dt><dd><span className="lt-qr-paid-pill">Paid · test</span></dd></div>
+              <div><dt>Payment</dt><dd><span className={`lt-qr-paid-pill${order.payment_method === 'cash' ? ' is-unpaid' : ''}`}>{paymentReceiptLabel(order.payment_method)}</span></dd></div>
             </dl>
             <ul className="lt-qr-cart-lines is-compact" aria-label="Items ordered">{(order.lines || []).map(line => <CartLine key={line.key} line={line} money={money} />)}</ul>
             <dl className="lt-qr-totals"><div className="is-total"><dt>Total paid</dt><dd>{money(order.subtotal)}</dd></div></dl>
@@ -494,7 +507,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
               <p><strong>Order not sent.</strong> {submitError}</p>
               <button type="button" onClick={submitOrder} disabled={submitting}>Try again</button>
             </div>}
-            {!submitError && <button type="button" className="lt-qr-primary lt-qr-wide" disabled={submitting} aria-busy={submitting} onClick={submitOrder}>{submitting ? <><span className="lt-qr-spinner" aria-hidden="true" />Sending order…</> : `Pay ${money(total)}`}</button>}
+            {!submitError && <button type="button" className="lt-qr-primary lt-qr-wide" disabled={submitting || !paymentMethod} aria-busy={submitting} onClick={submitOrder}>{submitting ? <><span className="lt-qr-spinner" aria-hidden="true" />Sending order…</> : !paymentMethod ? 'Choose how you’ll pay' : paymentMethod === 'cash' ? `Place order · ${money(total)}` : `Pay ${money(total)} (test)`}</button>}
             <button type="button" className="lt-qr-back-button" disabled={submitting} onClick={() => { setSubmitError(''); setPayStep('service') }}>Back</button>
           </>}
           {step === 'done' && <button type="button" className="lt-qr-primary lt-qr-wide" onClick={closeCart}>Back to menu</button>}

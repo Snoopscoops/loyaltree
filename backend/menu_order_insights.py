@@ -1,0 +1,386 @@
+"""Digital-menu orders: branch + member link, today's summary, and what groups order.
+
+Pure helpers are kept separate from the routes so they can be unit tested.
+Only data that really exists is used: the order rows themselves, plus the
+customer fields saved on a loyalty card (age range, gender, occupation, card
+join date) when the buyer connected their card on the menu.
+"""
+from collections import Counter, defaultdict
+from datetime import date, datetime, time as dtime, timedelta, timezone
+from zoneinfo import ZoneInfo
+import re
+
+from fastapi import Header, HTTPException
+
+try:
+    from .customer_demographics import AGE_LABELS, GENDER_LABELS, OCCUPATION_LABELS, age_bracket
+except ImportError:  # running from backend/
+    from customer_demographics import AGE_LABELS, GENDER_LABELS, OCCUPATION_LABELS, age_bracket
+
+MANILA = ZoneInfo('Asia/Manila')
+OPTIONAL_ORDER_COLUMNS = ('branch_public_id', 'branch_name', 'member_customer_public_id', 'payment_method')
+PAYMENT_METHODS = {'cash': 'Cash', 'qrph': 'GCash / Maya / Bank (QR Ph)', 'card': 'Card'}
+PAID_STATUSES = ('paid', 'paid_test')
+PAGE = 1000
+MAX_ROWS = 20000
+# Demographic groups are shown only with enough orders from enough people,
+# so one regular's order history can't be read off the screen.
+MIN_GROUP_ORDERS = 5
+MIN_GROUP_MEMBERS = 3
+NEW_MEMBER_DAYS = 30
+TIME_SLOTS = (('morning', 'Morning (before 11 AM)', 0, 11), ('midday', 'Lunch (11 AM–2 PM)', 11, 14),
+              ('afternoon', 'Afternoon (2–5 PM)', 14, 17), ('evening', 'Evening (5 PM on)', 17, 24))
+WEEKDAYS = ('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday')
+
+
+# ---------------------------------------------------------------- writing ---
+
+def missing_column(exc, candidates):
+    """Name of an optional column the database says is missing, else None."""
+    message = str(getattr(exc, 'message', '') or exc)
+    code = str(getattr(exc, 'code', '') or '')
+    if code not in ('42703', 'PGRST204') and 'column' not in message.lower():
+        return None
+    for field in candidates:
+        if re.search(rf"\b{re.escape(field)}\b", message):
+            return field
+    return None
+
+
+def insert_order(db, row, optional=OPTIONAL_ORDER_COLUMNS):
+    """Insert, dropping optional columns the table does not have yet.
+
+    Until the owner runs menu_order_branches.sql the order still saves, just
+    without branch/member columns. Returns (saved_row, dropped_columns).
+    """
+    data = dict(row)
+    dropped = []
+    while True:
+        try:
+            result = db.table('menu_counter_orders').insert(data).execute()
+            rows = getattr(result, 'data', None) or []
+            return (rows[0] if rows else data), dropped
+        except Exception as exc:
+            field = missing_column(exc, [key for key in optional if key in data])
+            if not field:
+                raise
+            data.pop(field, None)
+            dropped.append(field)
+
+
+def payment_fields(method):
+    """(payment_method, payment_status). No real payments exist yet.
+
+    cash -> 'unpaid'     customer pays at the counter; staff marks it paid.
+    qrph -> 'paid_test'  mock GCash / Maya / bank QR Ph payment, nothing charged.
+    card -> 'paid_test'  mock card payment, nothing charged.
+    missing/unknown -> ('', 'paid') so older menus keep their old behavior.
+    The status is decided here, never taken from the browser.
+    """
+    value = str(method or '').strip().lower()
+    if value == 'cash':
+        return 'cash', 'unpaid'
+    if value in ('qrph', 'card'):
+        return value, 'paid_test'
+    return '', 'paid'
+
+
+def resolve_branch(db, business_id, branch_public_id):
+    """(public_id, name) for an active branch of this business. '' -> ('', '')."""
+    wanted = str(branch_public_id or '').strip()[:80]
+    if not wanted:
+        return '', ''
+    try:
+        rows = (db.table('branches').select('public_id,name,is_active')
+                .eq('business_id', business_id).eq('public_id', wanted).limit(1).execute().data or [])
+    except Exception:
+        # Never lose an order over a branch lookup hiccup; save it unassigned.
+        return '', ''
+    if not rows or rows[0].get('is_active') is False:
+        raise HTTPException(status_code=400, detail='That branch is not available. Choose another branch.')
+    return str(rows[0].get('public_id') or wanted), str(rows[0].get('name') or 'Branch')[:120]
+
+
+def member_from_card_token(token, business_public_id, read_token):
+    """customer_public_id from a connected menu card, or '' (walk-in).
+
+    A bad or expired card token never blocks an order; it is just not linked.
+    """
+    token = str(token or '').strip()
+    if not token or read_token is None:
+        return ''
+    try:
+        payload = read_token(token, 'session')
+    except Exception:
+        return ''
+    if str(payload.get('business_public_id') or '') != str(business_public_id):
+        return ''
+    return str(payload.get('customer_public_id') or '')[:80]
+
+
+# --------------------------------------------------------------- reading ---
+
+def manila_day_bounds(day):
+    start = datetime.combine(day, dtime.min, tzinfo=MANILA)
+    return start.astimezone(timezone.utc), (start + timedelta(days=1)).astimezone(timezone.utc)
+
+
+def parse_when(value):
+    try:
+        parsed = datetime.fromisoformat(str(value or '').replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    return (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).astimezone(MANILA)
+
+
+def read_orders(db, business_id, since_utc, until_utc=None):
+    rows, offset = [], 0
+    while offset < MAX_ROWS:
+        query = (db.table('menu_counter_orders').select('*').eq('business_id', business_id)
+                 .gte('created_at', since_utc.isoformat()))
+        if until_utc is not None:
+            query = query.lt('created_at', until_utc.isoformat())
+        page = query.order('created_at', desc=True).range(offset, offset + PAGE - 1).execute().data or []
+        rows.extend(page)
+        if len(page) < PAGE:
+            break
+        offset += PAGE
+    return rows
+
+
+def branch_key(row):
+    return str(row.get('branch_public_id') or '')
+
+
+def branch_label(row):
+    return str(row.get('branch_name') or '').strip() or 'No branch saved'
+
+
+def filter_branch(rows, branch):
+    return [row for row in rows if not branch or branch_key(row) == branch]
+
+
+def _items(row):
+    for item in row.get('items') or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get('item_name') or item.get('name') or 'Item').strip() or 'Item'
+        try:
+            qty = max(1, int(item.get('quantity') or 1))
+        except (TypeError, ValueError):
+            qty = 1
+        yield name, qty
+
+
+def _money(value):
+    try:
+        return round(float(value or 0), 2)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def top_items(rows, limit=3):
+    counts = Counter()
+    for row in rows:
+        for name, qty in _items(row):
+            counts[name] += qty
+    return [{'name': name, 'quantity': qty} for name, qty in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]]
+
+
+def daily_summary(rows, day, branch=''):
+    """Today's numbers. Cancelled orders are counted separately, not in sales."""
+    scoped = filter_branch(rows, branch)
+    live = [row for row in scoped if row.get('status') != 'cancelled']
+    per_branch = defaultdict(lambda: {'orders': 0, 'sales': 0.0, 'cancelled': 0})
+    names = {}
+    for row in scoped:
+        key = branch_key(row)
+        names[key] = branch_label(row)
+        bucket = per_branch[key]
+        if row.get('status') == 'cancelled':
+            bucket['cancelled'] += 1
+        else:
+            bucket['orders'] += 1
+            bucket['sales'] = round(bucket['sales'] + _money(row.get('total')), 2)
+    return {
+        'date': day.isoformat(),
+        'timezone': 'Asia/Manila',
+        'branch': branch or '',
+        'orders': len(live),
+        'sales': round(sum(_money(row.get('total')) for row in live), 2),
+        'dine_in': sum(1 for row in live if row.get('service') == 'dine-in'),
+        'pickup': sum(1 for row in live if row.get('service') != 'dine-in'),
+        'cancelled': len(scoped) - len(live),
+        'top_items': top_items(live, 3),
+        'payments': payment_breakdown(live),
+        'branches': sorted(({'public_id': key, 'name': names[key], **value} for key, value in per_branch.items()),
+                           key=lambda value: (-value['sales'], value['name'])),
+    }
+
+
+def payment_breakdown(rows):
+    methods = {key: {'method': key, 'label': label, 'orders': 0, 'sales': 0.0} for key, label in PAYMENT_METHODS.items()}
+    methods['other'] = {'method': 'other', 'label': 'Not recorded', 'orders': 0, 'sales': 0.0}
+    paid = {'orders': 0, 'sales': 0.0}
+    unpaid = {'orders': 0, 'sales': 0.0}
+    for row in rows:
+        amount = _money(row.get('total'))
+        bucket = methods.get(str(row.get('payment_method') or ''), methods['other'])
+        bucket['orders'] += 1
+        bucket['sales'] = round(bucket['sales'] + amount, 2)
+        target = unpaid if str(row.get('payment_status') or '') not in PAID_STATUSES else paid
+        target['orders'] += 1
+        target['sales'] = round(target['sales'] + amount, 2)
+    return {'by_method': [value for value in methods.values() if value['orders']], 'paid': paid, 'unpaid': unpaid}
+
+
+def _group(key, label, rows, members_needed=False):
+    people = {str(row.get('member_customer_public_id')) for row in rows if row.get('member_customer_public_id')}
+    hidden = members_needed and (len(rows) < MIN_GROUP_ORDERS or len(people) < MIN_GROUP_MEMBERS)
+    return {'key': key, 'label': label, 'orders': len(rows), 'hidden': hidden,
+            'top_items': [] if hidden else top_items(rows, 3)}
+
+
+def order_insights(rows, customers, today, branch='', days=30):
+    """What different groups order most, from real order and card data only."""
+    scoped = [row for row in filter_branch(rows, branch) if row.get('status') != 'cancelled']
+    by_id = {str(c.get('public_id')): c for c in customers if c.get('public_id')}
+    linked = [row for row in scoped if str(row.get('member_customer_public_id') or '') in by_id]
+    sections = []
+
+    walk_ins = [row for row in scoped if not row.get('member_customer_public_id')]
+    members = [row for row in scoped if row.get('member_customer_public_id')]
+    sections.append({'key': 'membership', 'title': 'Card members vs walk-ins', 'groups': [
+        _group('members', 'Loyalty card members', members, True), _group('walk_ins', 'Walk-ins (no card)', walk_ins)]})
+
+    new, returning = [], []
+    for row in linked:
+        joined = parse_when(by_id[str(row['member_customer_public_id'])].get('created_at'))
+        placed = parse_when(row.get('created_at'))
+        if joined and placed and placed - joined <= timedelta(days=NEW_MEMBER_DAYS):
+            new.append(row)
+        elif joined and placed:
+            returning.append(row)
+    sections.append({'key': 'tenure', 'title': 'New vs returning members', 'note': f'New = card made in the {NEW_MEMBER_DAYS} days before the order.',
+                     'groups': [_group('new', 'New members', new, True), _group('returning', 'Returning members', returning, True)]})
+
+    for field, title, labels in (('age', 'By age range', AGE_LABELS), ('gender', 'By gender', GENDER_LABELS),
+                                 ('occupation', 'By occupation', OCCUPATION_LABELS)):
+        buckets = defaultdict(list)
+        for row in linked:
+            customer = by_id[str(row['member_customer_public_id'])]
+            value = age_bracket(customer, today) if field == 'age' else str(customer.get(field) or '').strip().lower()
+            if value in labels:
+                buckets[value].append(row)
+        sections.append({'key': field, 'title': title,
+                         'groups': [_group(key, label, buckets[key], True) for key, label in labels.items() if buckets.get(key)]})
+
+    slots = defaultdict(list)
+    weekdays = defaultdict(list)
+    for row in scoped:
+        placed = parse_when(row.get('created_at'))
+        if not placed:
+            continue
+        for key, label, start, end in TIME_SLOTS:
+            if start <= placed.hour < end:
+                slots[key].append(row)
+        weekdays[placed.weekday()].append(row)
+    sections.append({'key': 'time', 'title': 'By time of day',
+                     'groups': [_group(key, label, slots[key]) for key, label, _, _ in TIME_SLOTS if slots.get(key)]})
+    sections.append({'key': 'weekday', 'title': 'By day of week',
+                     'groups': [_group(str(index), WEEKDAYS[index], weekdays[index]) for index in range(7) if weekdays.get(index)]})
+    if not branch:
+        per_branch = defaultdict(list)
+        names = {}
+        for row in scoped:
+            per_branch[branch_key(row)].append(row)
+            names[branch_key(row)] = branch_label(row)
+        sections.append({'key': 'branch', 'title': 'By branch',
+                         'groups': [_group(key or 'none', names[key], value) for key, value in sorted(per_branch.items(), key=lambda kv: -len(kv[1]))]})
+    return {
+        'days': days, 'branch': branch or '', 'timezone': 'Asia/Manila',
+        'orders': len(scoped), 'top_items': top_items(scoped, 5),
+        'member_orders': len(members), 'linked_member_orders': len(linked),
+        'member_coverage_percent': round(len(members) / len(scoped) * 100, 1) if scoped else None,
+        'privacy': {'min_group_orders': MIN_GROUP_ORDERS, 'min_group_members': MIN_GROUP_MEMBERS},
+        'notes': [
+            'Age range, gender and occupation come only from loyalty cards connected on the menu.',
+            'Customer city is not collected, so there is no location breakdown.',
+        ],
+        'sections': sections,
+    }
+
+
+def read_customers(db, business_id, public_ids):
+    ids = sorted({str(value) for value in public_ids if value})
+    found = []
+    columns = ['public_id', 'created_at', 'age_bracket', 'age', 'birthday', 'gender', 'occupation']
+    for start in range(0, len(ids), 100):
+        chunk = ids[start:start + 100]
+        while True:
+            try:
+                found.extend(db.table('customers').select(','.join(columns)).eq('business_id', business_id)
+                             .in_('public_id', chunk).execute().data or [])
+                break
+            except Exception as exc:
+                field = missing_column(exc, [c for c in columns if c not in ('public_id', 'created_at')])
+                if not field:
+                    raise
+                columns.remove(field)
+    return found
+
+
+def register_menu_order_insight_routes(app, *, db, get_business, require_owner, friendly_error=str):
+    def business_for(public_id, authorization):
+        require_owner(public_id, authorization)
+        business = get_business(public_id)
+        if not business:
+            raise HTTPException(status_code=404, detail='Business not found')
+        return business
+
+    @app.get('/api/v1/business/{public_id}/menu-orders/summary')
+    def menu_orders_summary(public_id: str, date: str = '', branch: str = '', authorization: str = Header(default='')):
+        business = business_for(public_id, authorization)
+        try:
+            day = datetime.strptime(date, '%Y-%m-%d').date() if date else datetime.now(MANILA).date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail='Use a date like 2026-11-21.')
+        start, end = manila_day_bounds(day)
+        try:
+            rows = read_orders(db, business['id'], start, end)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f'Menu orders are not ready yet: {friendly_error(exc)}')
+        return daily_summary(rows, day, branch.strip())
+
+    @app.patch('/api/v1/business/{public_id}/menu-orders/{order_public_id}/payment')
+    def menu_order_mark_paid(public_id: str, order_public_id: str, authorization: str = Header(default='')):
+        """Owner confirms a cash order was paid at the counter."""
+        business = business_for(public_id, authorization)
+        try:
+            rows = (db.table('menu_counter_orders').select('*').eq('business_id', business['id'])
+                    .eq('public_id', order_public_id).limit(1).execute().data or [])
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f'Could not load the order: {friendly_error(exc)}')
+        if not rows:
+            raise HTTPException(status_code=404, detail='Order not found')
+        if str(rows[0].get('payment_status') or '') in PAID_STATUSES:
+            return {'success': True, 'payment_status': rows[0].get('payment_status')}
+        try:
+            (db.table('menu_counter_orders').update({'payment_status': 'paid'})
+             .eq('business_id', business['id']).eq('public_id', order_public_id).execute())
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f'Could not update the payment: {friendly_error(exc)}')
+        return {'success': True, 'payment_status': 'paid'}
+
+    @app.get('/api/v1/business/{public_id}/menu-orders/insights')
+    def menu_orders_insights(public_id: str, days: int = 30, branch: str = '', authorization: str = Header(default='')):
+        business = business_for(public_id, authorization)
+        days = max(1, min(365, int(days or 30)))
+        today = datetime.now(MANILA).date()
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+        try:
+            rows = read_orders(db, business['id'], since)
+            customers = read_customers(db, business['id'], [row.get('member_customer_public_id') for row in rows])
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f'Menu orders are not ready yet: {friendly_error(exc)}')
+        return order_insights(rows, customers, today, branch.strip(), days)

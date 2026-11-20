@@ -25,6 +25,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -116,6 +117,7 @@ private sealed class Page {
     data object Account : Page()
     data object Billing : Page()
     data object Points : Page()
+    data object Cashiers : Page()
     data class Customer(val id: String) : Page()
 }
 
@@ -199,6 +201,7 @@ private fun Shell(store: CounterStore) {
                     Page.Account -> AccountScreen(store) { page = Page.Billing }
                     Page.Billing -> BillingScreen(store)
                     Page.Points -> PointsScreen()
+                    Page.Cashiers -> CashiersScreen(store)
                     is Page.Customer -> CustomerScreen(store, current.id)
                 }
             }
@@ -221,6 +224,7 @@ private fun pageTitle(page: Page, store: CounterStore): String = when (page) {
     Page.Account -> "Account"
     Page.Billing -> "Billing"
     Page.Points -> "LT Points"
+    Page.Cashiers -> "Cashiers"
     is Page.Customer -> store.members.firstOrNull { it.id == page.id }?.name ?: "Customer"
     Page.None -> ""
 }
@@ -294,6 +298,15 @@ private fun HomeScreen(store: CounterStore, openAnalytics: () -> Unit, openCampa
             Metric("Rewards", if (store.period == "today") store.todayRewards else store.cardRewards, Modifier.weight(1f))
             Metric("New", if (store.period == "today") store.todayNew else store.cardNew, Modifier.weight(1f))
         }
+        Primary(when (store.cardType) {
+            "stamp" -> "Add a stamp"
+            "points" -> "Add points"
+            else -> "Add a stamp / points"
+        }) {
+            // Reuses the existing LoyaltyTree cashier (scan the customer's QR or wallet card, or look them up).
+            val slug = Uri.encode(store.session?.slug.orEmpty())
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://theloyaltytree.com/cashier?business=$slug")))
+        }
         Text("${store.memberCount} members  ·  ${store.cameBackRate.toInt()}% came back", color = Forest, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Box(Modifier.weight(1f)) { Secondary("Analytics", openAnalytics) }
@@ -340,11 +353,19 @@ private fun HomeScreen(store: CounterStore, openAnalytics: () -> Unit, openCampa
 @Composable
 private fun OrdersScreen(store: CounterStore) {
     LaunchedEffect(store.session?.slug) { store.loadOrders() }
-    val current = store.orders.filter { it.status == "new" || it.status == "preparing" || it.status == "ready" }
-    val earlier = store.orders.filter { it.status != "new" && it.status != "preparing" && it.status != "ready" }
+    val shown = if (store.ordersBranch.isBlank()) store.orders else store.orders.filter { it.branchId == store.ordersBranch }
+    val current = shown.filter { it.status == "new" || it.status == "preparing" || it.status == "ready" }
+    val earlier = shown.filter { it.status != "new" && it.status != "preparing" && it.status != "ready" }
     Scroll {
         Text("Orders", color = Forest, fontSize = 32.sp, fontWeight = FontWeight.Bold)
         Text("Orders placed on the digital menu show up here.", color = Muted, fontSize = 15.sp)
+        if (store.branches.size > 1) {
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                BranchChip("All", store.ordersBranch.isBlank()) { store.chooseOrdersBranch("") }
+                store.branches.forEach { place -> BranchChip(place.name, store.ordersBranch == place.id) { store.chooseOrdersBranch(place.id) } }
+            }
+        }
+        store.daySummary?.let { DaySummaryCard(it, showBranches = store.ordersBranch.isBlank() && store.branches.size > 1) }
         if (store.ordersNote.isNotBlank()) Text(store.ordersNote, color = Bad, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
         if (current.isEmpty()) Text("No current orders.", color = Muted)
         current.forEach { OrderCard(store, it) }
@@ -355,6 +376,93 @@ private fun OrdersScreen(store: CounterStore) {
         Secondary("Refresh") { store.loadOrders() }
     }
 }
+
+@Composable
+private fun CashiersScreen(store: CounterStore) {
+    LaunchedEffect(store.session?.slug) { store.loadCashiers() }
+    Scroll {
+        Text("Cashiers", color = Forest, fontSize = 32.sp, fontWeight = FontWeight.Bold)
+        Text("Pick the branch each cashier works at.", color = Muted, fontSize = 15.sp)
+        if (store.cashiersNote.isNotBlank()) Text(store.cashiersNote, color = if (store.cashiers.isEmpty()) Muted else Bad, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        store.cashiers.forEach { person ->
+            val busy = store.cashierBusy == person.id
+            Card {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text(person.name, color = Ink, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    Text(if (!person.active) "Inactive" else person.role.replaceFirstChar { it.uppercase() }, color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                }
+                if (person.email.isNotBlank()) Text(person.email, color = Muted, fontSize = 13.sp)
+                Text(if (busy) "Saving…" else if (person.branchName.isNotBlank()) branchLabel(person.branchName) else "No branch yet", color = Forest, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                if (store.branches.isNotEmpty()) {
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        store.branches.forEach { place ->
+                            BranchChip(place.name, person.branchId == place.id) { if (!busy && person.branchId != place.id) store.assignCashier(person.id, place.id) }
+                        }
+                        BranchChip("No branch", person.branchId.isBlank()) { if (!busy && person.branchId.isNotBlank()) store.assignCashier(person.id, "") }
+                    }
+                }
+            }
+        }
+        Secondary("Refresh") { store.loadCashiers() }
+    }
+}
+
+@Composable
+private fun BranchChip(title: String, selected: Boolean, onClick: () -> Unit) {
+    val view = LocalView.current
+    Box(Modifier.clip(RoundedCornerShape(99.dp)).background(if (selected) Forest else Color.White).border(1.dp, if (selected) Forest else Line, RoundedCornerShape(99.dp)).clickable { tick(view); onClick() }.padding(horizontal = 16.dp, vertical = 9.dp), contentAlignment = Alignment.Center) {
+        Text(title, color = if (selected) Color.White else Forest, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1)
+    }
+}
+
+@Composable
+private fun DaySummaryCard(summary: DaySummary, showBranches: Boolean) {
+    Card {
+        Text("TODAY", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Bottom) {
+            Column {
+                Text(summary.sales, color = Forest, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+                Text("${summary.orders} ${if (summary.orders == 1) "order" else "orders"}", color = Ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            }
+            Column(horizontalAlignment = Alignment.End) {
+                Text("Dine in ${summary.dineIn} · Pickup ${summary.pickup}", color = Muted, fontSize = 13.sp)
+                Text("Cancelled ${summary.cancelled}", color = if (summary.cancelled > 0) Bad else Muted, fontSize = 13.sp)
+            }
+        }
+        if (summary.topItems.isNotEmpty()) {
+            Text("Top items", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            summary.topItems.forEachIndexed { index, item -> Info("${index + 1}. ${item.name}", "× ${item.detail}") }
+        }
+        if (summary.payments.isNotEmpty()) {
+            Text("By payment", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            summary.payments.forEach { Info(it.name, it.detail) }
+            if (summary.paid.isNotBlank()) Info("Paid", summary.paid)
+            if (summary.unpaid.isNotBlank()) Info("Unpaid", summary.unpaid)
+        }
+        if (showBranches && summary.branches.isNotEmpty()) {
+            Text("By branch", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            summary.branches.forEach { Info(it.name, it.detail) }
+        }
+        if (summary.orders == 0 && summary.cancelled == 0) Text("No orders yet today.", color = Muted, fontSize = 13.sp)
+    }
+}
+
+private fun paymentBadge(method: String, status: String): String? {
+    val label = when (method) {
+        "cash" -> "Cash"
+        "qrph" -> "GCash/Maya (QR Ph)"
+        "card" -> "Card"
+        else -> return null
+    }
+    return when (status) {
+        "unpaid" -> "$label · Unpaid"
+        "paid_test" -> "Paid · $label (test)"
+        else -> "Paid · $label"
+    }
+}
+
+private fun branchLabel(name: String): String =
+    if (name.isBlank() || name.endsWith("branch", ignoreCase = true)) name else "$name branch"
 
 @Composable
 private fun OrderCard(store: CounterStore, order: LiveOrder) {
@@ -371,7 +479,13 @@ private fun OrderCard(store: CounterStore, order: LiveOrder) {
             Text(order.status.replaceFirstChar { it.uppercase() }, color = if (order.status == "cancelled") Bad else Forest, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
         }
         if (order.payment == "pending") Text("Unpaid · confirm the test payment on the menu", color = Bad, fontSize = 13.sp)
-        Text(listOf(order.customer, order.branch).filter { it.isNotBlank() }.joinToString(" · "), color = Ink, fontSize = 14.sp)
+        val unpaid = order.payment == "unpaid"
+        paymentBadge(order.paymentMethod, order.payment)?.let { badge ->
+            Box(Modifier.clip(RoundedCornerShape(99.dp)).background(if (unpaid) Color(0xFFFFF1D6) else Track).padding(horizontal = 10.dp, vertical = 4.dp)) {
+                Text(badge, color = if (unpaid) Color(0xFF7A4E00) else Forest, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+        Text(listOf(order.customer, branchLabel(order.branch)).filter { it.isNotBlank() }.joinToString(" · "), color = Ink, fontSize = 14.sp)
         if (order.pickup.isNotBlank()) Text("Pickup ${tidy(order.pickup)}", color = Muted, fontSize = 13.sp)
         order.items.forEach { line ->
             Text(line.name, color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
@@ -379,6 +493,9 @@ private fun OrderCard(store: CounterStore, order: LiveOrder) {
         }
         if (order.note.isNotBlank()) Text(order.note, color = Muted, fontSize = 13.sp)
         Text(order.total, color = Forest, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+        if (order.source == "menu" && order.payment == "unpaid" && order.status != "cancelled") {
+            Secondary(if (busy) "Saving" else "Mark as paid") { if (!busy) store.markPaid(order.id) }
+        }
         if (next != null) {
             Primary(if (busy) "Saving" else next.second, enabled = !busy) { store.setOrderStatus(order.id, next.first) }
             if (order.status == "new" || order.status == "preparing") {
@@ -822,6 +939,7 @@ private fun MoreScreen(store: CounterStore, open: (Page) -> Unit, openMenu: () -
             RowLink("Digital billboard", if (store.billboardOn) "On · 150 m" else "Off") { open(Page.Billboard) }
             RowLink("Card setup", store.cardName) { open(Page.Card) }
             RowLink("LT Points", "1 per visit") { open(Page.Points) }
+            RowLink("Cashiers", "Assign each cashier to a branch") { open(Page.Cashiers) }
         }
         Card { Column { Text("Loyalty Tree benefits", fontWeight = FontWeight.SemiBold, color = Muted); Text("Coming soon", color = Muted, fontSize = 13.sp) } }
         Card { RowLink("Account management", "Billing, details, and account") { open(Page.Account) } }
@@ -832,6 +950,7 @@ private fun MoreScreen(store: CounterStore, open: (Page) -> Unit, openMenu: () -
 @Composable
 private fun AnalyticsScreen(store: CounterStore) {
     val view = LocalView.current
+    LaunchedEffect(store.session?.slug, store.period) { store.loadInsights() }
     val month = java.util.Calendar.getInstance().get(java.util.Calendar.MONTH) + 1
     val birthdays = store.members.filter { it.birthdayMonth == month && it.birthdayDay > 0 }.sortedBy { it.birthdayDay }
     val months = listOf("", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
@@ -896,6 +1015,19 @@ private fun AnalyticsScreen(store: CounterStore) {
             Text("Branches", color = Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             Card { store.branchFacts.forEach { Info(it.name, it.detail) } }
         }
+        Text("What people order", color = Forest, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        if (store.insightsTop.isNotEmpty()) {
+            Text("Most ordered on the digital menu", color = Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Card { store.insightsTop.forEachIndexed { index, item -> Info("${index + 1}. ${item.name}", "× ${item.detail}") } }
+        }
+        store.insights.forEach { section ->
+            Text(section.title, color = Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Card {
+                section.rows.forEach { Info(it.name, it.detail) }
+                if (section.note.isNotBlank()) Text(section.note, color = Muted, fontSize = 12.sp)
+            }
+        }
+        if (store.insightsNote.isNotBlank()) Text(store.insightsNote, color = Muted, fontSize = 13.sp)
         if (store.analyticsNote.isNotBlank()) Text(store.analyticsNote, color = Muted, fontSize = 13.sp)
     }
 }

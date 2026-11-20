@@ -99,6 +99,25 @@ export function buildMenuOrder({ merchantId, cart, orderId }) {
   }
 }
 
+// No real payments yet. Cash is paid at the counter; QR Ph and card are test
+// confirmations. The server decides the stored status from the method.
+export const PAYMENT_METHODS = {
+  cash: { label: 'Cash', detail: 'Pay at the counter' },
+  qrph: { label: 'GCash / Maya / Bank transfer', detail: 'QR Ph · test payment' },
+  card: { label: 'Card', detail: 'Test payment · no card details needed' },
+}
+export function paymentStatusFor(method) {
+  if (method === 'cash') return 'unpaid'
+  if (method === 'qrph' || method === 'card') return 'paid_test'
+  return ''
+}
+export function paymentReceiptLabel(method) {
+  if (method === 'cash') return 'Cash · Pay at the counter'
+  if (method === 'qrph') return 'Paid (test) · GCash / Maya / Bank (QR Ph)'
+  if (method === 'card') return 'Paid (test) · Card'
+  return 'Paid · test'
+}
+
 // The exact body POST /api/v1/public/menu/{public_id}/orders expects.
 // Items are reduced to {name, quantity, line_total, options} so cart-only
 // fields such as image_url never leave the browser.
@@ -111,6 +130,12 @@ export function menuOrderRequest(order) {
     service,
     table_no: service === 'dine-in' ? order?.table_no || '' : '',
     pickup_label: service === 'pickup' ? order?.pickup_label || '' : '',
+    // The branch the customer chose, and their connected card (if any) so the
+    // shop can see which branch and which members ordered. Both optional.
+    branch_public_id: order?.branch_public_id || '',
+    card_token: order?.card_token || '',
+    payment_method: PAYMENT_METHODS[order?.payment_method] ? order.payment_method : '',
+    payment_status: paymentStatusFor(order?.payment_method),
     items: (order?.items || []).map(line => ({
       name: line.name,
       quantity: line.quantity,

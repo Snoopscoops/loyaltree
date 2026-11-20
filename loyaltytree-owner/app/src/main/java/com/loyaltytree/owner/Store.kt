@@ -43,9 +43,28 @@ data class LiveOrder(
     val note: String,
     val payment: String,
     val items: List<OrderLine>,
-    val source: String = "ahead"
+    val source: String = "ahead",
+    val branchId: String = "",
+    val service: String = "",
+    val createdAt: String = "",
+    val paymentMethod: String = ""
 )
 data class NamedCount(val id: String, val name: String, val detail: String)
+data class DaySummary(
+    val date: String,
+    val orders: Int,
+    val sales: String,
+    val dineIn: Int,
+    val pickup: Int,
+    val cancelled: Int,
+    val topItems: List<NamedCount>,
+    val branches: List<NamedCount>,
+    val payments: List<NamedCount> = emptyList(),
+    val paid: String = "",
+    val unpaid: String = ""
+)
+data class Cashier(val id: String, val name: String, val email: String, val role: String, val active: Boolean, val branchId: String, val branchName: String)
+data class InsightSection(val id: String, val title: String, val note: String, val rows: List<NamedCount>)
 
 class CounterStore(app: Application) : AndroidViewModel(app) {
     private val prefs = app.getSharedPreferences("lt", Context.MODE_PRIVATE)
@@ -56,6 +75,14 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     var orders by mutableStateOf<List<LiveOrder>>(emptyList())
     var ordersNote by mutableStateOf("")
     var orderBusy by mutableStateOf("")
+    var ordersBranch by mutableStateOf("")
+    var daySummary by mutableStateOf<DaySummary?>(null)
+    var insights by mutableStateOf<List<InsightSection>>(emptyList())
+    var insightsTop by mutableStateOf<List<NamedCount>>(emptyList())
+    var insightsNote by mutableStateOf("")
+    var cashiers by mutableStateOf<List<Cashier>>(emptyList())
+    var cashiersNote by mutableStateOf("")
+    var cashierBusy by mutableStateOf("")
     var optionGroups by mutableStateOf<List<OptionGroup>>(emptyList())
     var menuCategories by mutableStateOf<List<StatFact>>(emptyList())
     var branches by mutableStateOf<List<BranchPlace>>(emptyList())
@@ -259,6 +286,164 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { fetchOrders(current) }
     }
 
+    fun chooseOrdersBranch(id: String) {
+        ordersBranch = id
+        val current = session ?: return
+        viewModelScope.launch { fetchSummary(current) }
+    }
+
+    private suspend fun fetchSummary(current: OwnerSession) {
+        val branch = java.net.URLEncoder.encode(ordersBranch, "UTF-8")
+        val result = io { API.get("/api/v1/business/${current.slug}/menu-orders/summary?branch=$branch", current.token) }
+        if (result == null || result.first >= 400) {
+            daySummary = null
+            return
+        }
+        val json = result.second as? JSONObject ?: return
+        daySummary = DaySummary(
+            date = json.optString("date"),
+            orders = json.optInt("orders"),
+            sales = pesos(json.opt("sales")),
+            dineIn = json.optInt("dine_in"),
+            pickup = json.optInt("pickup"),
+            cancelled = json.optInt("cancelled"),
+            topItems = namedItems(json.optJSONArray("top_items")),
+            payments = buildList {
+                val methods = json.optJSONObject("payments")?.optJSONArray("by_method") ?: JSONArray()
+                for (i in 0 until methods.length()) {
+                    val row = methods.optJSONObject(i) ?: continue
+                    add(NamedCount(row.optString("method").ifBlank { "m$i" }, row.optString("label").ifBlank { "Other" }, "${row.optInt("orders")} · ${pesos(row.opt("sales"))}"))
+                }
+            },
+            paid = json.optJSONObject("payments")?.optJSONObject("paid")?.let { "${it.optInt("orders")} · ${pesos(it.opt("sales"))}" }.orEmpty(),
+            unpaid = json.optJSONObject("payments")?.optJSONObject("unpaid")?.let { "${it.optInt("orders")} · ${pesos(it.opt("sales"))}" }.orEmpty(),
+            branches = buildList {
+                val rows = json.optJSONArray("branches") ?: JSONArray()
+                for (i in 0 until rows.length()) {
+                    val row = rows.optJSONObject(i) ?: continue
+                    val cancelled = row.optInt("cancelled")
+                    val extra = if (cancelled > 0) " · $cancelled cancelled" else ""
+                    add(NamedCount(row.optString("public_id").ifBlank { "none-$i" }, row.optString("name").ifBlank { "No branch saved" }, "${row.optInt("orders")} orders · ${pesos(row.opt("sales"))}$extra"))
+                }
+            }
+        )
+    }
+
+    fun markPaid(id: String) {
+        val current = session ?: return
+        viewModelScope.launch {
+            orderBusy = id
+            ordersNote = ""
+            val result = io { API.patch("/api/v1/business/${current.slug}/menu-orders/$id/payment", current.token, JSONObject().put("payment_status", "paid")) }
+            orderBusy = ""
+            if (result == null) {
+                ordersNote = "Could not reach the server."
+                return@launch
+            }
+            if (result.first >= 400) {
+                ordersNote = API.message(result.second, "Could not mark the order paid.")
+                return@launch
+            }
+            fetchOrders(current)
+        }
+    }
+
+    fun loadCashiers() {
+        val current = session ?: return
+        viewModelScope.launch {
+            val result = io { API.get("/api/v1/business/${current.slug}/staff", current.token) }
+            if (result == null || result.first >= 400) {
+                cashiersNote = if (result == null) "Could not reach the server." else API.message(result.second, "Could not load cashiers.")
+                return@launch
+            }
+            val rows = result.second as? JSONArray ?: (result.second as? JSONObject)?.optJSONArray("staff") ?: JSONArray()
+            cashiers = buildList {
+                for (i in 0 until rows.length()) {
+                    val row = rows.optJSONObject(i) ?: continue
+                    val id = row.optString("public_id")
+                    if (id.isBlank()) continue
+                    val role = row.optString("role").ifBlank { "cashier" }
+                    if (role != "cashier" && role != "manager") continue
+                    add(Cashier(id, row.optString("name").ifBlank { "Staff" }, row.optString("email"), role, row.optBoolean("is_active", true), row.optString("branch_public_id"), row.optString("branch_name")))
+                }
+            }.sortedWith(compareBy({ !it.active }, { it.name.lowercase() }))
+            cashiersNote = if (cashiers.isEmpty()) "No cashiers yet. Invite them from the web dashboard." else ""
+        }
+    }
+
+    fun assignCashier(id: String, branchId: String) {
+        val current = session ?: return
+        viewModelScope.launch {
+            cashierBusy = id
+            cashiersNote = ""
+            val result = io { API.patch("/api/v1/business/${current.slug}/staff/$id", current.token, JSONObject().put("branch_public_id", branchId)) }
+            cashierBusy = ""
+            if (result == null || result.first >= 400) {
+                cashiersNote = if (result == null) "Could not reach the server." else API.message(result.second, "Could not change the branch.")
+                return@launch
+            }
+            val name = branches.firstOrNull { it.id == branchId }?.name.orEmpty()
+            cashiers = cashiers.map { if (it.id == id) it.copy(branchId = branchId, branchName = name) else it }
+        }
+    }
+
+    fun loadInsights() {
+        val current = session ?: return
+        val days = when (period) {
+            "today" -> 1
+            "7d" -> 7
+            "90d" -> 90
+            else -> 30
+        }
+        viewModelScope.launch {
+            val result = io { API.get("/api/v1/business/${current.slug}/menu-orders/insights?days=$days", current.token) }
+            if (result == null || result.first >= 400) {
+                insights = emptyList()
+                insightsTop = emptyList()
+                insightsNote = if (result == null) "Could not reach menu order insights." else API.message(result.second, "Menu order insights are not ready yet.")
+                return@launch
+            }
+            val json = result.second as? JSONObject ?: return@launch
+            insightsTop = namedItems(json.optJSONArray("top_items"))
+            val sections = json.optJSONArray("sections") ?: JSONArray()
+            insights = buildList {
+                for (i in 0 until sections.length()) {
+                    val section = sections.optJSONObject(i) ?: continue
+                    val groups = section.optJSONArray("groups") ?: JSONArray()
+                    val rows = buildList {
+                        for (j in 0 until groups.length()) {
+                            val group = groups.optJSONObject(j) ?: continue
+                            val count = group.optInt("orders")
+                            val detail = if (group.optBoolean("hidden")) {
+                                "$count orders · not enough people yet to show"
+                            } else {
+                                val top = namedItems(group.optJSONArray("top_items")).joinToString(", ") { "${it.name} ×${it.detail}" }
+                                "$count orders · ${top.ifBlank { "—" }}"
+                            }
+                            add(NamedCount(group.optString("key").ifBlank { "g$j" }, group.optString("label"), detail))
+                        }
+                    }
+                    if (rows.isNotEmpty()) add(InsightSection(section.optString("key"), section.optString("title"), section.optString("note"), rows))
+                }
+            }
+            val orders = json.optInt("orders")
+            val coverage = json.opt("member_coverage_percent")
+            insightsNote = when {
+                orders == 0 -> "No digital menu orders in this period yet."
+                coverage == null || coverage == JSONObject.NULL -> ""
+                else -> "$orders menu orders · ${API.plain(coverage) ?: "0"}% from loyalty card members. Age, gender and occupation come only from cards connected on the menu. City is not collected."
+            }
+        }
+    }
+
+    private fun namedItems(rows: JSONArray?): List<NamedCount> = buildList {
+        val list = rows ?: JSONArray()
+        for (i in 0 until list.length()) {
+            val row = list.optJSONObject(i) ?: continue
+            add(NamedCount("i$i", row.optString("name").ifBlank { "Item" }, row.optInt("quantity").toString()))
+        }
+    }
+
     fun setOrderStatus(id: String, next: String) {
         val current = session ?: return
         viewModelScope.launch {
@@ -298,6 +483,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
             if (ahead != null && ahead.first < 400) addAll(parseOrders(ahead.second, "ahead"))
         }
         orders = combined.distinctBy { it.id }
+        fetchSummary(current)
         val blocked = listOfNotNull(menu, ahead).filter { it.first >= 400 }
             .map { API.message(it.second, "Could not load orders.") }
             .filter { !it.contains("Order Ahead must be enabled", ignoreCase = true) }
@@ -335,7 +521,11 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
                         note = row.optString("customer_note"),
                         payment = row.optString("payment_status"),
                         items = lines,
-                        source = source
+                        source = source,
+                        branchId = branch?.optString("public_id").orEmpty(),
+                        service = row.optString("service"),
+                        createdAt = row.optString("created_at"),
+                        paymentMethod = row.optString("payment_method")
                     )
                 )
             }

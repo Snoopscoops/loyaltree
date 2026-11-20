@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { menuItemAvailable, filterMenuItems, groupMenuCategories, menuItemPrice, toggleMenuOption, validMenuPayload, addCartItem, changeCartQuantity, cartSubtotal, buildMenuOrder, digitalMenuHref, menuOrderRequest, sendMenuOrder, MENU_ORDER_OFFLINE, pickupTimeLabel, resolveMenuBranch } from '../src/components/qrMenuModel.js'
+import { menuItemAvailable, filterMenuItems, groupMenuCategories, menuItemPrice, toggleMenuOption, validMenuPayload, addCartItem, changeCartQuantity, cartSubtotal, buildMenuOrder, digitalMenuHref, menuOrderRequest, sendMenuOrder, MENU_ORDER_OFFLINE, pickupTimeLabel, resolveMenuBranch, paymentStatusFor, paymentReceiptLabel } from '../src/components/qrMenuModel.js'
 import { createFixtureTransport, fixtureSlug } from '../dev/owner-dashboard-fixtures.js'
 const size={public_id:'size',selection_type:'single',max_selections:1,options:[{public_id:'small',price_delta:0},{public_id:'large',price_delta:25}]}
 const extras={public_id:'extras',selection_type:'multiple',max_selections:1,options:[{public_id:'oat',price_delta:20},{public_id:'syrup',price_delta:10}]}
@@ -122,7 +122,9 @@ const placed={order_id:'LT-ABC',payment_reference:'REF-ABC',buyer_name:'John',se
 
 test('order request body matches the server contract exactly',()=>{
   const body=menuOrderRequest(placed)
-  assert.deepEqual(Object.keys(body).sort(),['buyer_name','items','order_number','payment_reference','pickup_label','service','table_no'])
+  assert.deepEqual(Object.keys(body).sort(),['branch_public_id','buyer_name','card_token','items','order_number','payment_method','payment_reference','payment_status','pickup_label','service','table_no'])
+  assert.equal(body.branch_public_id,'')
+  assert.equal(body.card_token,'')
   assert.equal(body.order_number,'LT-ABC')
   assert.equal(body.payment_reference,'REF-ABC')
   assert.equal(body.service,'dine-in')
@@ -230,4 +232,26 @@ test('menu page has no All branches option and blocks ordering until a branch is
   assert.ok(source.includes('disabled={checkingCard || needsBranch}'))
   assert.ok(source.includes("!cartOpen && !needsBranch"))
   assert.equal(source.includes('Location unavailable'),false)
+})
+
+test('order request carries the chosen branch and the connected card token',()=>{
+  const body=menuOrderRequest({...placed,branch_public_id:'bgc',card_token:'tok.sig',branch_name:'BGC',lines:[{image_url:'x'}]})
+  assert.equal(body.branch_public_id,'bgc')
+  assert.equal(body.card_token,'tok.sig')
+  assert.equal('branch_name' in body,false)
+  assert.equal('lines' in body,false)
+})
+
+test('payment method: cash is unpaid at the counter, QR Ph and card are test payments',()=>{
+  assert.equal(paymentStatusFor('cash'),'unpaid')
+  assert.equal(paymentStatusFor('qrph'),'paid_test')
+  assert.equal(paymentStatusFor('card'),'paid_test')
+  assert.equal(paymentStatusFor(''),'')
+  const cash=menuOrderRequest({...placed,payment_method:'cash'})
+  assert.deepEqual([cash.payment_method,cash.payment_status],['cash','unpaid'])
+  const bad=menuOrderRequest({...placed,payment_method:'crypto'})
+  assert.deepEqual([bad.payment_method,bad.payment_status],['',''])
+  assert.equal(paymentReceiptLabel('cash'),'Cash · Pay at the counter')
+  assert.match(paymentReceiptLabel('qrph'),/QR Ph/)
+  assert.match(paymentReceiptLabel('card'),/test/)
 })

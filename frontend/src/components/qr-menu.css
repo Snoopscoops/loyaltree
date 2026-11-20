@@ -497,3 +497,14 @@
 .lt-qr-branch-picker-copy span { font-size:12.5px; color:var(--qr-soft); }
 .lt-qr-branch-picker button i { flex:none; font-style:normal; font-size:22px; color:var(--qr-forest); }
 .lt-qr-branch-picker button:hover { border-color:var(--qr-forest); }
+
+/* Payment method (no real payments yet) */
+.lt-qr-pay-methods { display:grid; gap:8px; margin:0; padding:0; border:0; }
+.lt-qr-pay-methods legend { margin-bottom:8px; padding:0; font-size:14px; font-weight:800; color:var(--qr-ink); }
+.lt-qr-pay-methods label { display:flex; align-items:center; gap:12px; min-height:56px; padding:10px 14px; border:1.5px solid var(--qr-line); border-radius:14px; background:#fff; cursor:pointer; }
+.lt-qr-pay-methods label.is-on { border-color:var(--qr-forest); background:var(--qr-mint); }
+.lt-qr-pay-methods input { width:20px; height:20px; margin:0; accent-color:var(--qr-forest); flex:none; }
+.lt-qr-pay-methods span { display:flex; flex-direction:column; }
+.lt-qr-cafe .lt-qr-pay .lt-qr-pay-methods strong { font-size:15px; font-weight:800; color:var(--qr-ink); }
+.lt-qr-pay-methods small { font-size:12.5px; color:var(--qr-soft); }
+.lt-qr-paid-pill.is-unpaid { background:#fff3dc; color:#8a5a00; }

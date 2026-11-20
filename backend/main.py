@@ -18803,6 +18803,14 @@ async def owner_update_order_ahead_item_availability(
 
 
 
+try:
+    from .menu_order_insights import insert_order as _menu_order_insert, resolve_branch as _menu_order_resolve_branch, member_from_card_token as _menu_order_member, payment_fields as _menu_order_payment
+    from .menu_card_link import read_token as _menu_card_read_token
+except ImportError:
+    from menu_order_insights import insert_order as _menu_order_insert, resolve_branch as _menu_order_resolve_branch, member_from_card_token as _menu_order_member, payment_fields as _menu_order_payment
+    from menu_card_link import read_token as _menu_card_read_token
+
+
 @app.post('/api/v1/public/menu/{public_id}/orders')
 async def public_place_menu_order(public_id: str, request: Request):
     """Save a digital-menu order. This does not require Order Ahead."""
@@ -18810,6 +18818,11 @@ async def public_place_menu_order(public_id: str, request: Request):
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail='Menu not found')
+    # Optional: the branch the customer picked, and their connected loyalty card.
+    branch_public_id, branch_name = _menu_order_resolve_branch(supabase, business.get('id'), payload.get('branch_public_id'))
+    member_customer_public_id = _menu_order_member(payload.get('card_token'), business.get('public_id'), _menu_card_read_token)
+    # Test payments only: cash is paid at the counter, QR Ph / card are mock "paid (test)".
+    payment_method, payment_status = _menu_order_payment(payload.get('payment_method'))
     items = payload.get('items') if isinstance(payload.get('items'), list) else []
     if not items:
         raise HTTPException(status_code=400, detail='Your cart is empty')
@@ -18843,13 +18856,19 @@ async def public_place_menu_order(public_id: str, request: Request):
         'table_no': str(payload.get('table_no') or '')[:40],
         'pickup_label': str(payload.get('pickup_label') or '')[:80],
         'status': 'new',
-        'payment_status': 'paid',
+        'payment_status': payment_status,
+        'payment_method': payment_method,
         'total': round(total, 2),
         'items': clean_items,
         'created_at': now_iso,
+        'branch_public_id': branch_public_id,
+        'branch_name': branch_name,
+        'member_customer_public_id': member_customer_public_id,
     }
     try:
-        saved = _supabase_first_row(supabase.table('menu_counter_orders').insert(row).execute()) or row
+        # Drops the three optional columns if menu_order_branches.sql has not run yet.
+        saved, _ = _menu_order_insert(supabase, row)
+        saved = saved or row
     except Exception as e:
         raise HTTPException(status_code=503, detail=f'Menu orders are not ready yet: {friendly_db_error(e)}')
     return {'success': True, 'order': _menu_counter_order_public(saved)}
@@ -18866,16 +18885,27 @@ def _menu_counter_order_public(row: dict) -> dict:
         'order_number': row.get('order_number'),
         'status': row.get('status') or 'new',
         'payment_status': row.get('payment_status') or 'paid',
+        'payment_method': row.get('payment_method') or '',
         'total': float(row.get('total') or 0),
         'customer_note': where,
         'pickup_at': '',
         'customer': {'name': row.get('buyer_name') or 'Customer'},
-        'branch': {'name': where},
+        'branch': {'public_id': row.get('branch_public_id') or '', 'name': row.get('branch_name') or ''},
+        'service': 'dine-in' if row.get('service') == 'dine-in' else 'pickup',
+        'table_no': table_no,
+        'pickup_label': row.get('pickup_label') or '',
+        'created_at': row.get('created_at') or '',
+        'is_member': bool(row.get('member_customer_public_id')),
         'items': [
             {
                 'item_name': item.get('item_name') or 'Item',
                 'quantity': item.get('quantity') or 1,
-                'modifiers': [{'option_name': opt} for opt in (item.get('options') or []) if isinstance(opt, str)],
+                'line_total': item.get('line_total') or 0,
+                'modifiers': [
+                    {'option_name': opt if isinstance(opt, str) else str(opt.get('name') or '')}
+                    for opt in (item.get('options') or [])
+                    if isinstance(opt, str) or (isinstance(opt, dict) and opt.get('name'))
+                ],
             }
             for item in (row.get('items') or [])
             if isinstance(item, dict)
@@ -22633,9 +22663,20 @@ async def get_staff(public_id: str, authorization: str = Header(default='')):
         raise HTTPException(status_code=404, detail="Business not found")
     try:
         res = supabase.table("staff").select("*").eq("business_id", business.get("id")).execute()
-        return res.data or []
+        rows = res.data or []
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    # Additive: which branch each cashier is assigned to, by public id + name.
+    try:
+        places = supabase.table("branches").select("id,public_id,name").eq("business_id", business.get("id")).execute().data or []
+    except Exception:
+        places = []
+    by_id = {str(place.get("id")): place for place in places}
+    for row in rows:
+        place = by_id.get(str(row.get("branch_id"))) if row.get("branch_id") is not None else None
+        row["branch_public_id"] = (place or {}).get("public_id") or ""
+        row["branch_name"] = (place or {}).get("name") or ""
+    return rows
 
 @app.get("/api/v1/business/{public_id}/staff/stamp-counts")
 async def get_staff_stamp_counts(public_id: str, authorization: str = Header(default='')):
@@ -51659,6 +51700,12 @@ try:
     from .menu_card_link import register_menu_card_routes
 except ImportError:
     from menu_card_link import register_menu_card_routes
+try:
+    from .menu_order_insights import register_menu_order_insight_routes
+except ImportError:
+    from menu_order_insights import register_menu_order_insight_routes
+register_menu_order_insight_routes(app, db=supabase, get_business=safe_get_business,
+    require_owner=require_owner_session, friendly_error=friendly_db_error)
 register_menu_card_routes(app, db=supabase, get_business=safe_get_business,
     has_feature=business_has_plan_feature, on_hold=billing_hold, send_email=send_email,
     frontend_url=FRONTEND_URL or 'https://theloyaltytree.com')
