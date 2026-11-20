@@ -1,3 +1,5 @@
+import { requestJsonResponse } from './requestTimeout.js'
+
 export function menuItemOfferedAt(item, branchId) {
   if (!branchId || branchId === 'all') return true
   return !(item.unavailable_branch_public_ids || []).includes(branchId)
@@ -64,6 +66,8 @@ export function addCartItem(cart, item, selected = {}, quantity = 1) {
     unit_price: menuItemPrice(item, selected),
     quantity: qty,
     options: lineOptions(item, selected),
+    // Kept only for the cart/receipt thumbnails. Never sent to the server.
+    image_url: item.image_url || '',
   }]
 }
 
@@ -93,6 +97,57 @@ export function buildMenuOrder({ merchantId, cart, orderId }) {
     subtotal: cartSubtotal(cart),
     status: 'pending_payment',
   }
+}
+
+// The exact body POST /api/v1/public/menu/{public_id}/orders expects.
+// Items are reduced to {name, quantity, line_total, options} so cart-only
+// fields such as image_url never leave the browser.
+export function menuOrderRequest(order) {
+  const service = order?.service === 'dine-in' ? 'dine-in' : 'pickup'
+  return {
+    order_number: order?.order_id || '',
+    payment_reference: order?.payment_reference || '',
+    buyer_name: order?.buyer_name || '',
+    service,
+    table_no: service === 'dine-in' ? order?.table_no || '' : '',
+    pickup_label: service === 'pickup' ? order?.pickup_label || '' : '',
+    items: (order?.items || []).map(line => ({
+      name: line.name,
+      quantity: line.quantity,
+      line_total: line.line_total,
+      options: line.options || [],
+    })),
+  }
+}
+
+export const MENU_ORDER_OFFLINE = 'We couldn’t send your order. Check your connection and try again.'
+
+function menuOrderServerError(status, payload) {
+  const detail = payload?.detail ?? payload?.message
+  if (typeof detail === 'string' && detail.trim()) return detail.trim()
+  return `We couldn’t save your order${status ? ` (error ${status})` : ''}. Please try again.`
+}
+
+// Sends one order and reports whether the shop actually saved it.
+// Resolves { ok: true, order } only for a 2xx response; every failure resolves
+// { ok: false, error } so the caller can stay on the payment step.
+export async function sendMenuOrder({ fetchImpl, url, order, timeoutMs = 15000 }) {
+  if (!url) return { ok: false, error: 'Ordering is not available in preview.' }
+  if (!order?.items?.length) return { ok: false, error: 'Your cart is empty.' }
+  let result
+  try {
+    result = await requestJsonResponse(fetchImpl, url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(menuOrderRequest(order)),
+      cache: 'no-store',
+    }, { timeoutMs, message: MENU_ORDER_OFFLINE })
+  } catch (error) {
+    return { ok: false, error: MENU_ORDER_OFFLINE, cause: error }
+  }
+  const { response, payload } = result
+  if (!response?.ok) return { ok: false, status: response?.status || 0, error: menuOrderServerError(response?.status, payload) }
+  return { ok: true, order: payload?.order || null }
 }
 
 export function digitalMenuHref(config, slug) {

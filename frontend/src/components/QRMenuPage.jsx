@@ -1,6 +1,6 @@
 import React, { useEffect, useId, useRef, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
-import { filterMenuItems, groupMenuCategories, menuItemAvailable, menuItemPrice, toggleMenuOption, validMenuPayload, addCartItem, changeCartQuantity, cartSubtotal, buildMenuOrder } from './qrMenuModel'
+import { filterMenuItems, groupMenuCategories, menuItemAvailable, menuItemPrice, toggleMenuOption, validMenuPayload, addCartItem, changeCartQuantity, cartSubtotal, buildMenuOrder, sendMenuOrder } from './qrMenuModel'
 import loyaltyTreeLogo from './logo-192.png'
 import { requestJsonResponse } from './requestTimeout'
 import './qr-menu.css'
@@ -115,6 +115,47 @@ function pickupSlots() {
   })
 }
 
+function CartThumb({ line }) {
+  const [failedSource, setFailedSource] = useState('')
+  const source = line?.image_url || ''
+  const letter = (String(line?.name || '').trim().slice(0, 1) || '•').toUpperCase()
+  return <span className="lt-qr-cart-thumb" aria-hidden="true">
+    {source && failedSource !== source
+      ? <img src={source} alt="" loading="lazy" decoding="async" onError={() => setFailedSource(source)} />
+      : <span className="lt-qr-cart-thumb-letter">{letter}</span>}
+  </span>
+}
+
+function CartLine({ line, money, onQuantity, disabled = false }) {
+  const options = (line.options || []).map(option => option.name).filter(Boolean)
+  const lineTotal = Number(line.unit_price || 0) * Number(line.quantity || 0)
+  return <li className="lt-qr-cart-line">
+    <CartThumb line={line} />
+    <div className="lt-qr-cart-line-copy">
+      <strong className="lt-qr-cart-line-name">{line.name}</strong>
+      {options.length > 0 && <span className="lt-qr-cart-line-options">{options.join(', ')}</span>}
+      <span className="lt-qr-cart-line-unit">{money(line.unit_price)} × {line.quantity}</span>
+      {onQuantity && <div className="lt-qr-cart-stepper">
+        <button type="button" disabled={disabled} onClick={() => onQuantity(line.quantity - 1)} aria-label={line.quantity === 1 ? `Remove ${line.name}` : `Decrease ${line.name}`}>−</button>
+        <span aria-label={`Quantity ${line.quantity}`}>{line.quantity}</span>
+        <button type="button" disabled={disabled || line.quantity >= 20} onClick={() => onQuantity(line.quantity + 1)} aria-label={`Increase ${line.name}`}>+</button>
+      </div>}
+    </div>
+    <strong className="lt-qr-cart-line-total">{money(lineTotal)}</strong>
+  </li>
+}
+
+function CheckIcon({ size = 16 }) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5 10 17.5 19 7" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+}
+
+const CHECKOUT_STEPS = [['', 'Cart'], ['service', 'Details'], ['payment', 'Pay']]
+
+function serviceLine(service, tableNo, pickupLabel) {
+  if (service === 'dine-in') return `Dine in${tableNo ? ` · Table ${tableNo}` : ''}`
+  return `Pick up${pickupLabel ? ` · ${pickupLabel}` : ' later'}`
+}
+
 export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchChange, apiBase = '' }) {
   const [category, setCategory] = useState('all')
   const [search, setSearch] = useState('')
@@ -126,17 +167,30 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   const [payStep, setPayStep] = useState('')
   const [service, setService] = useState('dine-in')
   const [buyerName, setBuyerName] = useState('')
+  const [cardName, setCardName] = useState('')
+  const [editingName, setEditingName] = useState(false)
   const [tableNo, setTableNo] = useState('')
   const [pickupAt, setPickupAt] = useState('')
+  const [slots, setSlots] = useState([])
+  const [checkingCard, setCheckingCard] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState('')
+  const [copied, setCopied] = useState(false)
+  const submittingRef = useRef(false)
+  // One order number + payment reference per checkout. A retry after a failed
+  // save reuses them so the shop never gets two different orders for one tap.
+  const pendingIds = useRef(null)
+  const sheetRef = useRef(null)
+  const dockRef = useRef(null)
+  const sheetTitleId = useId()
   const menuHeading = useRef(null)
   const focusHeading = useRef(false)
   const business = data.business
   const branches = data.branches || []
-  const branch = branches.find(value => value.public_id === branchId)
   const chooseBranch = id => { setBranchId(id); setItem(null); onBranchChange?.(id) }
   useEffect(() => { if (initialBranch !== undefined) setBranchId(initialBranch || data.selected_branch || '') }, [initialBranch, data.selected_branch])
   useEffect(() => { if (focusHeading.current) { menuHeading.current?.focus({ preventScroll: true }); focusHeading.current = false } }, [category, search])
-  const money = value => new Intl.NumberFormat(undefined, { style: 'currency', currency: business.currency || 'PHP' }).format(value)
+  const money = value => new Intl.NumberFormat(undefined, { style: 'currency', currency: business.currency || 'PHP' }).format(Number(value || 0))
   const groups = groupMenuCategories(data.categories || [], data.items || [], branchId)
   const selectedCategory = groups.find(value => value.public_id === category)
   const catalog = category && category !== 'all' ? selectedCategory?.items || [] : groups.flatMap(value => value.items)
@@ -145,11 +199,117 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   const chooseCategory = id => { focusHeading.current = true; setCategory(id) }
   const count = cart.reduce((sum, line) => sum + line.quantity, 0)
   const total = cartSubtotal(cart)
+  const pickupLabel = slots.find(slot => slot.value === pickupAt)?.label || ''
+  const updateCart = change => { pendingIds.current = null; setSubmitError(''); setCart(change) }
   const addItem = (value, selected = {}, quantity = 1) => {
     if (!menuItemAvailable(value, branchId)) return
-    setCart(current => addCartItem(current, value, selected, quantity))
+    updateCart(current => addCartItem(current, value, selected, quantity))
     setOrder(null)
   }
+  const changeLine = (key, quantity) => updateCart(current => changeCartQuantity(current, key, quantity))
+
+  const openCart = () => { setOrder(null); setPayStep(''); setSubmitError(''); setCartOpen(true) }
+  const closeCart = () => {
+    if (submittingRef.current) return
+    setCartOpen(false); setSubmitError(''); setCopied(false)
+    if (payStep === 'done') { setOrder(null); setPayStep('') }
+    else if (!cart.length) setPayStep('')
+  }
+
+  // Focus the sheet when it opens, trap Tab inside it, and give focus back.
+  useEffect(() => {
+    if (!cartOpen) return undefined
+    let previous = ''
+    if (!preview) { previous = document.body.style.overflow; document.body.style.overflow = 'hidden' }
+    return () => {
+      if (!preview) document.body.style.overflow = previous
+      setTimeout(() => dockRef.current?.focus?.({ preventScroll: true }), 0)
+    }
+  }, [cartOpen, preview])
+  useEffect(() => { if (cartOpen) sheetRef.current?.querySelector('h2')?.focus({ preventScroll: true }) }, [payStep, cartOpen])
+  const onSheetKeyDown = event => {
+    if (event.key === 'Escape') { event.preventDefault(); closeCart(); return }
+    if (event.key !== 'Tab') return
+    const focusable = [...(sheetRef.current?.querySelectorAll('button:not([disabled]),input:not([disabled]),select:not([disabled]),a[href],[tabindex="0"]') || [])]
+    if (!focusable.length) return
+    const first = focusable[0]
+    const last = focusable[focusable.length - 1]
+    if (event.shiftKey && (document.activeElement === first || !sheetRef.current.contains(document.activeElement))) { event.preventDefault(); last.focus() }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+  }
+
+  const startCheckout = async () => {
+    if (!cart.length || checkingCard) return
+    setCheckingCard(true)
+    let saved = ''
+    let token = ''
+    try { saved = localStorage.getItem(`lt-menu-card-name:${business.public_id}`) || ''; token = localStorage.getItem(`lt-menu-card:${business.public_id}`) || '' } catch { saved = ''; token = '' }
+    if (token && apiBase) {
+      try {
+        const response = await fetch(`${apiBase}/api/v1/public/menu/${encodeURIComponent(business.public_id)}/card`, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' })
+        if (response.ok) {
+          const body = await response.json()
+          if (body.name && body.name !== 'Loyalty card') { saved = body.name; try { localStorage.setItem(`lt-menu-card-name:${business.public_id}`, saved) } catch { /* storage is optional */ } }
+        }
+      } catch { /* the saved name is optional; keep the stored one */ }
+    }
+    setCheckingCard(false)
+    setCardName(saved)
+    setEditingName(false)
+    setBuyerName(current => current.trim() ? current : saved)
+    setSlots(pickupSlots())
+    setPayStep('service')
+  }
+
+  async function submitOrder() {
+    if (submittingRef.current) return
+    if (!cart.length) { setSubmitError('Your cart is empty.'); return }
+    if (!apiBase) { setSubmitError('Ordering is not available in preview.'); return }
+    if (!pendingIds.current) {
+      const stamp = Date.now().toString(36).toUpperCase()
+      pendingIds.current = { order_id: `LT-${stamp}`, payment_reference: `REF-${stamp.slice(-6)}` }
+    }
+    const ids = pendingIds.current
+    const placedOrder = {
+      ...buildMenuOrder({ merchantId: business.public_id, cart, orderId: ids.order_id }),
+      buyer_name: buyerName.trim(),
+      service,
+      table_no: service === 'dine-in' ? tableNo.trim() : '',
+      pickup_at: service === 'pickup' ? pickupAt : '',
+      pickup_label: service === 'pickup' ? pickupLabel : '',
+      payment_reference: ids.payment_reference,
+      status: 'awaiting_payment',
+      lines: cart.map(line => ({ ...line })),
+    }
+    submittingRef.current = true
+    setSubmitting(true)
+    setSubmitError('')
+    const result = await sendMenuOrder({
+      fetchImpl: (input, init) => fetch(input, init),
+      url: `${apiBase}/api/v1/public/menu/${encodeURIComponent(business.public_id)}/orders`,
+      order: placedOrder,
+    })
+    submittingRef.current = false
+    setSubmitting(false)
+    if (!result.ok) { setSubmitError(result.error); return }
+    // Only a saved order (response.ok) reaches the receipt.
+    const saved = result.order || {}
+    setOrder({ ...placedOrder, order_number: saved.order_number || placedOrder.order_id, server_order_id: saved.public_id || '', status: saved.status || 'new' })
+    pendingIds.current = null
+    setCopied(false)
+    setCart([])
+    setPayStep('done')
+  }
+
+  const copyOrderNumber = async value => {
+    try { await navigator.clipboard.writeText(value); setCopied(true) } catch { setCopied(false) }
+  }
+
+  const step = payStep === 'done' ? 'done' : !cart.length ? 'empty' : payStep
+  const title = step === 'done' ? 'Order sent' : step === 'service' ? 'How will you get it?' : step === 'payment' ? 'Review & pay' : 'Your order'
+  const stepIndex = CHECKOUT_STEPS.findIndex(([value]) => value === payStep)
+  const nameFromCard = cardName && buyerName.trim() === cardName && !editingName
+
   return <div className={`lt-qr-public lt-qr-cafe${preview ? ' lt-qr-is-preview' : ''}${count ? ' lt-qr-has-cart' : ''}`}>
     <main className="lt-qr-page">
       {preview && <div className="lt-qr-preview-note">Owner preview · {data.is_published ? 'Published' : 'Not published'}</div>}
@@ -189,9 +349,10 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
               </div>
               <div className="lt-qr-dish-row">
                 <div><span>Price</span><strong>{money(value.base_price)}</strong></div>
-                {canAdd && line ? <div className="lt-qr-step"><button type="button" onClick={() => setCart(current => changeCartQuantity(current, line.key, line.quantity - 1))} aria-label={`Decrease ${value.name}`}>−</button><span>{line.quantity}</span><button type="button" onClick={() => setCart(current => changeCartQuantity(current, line.key, line.quantity + 1))} aria-label={`Increase ${value.name}`}>+</button></div>
-                  : canAdd ? <button type="button" className="lt-qr-add-pill" onClick={() => addItem(value)}>+ Add</button>
-                  : <button type="button" className="lt-qr-add-pill" disabled={!available} onClick={() => available && setItem(value)}>{available ? 'Choose' : 'Sold out'}</button>}
+                {canAdd && line ? <div className="lt-qr-step"><button type="button" onClick={() => changeLine(line.key, line.quantity - 1)} aria-label={`Decrease ${value.name}`}>−</button><span>{line.quantity}</span><button type="button" onClick={() => changeLine(line.key, line.quantity + 1)} aria-label={`Increase ${value.name}`}>+</button></div>
+                  : canAdd ? <button type="button" className="lt-qr-add-pill" onClick={() => addItem(value)} aria-label={`Add ${value.name}`}>+ Add</button>
+                  : available ? <button type="button" className="lt-qr-add-pill" onClick={() => setItem(value)} aria-label={`Choose options for ${value.name}`}>Choose</button>
+                  : <span className="lt-qr-sold-pill">Sold out</span>}
               </div>
             </article>
           })}
@@ -201,40 +362,116 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
       <footer className="lt-qr-footer"><img src={loyaltyTreeLogo} alt="" /><span>Menu by <strong>Loyalty Tree</strong></span></footer>
     </main>
     {item && <ItemDetails key={item.public_id} item={item} available={menuItemAvailable(item, branchId)} money={money} onClose={() => setItem(null)} onAdd={addItem} />}
-    {count > 0 && <div className="lt-qr-dock"><div className="lt-qr-dock-card"><div className="lt-qr-dock-count" aria-hidden="true">{count}</div><div><span>{count} {count === 1 ? 'item' : 'items'}</span><strong>{money(total)}</strong></div><button type="button" onClick={() => setCartOpen(true)}>Review & Pay</button></div></div>}
-    {cartOpen && <div className="lt-qr-cart" role="dialog" aria-label="Your cart">
-      <div className="lt-qr-cart-card">
-        <div className="lt-qr-cart-head"><h2>{payStep === 'done' ? 'Your order' : payStep === 'payment' ? 'Payment' : 'Your cart'}</h2><button type="button" onClick={() => { setCartOpen(false); setOrder(null); setPayStep('') }} aria-label="Close cart">×</button></div>
-        {payStep !== 'done' && cart.map(line => <div className="lt-qr-cart-line" key={line.key}><div><strong>{line.name}</strong>{line.options.length > 0 && <p>{line.options.map(option => option.name).join(', ')}</p>}<span>{money(line.unit_price * line.quantity)}</span></div><div className="lt-qr-qty"><button type="button" onClick={() => setCart(current => changeCartQuantity(current, line.key, line.quantity - 1))} aria-label={`Decrease ${line.name}`}>−</button><span>{line.quantity}</span><button type="button" onClick={() => setCart(current => changeCartQuantity(current, line.key, line.quantity + 1))} aria-label={`Increase ${line.name}`}>+</button></div></div>)}
-        {payStep !== 'done' && <div className="lt-qr-cart-total"><span>Total</span><strong>{money(total)}</strong></div>}
-        {!payStep && <button type="button" className="lt-qr-primary" onClick={async () => { let saved = ''; let token = ''; try { saved = localStorage.getItem(`lt-menu-card-name:${business.public_id}`) || ''; token = localStorage.getItem(`lt-menu-card:${business.public_id}`) || '' } catch { saved = ''; token = '' } if (token && apiBase) { try { const response = await fetch(`${apiBase}/api/v1/public/menu/${encodeURIComponent(business.public_id)}/card`, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' }); if (response.ok) { const body = await response.json(); if (body.name && body.name !== 'Loyalty card') { saved = body.name; try { localStorage.setItem(`lt-menu-card-name:${business.public_id}`, saved) } catch { /* ignore */ } } } } catch { /* keep saved */ } } setBuyerName(saved); setPayStep('service') }}>Checkout</button>}
-        {payStep === 'service' && <div className="lt-qr-pay"><p>How will you get this?</p><div className="lt-qr-pay-choices"><button type="button" aria-pressed={service === 'dine-in'} onClick={() => setService('dine-in')}>Dine in</button><button type="button" aria-pressed={service === 'pickup'} onClick={() => { const first = pickupSlots()[0]; setService('pickup'); setPickupAt(current => current || first?.value || '') }}>Pick up later</button></div>{service === 'dine-in' ? <input aria-label="Table number" placeholder="Table number, optional" value={tableNo} onChange={event => setTableNo(event.target.value)} /> : <select aria-label="Pick up time" value={pickupAt} onChange={event => setPickupAt(event.target.value)}><option value="">Choose a time</option>{pickupSlots().map(slot => <option key={slot.value} value={slot.value}>{slot.label}</option>)}</select>}{buyerName ? <p>Name · {buyerName}</p> : <input aria-label="Your name" placeholder="Your name, optional" value={buyerName} onChange={event => setBuyerName(event.target.value)} />}<button type="button" className="lt-qr-primary" disabled={service === 'pickup' && !pickupAt} onClick={() => setPayStep('payment')}>Continue to payment</button></div>}
-        {payStep === 'payment' && <div className="lt-qr-pay"><p>{service === 'dine-in' ? `Dine in${tableNo.trim() ? ` · Table ${tableNo.trim()}` : ''}` : `Pick up later · ${pickupSlots().find(slot => slot.value === pickupAt)?.label || ''}`}</p>{buyerName.trim() && <p>{buyerName.trim()}</p>}<strong>{money(total)}</strong><button type="button" className="lt-qr-primary" onClick={() => { const stamp = Date.now().toString(36).toUpperCase(); const slot = pickupSlots().find(item => item.value === pickupAt); {
-const placedOrder = { ...buildMenuOrder({ merchantId: business.public_id, cart, orderId: `LT-${stamp}` }), buyer_name: buyerName.trim(), service, table_no: tableNo.trim(), pickup_at: pickupAt, pickup_label: slot?.label || '', payment_reference: `REF-${stamp.slice(-6)}`, status: 'awaiting_payment' };
-setOrder(placedOrder);
-const menuBusinessId = placedOrder.merchant_id || placedOrder.merchantId;
-if (menuBusinessId) {
-  fetch(apiBase + '/api/v1/public/menu/' + encodeURIComponent(menuBusinessId) + '/orders', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      order_number: placedOrder.order_id || placedOrder.orderId,
-      payment_reference: placedOrder.payment_reference,
-      buyer_name: placedOrder.buyer_name,
-      service: placedOrder.service,
-      table_no: placedOrder.table_no,
-      pickup_label: placedOrder.pickup_label,
-      items: placedOrder.items || [],
-    }),
-  }).catch(() => {});
-}
-setPayStep('done');
-} }}>Pay</button><button type="button" className="lt-qr-text-button" onClick={() => setPayStep('service')}>Back</button></div>}
-        {payStep === 'done' && order && <div className="lt-qr-checkout" role="status"><strong>Paid</strong><dl><div><dt>Order number</dt><dd>{order.order_id}</dd></div><div><dt>Payment reference</dt><dd>{order.payment_reference}</dd></div><div><dt>Buyer</dt><dd>{order.buyer_name || '—'}</dd></div></dl><p>{order.service === 'dine-in' ? `Dine in${order.table_no ? ` · Table ${order.table_no}` : ''}` : `Pick up later${order.pickup_label ? ` · ${order.pickup_label}` : ''}`}</p></div>}
+    {count > 0 && !cartOpen && <div className="lt-qr-dock">
+      <button type="button" ref={dockRef} className="lt-qr-dock-card" onClick={openCart} aria-label={`View cart, ${count} ${count === 1 ? 'item' : 'items'}, ${money(total)}`}>
+        <span className="lt-qr-dock-count" aria-hidden="true">{count}</span>
+        <span className="lt-qr-dock-label" aria-hidden="true">View cart<small>{count} {count === 1 ? 'item' : 'items'}</small></span>
+        <strong aria-hidden="true">{money(total)}</strong>
+      </button>
+    </div>}
+    {cartOpen && <div className="lt-qr-cart" onMouseDown={event => { if (event.target === event.currentTarget) closeCart() }}>
+      <div className="lt-qr-cart-card" ref={sheetRef} role="dialog" aria-modal="true" aria-labelledby={sheetTitleId} onKeyDown={onSheetKeyDown}>
+        <header className="lt-qr-sheet-head">
+          <div>
+            <h2 id={sheetTitleId} tabIndex={-1}>{title}</h2>
+            {(step === '' || step === 'service' || step === 'payment') && <ol className="lt-qr-steps" aria-label="Checkout steps">
+              {CHECKOUT_STEPS.map(([value, label], index) => <li key={label} className={index < stepIndex ? 'is-done' : index === stepIndex ? 'is-current' : ''} aria-current={index === stepIndex ? 'step' : undefined}>{label}</li>)}
+            </ol>}
+          </div>
+          <button type="button" className="lt-qr-sheet-x" onClick={closeCart} disabled={submitting} aria-label={step === 'done' ? 'Close receipt' : 'Close cart'}>×</button>
+        </header>
+
+        <div className="lt-qr-sheet-body">
+          {step === 'empty' && <div className="lt-qr-cart-empty">
+            <span className="lt-qr-cart-empty-icon" aria-hidden="true">☕</span>
+            <h3>Your cart is empty</h3>
+            <p>Add something from the menu and it will show up here.</p>
+          </div>}
+
+          {step === '' && <ul className="lt-qr-cart-lines">{cart.map(line => <CartLine key={line.key} line={line} money={money} onQuantity={quantity => changeLine(line.key, quantity)} />)}</ul>}
+
+          {step === 'service' && <div className="lt-qr-pay">
+            <div className="lt-qr-pay-choices" role="group" aria-label="How will you get it?">
+              <button type="button" aria-pressed={service === 'dine-in'} onClick={() => setService('dine-in')}>{service === 'dine-in' && <CheckIcon />}Dine in</button>
+              <button type="button" aria-pressed={service === 'pickup'} onClick={() => { setService('pickup'); if (!slots.length) setSlots(pickupSlots()) }}>{service === 'pickup' && <CheckIcon />}Pick up later</button>
+            </div>
+            {service === 'dine-in'
+              ? <label className="lt-qr-field"><span>Table number <em>optional</em></span><input inputMode="numeric" autoComplete="off" placeholder="e.g. 5" value={tableNo} onChange={event => setTableNo(event.target.value.slice(0, 12))} /></label>
+              : <label className="lt-qr-field"><span>Pick up time</span><select value={pickupAt} onChange={event => setPickupAt(event.target.value)}><option value="">Choose a time</option>{slots.map(slot => <option key={slot.value} value={slot.value}>{slot.label}</option>)}</select>{!pickupAt && <small className="lt-qr-field-help">Choose a pick up time to continue.</small>}</label>}
+            {nameFromCard
+              ? <div className="lt-qr-name-row"><span>Name: <strong>{cardName}</strong></span><button type="button" className="lt-qr-text-button" onClick={() => setEditingName(true)}>Change</button></div>
+              : <label className="lt-qr-field"><span>Your name <em>optional</em></span><input autoComplete="name" placeholder="So the shop can call you" value={buyerName} onChange={event => setBuyerName(event.target.value.slice(0, 120))} /></label>}
+            <ul className="lt-qr-cart-lines is-compact" aria-label="Items in your order">{cart.map(line => <CartLine key={line.key} line={line} money={money} />)}</ul>
+          </div>}
+
+          {step === 'payment' && <div className="lt-qr-pay">
+            <dl className="lt-qr-summary">
+              <div><dt>Order type</dt><dd>{serviceLine(service, tableNo.trim(), pickupLabel)}</dd></div>
+              <div><dt>Name</dt><dd>{buyerName.trim() || '—'}</dd></div>
+              <div><dt>Items</dt><dd>{count} {count === 1 ? 'item' : 'items'}</dd></div>
+            </dl>
+            <ul className="lt-qr-cart-lines is-compact" aria-label="Items in your order">{cart.map(line => <CartLine key={line.key} line={line} money={money} />)}</ul>
+            <dl className="lt-qr-totals">
+              <div><dt>Subtotal</dt><dd>{money(total)}</dd></div>
+              <div className="is-total"><dt>Total</dt><dd>{money(total)}</dd></div>
+            </dl>
+            <p className="lt-qr-test-note">Test payment. Your order will be sent to the shop.</p>
+          </div>}
+
+          {step === 'done' && order && <div className="lt-qr-receipt" role="status">
+            <span className="lt-qr-receipt-check" aria-hidden="true"><CheckIcon size={34} /></span>
+            <h3>Order sent to {business.name}</h3>
+            <p className="lt-qr-receipt-sub">The shop has received your order.</p>
+            <div className="lt-qr-receipt-number">
+              <span>Order number</span>
+              <strong>{order.order_number}</strong>
+              <button type="button" className="lt-qr-text-button" onClick={() => copyOrderNumber(order.order_number)}>{copied ? 'Copied' : 'Copy'}</button>
+            </div>
+            <dl className="lt-qr-summary">
+              <div><dt>Payment reference</dt><dd>{order.payment_reference}</dd></div>
+              <div><dt>Order type</dt><dd>{serviceLine(order.service, order.table_no, order.pickup_label)}</dd></div>
+              <div><dt>Name</dt><dd>{order.buyer_name || '—'}</dd></div>
+              <div><dt>Payment</dt><dd><span className="lt-qr-paid-pill">Paid · test</span></dd></div>
+            </dl>
+            <ul className="lt-qr-cart-lines is-compact" aria-label="Items ordered">{(order.lines || []).map(line => <CartLine key={line.key} line={line} money={money} />)}</ul>
+            <dl className="lt-qr-totals"><div className="is-total"><dt>Total paid</dt><dd>{money(order.subtotal)}</dd></div></dl>
+          </div>}
+        </div>
+
+        <footer className="lt-qr-sheet-foot">
+          {step === 'empty' && <button type="button" className="lt-qr-primary lt-qr-wide" onClick={closeCart}>Browse the menu</button>}
+          {step === '' && <button type="button" className="lt-qr-primary lt-qr-wide" disabled={checkingCard} onClick={startCheckout}>{checkingCard ? 'One moment…' : `Checkout · ${money(total)}`}</button>}
+          {step === 'service' && <>
+            <button type="button" className="lt-qr-primary lt-qr-wide" disabled={service === 'pickup' && !pickupAt} onClick={() => { setSubmitError(''); setPayStep('payment') }}>Continue to payment</button>
+            <button type="button" className="lt-qr-back-button" onClick={() => setPayStep('')}>Back to cart</button>
+          </>}
+          {step === 'payment' && <>
+            {submitError && <div className="lt-qr-pay-error" role="alert">
+              <p><strong>Order not sent.</strong> {submitError}</p>
+              <button type="button" onClick={submitOrder} disabled={submitting}>Try again</button>
+            </div>}
+            {!submitError && <button type="button" className="lt-qr-primary lt-qr-wide" disabled={submitting} aria-busy={submitting} onClick={submitOrder}>{submitting ? <><span className="lt-qr-spinner" aria-hidden="true" />Sending order…</> : `Pay ${money(total)}`}</button>}
+            <button type="button" className="lt-qr-back-button" disabled={submitting} onClick={() => { setSubmitError(''); setPayStep('service') }}>Back</button>
+          </>}
+          {step === 'done' && <button type="button" className="lt-qr-primary lt-qr-wide" onClick={closeCart}>Back to menu</button>}
+        </footer>
       </div>
     </div>}
   </div>
 }
+function MenuLoading() {
+  return <div className="lt-qr-public lt-qr-cafe">
+    <main className="lt-qr-page lt-qr-loading" role="status" aria-live="polite">
+      <span className="lt-qr-sr">Getting the menu ready…</span>
+      <div className="lt-qr-cafe-head" aria-hidden="true"><div className="lt-qr-skel lt-qr-skel-title" /><div className="lt-qr-skel lt-qr-skel-search" /></div>
+      <div className="lt-qr-cafe-split" aria-hidden="true">
+        <div className="lt-qr-rail">{[0, 1, 2, 3].map(index => <div key={index} className="lt-qr-skel lt-qr-skel-rail" />)}</div>
+        <div className="lt-qr-stream">{[0, 1, 2, 3].map(index => <div key={index} className="lt-qr-dish lt-qr-skel-card"><div className="lt-qr-skel lt-qr-skel-photo" /><div><div className="lt-qr-skel lt-qr-skel-line" /><div className="lt-qr-skel lt-qr-skel-line is-short" /></div></div>)}</div>
+      </div>
+    </main>
+  </div>
+}
+
 export default function QRMenuPage({ API_BASE }) {
   const { businessId } = useParams()
   const [params, setParams] = useSearchParams()
@@ -255,7 +492,7 @@ export default function QRMenuPage({ API_BASE }) {
   }, [API_BASE, businessId, attempt])
   useEffect(() => { if (data?.business?.name) document.title = `${data.business.name} · QR Menu | Loyalty Tree` }, [data?.business?.name])
   if (error) return <main className="lt-qr-message-page"><h1>Menu unavailable</h1><p role="alert">{error}</p><button type="button" onClick={() => setAttempt(value => value + 1)}>Try again</button></main>
-  if (!data) return <main className="lt-qr-message-page" role="status"><p>Getting the menu ready…</p></main>
+  if (!data) return <MenuLoading />
   if (branch && !data.branches.some(value => value.public_id === branch)) return <main className="lt-qr-message-page"><h1>Location unavailable</h1><p>This location is no longer available.</p><button type="button" onClick={() => setParams({})}>Choose another location</button></main>
   return <QRMenuBrowser data={data} apiBase={API_BASE} initialBranch={branch} onBranchChange={value => setParams(value ? { branch: value } : {})} />
 }

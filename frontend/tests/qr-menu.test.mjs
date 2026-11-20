@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { menuItemAvailable, filterMenuItems, groupMenuCategories, menuItemPrice, toggleMenuOption, validMenuPayload, addCartItem, changeCartQuantity, cartSubtotal, buildMenuOrder, digitalMenuHref } from '../src/components/qrMenuModel.js'
+import { menuItemAvailable, filterMenuItems, groupMenuCategories, menuItemPrice, toggleMenuOption, validMenuPayload, addCartItem, changeCartQuantity, cartSubtotal, buildMenuOrder, digitalMenuHref, menuOrderRequest, sendMenuOrder, MENU_ORDER_OFFLINE } from '../src/components/qrMenuModel.js'
 import { createFixtureTransport, fixtureSlug } from '../dev/owner-dashboard-fixtures.js'
 const size={public_id:'size',selection_type:'single',max_selections:1,options:[{public_id:'small',price_delta:0},{public_id:'large',price_delta:25}]}
 const extras={public_id:'extras',selection_type:'multiple',max_selections:1,options:[{public_id:'oat',price_delta:20},{public_id:'syrup',price_delta:10}]}
@@ -24,12 +24,16 @@ test('category browsing keeps every item reachable and prefers an available cove
     {public_id:'special',category_public_id:null},
   ]
   const groups=groupMenuCategories(categories,items,'main')
-  assert.deepEqual(groups.map(group=>group.name),['Coffee','Bakes','More favorites'])
+  assert.deepEqual(groups.map(group=>group.name),['Coffee','Bakes','More'])
   assert.equal(groups[0].image_url,'/americano.jpg')
   assert.equal(groups[1].image_url,'/croissant.jpg')
-  assert.deepEqual(groups.flatMap(group=>group.items),items)
+  // Items not offered at the chosen branch are hidden there (current model behavior).
+  assert.deepEqual(groups.flatMap(group=>group.items),items.filter(item=>item.public_id!=='latte'))
   assert.equal(groupMenuCategories(categories,items,'riverside')[0].image_url,'/latte.jpg')
-  assert.deepEqual(groupMenuCategories([],items,'main'),[])
+  // With no categories, everything offered at the branch lands in one "Menu" group.
+  const flat=groupMenuCategories([],items,'main')
+  assert.deepEqual(flat.map(group=>[group.name,group.items.length]),[['Menu',3]])
+  assert.deepEqual(groupMenuCategories([],[],'main'),[])
 })
 test('price preview replaces single choices and caps multiple options without mutating state',()=>{
   const initial={size:['small']}
@@ -91,4 +95,97 @@ test('cart keeps quantities, refuses sold-out items, and builds a pending order'
   assert.equal(order.status,'pending_payment')
   assert.equal(order.subtotal,360)
   assert.equal(order.items[0].line_total,360)
+})
+
+test('cart lines keep the item photo for thumbnails, but the order never sends it',()=>{
+  const mocha={public_id:'mocha',name:'Mocha Matcha',base_price:250,image_url:'https://cdn.example/mocha.jpg',modifier_groups:[size]}
+  const plain={public_id:'bun',name:'Bun',base_price:50}
+  let cart=addCartItem([],mocha,{size:['large']},2)
+  cart=addCartItem(cart,plain)
+  assert.equal(cart[0].image_url,'https://cdn.example/mocha.jpg')
+  assert.equal(cart[1].image_url,'')
+  cart=addCartItem(cart,mocha,{size:['large']})
+  assert.equal(cart[0].quantity,3)
+  assert.equal(cart[0].image_url,'https://cdn.example/mocha.jpg')
+  const order=buildMenuOrder({merchantId:'nfc9277',cart,orderId:'LT-1'})
+  for(const line of order.items){
+    assert.equal('image_url' in line,false)
+    for(const key of ['name','quantity','line_total','options']) assert.ok(key in line)
+  }
+  assert.equal(order.items[0].line_total,825)
+  // Old carts saved before image_url existed still build an order.
+  assert.equal(buildMenuOrder({cart:[{key:'x',name:'Old',unit_price:10,quantity:1,options:[]}],orderId:'LT-2'}).items[0].line_total,10)
+})
+
+const placed={order_id:'LT-ABC',payment_reference:'REF-ABC',buyer_name:'John',service:'dine-in',table_no:'5',pickup_label:'3:30 PM',
+  items:[{item_id:'mocha',name:'Mocha',quantity:2,unit_price:150,line_total:300,options:[{public_id:'oat',name:'Oat',price_delta:20}],image_url:'x.jpg'}]}
+
+test('order request body matches the server contract exactly',()=>{
+  const body=menuOrderRequest(placed)
+  assert.deepEqual(Object.keys(body).sort(),['buyer_name','items','order_number','payment_reference','pickup_label','service','table_no'])
+  assert.equal(body.order_number,'LT-ABC')
+  assert.equal(body.payment_reference,'REF-ABC')
+  assert.equal(body.service,'dine-in')
+  assert.equal(body.table_no,'5')
+  assert.equal(body.pickup_label,'')
+  assert.deepEqual(body.items,[{name:'Mocha',quantity:2,line_total:300,options:[{public_id:'oat',name:'Oat',price_delta:20}]}])
+  const pickup=menuOrderRequest({...placed,service:'pickup'})
+  assert.equal(pickup.service,'pickup'); assert.equal(pickup.table_no,''); assert.equal(pickup.pickup_label,'3:30 PM')
+})
+
+const url='https://api.example/api/v1/public/menu/nfc9277/orders'
+test('sendMenuOrder posts once and reports ok only for a 2xx save',async()=>{
+  const calls=[]
+  const fetchImpl=async(input,init)=>{ calls.push({input,init}); return new Response(JSON.stringify({success:true,order:{public_id:'abc',order_number:'LT-ABC',status:'new'}}),{status:200,headers:{'Content-Type':'application/json'}}) }
+  const result=await sendMenuOrder({fetchImpl,url,order:placed})
+  assert.equal(result.ok,true)
+  assert.equal(result.order.order_number,'LT-ABC')
+  assert.equal(calls.length,1)
+  assert.equal(calls[0].input,url)
+  assert.equal(calls[0].init.method,'POST')
+  assert.equal(calls[0].init.headers['Content-Type'],'application/json')
+  assert.deepEqual(JSON.parse(calls[0].init.body),menuOrderRequest(placed))
+})
+
+test('sendMenuOrder never reports a save for server errors, offline, timeouts or preview',async()=>{
+  const failed=await sendMenuOrder({fetchImpl:async()=>new Response(JSON.stringify({detail:'Menu orders are not ready yet'}),{status:503}),url,order:placed})
+  assert.deepEqual([failed.ok,failed.status,failed.error],[false,503,'Menu orders are not ready yet'])
+  const bare=await sendMenuOrder({fetchImpl:async()=>new Response('oops',{status:500}),url,order:placed})
+  assert.equal(bare.ok,false); assert.match(bare.error,/error 500/)
+  const validation=await sendMenuOrder({fetchImpl:async()=>new Response(JSON.stringify({detail:[{msg:'bad'}]}),{status:422}),url,order:placed})
+  assert.equal(validation.ok,false); assert.match(validation.error,/error 422/)
+  const offline=await sendMenuOrder({fetchImpl:async()=>{ throw new TypeError('Failed to fetch') },url,order:placed})
+  assert.deepEqual([offline.ok,offline.error],[false,MENU_ORDER_OFFLINE])
+  const hang=await sendMenuOrder({fetchImpl:()=>new Promise(()=>{}),url,order:placed,timeoutMs:20})
+  assert.deepEqual([hang.ok,hang.error],[false,MENU_ORDER_OFFLINE])
+  let called=false
+  const previewMode=await sendMenuOrder({fetchImpl:async()=>{ called=true },url:'',order:placed})
+  assert.equal(previewMode.ok,false); assert.equal(called,false)
+  const empty=await sendMenuOrder({fetchImpl:async()=>{ called=true },url,order:{...placed,items:[]}})
+  assert.equal(empty.ok,false); assert.equal(called,false)
+})
+
+test('a retry resends the same order number and payment reference',async()=>{
+  const bodies=[]
+  let attempt=0
+  const fetchImpl=async(input,init)=>{ bodies.push(JSON.parse(init.body)); attempt+=1; return attempt===1?new Response('{}',{status:503}):new Response(JSON.stringify({order:{order_number:'LT-ABC'}}),{status:200}) }
+  assert.equal((await sendMenuOrder({fetchImpl,url,order:placed})).ok,false)
+  assert.equal((await sendMenuOrder({fetchImpl,url,order:placed})).ok,true)
+  assert.equal(bodies[0].order_number,bodies[1].order_number)
+  assert.equal(bodies[0].payment_reference,bodies[1].payment_reference)
+})
+
+test('menu page posts to apiBase with business.public_id and only shows the receipt after a save',async()=>{
+  const {readFile}=await import('node:fs/promises')
+  const source=await readFile(new URL('../src/components/QRMenuPage.jsx',import.meta.url),'utf8')
+  const browser=source.slice(source.indexOf('export function QRMenuBrowser'),source.indexOf('export default function QRMenuPage'))
+  assert.ok(browser.includes('`${apiBase}/api/v1/public/menu/${encodeURIComponent(business.public_id)}/orders`'))
+  assert.equal(browser.includes('API_BASE'),false)
+  assert.equal(browser.includes('merchant_id ||'),false)
+  assert.equal(/\.catch\(\(\) => \{\s*\}\)/.test(source),false)
+  const submit=browser.slice(browser.indexOf('async function submitOrder'),browser.indexOf('const copyOrderNumber'))
+  const failure=submit.indexOf("if (!result.ok) { setSubmitError(result.error); return }")
+  assert.ok(failure>0)
+  assert.equal(submit.indexOf("setPayStep('done')")>failure,true)
+  assert.equal(submit.split("setPayStep('done')").length,2)
 })
