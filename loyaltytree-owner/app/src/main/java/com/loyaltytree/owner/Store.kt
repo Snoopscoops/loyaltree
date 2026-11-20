@@ -342,6 +342,9 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     }
 
     fun signOut() {
+        // Stop pushes to this phone first (works even if the 12-hour shift sign-in already ended).
+        session?.let { OrderPush.signOut(getApplication<Application>(), it.slug) }
+        pushRegistered = ""
         watchJob?.cancel()
         watchJob = null
         session = null
@@ -378,6 +381,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
                 status = "Sign in again."
                 return@launch
             }
+            registerPush(current)
             memberCount = fact(stats.second, "total_customers") ?: "0"
             members = parseMembers(people.second)
             if (board != null) applyBoard(board.second, board.first)
@@ -421,9 +425,27 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
                 }
             }
             loading = false
+            if (access != null && access.first < 400) registerPush(session ?: current)
             if (!staffNeedsBranch) {
                 fetchOrders(session ?: current)
                 startOrderWatch()
+            }
+        }
+    }
+
+    // ----- New-order push (FCM): rings even when the app is closed -----
+
+    private var pushRegistered = ""
+
+    /** Tells the server this phone should ring for new orders (owner: all branches, staff: their branch). */
+    private fun registerPush(current: OwnerSession) {
+        val context = getApplication<Application>()
+        OrderPush.currentToken(context) { token ->
+            val signature = "${current.slug}|${current.role}|${current.branchId}|$token"
+            if (signature == pushRegistered || session?.slug != current.slug) return@currentToken
+            viewModelScope.launch {
+                val result = io { OrderPush.register(context, current.slug, current.token, token) }
+                if (result != null && result.first < 400) pushRegistered = signature
             }
         }
     }
@@ -443,21 +465,20 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun seenKey(current: OwnerSession) = "seenOrders:${current.slug}:${current.role}:${current.branchId}"
+    private fun seenKey(current: OwnerSession) = OrderAlerts.seenKey(current.slug, current.role, current.branchId)
 
-    /** Rings for orders this phone has not seen yet. The first load after sign-in only remembers what is already there. */
+    /**
+     * Rings for orders this phone has not seen yet. The first load after sign-in only remembers what is already there.
+     * Orders that already rang through a push (OrderPushService) are in the same seen list, so they don't ring twice.
+     */
     private fun ringForNew(current: OwnerSession, list: List<LiveOrder>) {
-        val key = seenKey(current)
-        val stored = prefs.getString(key, null)
-        val seen = stored?.split(",")?.filter { it.isNotBlank() }?.toMutableSet() ?: mutableSetOf()
-        val fresh = if (stored == null) emptyList() else list.filter { order ->
-            order.id !in seen && order.status == "new" && recent(order.createdAt) &&
+        val context = getApplication<Application>()
+        val unseen = OrderAlerts.claim(context, seenKey(current), list.map { it.id }, firstLoadQuiet = true)
+        val fresh = list.filter { order ->
+            order.id in unseen && order.status == "new" && recent(order.createdAt) &&
                 (current.isStaff || order.branchId !in mutedBranches)
         }
-        seen.addAll(list.map { it.id })
-        prefs.edit().putString(key, seen.toList().takeLast(400).joinToString(",")).apply()
         if (fresh.isEmpty() || !alertsOn) return
-        val context = getApplication<Application>()
         if (!OrderAlerts.announce(context, fresh)) {
             alertsNote = "Notifications are off for LoyaltyTree, so new orders only chime while the app is open."
         }

@@ -18817,7 +18817,7 @@ _menu_order_operator = make_menu_order_operator(db=supabase, get_business=safe_g
 
 
 @app.post('/api/v1/public/menu/{public_id}/orders')
-async def public_place_menu_order(public_id: str, request: Request):
+async def public_place_menu_order(public_id: str, request: Request, background_tasks: BackgroundTasks):
     """Save a digital-menu order. This does not require Order Ahead."""
     payload = await request.json()
     business = safe_get_business(public_id)
@@ -18876,6 +18876,8 @@ async def public_place_menu_order(public_id: str, request: Request):
         saved = saved or row
     except Exception as e:
         raise HTTPException(status_code=503, detail=f'Menu orders are not ready yet: {friendly_db_error(e)}')
+    # owner-v6 menu_order_push: ring the owner / branch phones after the response (never blocks the order).
+    background_tasks.add_task(_menu_order_push, dict(business), {**row, **saved})
     return {'success': True, 'order': _menu_counter_order_public(saved)}
 
 
@@ -51732,6 +51734,13 @@ try:
 except ImportError:
     from menu_order_access import register_menu_order_access_routes
 register_menu_order_access_routes(app, operator=_menu_order_operator)
+try:
+    from .menu_order_push import register_menu_order_push_routes
+except ImportError:
+    from menu_order_push import register_menu_order_push_routes
+# New-order push (FCM). Off until FIREBASE_SERVICE_ACCOUNT_JSON is set on Render.
+_menu_order_push = register_menu_order_push_routes(app, db=supabase, operator=_menu_order_operator,
+    get_business=safe_get_business)
 register_menu_card_routes(app, db=supabase, get_business=safe_get_business,
     has_feature=business_has_plan_feature, on_hold=billing_hold, send_email=send_email,
     frontend_url=FRONTEND_URL or 'https://theloyaltytree.com')

@@ -48,6 +48,24 @@ object OrderAlerts {
     fun canNotify(context: Context): Boolean =
         permissionGranted(context) && NotificationManagerCompat.from(context).areNotificationsEnabled()
 
+    private val seenLock = Any()
+
+    /** Same key for the 20-second poll and the push service, so one order rings only once. */
+    fun seenKey(slug: String, role: String, branchId: String) = "seenOrders:$slug:$role:$branchId"
+
+    /**
+     * Marks [ids] as seen on this phone and returns the ones that were new.
+     * [firstLoadQuiet]: when nothing is stored yet (first load after sign-in), only remember.
+     */
+    fun claim(context: Context, key: String, ids: List<String>, firstLoadQuiet: Boolean): Set<String> = synchronized(seenLock) {
+        val prefs = context.getSharedPreferences("lt", Context.MODE_PRIVATE)
+        val stored = prefs.getString(key, null)
+        val seen = stored?.split(",")?.filter { it.isNotBlank() }?.toMutableList() ?: mutableListOf()
+        val unseen = ids.filter { it.isNotBlank() && it !in seen }.distinct()
+        prefs.edit().putString(key, (seen + unseen).takeLast(400).joinToString(",")).apply()
+        if (stored == null && firstLoadQuiet) emptySet() else unseen.toSet()
+    }
+
     fun ensureChannel(context: Context) {
         if (Build.VERSION.SDK_INT < 26) return
         val manager = context.getSystemService(NotificationManager::class.java) ?: return
