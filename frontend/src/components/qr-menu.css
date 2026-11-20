@@ -477,3 +477,23 @@
   .lt-qr-cart-thumb { width:48px; height:48px; }
   .lt-qr-cart-line-total { font-size:14px; }
 }
+
+/* Details: required name + connect card for rewards */
+.lt-qr-required { color:#b4432f; font-weight:800; margin-left:2px; }
+.lt-qr-field-help.is-neutral { color:var(--qr-soft); font-weight:500; }
+.lt-qr-card-promo { display:flex; align-items:center; gap:12px; padding:12px 14px; border:1px solid #d6eadf; border-radius:14px; background:var(--qr-mint); }
+.lt-qr-cafe .lt-qr-pay .lt-qr-card-promo p { flex:1; margin:0; font-size:13px; line-height:1.4; color:var(--qr-ink); }
+.lt-qr-cafe .lt-qr-pay .lt-qr-card-promo p strong { display:block; font-weight:800; color:var(--qr-forest-ink); }
+.lt-qr-card-promo-button { flex:none; display:inline-flex; align-items:center; justify-content:center; min-height:40px; padding:8px 14px; border:0; border-radius:999px; background:var(--qr-forest); color:#fff; font-size:13px; font-weight:800; text-decoration:none; white-space:nowrap; }
+
+/* Choose your branch (multi-branch shops) */
+.lt-qr-branch-picker { margin:16px 16px 8px; padding:18px 16px; border:1px solid var(--qr-line); border-radius:20px; background:#fff; }
+.lt-qr-branch-picker h2 { margin:0; font-size:21px; color:var(--qr-forest-ink); letter-spacing:-.02em; }
+.lt-qr-branch-picker > p { margin:4px 0 14px; color:var(--qr-soft); font-size:14px; }
+.lt-qr-branch-picker ul { display:grid; gap:8px; margin:0; padding:0; list-style:none; }
+.lt-qr-branch-picker button { display:flex; align-items:center; justify-content:space-between; gap:10px; width:100%; min-height:56px; padding:12px 14px; border:1.5px solid var(--qr-line); border-radius:14px; background:var(--qr-paper); color:var(--qr-ink); text-align:left; }
+.lt-qr-branch-picker button strong { font-size:16px; font-weight:800; }
+.lt-qr-branch-picker-copy { display:flex; flex-direction:column; min-width:0; }
+.lt-qr-branch-picker-copy span { font-size:12.5px; color:var(--qr-soft); }
+.lt-qr-branch-picker button i { flex:none; font-style:normal; font-size:22px; color:var(--qr-forest); }
+.lt-qr-branch-picker button:hover { border-color:var(--qr-forest); }

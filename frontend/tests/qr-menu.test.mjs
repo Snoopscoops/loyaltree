@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { menuItemAvailable, filterMenuItems, groupMenuCategories, menuItemPrice, toggleMenuOption, validMenuPayload, addCartItem, changeCartQuantity, cartSubtotal, buildMenuOrder, digitalMenuHref, menuOrderRequest, sendMenuOrder, MENU_ORDER_OFFLINE } from '../src/components/qrMenuModel.js'
+import { menuItemAvailable, filterMenuItems, groupMenuCategories, menuItemPrice, toggleMenuOption, validMenuPayload, addCartItem, changeCartQuantity, cartSubtotal, buildMenuOrder, digitalMenuHref, menuOrderRequest, sendMenuOrder, MENU_ORDER_OFFLINE, pickupTimeLabel, resolveMenuBranch } from '../src/components/qrMenuModel.js'
 import { createFixtureTransport, fixtureSlug } from '../dev/owner-dashboard-fixtures.js'
 const size={public_id:'size',selection_type:'single',max_selections:1,options:[{public_id:'small',price_delta:0},{public_id:'large',price_delta:25}]}
 const extras={public_id:'extras',selection_type:'multiple',max_selections:1,options:[{public_id:'oat',price_delta:20},{public_id:'syrup',price_delta:10}]}
@@ -188,4 +188,46 @@ test('menu page posts to apiBase with business.public_id and only shows the rece
   assert.ok(failure>0)
   assert.equal(submit.indexOf("setPayStep('done')")>failure,true)
   assert.equal(submit.split("setPayStep('done')").length,2)
+})
+
+test('pickup times always show AM or PM, and that label is what the server gets',()=>{
+  assert.equal(pickupTimeLabel(new Date(2026,10,21,13,30)),'1:30 PM')
+  assert.equal(pickupTimeLabel(new Date(2026,10,21,0,5)),'12:05 AM')
+  assert.equal(pickupTimeLabel(new Date(2026,10,21,12,0)),'12:00 PM')
+  assert.equal(pickupTimeLabel(new Date(2026,10,21,9,45)),'9:45 AM')
+  assert.equal(pickupTimeLabel('not a date'),'')
+  assert.equal(menuOrderRequest({...placed,service:'pickup',pickup_label:pickupTimeLabel(new Date(2026,10,21,15,30))}).pickup_label,'3:30 PM')
+})
+
+test('details step requires a name without a card and offers Connect card for rewards',async()=>{
+  const {readFile}=await import('node:fs/promises')
+  const source=await readFile(new URL('../src/components/QRMenuPage.jsx',import.meta.url),'utf8')
+  assert.ok(source.includes('const nameRequired = !cardName'))
+  assert.ok(source.includes("!(nameRequired && !buyerName.trim())"))
+  assert.ok(source.includes('disabled={!detailsReady}'))
+  assert.ok(source.includes('So the shop can call your order.'))
+  assert.ok(source.includes('Connect it to earn rewards on this order.'))
+  assert.equal(/download our app/i.test(source),false)
+  assert.ok(source.includes('label: pickupTimeLabel(slot)'))
+})
+
+test('customers must pick a branch when there are several, one branch is automatic',()=>{
+  const two=[{public_id:'main',name:'Main'},{public_id:'bgc',name:'BGC'}]
+  assert.deepEqual(resolveMenuBranch(two,''),{branchId:'',needsBranch:true,showSelector:true,invalidBranch:false})
+  assert.deepEqual(resolveMenuBranch(two,'bgc'),{branchId:'bgc',needsBranch:false,showSelector:true,invalidBranch:false})
+  assert.deepEqual(resolveMenuBranch(two,'closed'),{branchId:'',needsBranch:true,showSelector:true,invalidBranch:true})
+  assert.deepEqual(resolveMenuBranch([{public_id:'only',name:'Only'}],''),{branchId:'only',needsBranch:false,showSelector:false,invalidBranch:false})
+  assert.deepEqual(resolveMenuBranch([{public_id:'only',name:'Only'}],'old'),{branchId:'only',needsBranch:false,showSelector:false,invalidBranch:false})
+  assert.equal(resolveMenuBranch([],'x').needsBranch,false)
+})
+
+test('menu page has no All branches option and blocks ordering until a branch is chosen',async()=>{
+  const {readFile}=await import('node:fs/promises')
+  const source=await readFile(new URL('../src/components/QRMenuPage.jsx',import.meta.url),'utf8')
+  assert.equal(source.includes('All branches'),false)
+  assert.ok(source.includes('Choose your branch'))
+  assert.ok(source.includes('if (needsBranch || !menuItemAvailable(value, branchId)) return'))
+  assert.ok(source.includes('disabled={checkingCard || needsBranch}'))
+  assert.ok(source.includes("!cartOpen && !needsBranch"))
+  assert.equal(source.includes('Location unavailable'),false)
 })

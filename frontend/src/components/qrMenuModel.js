@@ -150,6 +150,25 @@ export async function sendMenuOrder({ fetchImpl, url, order, timeoutMs = 15000 }
   return { ok: true, order: payload?.order || null }
 }
 
+// "1:30 PM" style label. Built by hand so every browser shows AM/PM.
+export function pickupTimeLabel(date) {
+  const value = date instanceof Date ? date : new Date(date)
+  if (Number.isNaN(value.getTime())) return ''
+  const hours = value.getHours()
+  return `${hours % 12 || 12}:${String(value.getMinutes()).padStart(2, '0')} ${hours < 12 ? 'AM' : 'PM'}`
+}
+
+// Which branch the menu shows. No "All branches": with 2+ branches the
+// customer must pick one (?branch=); with exactly one it is chosen for them.
+export function resolveMenuBranch(branches, requested) {
+  const list = Array.isArray(branches) ? branches : []
+  const wanted = String(requested || '')
+  if (list.length === 0) return { branchId: '', needsBranch: false, showSelector: false, invalidBranch: false }
+  if (list.length === 1) return { branchId: list[0].public_id, needsBranch: false, showSelector: false, invalidBranch: false }
+  const valid = list.some(branch => branch.public_id === wanted)
+  return { branchId: valid ? wanted : '', needsBranch: !valid, showSelector: true, invalidBranch: Boolean(wanted) && !valid }
+}
+
 export function digitalMenuHref(config, slug) {
   if (config?.digital_menu_published !== true) return ''
   const id = String(config.public_id || slug || '').trim()
