@@ -1,0 +1,1548 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
+package com.loyaltytree.owner
+
+import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.graphics.Bitmap
+import android.location.LocationManager
+import android.net.Uri
+import android.os.Build
+import android.view.HapticFeedbackConstants
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Receipt
+import androidx.compose.material.icons.filled.Restaurant
+import androidx.compose.material.icons.filled.Store
+import androidx.compose.material3.BottomSheetDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.qrcode.QRCodeWriter
+import kotlinx.coroutines.delay
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.TimeZone
+
+private val Forest = Color(0xFF123C32)
+private val Ink = Color(0xFF163B31)
+private val Ivory = Color(0xFFF4F7F1)
+private val Lime = Color(0xFFD6F675)
+private val Gold = Color(0xFF2F6A52)
+private val Muted = Color(0xFF5E7268)
+private val Line = Color(0xFFE3EADF)
+private val Track = Color(0xFFE6EEE4)
+private val Bad = Color(0xFF9F2D2D)
+private val Shape = RoundedCornerShape(16.dp)
+private val Pill = RoundedCornerShape(12.dp)
+
+private sealed class Page {
+    data object None : Page()
+    data object Analytics : Page()
+    data object Campaign : Page()
+    data object Billboard : Page()
+    data object Greetings : Page()
+    data class Guest(val part: String) : Page()
+    data object Card : Page()
+    data object Account : Page()
+    data object Billing : Page()
+    data object Points : Page()
+    data class Customer(val id: String) : Page()
+}
+
+private sealed class MenuSheet {
+    data object Closed : MenuSheet()
+    data object Add : MenuSheet()
+    data class Edit(val id: String) : MenuSheet()
+    data class Group(val id: String?, val backToAdd: Boolean) : MenuSheet()
+}
+
+@Composable
+fun LoyaltyTreeApp(store: CounterStore = viewModel()) {
+    var showOpening by remember { mutableStateOf(!store.seenOpening) }
+    LaunchedEffect(showOpening) {
+        if (showOpening) {
+            delay(1500)
+            store.markOpened()
+            showOpening = false
+        }
+    }
+    if (showOpening) {
+        Box(Modifier.fillMaxSize().background(Forest), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Mark(88)
+                Spacer(Modifier.height(16.dp))
+                Text("Loyalty Tree", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+                Text("Business", color = Lime, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            }
+        }
+        return
+    }
+    if (store.session == null) LoginScreen(store) else Shell(store)
+}
+
+@Composable
+private fun Shell(store: CounterStore) {
+    var tab by remember { mutableIntStateOf(0) }
+    var page by remember { mutableStateOf<Page>(Page.None) }
+    val view = LocalView.current
+    LaunchedEffect(store.session?.slug) { store.refresh() }
+    BackHandler(page !is Page.None) { page = Page.None }
+    val saving = page is Page.Guest || page is Page.Billboard || page is Page.Card
+    Scaffold(containerColor = Ivory, bottomBar = {
+        Dock(tab) {
+            tick(view)
+            tab = it
+            page = Page.None
+        }
+    }) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding).background(Ivory)) {
+            if (page !is Page.None) {
+                NavBar(
+                    title = pageTitle(page, store),
+                    onBack = { page = Page.None },
+                    action = if (saving) if (store.loading) "Saving" else "Save" else null,
+                    onAction = {
+                        when (page) {
+                            is Page.Guest -> store.saveGuest()
+                            Page.Billboard -> store.saveBillboard()
+                            Page.Card -> store.saveCard()
+                            else -> Unit
+                        }
+                    }
+                )
+            }
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                when (val current = page) {
+                    Page.None -> when (tab) {
+                        0 -> HomeScreen(store, { page = Page.Analytics }, { page = Page.Campaign })
+                        1 -> OrdersScreen(store)
+                        2 -> MenuScreen(store)
+                        3 -> CustomersScreen(store) { page = Page.Customer(it) }
+                        else -> MoreScreen(store, { page = it }) { tab = 2; page = Page.None }
+                    }
+                    Page.Analytics -> AnalyticsScreen(store)
+                    Page.Campaign -> CampaignScreen(store)
+                    Page.Billboard -> BillboardScreen(store)
+                    Page.Greetings -> GreetingsScreen(store)
+                    is Page.Guest -> GuestScreen(store, current.part)
+                    Page.Card -> CardScreen(store)
+                    Page.Account -> AccountScreen(store) { page = Page.Billing }
+                    Page.Billing -> BillingScreen(store)
+                    Page.Points -> PointsScreen()
+                    is Page.Customer -> CustomerScreen(store, current.id)
+                }
+            }
+        }
+    }
+}
+
+private fun pageTitle(page: Page, store: CounterStore): String = when (page) {
+    Page.Analytics -> "Analytics"
+    Page.Campaign -> "Campaign"
+    Page.Billboard -> "Billboard"
+    Page.Greetings -> "Notifications"
+    is Page.Guest -> when (page.part) {
+        "socials" -> "Socials"
+        "book" -> "Book our place"
+        "reserve" -> "Reserve a table"
+        else -> "Wi-Fi"
+    }
+    Page.Card -> "Card"
+    Page.Account -> "Account"
+    Page.Billing -> "Billing"
+    Page.Points -> "LT Points"
+    is Page.Customer -> store.members.firstOrNull { it.id == page.id }?.name ?: "Customer"
+    Page.None -> ""
+}
+
+@Composable
+private fun LoginScreen(store: CounterStore) {
+    val context = LocalContext.current
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    val ready = email.contains("@") && password.length >= 4
+    Column(Modifier.fillMaxSize().background(Ivory).padding(24.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+        Mark(72)
+        Spacer(Modifier.height(16.dp))
+        Text("Sign in", color = Forest, fontSize = 32.sp, fontWeight = FontWeight.Bold)
+        Text("Use the email for this business.", color = Muted, fontSize = 15.sp)
+        Spacer(Modifier.height(18.dp))
+        Column(Modifier.fillMaxWidth().clip(Shape).background(Color.White).border(1.dp, Line, Shape).padding(18.dp)) {
+            Field("Email", email, { email = it })
+            Spacer(Modifier.height(12.dp))
+            Field("Password", password, { password = it }, password = true)
+            if (store.status.isNotBlank()) Text(store.status, color = Bad, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, modifier = Modifier.padding(top = 10.dp))
+            Spacer(Modifier.height(12.dp))
+            Primary(if (store.loading) "Signing in" else "Sign in", enabled = ready && !store.loading) {
+                store.signIn(email.trim(), password)
+            }
+            TextButton(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://theloyaltytree.com/signup"))) }, modifier = Modifier.fillMaxWidth()) {
+                Text("Create a business account", color = Forest, fontWeight = FontWeight.SemiBold)
+            }
+            Text("Registration and payment stay on the website.", color = Muted, fontSize = 12.sp, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
+        }
+    }
+}
+
+@Composable
+private fun HomeScreen(store: CounterStore, openAnalytics: () -> Unit, openCampaign: () -> Unit) {
+    val context = LocalContext.current
+    val view = LocalView.current
+    var enlarged by remember { mutableStateOf(false) }
+    var copied by remember { mutableStateOf(false) }
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(1400)
+            copied = false
+        }
+    }
+    fun copyLink() {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("join", store.joinLink))
+        copied = true
+        confirm(view)
+    }
+    Scroll {
+        Text(store.session?.businessName ?: "Home", color = Forest, fontSize = 30.sp, fontWeight = FontWeight.Bold, lineHeight = 34.sp)
+        Text(if (store.branches.size == 1) store.branches[0].name else "All branches", color = Muted, fontSize = 15.sp)
+        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Track).padding(4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            listOf("Today" to "today", "7 days" to "7d", "30 days" to "30d", "90 days" to "90d").forEach { (label, id) ->
+                val on = store.period == id
+                Box(
+                    Modifier.weight(1f).clip(RoundedCornerShape(9.dp)).background(if (on) Forest else Color.Transparent).clickable {
+                        tick(view)
+                        store.selectRange(id)
+                    }.padding(vertical = 8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(label, color = if (on) Color.White else Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                }
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Metric("Stamps", if (store.period == "today") store.todayStamps else store.cardStamps, Modifier.weight(1f))
+            Metric("Rewards", if (store.period == "today") store.todayRewards else store.cardRewards, Modifier.weight(1f))
+            Metric("New", if (store.period == "today") store.todayNew else store.cardNew, Modifier.weight(1f))
+        }
+        Text("${store.memberCount} members  ·  ${store.cameBackRate.toInt()}% came back", color = Forest, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box(Modifier.weight(1f)) { Secondary("Analytics", openAnalytics) }
+            Box(Modifier.weight(1f)) { Primary("Campaign", onClick = openCampaign) }
+        }
+        Column(Modifier.fillMaxWidth().clip(Shape).background(Color.White).border(1.dp, Line, Shape)) {
+            Row(Modifier.fillMaxWidth().clickable { enlarged = true }.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Qr(store.joinLink, 64)
+                Spacer(Modifier.size(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Join QR", color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                    Text("Customers scan this to join.", color = Muted, fontSize = 13.sp, lineHeight = 18.sp)
+                }
+                Text("›", color = Muted, fontSize = 22.sp)
+            }
+            Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
+            Row(Modifier.fillMaxWidth().height(44.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.weight(1f).fillMaxSize().clickable { enlarged = true }, contentAlignment = Alignment.Center) {
+                    Text("Enlarge", color = Forest, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                }
+                Box(Modifier.width(1.dp).height(22.dp).background(Line))
+                Box(Modifier.weight(1f).fillMaxSize().clickable { copyLink() }, contentAlignment = Alignment.Center) {
+                    Text(if (copied) "Copied" else "Copy link", color = Forest, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                }
+            }
+        }
+        if (store.status.isNotBlank()) Text(store.status, color = Bad, fontWeight = FontWeight.SemiBold)
+    }
+    if (enlarged) {
+        ModalBottomSheet(onDismissRequest = { enlarged = false }, containerColor = Ivory, dragHandle = { BottomSheetDefaults.DragHandle(color = Muted.copy(alpha = 0.45f)) }) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 12.dp).navigationBarsPadding(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Text("Customer join QR", color = Forest, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                Qr(store.joinLink, 240)
+                Text("Customers scan this to join.", color = Muted)
+                Primary("Share link") {
+                    context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, store.joinLink), "Share"))
+                }
+                Secondary(if (copied) "Copied" else "Copy link") { copyLink() }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OrdersScreen(store: CounterStore) {
+    LaunchedEffect(store.session?.slug) { store.loadOrders() }
+    val current = store.orders.filter { it.status == "new" || it.status == "preparing" || it.status == "ready" }
+    val earlier = store.orders.filter { it.status != "new" && it.status != "preparing" && it.status != "ready" }
+    Scroll {
+        Text("Orders", color = Forest, fontSize = 32.sp, fontWeight = FontWeight.Bold)
+        Text("Orders placed on the digital menu show up here.", color = Muted, fontSize = 15.sp)
+        if (store.ordersNote.isNotBlank()) Text(store.ordersNote, color = Bad, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+        if (current.isEmpty()) Text("No current orders.", color = Muted)
+        current.forEach { OrderCard(store, it) }
+        if (earlier.isNotEmpty()) {
+            Text("EARLIER", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            earlier.take(12).forEach { OrderCard(store, it) }
+        }
+        Secondary("Refresh") { store.loadOrders() }
+    }
+}
+
+@Composable
+private fun OrderCard(store: CounterStore, order: LiveOrder) {
+    val busy = store.orderBusy == order.id
+    val next = when (order.status) {
+        "new" -> "preparing" to "Start preparing"
+        "preparing" -> "ready" to "Mark ready"
+        "ready" -> "completed" to "Complete"
+        else -> null
+    }
+    Card {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text(order.number, color = Forest, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            Text(order.status.replaceFirstChar { it.uppercase() }, color = if (order.status == "cancelled") Bad else Forest, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+        }
+        if (order.payment == "pending") Text("Unpaid · confirm the test payment on the menu", color = Bad, fontSize = 13.sp)
+        Text(listOf(order.customer, order.branch).filter { it.isNotBlank() }.joinToString(" · "), color = Ink, fontSize = 14.sp)
+        if (order.pickup.isNotBlank()) Text("Pickup ${tidy(order.pickup)}", color = Muted, fontSize = 13.sp)
+        order.items.forEach { line ->
+            Text(line.name, color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+            if (line.detail.isNotBlank()) Text(line.detail, color = Muted, fontSize = 13.sp)
+        }
+        if (order.note.isNotBlank()) Text(order.note, color = Muted, fontSize = 13.sp)
+        Text(order.total, color = Forest, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+        if (next != null) {
+            Primary(if (busy) "Saving" else next.second, enabled = !busy) { store.setOrderStatus(order.id, next.first) }
+            if (order.status == "new" || order.status == "preparing") {
+                Secondary(if (busy) "Saving" else "Cancel order") { if (!busy) store.setOrderStatus(order.id, "cancelled") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MenuScreen(store: CounterStore) {
+    var sheet by remember { mutableStateOf<MenuSheet>(MenuSheet.Closed) }
+    var groupKey by remember { mutableIntStateOf(0) }
+    var step by remember { mutableIntStateOf(0) }
+    var forward by remember { mutableStateOf(true) }
+    var name by remember { mutableStateOf("") }
+    var price by remember { mutableStateOf("") }
+    var detail by remember { mutableStateOf("") }
+    var section by remember { mutableStateOf("") }
+    var newSection by remember { mutableStateOf("") }
+    var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var groupsPrimed by remember { mutableStateOf(false) }
+    var unavailable by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var shown by remember { mutableStateOf(true) }
+    var inStock by remember { mutableStateOf(true) }
+    val view = LocalView.current
+    fun go(next: Int) {
+        forward = next >= step
+        step = next
+        tick(view)
+    }
+    fun openAdd() {
+        tick(view)
+        name = ""
+        price = ""
+        detail = ""
+        section = ""
+        newSection = ""
+        selected = emptySet()
+        groupsPrimed = false
+        unavailable = emptySet()
+        shown = true
+        inStock = true
+        step = 0
+        store.setupStatus = ""
+        sheet = MenuSheet.Add
+    }
+    fun openGroup(id: String?, backToAdd: Boolean) {
+        groupKey += 1
+        store.setupStatus = ""
+        sheet = MenuSheet.Group(id, backToAdd)
+    }
+    LaunchedEffect(step, section) {
+        if (sheet is MenuSheet.Add && step == 2 && !groupsPrimed) {
+            selected = store.groupsOn(section).toSet()
+            groupsPrimed = true
+        }
+    }
+    LaunchedEffect(store.setupStatus, sheet) {
+        if (store.setupStatus == "Saved." && (sheet is MenuSheet.Add || sheet is MenuSheet.Edit)) {
+            sheet = MenuSheet.Closed
+            confirm(view)
+        }
+    }
+    Scroll {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Menu", color = Forest, fontSize = 32.sp, fontWeight = FontWeight.Bold)
+                Text(if (store.menuRows.isEmpty()) "Add your first item with +." else "Tap an item to edit it. Turn it off when it is sold out.", color = Muted, fontSize = 15.sp)
+            }
+            Box(Modifier.size(40.dp).clip(CircleShape).background(Forest).clickable { openAdd() }, contentAlignment = Alignment.Center) {
+                Text("+", color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Medium)
+            }
+        }
+        Card {
+            Text("Hours", color = Forest, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            Text("One opening and one closing for the whole menu. Same every day.", color = Muted, fontSize = 13.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+                Box(Modifier.weight(1f)) { Field("Opens", store.openTime, { store.openTime = it }, hint = "10:00 AM") }
+                Box(Modifier.weight(1f)) { Field("Closes", store.closeTime, { store.closeTime = it }, hint = "10:00 PM") }
+            }
+            Secondary("Save hours") { store.saveGuest() }
+            if (store.guestStatus.isNotBlank()) Text(store.guestStatus, color = Forest, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+        }
+        if (store.setupStatus.isNotBlank() && sheet is MenuSheet.Closed) Text(store.setupStatus, color = if (store.setupStatus == "Saved.") Forest else Bad, fontWeight = FontWeight.SemiBold)
+        val categories = store.menuRows.map { it.category }.distinct()
+        if (categories.isEmpty()) Text("No items yet.", color = Muted)
+        categories.forEach { category ->
+            Text(category, color = Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Column(Modifier.fillMaxWidth().clip(Shape).background(Color.White).border(1.dp, Line, Shape).padding(horizontal = 14.dp)) {
+                store.menuRows.filter { it.category == category }.forEachIndexed { index, item ->
+                    if (index > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
+                    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f).clickable {
+                            store.setupStatus = ""
+                            sheet = MenuSheet.Edit(item.id)
+                        }) {
+                            Text(item.name, fontWeight = FontWeight.SemiBold, color = Ink)
+                            Text(if (!item.shown) "Hidden · ${item.price}" else if (item.available) item.price else "Sold out · ${item.price}", color = if (item.available && item.shown) Muted else Bad, fontSize = 13.sp)
+                        }
+                        Text("›", color = Muted, fontSize = 22.sp, modifier = Modifier.clickable {
+                            store.setupStatus = ""
+                            sheet = MenuSheet.Edit(item.id)
+                        }.padding(horizontal = 8.dp))
+                        Switch(item.available, { store.setMenuAvailable(item.id, it) }, colors = switchColors())
+                    }
+                }
+            }
+        }
+        Text("Option groups", color = Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        Text("Size, sugar, add-ons. Tap one to edit it, then tick it on an item.", color = Muted, fontSize = 13.sp)
+        Column(Modifier.fillMaxWidth().clip(Shape).background(Color.White).border(1.dp, Line, Shape).padding(horizontal = 14.dp)) {
+            if (store.optionGroups.isEmpty()) Text("No option groups yet.", color = Muted, fontSize = 14.sp, modifier = Modifier.padding(vertical = 12.dp))
+            store.optionGroups.forEachIndexed { index, group ->
+                if (index > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
+                Column(Modifier.fillMaxWidth().clickable { openGroup(group.id, false) }.padding(vertical = 12.dp)) {
+                    Text(group.name, fontWeight = FontWeight.SemiBold, color = Ink)
+                    Text(buildString {
+                        if (group.required) append("Required · ")
+                        append(group.choices.ifBlank { "No choices" })
+                    }, color = Muted, fontSize = 13.sp)
+                }
+            }
+        }
+        Secondary("Add option group") { openGroup(null, false) }
+    }
+    if (sheet !is MenuSheet.Closed) {
+        ModalBottomSheet(onDismissRequest = { sheet = MenuSheet.Closed }, containerColor = Ivory, dragHandle = { BottomSheetDefaults.DragHandle(color = Muted.copy(alpha = 0.45f)) }) {
+            when (val current = sheet) {
+                is MenuSheet.Add -> Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 16.dp).imePadding().navigationBarsPadding(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("${step + 1} of 4", color = Muted, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        repeat(4) { index -> Box(Modifier.weight(1f).height(4.dp).clip(RoundedCornerShape(99.dp)).background(if (index <= step) Forest else Line)) }
+                    }
+                    AnimatedContent(targetState = step, transitionSpec = {
+                        val dir = if (forward) 1 else -1
+                        (slideInHorizontally { it * dir } + fadeIn()).togetherWith(slideOutHorizontally { -it * dir } + fadeOut())
+                    }, label = "add-item") { currentStep ->
+                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            when (currentStep) {
+                                0 -> {
+                                    Text("Where does this item go?", color = Forest, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                                    Text("Pick a section, like Coffee or Food. You can add one here.", color = Muted)
+                                    store.menuCategories.forEach { row -> Choice(row.label, section == row.id) { section = row.id; newSection = ""; groupsPrimed = false } }
+                                    Field("New section", newSection, { newSection = it }, hint = "Coffee")
+                                }
+                                1 -> {
+                                    Text("Name and price", color = Forest, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                                    Text("One line is enough. Use 0 if it is free.", color = Muted)
+                                    Field("Item name", name, { name = it }, hint = "Iced latte")
+                                    Field("Price", price, { price = it }, hint = "120", number = true)
+                                    Field("Description", detail, { detail = it }, hint = "12 oz, less sweet")
+                                }
+                                2 -> {
+                                    Text("Which option groups?", color = Forest, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                                    Text("Tick what this item can have, like Size or Sugar level.", color = Muted)
+                                    if (store.optionGroups.isEmpty()) Text("No option groups yet. Add one, or continue without.", color = Muted, fontSize = 14.sp)
+                                    store.optionGroups.forEach { group ->
+                                        CheckLine(group.name, group.choices, group.id in selected) {
+                                            groupsPrimed = true
+                                            selected = if (group.id in selected) selected - group.id else selected + group.id
+                                        }
+                                    }
+                                    Secondary("Add option group") { openGroup(null, true) }
+                                }
+                                else -> {
+                                    Text("Which branches can sell it?", color = Forest, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                                    Text("Ticked branches can sell this item. Untick a branch to hide it there.", color = Muted)
+                                    if (store.branches.isEmpty()) Text("No branches yet. This item is available everywhere.", color = Muted, fontSize = 14.sp)
+                                    store.branches.forEach { branch ->
+                                        CheckLine(branch.name, "", branch.id !in unavailable) {
+                                            unavailable = if (branch.id in unavailable) unavailable - branch.id else unavailable + branch.id
+                                        }
+                                    }
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text("Show on the menu", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = Ink)
+                                        Switch(shown, { shown = it }, colors = switchColors())
+                                    }
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text("In stock now", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = Ink)
+                                        Switch(inStock, { inStock = it }, colors = switchColors())
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (store.setupStatus.isNotBlank()) Text(store.setupStatus, color = Bad, fontWeight = FontWeight.SemiBold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (step > 0) Box(Modifier.weight(1f)) { Secondary("Back") { store.setupStatus = ""; go(step - 1) } }
+                        Box(Modifier.weight(1f)) {
+                            when (step) {
+                                0 -> Primary(if (store.loading) "Saving" else "Continue", enabled = !store.loading) {
+                                    val typed = newSection.trim()
+                                    if (typed.isNotEmpty()) {
+                                        store.addCategory(typed) { id ->
+                                            if (id != null) {
+                                                section = id
+                                                newSection = ""
+                                                groupsPrimed = false
+                                                go(1)
+                                            }
+                                        }
+                                    } else if (section.isNotBlank()) go(1)
+                                    else store.setupStatus = "Choose a section, or type a new one."
+                                }
+                                1 -> Primary("Continue") {
+                                    if (name.isBlank()) store.setupStatus = "Enter the item name."
+                                    else if (price.replace(",", "").toDoubleOrNull()?.let { it >= 0 } != true) store.setupStatus = "Enter a price. Use 0 if it is free."
+                                    else { store.setupStatus = ""; go(2) }
+                                }
+                                2 -> Primary("Continue") { go(3) }
+                                else -> Primary(if (store.loading) "Saving" else "Add item", enabled = !store.loading) {
+                                    store.saveMenuItem(null, name, price, detail, section, shown, inStock, selected, unavailable.toList(), store.menuRows.size)
+                                }
+                            }
+                        }
+                    }
+                }
+                is MenuSheet.Edit -> {
+                    val item = store.menuRows.firstOrNull { it.id == current.id }
+                    if (item == null) Text("That item is not loaded.", color = Muted, modifier = Modifier.padding(24.dp))
+                    else ItemEditor(store, item)
+                }
+                is MenuSheet.Group -> GroupEditor(store, store.optionGroups.firstOrNull { it.id == current.id }, groupKey) { id ->
+                    if (id != null && current.backToAdd) selected = selected + id
+                    sheet = if (current.backToAdd) MenuSheet.Add else MenuSheet.Closed
+                }
+                MenuSheet.Closed -> Unit
+            }
+        }
+    }
+}
+
+@Composable
+private fun ItemEditor(store: CounterStore, item: MenuRow) {
+    var name by remember(item.id) { mutableStateOf(item.name) }
+    var price by remember(item.id) { mutableStateOf(item.priceNumber) }
+    var detail by remember(item.id) { mutableStateOf(if (item.detail == "null") "" else item.detail) }
+    var categoryId by remember(item.id) { mutableStateOf(item.categoryId) }
+    var shown by remember(item.id) { mutableStateOf(item.shown) }
+    var inStock by remember(item.id) { mutableStateOf(item.available) }
+    var selected by remember(item.id) {
+        val inherited = store.groupsOn(item.categoryId).toSet()
+        mutableStateOf(inherited.minus(item.excludedGroups.toSet()).plus(item.directGroups))
+    }
+    var unavailable by remember(item.id) { mutableStateOf(item.unavailableBranches.toSet()) }
+    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 16.dp).imePadding().navigationBarsPadding(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("Edit item", color = Forest, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Field("Item name", name, { name = it })
+        Field("Price", price, { price = it }, number = true)
+        Field("Description", detail, { detail = it })
+        Text("Section", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        store.menuCategories.forEach { row ->
+            Choice(row.label, categoryId == row.id) {
+                categoryId = row.id
+                selected = store.groupsOn(row.id).toSet()
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Show on the menu", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = Ink)
+            Switch(shown, { shown = it }, colors = switchColors())
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("In stock now", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = Ink)
+            Switch(inStock, { inStock = it }, colors = switchColors())
+        }
+        Text("Branches that can sell it", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        if (store.branches.isEmpty()) Text("No branches yet. This item is available everywhere.", color = Muted, fontSize = 14.sp)
+        store.branches.forEach { branch ->
+            CheckLine(branch.name, "", branch.id !in unavailable) {
+                unavailable = if (branch.id in unavailable) unavailable - branch.id else unavailable + branch.id
+            }
+        }
+        Text("Option groups", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        if (store.optionGroups.isEmpty()) Text("No option groups yet.", color = Muted, fontSize = 14.sp)
+        store.optionGroups.forEach { group ->
+            CheckLine(group.name, group.choices, group.id in selected) {
+                selected = if (group.id in selected) selected - group.id else selected + group.id
+            }
+        }
+        if (store.setupStatus.isNotBlank()) Text(store.setupStatus, color = Bad, fontWeight = FontWeight.SemiBold)
+        Primary(if (store.loading) "Saving" else "Save item", enabled = !store.loading) {
+            store.saveMenuItem(item.id, name, price, detail, categoryId, shown, inStock, selected, unavailable.toList(), item.sortOrder)
+        }
+    }
+}
+
+@Composable
+private fun GroupEditor(store: CounterStore, group: OptionGroup?, key: Int, onDone: (String?) -> Unit) {
+    var name by remember(group?.id, key) { mutableStateOf(group?.name ?: "") }
+    var required by remember(group?.id, key) { mutableStateOf(group?.required ?: false) }
+    var sections by remember(group?.id, key) { mutableStateOf(group?.categoryIds?.toSet() ?: emptySet()) }
+    var options by remember(group?.id, key) { mutableStateOf(if (group == null || group.options.isEmpty()) listOf(OptionChoice("new-1", "", "0")) else group.options) }
+    var confirmDelete by remember(group?.id, key) { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 16.dp).imePadding().navigationBarsPadding(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(if (group == null) "Add option group" else "Edit option group", color = Forest, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Text("Example: Sugar level, with 0%, 50%, and 100%. The customer picks one.", color = Muted, fontSize = 14.sp)
+        Field("Group name", name, { name = it }, hint = "Sugar level")
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Customer must pick one", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = Ink)
+            Switch(required, { required = it }, colors = switchColors())
+        }
+        Text("Use on these sections", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        if (store.menuCategories.isEmpty()) Text("Add a section first, or tick this group on one item.", color = Muted, fontSize = 13.sp)
+        store.menuCategories.forEach { section ->
+            CheckLine(section.label, "", section.id in sections) {
+                sections = if (section.id in sections) sections - section.id else sections + section.id
+            }
+        }
+        Text("Choices", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        options.forEach { option ->
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+                Box(Modifier.weight(1f)) { Field("Choice", option.name, { value -> options = options.map { if (it.id == option.id) it.copy(name = value) else it } }, hint = "Small") }
+                Box(Modifier.width(96.dp)) { Field("₱ extra", option.price, { value -> options = options.map { if (it.id == option.id) it.copy(price = value) else it } }, hint = "0", number = true) }
+            }
+            if (options.size > 1) Text("Remove", color = Bad, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, modifier = Modifier.clickable { options = options.filter { it.id != option.id } })
+        }
+        Secondary("Add a choice") { options = options + OptionChoice("new-${System.nanoTime()}", "", "0") }
+        if (store.setupStatus.isNotBlank()) Text(store.setupStatus, color = Bad, fontWeight = FontWeight.SemiBold)
+        Primary(if (store.loading) "Saving" else "Save group", enabled = !store.loading) {
+            store.saveOptionGroup(group?.id, name, required, sections.toList(), options) { id ->
+                if (id != null) onDone(id.ifBlank { null })
+            }
+        }
+        if (group != null && !confirmDelete) Secondary("Delete group") { confirmDelete = true }
+        if (confirmDelete && group != null) {
+            Text("Delete ${group.name}? It will be removed from every item.", color = Bad, fontWeight = FontWeight.SemiBold)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Box(Modifier.weight(1f)) { Secondary("Keep") { confirmDelete = false } }
+                Box(Modifier.weight(1f)) {
+                    Primary("Delete") {
+                        confirmDelete = false
+                        store.deleteOptionGroup(group.id)
+                        onDone(null)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CustomersScreen(store: CounterStore, open: (String) -> Unit) {
+    var query by remember { mutableStateOf("") }
+    val filtered = store.members.filter { query.isBlank() || it.name.contains(query, true) || it.phone.contains(query) }
+    Scroll {
+        Text("Customers", color = Forest, fontSize = 32.sp, fontWeight = FontWeight.Bold)
+        Text(if (query.isBlank()) "${store.members.size} loaded" else "${filtered.size} of ${store.members.size}", color = Muted)
+        Field("", query, { query = it }, hint = "Search name or phone", onCard = false)
+        if (filtered.isEmpty()) Text(if (store.loading) "Loading members." else if (query.isBlank()) "No members yet." else "No members match.", color = Muted)
+        filtered.forEach { member ->
+            Row(Modifier.fillMaxWidth().clip(Shape).background(Color.White).border(1.dp, Line, Shape).clickable { open(member.id) }.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(40.dp).clip(CircleShape).background(Track), contentAlignment = Alignment.Center) {
+                    Text(member.name.trim().take(1).uppercase().ifBlank { "•" }, color = Forest, fontWeight = FontWeight.Bold)
+                }
+                Spacer(Modifier.size(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(member.name, fontWeight = FontWeight.SemiBold, color = Ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(member.phone.ifBlank { member.email }, color = Muted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    Text("${member.stamps}", color = Forest, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Text("stamps", color = Muted, fontSize = 11.sp)
+                }
+                Spacer(Modifier.size(6.dp))
+                Text("›", color = Muted, fontSize = 22.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CustomerScreen(store: CounterStore, id: String) {
+    val member = store.members.firstOrNull { it.id == id }
+    var lines by remember { mutableStateOf<List<ActivityLine>>(emptyList()) }
+    var coupon by remember { mutableStateOf("") }
+    var note by remember { mutableStateOf("") }
+    val context = LocalContext.current
+    LaunchedEffect(id) { store.activity(id) { lines = it } }
+    if (member == null) { Scroll { Text("Member not loaded.", color = Muted) }; return }
+    val months = listOf("", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+    val birthday = if (member.birthdayMonth in 1..12 && member.birthdayDay > 0) "${months[member.birthdayMonth]} ${member.birthdayDay}" else ""
+    Scroll {
+        Text(member.name, color = Forest, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+        Text(store.cardName, color = Muted, fontWeight = FontWeight.SemiBold)
+        Card {
+            Info("Phone", member.phone.ifBlank { "—" })
+            Info("Email", member.email.ifBlank { "—" })
+            Info("Stamps", "${member.stamps} of ${store.stampGoal}")
+            Info("LT Points", member.points.ifBlank { "0" })
+            if (birthday.isNotBlank()) Info("Birthday", birthday)
+            Info("Last visit", tidy(member.lastVisit).ifBlank { "—" })
+        }
+        Secondary("Share join link") {
+            context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, store.joinLink), "Share"))
+        }
+        Card {
+            Text("Coupon", color = Forest, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            Text("Type what they get. Example: Free drink, ₱50 off.", color = Muted, fontSize = 13.sp)
+            Field("Coupon", coupon, { coupon = it })
+            Secondary("Add coupon") { store.giveCoupon(member.id, coupon) { note = it } }
+            if (note.isNotBlank()) Text(note, color = Forest, fontWeight = FontWeight.SemiBold)
+        }
+        Text("Activity", color = Forest, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+        if (lines.isEmpty()) Text(if (member.stamps > 0) "Stamps are on the card. Recent activity is still loading." else "No stamps yet.", color = Muted)
+        lines.forEach { line ->
+            val detail = tidyDetail(line.detail)
+            val whenText = tidy(line.whenText)
+            Card {
+                Column {
+                    Text(line.title, fontWeight = FontWeight.SemiBold, color = Ink)
+                    if (detail.isNotBlank()) Text(detail, color = Muted, fontSize = 13.sp)
+                    if (whenText.isNotBlank()) Text(whenText, color = Muted, fontSize = 12.sp)
+                }
+            }
+        }
+        Text("1 LT Point per visit. This phone does not add a stamp.", color = Muted, fontSize = 13.sp)
+    }
+}
+
+@Composable
+private fun MoreScreen(store: CounterStore, open: (Page) -> Unit, openMenu: () -> Unit) {
+    Scroll {
+        Text("More", color = Forest, fontSize = 32.sp, fontWeight = FontWeight.Bold)
+        Text(store.session?.businessName ?: "Your business", fontWeight = FontWeight.SemiBold, color = Ink, fontSize = 16.sp)
+        Text(store.session?.email ?: "", color = Muted, fontSize = 14.sp)
+        Section("What customers see", "Shown after they scan your QR.") {
+            RowLink("Digital menu", when {
+                store.openTime.isNotBlank() && store.closeTime.isNotBlank() -> "${store.menuRows.size} items · ${store.openTime}–${store.closeTime}"
+                store.menuRows.isEmpty() -> "No items yet"
+                else -> "${store.menuRows.size} items"
+            }) { openMenu() }
+            RowLink("Wi-Fi", if (store.wifiOn) "Shown on the scan page" else "Hidden") { open(Page.Guest("wifi")) }
+            RowLink("Socials", if (store.socialsOn) "Shown on the scan page" else "Hidden") { open(Page.Guest("socials")) }
+            RowLink("Book our place", if (store.bookOn) "Shown on the menu" else "Hidden") { open(Page.Guest("book")) }
+            RowLink("Reserve a table", if (store.reserveOn) "Shown on the menu" else "Hidden") { open(Page.Guest("reserve")) }
+        }
+        Section("Your business", "The tools you use after the scan.") {
+            RowLink("Analytics", "Last 30 days") { open(Page.Analytics) }
+            RowLink("Notifications", "Birthday, churn, and announcements") { open(Page.Greetings) }
+            RowLink("Digital billboard", if (store.billboardOn) "On · 150 m" else "Off") { open(Page.Billboard) }
+            RowLink("Card setup", store.cardName) { open(Page.Card) }
+            RowLink("LT Points", "1 per visit") { open(Page.Points) }
+        }
+        Card { Column { Text("Loyalty Tree benefits", fontWeight = FontWeight.SemiBold, color = Muted); Text("Coming soon", color = Muted, fontSize = 13.sp) } }
+        Card { RowLink("Account management", "Billing, details, and account") { open(Page.Account) } }
+        Secondary("Log out") { store.signOut() }
+    }
+}
+
+@Composable
+private fun AnalyticsScreen(store: CounterStore) {
+    val view = LocalView.current
+    val month = java.util.Calendar.getInstance().get(java.util.Calendar.MONTH) + 1
+    val birthdays = store.members.filter { it.birthdayMonth == month && it.birthdayDay > 0 }.sortedBy { it.birthdayDay }
+    val months = listOf("", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+    Scroll {
+        Text(store.analyticsProgram.ifBlank { "This business" }, color = Forest, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+        Text(when (store.period) {
+            "today" -> "Today, counted from the daily list."
+            "7d" -> "Last 7 days."
+            "90d" -> "Last 90 days."
+            else -> "Last 30 days."
+        }, color = Muted, fontSize = 14.sp)
+        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Track).padding(4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            listOf("Today" to "today", "7 days" to "7d", "30 days" to "30d", "90 days" to "90d").forEach { (label, id) ->
+                val on = store.period == id
+                Box(Modifier.weight(1f).clip(RoundedCornerShape(9.dp)).background(if (on) Forest else Color.Transparent).clickable { tick(view); store.selectRange(id) }.padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+                    Text(label, color = if (on) Color.White else Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                }
+            }
+        }
+        Text("This period", color = Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Metric("Stamps", if (store.period == "today") store.todayStamps else store.cardStamps, Modifier.weight(1f))
+            Metric("Rewards", if (store.period == "today") store.todayRewards else store.cardRewards, Modifier.weight(1f))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Metric("New", if (store.period == "today") store.todayNew else store.cardNew, Modifier.weight(1f))
+            Metric("Active", if (store.period == "today") "—" else store.cardActive, Modifier.weight(1f))
+        }
+        Text("Customers", color = Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Metric("Members", store.memberCount, Modifier.weight(1f))
+            Metric("Gone quiet", store.churnCount.toString(), Modifier.weight(1f))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Metric("Came back", "${store.cameBackRate.toInt()}%", Modifier.weight(1f))
+            Metric("Per active", if (store.period == "today") "—" else store.cardAverage, Modifier.weight(1f))
+        }
+        Text("Birthdays this month", color = Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        Text(if (birthdays.isEmpty()) "No birthdays this month." else "${birthdays.size} members.", color = Forest, fontWeight = FontWeight.SemiBold)
+        birthdays.take(6).forEach { member ->
+            Card { Info(member.name, "${months.getOrElse(member.birthdayMonth) { "" }} ${member.birthdayDay}") }
+        }
+        if (store.topMembers.isNotEmpty()) {
+            Text("Most stamps on a card", color = Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Card { store.topMembers.forEach { Info(it.name, it.detail) } }
+        }
+        if (store.period != "today" && store.dailyBars.isNotEmpty()) {
+            Text("Daily activity", color = Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Card {
+                val peak = store.dailyBars.maxOf { it.count }.coerceAtLeast(1)
+                store.dailyBars.take(12).forEach { MiniBar(it.label, it.count, peak) }
+            }
+        }
+        if (store.hourBars.isNotEmpty() && store.period != "today") {
+            Text("By hour", color = Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Card {
+                val peak = store.hourBars.maxOf { it.count }.coerceAtLeast(1)
+                store.hourBars.forEach { MiniBar(it.label, it.count, peak) }
+            }
+        }
+        if (store.branchFacts.isNotEmpty()) {
+            Text("Branches", color = Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Card { store.branchFacts.forEach { Info(it.name, it.detail) } }
+        }
+        if (store.analyticsNote.isNotBlank()) Text(store.analyticsNote, color = Muted, fontSize = 13.sp)
+    }
+}
+
+@Composable
+private fun CampaignScreen(store: CounterStore) {
+    var name by remember { mutableStateOf("") }
+    var kind by remember { mutableStateOf("percent_discount") }
+    var value by remember { mutableStateOf("10") }
+    var scope by remember { mutableStateOf("nationwide") }
+    var branchId by remember { mutableStateOf("") }
+    val start = store.manila()
+    val endCal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Manila")).apply { add(java.util.Calendar.DAY_OF_YEAR, 7) }
+    val end = store.manila(endCal)
+    LaunchedEffect(Unit) { store.loadCampaigns() }
+    Scroll {
+        Text("Members who buy during these dates get the voucher. Stamps stay the same.", color = Muted)
+        Field("Campaign name", name, { name = it })
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("percent_discount" to "% off", "fixed_discount" to "₱ off", "buy_one_take_one" to "Buy 1 Take 1").forEach { item ->
+                Box(Modifier.weight(1f)) { Choice(item.second, kind == item.first) { kind = item.first } }
+            }
+        }
+        if (kind != "buy_one_take_one") Field(if (kind == "percent_discount") "Percent" else "Pesos", value, { value = it })
+        Text("Starts $start · ends $end", color = Muted, fontSize = 13.sp)
+        Text("The coupon disappears after the end date.", color = Muted, fontSize = 13.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box(Modifier.weight(1f)) { Choice("Whole business", scope == "nationwide") { scope = "nationwide" } }
+            Box(Modifier.weight(1f)) { Choice("One branch", scope == "single_branch") { scope = "single_branch" } }
+        }
+        if (scope == "single_branch") store.branches.forEach { branch -> Choice(branch.name, branchId == branch.id) { branchId = branch.id } }
+        if (store.campaignNote.isNotBlank()) Text(store.campaignNote, color = if (store.campaignNote.startsWith("Started")) Forest else Bad, fontWeight = FontWeight.SemiBold)
+        Primary(if (store.loading) "Starting" else "Start campaign", enabled = !store.loading) {
+            store.startCampaign(name, kind, value, start, end, scope, branchId)
+        }
+        store.campaigns.forEach { row ->
+            Card { Column { Text(row.name, fontWeight = FontWeight.SemiBold); Text(row.detail, color = Muted, fontSize = 13.sp) } }
+        }
+    }
+}
+
+@Composable
+private fun BillboardScreen(store: CounterStore) {
+    val context = LocalContext.current
+    val location = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (!granted) { store.status = "Location was not allowed. Type the pin instead."; return@rememberLauncherForActivityResult }
+        val manager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        val place = runCatching { manager.getLastKnownLocation(LocationManager.GPS_PROVIDER) ?: manager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER) }.getOrNull()
+        if (place == null) store.status = "Location was not ready. Type the pin instead."
+        else {
+            store.pinLat = String.format(Locale.US, "%.6f", place.latitude)
+            store.pinLng = String.format(Locale.US, "%.6f", place.longitude)
+        }
+    }
+    Scroll {
+        Text("150 meters. iPhone can show your line. Android only says they are nearby.", color = Muted)
+        if (!store.billboardAllowed) {
+            Card { Text(store.billboardNote.ifBlank { "Nearby alerts are not on this plan." }) }
+        } else {
+            Card {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(if (store.billboardOn) "On" else "Off", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Ink)
+                        Text(store.pinLabel.ifBlank { "Saved pin" }, color = Muted, fontSize = 13.sp)
+                    }
+                    Switch(store.billboardOn, { store.billboardOn = it }, colors = switchColors())
+                }
+            }
+            Card {
+                Text("Lock screen", color = Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Field("Short line", store.billboardMessage, { store.billboardMessage = it.take(80) })
+                Text("${store.billboardMessage.length} / 80", color = Muted, fontSize = 12.sp, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.End)
+            }
+            Card {
+                Text("Location", color = Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Field("Place name", store.pinLabel, { store.pinLabel = it })
+                Field("Latitude", store.pinLat, { store.pinLat = it })
+                Field("Longitude", store.pinLng, { store.pinLng = it })
+                Secondary("Use this phone's location") { location.launch(Manifest.permission.ACCESS_FINE_LOCATION) }
+            }
+            Column(Modifier.fillMaxWidth().clip(Shape).background(Forest).padding(14.dp)) {
+                Text(store.session?.businessName ?: "LoyaltyTree", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Text(if (store.billboardOn) store.billboardMessage.ifBlank { "Your line" } else "Billboard is off.", color = Color.White, fontSize = 15.sp)
+            }
+            if (store.status.isNotBlank()) Text(store.status, color = Forest, fontWeight = FontWeight.SemiBold)
+            Text("Save is at the top right.", color = Muted, fontSize = 13.sp)
+        }
+    }
+}
+
+@Composable
+private fun GreetingsScreen(store: CounterStore) {
+    var title by remember { mutableStateOf("") }
+    var message by remember { mutableStateOf("") }
+    var scope by remember { mutableStateOf("business") }
+    var branch by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) { store.refresh() }
+    Scroll {
+        Text("Birthday ${store.birthdaySent} sent this week. Churn ${store.churnSent} sent this week.", color = Muted)
+        Card {
+            Text("Announcement", fontWeight = FontWeight.Bold, fontSize = 17.sp, color = Ink)
+            Text("Pushes to the wallet. Choose the whole business or one branch.", color = Muted, fontSize = 13.sp)
+            Field("Title", title, { title = it })
+            Field("Message", message, { message = it })
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Box(Modifier.weight(1f)) { Choice("Whole business", scope == "business") { scope = "business" } }
+                Box(Modifier.weight(1f)) { Choice("One branch", scope == "branch") { scope = "branch" } }
+            }
+            if (scope == "branch") store.branches.forEach { row -> Choice(row.name, branch == row.id) { branch = row.id } }
+            if (store.announcementNote.isNotBlank()) Text(store.announcementNote, color = if (store.announcementNote.startsWith("Sent")) Forest else Bad, fontWeight = FontWeight.SemiBold)
+            Primary(if (store.loading) "Sending" else "Send announcement", enabled = !store.loading) { store.sendAnnouncement(title, message, scope, branch) }
+        }
+        Card {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Birthday greeting", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), color = Ink)
+                Switch(store.birthdayOn, { store.birthdayOn = it }, colors = switchColors())
+            }
+            Field("Birthday message", store.birthdayMessage, { store.birthdayMessage = it.take(500) })
+        }
+        Card {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Birthday coupon", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), color = Ink)
+                Switch(store.birthdayRewardOn, { store.birthdayRewardOn = it }, colors = switchColors())
+            }
+            Field("Coupon name", store.birthdayRewardName, { store.birthdayRewardName = it.take(80) })
+            StepRow("Valid ${store.birthdayRewardDays} days", { if (store.birthdayRewardDays > 1) store.birthdayRewardDays-- }, { if (store.birthdayRewardDays < 60) store.birthdayRewardDays++ })
+            listOf("birthday" to "On the birthday", "1_day_before" to "1 day before", "3_days_before" to "3 days before", "7_days_before" to "7 days before", "month_start" to "Start of the month").forEach { option ->
+                Choice(option.second, store.birthdayTiming == option.first) { store.birthdayTiming = option.first }
+            }
+        }
+        Card {
+            Text("Churn greeting", fontWeight = FontWeight.Bold, color = Ink)
+            StepRow("After ${store.churnDays} quiet days", { if (store.churnDays > 7) store.churnDays-- }, { if (store.churnDays < 365) store.churnDays++ })
+            Field("Come back message", store.churnMessage, { store.churnMessage = it.take(500) })
+        }
+        if (store.setupStatus.isNotBlank()) Text(store.setupStatus, color = Forest, fontWeight = FontWeight.SemiBold)
+        Primary(if (store.loading) "Saving" else "Save greetings", enabled = !store.loading) { store.saveGreetings() }
+    }
+}
+
+@Composable
+private fun GuestScreen(store: CounterStore, part: String) {
+    Scroll {
+        Text("What your customers see when they scan your QR.", color = Muted)
+        Card {
+            when (part) {
+                "wifi" -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) { Text("Show Wi-Fi", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = Ink); Switch(store.wifiOn, { store.wifiOn = it }, colors = switchColors()) }
+                    Field("Network name", store.wifiName, { store.wifiName = it })
+                    Field("Password", store.wifiPassword, { store.wifiPassword = it }, password = true)
+                }
+                "socials" -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) { Text("Show socials", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = Ink); Switch(store.socialsOn, { store.socialsOn = it }, colors = switchColors()) }
+                    Field("Instagram", store.instagramURL, { store.instagramURL = it })
+                    Field("Facebook", store.facebookURL, { store.facebookURL = it })
+                    Field("Google review", store.reviewURL, { store.reviewURL = it })
+                }
+                "book" -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) { Text("Show on the menu", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = Ink); Switch(store.bookOn, { store.bookOn = it }, colors = switchColors()) }
+                    Field("Link", store.bookURL, { store.bookURL = it }, hint = "https://")
+                    AvailabilityEditor(store.bookNote, { store.bookNote = it }, "book")
+                }
+                else -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) { Text("Show on the menu", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = Ink); Switch(store.reserveOn, { store.reserveOn = it }, colors = switchColors()) }
+                    Field("Link", store.reserveURL, { store.reserveURL = it }, hint = "https://")
+                    AvailabilityEditor(store.reserveNote, { store.reserveNote = it }, "reserve a table")
+                }
+            }
+        }
+        if (store.guestStatus.isNotBlank()) Text(store.guestStatus, color = Forest, fontWeight = FontWeight.SemiBold)
+        Text("Save is at the top right.", color = Muted, fontSize = 13.sp)
+    }
+}
+
+@Composable
+private fun AvailabilityEditor(note: String, onNote: (String) -> Unit, verb: String) {
+    val month = remember {
+        val zone = TimeZone.getTimeZone("Asia/Manila")
+        SimpleDateFormat("MMMM yyyy", Locale.US).apply { timeZone = zone }.format(java.util.Date())
+    }
+    val wholeLine = "Available the whole month ($month)."
+    val whole = note.trim().startsWith("Available the whole month")
+    Text("When they can $verb", color = Ink, fontWeight = FontWeight.SemiBold)
+    Text("Write the days and hours, or open it for the whole month. Customers see this after they scan.", color = Muted, fontSize = 13.sp)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Box(Modifier.weight(1f)) {
+            Choice("Specific", !whole) { if (whole) onNote("") }
+        }
+        Box(Modifier.weight(1f)) {
+            Choice("Whole month", whole) { onNote(wholeLine) }
+        }
+    }
+    if (whole) {
+        Text(if (note.isBlank()) wholeLine else note.trim(), color = Forest, fontWeight = FontWeight.SemiBold)
+    } else {
+        Field("Available", note, onNote, hint = "Sat and Sun, 10 am–6 pm", lines = 3)
+    }
+}
+
+@Composable
+private fun CardScreen(store: CounterStore) {
+    var hexText by remember { mutableStateOf(store.cardColor) }
+    var milestoneStamps by remember { mutableStateOf("") }
+    var milestoneName by remember { mutableStateOf("") }
+    var milestoneNote by remember { mutableStateOf("") }
+    var prizeCost by remember { mutableStateOf("") }
+    var prizeName by remember { mutableStateOf("") }
+    val palette = listOf("#81d6d6", "#073f36", "#102d28", "#0f766e", "#1d4e89", "#9f2d2d", "#d7b578")
+    val preview = hexColor(store.cardColor) ?: Forest
+    Scroll {
+        Column(Modifier.fillMaxWidth().clip(Shape).background(preview).padding(16.dp)) {
+            Text(store.cardName.ifBlank { "Loyalty card" }, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 22.sp)
+            Text(when (store.cardType) {
+                "points" -> "${store.pointsPer} points per ₱${store.pointsPesos}"
+                "membership" -> "${store.membershipDays} days · ₱${store.membershipPrice}"
+                else -> "${store.stampGoal} stamps · ${store.rewardName}"
+            }, color = Color.White.copy(alpha = 0.88f), fontSize = 14.sp)
+        }
+        Text("Card name, rewards, color, welcome reward, and the signup agreement. Save is at the top right.", color = Muted, fontSize = 14.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("stamp" to "Stamps", "points" to "Points", "membership" to "Subscription").forEach { (id, label) ->
+                val on = store.cardType == id
+                Box(Modifier.weight(1f).height(40.dp).clip(Pill).background(if (on) Forest else Color.White).border(1.dp, if (on) Forest else Line, Pill).clickable { store.cardType = id }, contentAlignment = Alignment.Center) {
+                    Text(label, color = if (on) Color.White else Forest, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, maxLines = 1)
+                }
+            }
+        }
+        Field("Card name", store.cardName, { store.cardName = it })
+        Text("Customer agreement", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        Text("Off is a normal signup. Checkbox is terms only. Signature asks them to sign.", color = Muted, fontSize = 13.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("off" to "Off", "checkbox" to "Checkbox", "signature" to "Signature").forEach { (id, label) ->
+                Box(Modifier.weight(1f)) { Choice(label, store.agreementMode == id) { store.agreementMode = id } }
+            }
+        }
+        if (store.agreementMode != "off") {
+            Field("Title", store.agreementTitle, { store.agreementTitle = it })
+            Field("Terms", store.agreementBody, { store.agreementBody = it }, lines = 4)
+            Field("Checkbox line", store.agreementAck, { store.agreementAck = it })
+        }
+        Card {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Welcome reward", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = Ink)
+                Switch(store.welcomeOn, { store.welcomeOn = it }, colors = switchColors())
+            }
+            if (store.welcomeOn) {
+                Field("Reward name", store.welcomeName, { store.welcomeName = it }, hint = "Free drink")
+                Choice("When they join", store.welcomeTrigger == "join") { store.welcomeTrigger = "join" }
+                Choice("After the first purchase", store.welcomeTrigger == "first_purchase") { store.welcomeTrigger = "first_purchase" }
+                StepRow("Valid ${store.welcomeDays} days", { if (store.welcomeDays > 1) store.welcomeDays-- }, { if (store.welcomeDays < 365) store.welcomeDays++ })
+            }
+        }
+        Text("Color", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            palette.forEach { hex ->
+                val color = hexColor(hex) ?: Forest
+                Box(Modifier.size(32.dp).clip(CircleShape).background(color).border(2.dp, if (store.cardColor.equals(hex, true)) Ink else Color.Transparent, CircleShape).clickable {
+                    store.cardColor = hex
+                    hexText = hex
+                })
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+            Box(Modifier.weight(1f)) { Field("Hex", hexText, { hexText = it }, hint = "#073f36") }
+            Box(Modifier.width(88.dp)) {
+                Primary("Use") {
+                    val next = normalizeHex(hexText)
+                    if (next == null) store.setupStatus = "Use a color like #073f36."
+                    else {
+                        store.cardColor = next
+                        hexText = next
+                        store.setupStatus = ""
+                    }
+                }
+            }
+        }
+        Card {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Expire the card", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = Ink)
+                Switch(store.cardExpires, { store.cardExpires = it }, colors = switchColors())
+            }
+            Text("Each customer's cycle starts when they join.", color = Muted, fontSize = 13.sp)
+            if (store.cardExpires) StepRow("${store.cardExpireDays} days", { if (store.cardExpireDays > 1) store.cardExpireDays-- }, { if (store.cardExpireDays < 3650) store.cardExpireDays++ })
+        }
+        if (store.cardType == "stamp") {
+            Card {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("One stamp a day", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = Ink)
+                    Switch(store.stampOnce, { store.stampOnce = it }, colors = switchColors())
+                }
+            }
+            Text("Rewards and milestones", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Text("Example: 4 stamps, then a free drink. The last milestone is the full card.", color = Muted, fontSize = 13.sp)
+            if (store.stampRewards.isEmpty()) {
+                Field("Final reward", store.rewardName, { store.rewardName = it })
+                StepRow("Stamp goal ${store.stampGoal}", { if (store.stampGoal > 1) store.stampGoal-- }, { store.stampGoal++ })
+            }
+            store.stampRewards.forEach { reward ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("${reward.stamps} stamps → ${reward.name}", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = Ink)
+                    Text("Remove", color = Bad, fontWeight = FontWeight.SemiBold, modifier = Modifier.clickable {
+                        val next = store.stampRewards.filter { it.id != reward.id }
+                        store.stampRewards = next
+                        next.lastOrNull()?.let { store.stampGoal = it.stamps; store.rewardName = it.name }
+                    })
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+                Box(Modifier.width(96.dp)) { Field("Stamps", milestoneStamps, { milestoneStamps = it.filter { ch -> ch.isDigit() } }, number = true) }
+                Box(Modifier.weight(1f)) { Field("Reward", milestoneName, { milestoneName = it }, hint = "Free drink") }
+            }
+            if (milestoneNote.isNotBlank()) Text(milestoneNote, color = Bad, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+            Secondary("Add stamp reward") {
+                val stamps = milestoneStamps.toIntOrNull()
+                val reward = milestoneName.trim()
+                milestoneNote = when {
+                    stamps == null || stamps <= 0 -> "Enter how many stamps."
+                    reward.isEmpty() -> "Enter the reward name."
+                    store.stampRewards.any { it.stamps == stamps } -> "That stamp count already has a reward."
+                    else -> ""
+                }
+                if (milestoneNote.isEmpty() && stamps != null) {
+                    val next = (store.stampRewards + StampReward("new-$stamps", stamps, reward)).sortedBy { it.stamps }
+                    store.stampRewards = next
+                    store.stampGoal = next.last().stamps
+                    store.rewardName = next.last().name
+                    milestoneStamps = ""
+                    milestoneName = ""
+                }
+            }
+        }
+        if (store.cardType == "points") {
+            Text("How they earn", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+                Box(Modifier.weight(1f)) { Field("Points", store.pointsPer, { store.pointsPer = it }, number = true) }
+                Box(Modifier.weight(1f)) { Field("For every ₱", store.pointsPesos, { store.pointsPesos = it }, number = true) }
+            }
+            Field("Maximum points", store.pointsCap, { store.pointsCap = it.filter { ch -> ch.isDigit() } }, hint = "Blank means no limit", number = true)
+            Text("Points rewards", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            store.pointsPrizes.forEach { prize ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("${prize.cost} points → ${prize.name}", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = Ink)
+                    Text("Remove", color = Bad, fontWeight = FontWeight.SemiBold, modifier = Modifier.clickable {
+                        store.pointsPrizes = store.pointsPrizes.filter { it.id != prize.id }
+                    })
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+                Box(Modifier.width(96.dp)) { Field("Points", prizeCost, { prizeCost = it.filter { ch -> ch.isDigit() } }, number = true) }
+                Box(Modifier.weight(1f)) { Field("Reward", prizeName, { prizeName = it }, hint = "Free drink") }
+            }
+            Secondary("Add points reward") {
+                val cost = prizeCost.toIntOrNull()
+                val reward = prizeName.trim()
+                if (reward.isNotEmpty() && cost != null && cost > 0) {
+                    store.pointsPrizes = store.pointsPrizes + PointsPrize("new-$cost", reward, cost.toString())
+                    prizeCost = ""
+                    prizeName = ""
+                    store.setupStatus = ""
+                } else store.setupStatus = "Enter the points and the reward name."
+            }
+        }
+        if (store.cardType == "membership") {
+            Text("Subscription", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            StepRow("${store.membershipDays} days", { if (store.membershipDays > 1) store.membershipDays-- }, { if (store.membershipDays < 3650) store.membershipDays++ })
+            Field("Price in pesos", store.membershipPrice, { store.membershipPrice = it }, number = true)
+            Field("Perks, one per line", store.membershipPerks, { store.membershipPerks = it }, lines = 4, hint = "Unlimited access")
+            Field("Terms", store.membershipTerms, { store.membershipTerms = it }, lines = 3)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Log a visit in the cashier", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = Ink)
+                Switch(store.membershipVisits, { store.membershipVisits = it }, colors = switchColors())
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Quick check-in", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = Ink)
+                Switch(store.membershipQuick, { store.membershipQuick = it }, colors = switchColors())
+            }
+        }
+        if (store.setupStatus.isNotBlank()) Text(store.setupStatus, color = if (store.setupStatus.startsWith("Card saved")) Forest else Bad, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+private fun PointsScreen() {
+    Scroll {
+        Text("1 point per visit.", color = Forest, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+        Text("A customer earns one LT Point when they visit this business. Not one point for every stamp on the card.", color = Muted, fontSize = 16.sp)
+    }
+}
+
+@Composable
+private fun AccountScreen(store: CounterStore, openBilling: () -> Unit) {
+    LaunchedEffect(Unit) { store.loadAccount(); store.loadBilling() }
+    Scroll {
+        Card {
+            Info("Business", store.session?.businessName ?: "")
+            Info("Contact", store.accountContact.ifBlank { "—" })
+            Info("Email", store.session?.email ?: "")
+            Info("Mobile", store.accountPhone.ifBlank { "—" })
+            Info("Address", store.accountAddress.ifBlank { "—" })
+            Info("Status", store.accountStatus.ifBlank { "—" })
+        }
+        Card { RowLink("Billing", if (store.billPlan.isBlank()) "Plan and payment" else "${store.billPlan} · ${store.billDays} days left") { openBilling() } }
+    }
+}
+
+@Composable
+private fun BillingScreen(store: CounterStore) {
+    val context = LocalContext.current
+    LaunchedEffect(Unit) { store.loadBilling() }
+    Scroll {
+        Text(if (store.billPlan.isBlank()) "Loading the plan" else "${store.billPlan} · ${store.billStatus}", fontWeight = FontWeight.SemiBold, color = Ink, fontSize = 18.sp)
+        if (store.billDays.isNotBlank()) Text("${store.billDays} days left${if (store.billExpires.isBlank()) "" else " · until ${store.billExpires}"}", color = Muted)
+        store.billPrices.forEach { price -> Card { Info(price.label, "₱${price.pesos}") } }
+        Text("Payment is on the website. This app does not charge a card or show a payment QR.", color = Muted)
+        Primary("Manage billing on the website") { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://theloyaltytree.com/login"))) }
+        if (store.billingNote.isNotBlank()) Text(store.billingNote, color = Bad, fontWeight = FontWeight.SemiBold)
+        store.billPays.forEach { pay -> Card { Column { Text(pay.title, fontWeight = FontWeight.SemiBold); Text(pay.detail, color = Muted, fontSize = 13.sp) } } }
+    }
+}
+
+@Composable
+private fun Scroll(content: @Composable () -> Unit) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { content() }
+}
+
+@Composable
+private fun Mark(size: Int) {
+    Image(painterResource(R.drawable.lt_mark), "Loyalty Tree", modifier = Modifier.size(size.dp).clip(CircleShape))
+}
+
+@Composable
+private fun NavBar(title: String, onBack: () -> Unit, action: String? = null, onAction: () -> Unit = {}) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(36.dp).clip(CircleShape).background(Color.White).border(1.dp, Line, CircleShape).clickable { onBack() }, contentAlignment = Alignment.Center) {
+            Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "Back", tint = Forest)
+        }
+        Text(title, modifier = Modifier.weight(1f).padding(horizontal = 8.dp), textAlign = TextAlign.Center, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, color = Ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (action == null) Spacer(Modifier.width(36.dp))
+        else Text(action, color = Forest, fontWeight = FontWeight.SemiBold, modifier = Modifier.clickable(enabled = action != "Saving") { onAction() }.padding(horizontal = 4.dp))
+    }
+}
+
+@Composable
+private fun Dock(tab: Int, onSelect: (Int) -> Unit) {
+    val items = listOf(
+        "Home" to Icons.Default.Store,
+        "Orders" to Icons.Default.Receipt,
+        "Menu" to Icons.Default.Restaurant,
+        "Customers" to Icons.Default.Person,
+        "More" to Icons.Default.MoreHoriz
+    )
+    Row(
+        Modifier.fillMaxWidth().background(Ivory).padding(horizontal = 14.dp, vertical = 8.dp)
+            .shadow(12.dp, RoundedCornerShape(28.dp), ambientColor = Color(0x22123C32), spotColor = Color(0x22123C32))
+            .clip(RoundedCornerShape(28.dp)).background(Color.White).padding(horizontal = 4.dp, vertical = 6.dp)
+    ) {
+        items.forEachIndexed { index, item ->
+            val on = tab == index
+            Column(
+                Modifier.weight(1f).clip(RoundedCornerShape(20.dp)).background(if (on) Track else Color.Transparent).clickable { onSelect(index) }.padding(vertical = 6.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Icon(item.second, item.first, tint = Forest, modifier = Modifier.size(20.dp))
+                Text(item.first, color = if (on) Forest else Muted, fontSize = 10.sp, fontWeight = if (on) FontWeight.Bold else FontWeight.Medium, maxLines = 1)
+            }
+        }
+    }
+}
+
+@Composable
+private fun Card(content: @Composable () -> Unit) {
+    Column(Modifier.fillMaxWidth().clip(Shape).background(Color.White).border(1.dp, Line, Shape).padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { content() }
+}
+
+@Composable
+private fun Field(label: String, value: String, onChange: (String) -> Unit, password: Boolean = false, hint: String = "", onCard: Boolean = true, number: Boolean = false, lines: Int = 1) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        if (label.isNotBlank()) Text(label, color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        BasicTextField(
+            value = value,
+            onValueChange = onChange,
+            singleLine = lines <= 1,
+            textStyle = TextStyle(color = Ink, fontSize = 16.sp),
+            cursorBrush = SolidColor(Forest),
+            visualTransformation = if (password) PasswordVisualTransformation() else VisualTransformation.None,
+            keyboardOptions = KeyboardOptions(keyboardType = when {
+                password -> KeyboardType.Password
+                number -> KeyboardType.Decimal
+                else -> KeyboardType.Text
+            }),
+            modifier = Modifier.fillMaxWidth().height(if (lines <= 1) 48.dp else (lines * 24).dp).clip(Pill).background(if (onCard) Ivory else Color.White).border(1.dp, Line, Pill).padding(horizontal = 14.dp, vertical = if (lines <= 1) 0.dp else 10.dp),
+            decorationBox = { inner ->
+                Box(Modifier.fillMaxSize(), contentAlignment = if (lines <= 1) Alignment.CenterStart else Alignment.TopStart) {
+                    if (value.isEmpty() && hint.isNotBlank()) Text(hint, color = Muted, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    inner()
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun Primary(title: String, enabled: Boolean = true, onClick: () -> Unit) {
+    val view = LocalView.current
+    Box(Modifier.fillMaxWidth().height(50.dp).clip(RoundedCornerShape(14.dp)).background(if (enabled) Forest else Line).clickable(enabled) { tick(view); onClick() }, contentAlignment = Alignment.Center) {
+        Text(title, color = if (enabled) Color.White else Muted, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+private fun Secondary(title: String, onClick: () -> Unit) {
+    val view = LocalView.current
+    Box(Modifier.fillMaxWidth().height(48.dp).clip(RoundedCornerShape(14.dp)).background(Color.White).border(1.dp, Line, RoundedCornerShape(14.dp)).clickable { tick(view); onClick() }, contentAlignment = Alignment.Center) {
+        Text(title, color = Forest, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+private fun Choice(title: String, selected: Boolean, onClick: () -> Unit) {
+    Box(Modifier.fillMaxWidth().height(42.dp).clip(Pill).background(if (selected) Forest else Ivory).clickable { onClick() }.padding(horizontal = 12.dp), contentAlignment = Alignment.CenterStart) {
+        Text(title, color = if (selected) Color.White else Forest, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+    }
+}
+
+@Composable
+private fun Metric(title: String, value: String, modifier: Modifier) {
+    Column(modifier.clip(Shape).background(Color.White).border(1.dp, Line, Shape).padding(horizontal = 12.dp, vertical = 14.dp)) {
+        Text(title, color = Muted, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+        Text(value, color = Forest, fontSize = 26.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+@Composable
+private fun MiniBar(label: String, count: Int, peak: Int) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(label, color = Muted, fontSize = 12.sp, modifier = Modifier.width(64.dp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Box(Modifier.weight(1f).height(8.dp).clip(RoundedCornerShape(99.dp)).background(Track)) {
+            Box(Modifier.fillMaxWidth((count.toFloat() / peak).coerceIn(0.04f, 1f)).height(8.dp).clip(RoundedCornerShape(99.dp)).background(Forest))
+        }
+        Text("$count", color = Ink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.width(32.dp), textAlign = TextAlign.End)
+    }
+}
+
+@Composable
+private fun CheckLine(title: String, detail: String, checked: Boolean, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clip(Pill).clickable { onClick() }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(22.dp).clip(RoundedCornerShape(6.dp)).background(if (checked) Forest else Color.White).border(1.dp, if (checked) Forest else Line, RoundedCornerShape(6.dp)), contentAlignment = Alignment.Center) {
+            if (checked) Text("✓", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+            if (detail.isNotBlank()) Text(detail, color = Muted, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+private fun hexColor(raw: String): Color? {
+    val hex = normalizeHex(raw) ?: return null
+    return Color(android.graphics.Color.parseColor(hex))
+}
+
+private fun normalizeHex(raw: String): String? {
+    val cleaned = raw.trim().removePrefix("#")
+    if (cleaned.length != 6 || cleaned.any { it !in "0123456789abcdefABCDEF" }) return null
+    return "#${cleaned.lowercase()}"
+}
+
+@Composable
+private fun Info(label: String, value: String) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, color = Muted, modifier = Modifier.weight(0.9f), fontSize = 13.sp)
+        Text(value, fontWeight = FontWeight.SemiBold, color = Ink, fontSize = 14.sp, modifier = Modifier.weight(1.4f), lineHeight = 18.sp)
+    }
+}
+
+@Composable
+private fun RowLink(title: String, detail: String, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clip(Pill).clickable { onClick() }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(title, fontWeight = FontWeight.SemiBold, color = Ink)
+            Text(detail, color = Muted, fontSize = 13.sp)
+        }
+        Text("›", color = Muted, fontSize = 22.sp)
+    }
+}
+
+@Composable
+private fun Section(title: String, note: String, content: @Composable () -> Unit) {
+    Card {
+        Text(title, color = Forest, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+        Text(note, color = Muted, fontSize = 13.sp, lineHeight = 18.sp)
+        content()
+    }
+}
+
+@Composable
+private fun StepRow(label: String, minus: () -> Unit, plus: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(label, modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = Ink)
+        Text("−", modifier = Modifier.clip(CircleShape).background(Track).clickable { minus() }.padding(horizontal = 14.dp, vertical = 6.dp), fontWeight = FontWeight.Bold, color = Forest)
+        Spacer(Modifier.size(8.dp))
+        Text("+", modifier = Modifier.clip(CircleShape).background(Track).clickable { plus() }.padding(horizontal = 14.dp, vertical = 6.dp), fontWeight = FontWeight.Bold, color = Forest)
+    }
+}
+
+@Composable
+private fun Qr(text: String, size: Int) {
+    val bitmap = remember(text, size) { qrBitmap(text, size) }
+    Image(bitmap.asImageBitmap(), "QR", modifier = Modifier.size(size.dp).clip(RoundedCornerShape(8.dp)).background(Color.White))
+}
+
+private fun qrBitmap(text: String, size: Int): Bitmap {
+    val matrix = QRCodeWriter().encode(text.ifBlank { " " }, BarcodeFormat.QR_CODE, size, size)
+    val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+    val ink = android.graphics.Color.parseColor("#123C32")
+    for (x in 0 until size) for (y in 0 until size) bitmap.setPixel(x, y, if (matrix.get(x, y)) ink else android.graphics.Color.WHITE)
+    return bitmap
+}
+
+private fun tick(view: android.view.View) {
+    view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+}
+
+private fun confirm(view: android.view.View) {
+    val kind = if (Build.VERSION.SDK_INT >= 30) HapticFeedbackConstants.CONFIRM else HapticFeedbackConstants.CONTEXT_CLICK
+    view.performHapticFeedback(kind)
+}
+
+private fun tidy(raw: String): String {
+    val text = raw.trim()
+    if (text.isBlank() || text.equals("null", true)) return ""
+    val source = text.substringBefore("+").substringBefore("Z").replace(Regex("\\.\\d+"), "")
+    val parsed = runCatching {
+        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+            isLenient = false
+        }.parse(source)
+    }.getOrNull() ?: runCatching {
+        SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { isLenient = false }.parse(source.take(10))
+    }.getOrNull() ?: return text
+    val pattern = if (source.length > 10) "MMM d, yyyy · h:mm a" else "MMM d, yyyy"
+    return SimpleDateFormat(pattern, Locale.US).apply { timeZone = TimeZone.getTimeZone("Asia/Manila") }.format(parsed)
+}
+
+private fun tidyDetail(raw: String): String =
+    raw.split("·").map { it.trim() }.filter { it.isNotBlank() && !it.equals("null", true) }.joinToString(" · ")
+
+@Composable
+private fun switchColors() = SwitchDefaults.colors(checkedTrackColor = Forest, checkedThumbColor = Color.White, uncheckedTrackColor = Line, uncheckedThumbColor = Color.White, uncheckedBorderColor = Line)

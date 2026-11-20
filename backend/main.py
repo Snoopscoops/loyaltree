@@ -17203,8 +17203,6 @@ def _oa_require_order_operator(public_id: str, authorization: str) -> tuple[dict
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail='Business not found')
-    if not bool(business.get('order_ahead_enabled')):
-        raise HTTPException(status_code=403, detail='Order Ahead must be enabled by LoyaltyTree Admin first')
 
     if claims.get('role') == 'owner':
         return business, claims, None
@@ -18802,6 +18800,130 @@ async def owner_update_order_ahead_item_availability(
         'is_available': bool(payload.is_available and item.get('is_available') is not False),
         'global_is_available': item.get('is_available') is not False,
     }
+
+
+
+@app.post('/api/v1/public/menu/{public_id}/orders')
+async def public_place_menu_order(public_id: str, request: Request):
+    """Save a digital-menu order. This does not require Order Ahead."""
+    payload = await request.json()
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Menu not found')
+    items = payload.get('items') if isinstance(payload.get('items'), list) else []
+    if not items:
+        raise HTTPException(status_code=400, detail='Your cart is empty')
+    now_iso = datetime.now(timezone.utc).isoformat()
+    order_number = str(payload.get('order_number') or '').strip()[:40] or f"LT-{uuid.uuid4().hex[:8].upper()}"
+    total = 0.0
+    clean_items = []
+    for raw in items[:40]:
+        if not isinstance(raw, dict):
+            continue
+        name = str(raw.get('name') or raw.get('item_name') or 'Item').strip()[:120]
+        try:
+            qty = max(1, int(raw.get('quantity') or 1))
+        except (TypeError, ValueError):
+            qty = 1
+        try:
+            line_total = float(raw.get('line_total') or 0)
+        except (TypeError, ValueError):
+            line_total = 0.0
+        total += line_total
+        clean_items.append({'item_name': name, 'quantity': qty, 'line_total': line_total, 'options': raw.get('options') or []})
+    if not clean_items:
+        raise HTTPException(status_code=400, detail='Your cart is empty')
+    row = {
+        'public_id': uuid.uuid4().hex,
+        'business_id': business.get('id'),
+        'order_number': order_number,
+        'payment_reference': str(payload.get('payment_reference') or '')[:40],
+        'buyer_name': str(payload.get('buyer_name') or 'Customer')[:120],
+        'service': 'dine-in' if str(payload.get('service') or '') == 'dine-in' else 'pickup',
+        'table_no': str(payload.get('table_no') or '')[:40],
+        'pickup_label': str(payload.get('pickup_label') or '')[:80],
+        'status': 'new',
+        'payment_status': 'paid',
+        'total': round(total, 2),
+        'items': clean_items,
+        'created_at': now_iso,
+    }
+    try:
+        saved = _supabase_first_row(supabase.table('menu_counter_orders').insert(row).execute()) or row
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f'Menu orders are not ready yet: {friendly_db_error(e)}')
+    return {'success': True, 'order': _menu_counter_order_public(saved)}
+
+
+def _menu_counter_order_public(row: dict) -> dict:
+    service = 'Dine in' if row.get('service') == 'dine-in' else 'Pickup'
+    table_no = str(row.get('table_no') or '').strip()
+    where = f'{service} · Table {table_no}' if table_no else service
+    if row.get('service') != 'dine-in' and row.get('pickup_label'):
+        where = f"Pickup · {row.get('pickup_label')}"
+    return {
+        'public_id': row.get('public_id'),
+        'order_number': row.get('order_number'),
+        'status': row.get('status') or 'new',
+        'payment_status': row.get('payment_status') or 'paid',
+        'total': float(row.get('total') or 0),
+        'customer_note': where,
+        'pickup_at': '',
+        'customer': {'name': row.get('buyer_name') or 'Customer'},
+        'branch': {'name': where},
+        'items': [
+            {
+                'item_name': item.get('item_name') or 'Item',
+                'quantity': item.get('quantity') or 1,
+                'modifiers': [{'option_name': opt} for opt in (item.get('options') or []) if isinstance(opt, str)],
+            }
+            for item in (row.get('items') or [])
+            if isinstance(item, dict)
+        ],
+    }
+
+
+@app.get('/api/v1/business/{public_id}/menu-orders')
+async def owner_list_menu_orders(public_id: str, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    try:
+        rows = (
+            supabase.table('menu_counter_orders').select('*')
+            .eq('business_id', business.get('id'))
+            .order('created_at', desc=True)
+            .limit(100)
+            .execute().data or []
+        )
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f'Menu orders are not ready yet: {friendly_db_error(e)}')
+    return {'orders': [_menu_counter_order_public(row) for row in rows], 'total': len(rows)}
+
+
+@app.patch('/api/v1/business/{public_id}/menu-orders/{order_public_id}/status')
+async def owner_update_menu_order_status(public_id: str, order_public_id: str, request: Request, authorization: str = Header(default='')):
+    require_owner_session(public_id, authorization)
+    business = safe_get_business(public_id)
+    if not business:
+        raise HTTPException(status_code=404, detail='Business not found')
+    payload = await request.json()
+    target = str((payload or {}).get('status') or '')
+    if target not in ('preparing', 'ready', 'completed', 'cancelled'):
+        raise HTTPException(status_code=400, detail='Invalid order status')
+    try:
+        saved = _supabase_first_row(
+            supabase.table('menu_counter_orders').update({'status': target})
+            .eq('public_id', order_public_id)
+            .eq('business_id', business.get('id'))
+            .execute()
+        )
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f'Could not update the order: {friendly_db_error(e)}')
+    if not saved:
+        raise HTTPException(status_code=404, detail='Order not found')
+    return {'success': True, 'order': _menu_counter_order_public(saved)}
 
 
 @app.get('/api/v1/business/{public_id}/order-ahead/orders')

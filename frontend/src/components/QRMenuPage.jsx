@@ -209,7 +209,27 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
         {payStep !== 'done' && <div className="lt-qr-cart-total"><span>Total</span><strong>{money(total)}</strong></div>}
         {!payStep && <button type="button" className="lt-qr-primary" onClick={async () => { let saved = ''; let token = ''; try { saved = localStorage.getItem(`lt-menu-card-name:${business.public_id}`) || ''; token = localStorage.getItem(`lt-menu-card:${business.public_id}`) || '' } catch { saved = ''; token = '' } if (token && apiBase) { try { const response = await fetch(`${apiBase}/api/v1/public/menu/${encodeURIComponent(business.public_id)}/card`, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' }); if (response.ok) { const body = await response.json(); if (body.name && body.name !== 'Loyalty card') { saved = body.name; try { localStorage.setItem(`lt-menu-card-name:${business.public_id}`, saved) } catch { /* ignore */ } } } } catch { /* keep saved */ } } setBuyerName(saved); setPayStep('service') }}>Checkout</button>}
         {payStep === 'service' && <div className="lt-qr-pay"><p>How will you get this?</p><div className="lt-qr-pay-choices"><button type="button" aria-pressed={service === 'dine-in'} onClick={() => setService('dine-in')}>Dine in</button><button type="button" aria-pressed={service === 'pickup'} onClick={() => { const first = pickupSlots()[0]; setService('pickup'); setPickupAt(current => current || first?.value || '') }}>Pick up later</button></div>{service === 'dine-in' ? <input aria-label="Table number" placeholder="Table number, optional" value={tableNo} onChange={event => setTableNo(event.target.value)} /> : <select aria-label="Pick up time" value={pickupAt} onChange={event => setPickupAt(event.target.value)}><option value="">Choose a time</option>{pickupSlots().map(slot => <option key={slot.value} value={slot.value}>{slot.label}</option>)}</select>}{buyerName ? <p>Name · {buyerName}</p> : <input aria-label="Your name" placeholder="Your name, optional" value={buyerName} onChange={event => setBuyerName(event.target.value)} />}<button type="button" className="lt-qr-primary" disabled={service === 'pickup' && !pickupAt} onClick={() => setPayStep('payment')}>Continue to payment</button></div>}
-        {payStep === 'payment' && <div className="lt-qr-pay"><p>{service === 'dine-in' ? `Dine in${tableNo.trim() ? ` · Table ${tableNo.trim()}` : ''}` : `Pick up later · ${pickupSlots().find(slot => slot.value === pickupAt)?.label || ''}`}</p>{buyerName.trim() && <p>{buyerName.trim()}</p>}<strong>{money(total)}</strong><button type="button" className="lt-qr-primary" onClick={() => { const stamp = Date.now().toString(36).toUpperCase(); const slot = pickupSlots().find(item => item.value === pickupAt); setOrder({ ...buildMenuOrder({ merchantId: business.public_id, cart, orderId: `LT-${stamp}` }), buyer_name: buyerName.trim(), service, table_no: tableNo.trim(), pickup_at: pickupAt, pickup_label: slot?.label || '', payment_reference: `REF-${stamp.slice(-6)}`, status: 'awaiting_payment' }); setPayStep('done') }}>Pay</button><button type="button" className="lt-qr-text-button" onClick={() => setPayStep('service')}>Back</button></div>}
+        {payStep === 'payment' && <div className="lt-qr-pay"><p>{service === 'dine-in' ? `Dine in${tableNo.trim() ? ` · Table ${tableNo.trim()}` : ''}` : `Pick up later · ${pickupSlots().find(slot => slot.value === pickupAt)?.label || ''}`}</p>{buyerName.trim() && <p>{buyerName.trim()}</p>}<strong>{money(total)}</strong><button type="button" className="lt-qr-primary" onClick={() => { const stamp = Date.now().toString(36).toUpperCase(); const slot = pickupSlots().find(item => item.value === pickupAt); {
+const placedOrder = { ...buildMenuOrder({ merchantId: business.public_id, cart, orderId: `LT-${stamp}` }), buyer_name: buyerName.trim(), service, table_no: tableNo.trim(), pickup_at: pickupAt, pickup_label: slot?.label || '', payment_reference: `REF-${stamp.slice(-6)}`, status: 'awaiting_payment' };
+setOrder(placedOrder);
+const menuBusinessId = placedOrder.merchant_id || placedOrder.merchantId;
+if (menuBusinessId) {
+  fetch(API_BASE + '/api/v1/public/menu/' + encodeURIComponent(menuBusinessId) + '/orders', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      order_number: placedOrder.order_id || placedOrder.orderId,
+      payment_reference: placedOrder.payment_reference,
+      buyer_name: placedOrder.buyer_name,
+      service: placedOrder.service,
+      table_no: placedOrder.table_no,
+      pickup_label: placedOrder.pickup_label,
+      items: placedOrder.items || [],
+    }),
+  }).catch(() => {});
+}
+setPayStep('done');
+} }}>Pay</button><button type="button" className="lt-qr-text-button" onClick={() => setPayStep('service')}>Back</button></div>}
         {payStep === 'done' && order && <div className="lt-qr-checkout" role="status"><strong>Paid</strong><dl><div><dt>Order number</dt><dd>{order.order_id}</dd></div><div><dt>Payment reference</dt><dd>{order.payment_reference}</dd></div><div><dt>Buyer</dt><dd>{order.buyer_name || '—'}</dd></div></dl><p>{order.service === 'dine-in' ? `Dine in${order.table_no ? ` · Table ${order.table_no}` : ''}` : `Pick up later${order.pickup_label ? ` · ${order.pickup_label}` : ''}`}</p></div>}
       </div>
     </div>}
