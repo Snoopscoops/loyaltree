@@ -8,6 +8,9 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -15,7 +18,25 @@ import org.json.JSONObject
 import java.util.Calendar
 import java.util.TimeZone
 
-data class OwnerSession(val token: String, val slug: String, val businessName: String, val email: String, val role: String)
+data class OwnerSession(
+    val token: String,
+    val slug: String,
+    val businessName: String,
+    val email: String,
+    val role: String,
+    val staffName: String = "",
+    val branchId: String = "",
+    val branchName: String = ""
+) {
+    /** Managers and cashiers sign in with their staff email + PIN and get the limited, orders-first app. */
+    val isStaff get() = role == "manager" || role == "cashier"
+    val isOwner get() = role == "owner"
+    /** Owner and managers see the daily summary and can download the sales report. */
+    val canReport get() = role == "owner" || role == "manager"
+    /** Removing stamps is a correction: owner and managers only. */
+    val canCorrectStamps get() = role == "owner" || role == "manager"
+    val roleLabel get() = role.replaceFirstChar { it.uppercase() }
+}
 data class Member(val id: String, val name: String, val phone: String, val email: String, val stamps: Int, val points: String, val lastVisit: String, val birthdayMonth: Int = 0, val birthdayDay: Int = 0)
 data class MenuRow(val id: String, val categoryId: String, val category: String, val name: String, val price: String, val priceNumber: String, val detail: String, val available: Boolean, val shown: Boolean, val sortOrder: Int = 0, val directGroups: List<String> = emptyList(), val excludedGroups: List<String> = emptyList(), val unavailableBranches: List<String> = emptyList())
 data class OptionChoice(val id: String, val name: String, val price: String)
@@ -241,6 +262,14 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     var analyticsProgram by mutableStateOf("")
     var analyticsNote by mutableStateOf("")
     var seenOpening by mutableStateOf(prefs.getBoolean("seenOpening", false))
+    var staffNeedsBranch by mutableStateOf(false)
+    var alertsOn by mutableStateOf(prefs.getBoolean("orderAlerts", true))
+    var mutedBranches by mutableStateOf(prefs.getStringSet("mutedBranches", emptySet())?.toSet() ?: emptySet())
+    var alertsNote by mutableStateOf("")
+    /** Bumped when a new-order notification is tapped, so the app jumps to Orders. */
+    var openOrdersTick by mutableStateOf(0)
+
+    private var watchJob: Job? = null
 
     private var pins = JSONArray()
     private var cardConfig = JSONObject()
@@ -263,11 +292,24 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
             json.optString("slug"),
             json.optString("businessName"),
             json.optString("email"),
-            json.optString("role")
+            json.optString("role"),
+            json.optString("staffName"),
+            json.optString("branchId"),
+            json.optString("branchName")
         )
     }
 
-    fun signIn(email: String, password: String) {
+    private fun saveSession(next: OwnerSession) {
+        prefs.edit().putString(
+            "session",
+            JSONObject().put("token", next.token).put("slug", next.slug).put("businessName", next.businessName)
+                .put("email", next.email).put("role", next.role).put("staffName", next.staffName)
+                .put("branchId", next.branchId).put("branchName", next.branchName).toString()
+        ).apply()
+    }
+
+    /** Owner: email + password. Staff (manager or cashier): the email + PIN the owner set in Cashiers. Same login API. */
+    fun signIn(email: String, password: String, staff: Boolean = false) {
         viewModelScope.launch {
             loading = true
             status = ""
@@ -277,30 +319,48 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
             val (code, body) = result
             val json = body as? JSONObject
             val token = json?.optString("token").orEmpty()
-            if (code != 200 || token.isBlank()) { status = API.message(body, "Could not sign in."); return@launch }
-            val role = json?.optString("role").orEmpty()
-            val slug = json?.optString("business_slug").orEmpty()
-            if ((role != "owner" && role != "manager") || slug.isBlank()) {
-                status = "Use a business owner account. This phone is the counter, not admin."
+            if (code != 200 || token.isBlank()) {
+                status = API.message(body, if (staff) "Check your email and PIN." else "Could not sign in.")
                 return@launch
             }
-            val next = OwnerSession(token, slug, json?.optString("business_name").ifNullOrBlank("LoyaltyTree"), email, role)
-            prefs.edit().putString("session", JSONObject().put("token", next.token).put("slug", next.slug).put("businessName", next.businessName).put("email", next.email).put("role", next.role).toString()).apply()
+            val role = json?.optString("role").orEmpty().lowercase()
+            val slug = json?.optString("business_slug").orEmpty()
+            if (role !in listOf("owner", "manager", "cashier") || slug.isBlank()) {
+                status = "This account can't use the LoyaltyTree app. Use an owner, manager or cashier account."
+                return@launch
+            }
+            val next = OwnerSession(
+                token, slug, json?.optString("business_name").ifNullOrBlank("LoyaltyTree"), email, role,
+                staffName = json?.optString("name").orEmpty().takeIf { role != "owner" }.orEmpty(),
+                branchId = json?.optString("branch_public_id").orEmpty().takeIf { it != "null" }.orEmpty(),
+                branchName = json?.optString("branch_name").orEmpty().takeIf { it != "null" }.orEmpty()
+            )
+            saveSession(next)
             session = next
             refresh()
         }
     }
 
     fun signOut() {
+        watchJob?.cancel()
+        watchJob = null
         session = null
         members = emptyList()
         menuRows = emptyList()
+        orders = emptyList()
+        daySummary = null
+        staffNeedsBranch = false
         status = ""
         prefs.edit().remove("session").apply()
     }
 
     fun refresh() {
         val current = session ?: return
+        if (current.isStaff) {
+            refreshStaff(current)
+            return
+        }
+        startOrderWatch()
         viewModelScope.launch {
             loading = true
             status = ""
@@ -327,6 +387,109 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Staff only load what they can use: their access (role + branch) and the orders of their branch. */
+    private fun refreshStaff(current: OwnerSession) {
+        viewModelScope.launch {
+            loading = true
+            status = ""
+            val access = io { API.get("/api/v1/business/${current.slug}/menu-orders/access", current.token) }
+            if (access != null && access.first == 401) {
+                loading = false
+                signOut()
+                status = "Your 12-hour shift sign-in ended. Sign in again."
+                return@launch
+            }
+            if (access != null && access.first == 403) {
+                loading = false
+                signOut()
+                status = API.message(access.second, "This staff account can't sign in right now. Ask the owner.")
+                return@launch
+            }
+            val json = access?.second as? JSONObject
+            if (access != null && access.first < 400 && json != null) {
+                val branch = json.optJSONObject("branch")
+                staffNeedsBranch = json.optBoolean("needs_branch")
+                val next = current.copy(
+                    role = json.optString("role").ifBlank { current.role },
+                    staffName = json.optString("name").ifBlank { current.staffName },
+                    branchId = branch?.optString("public_id").orEmpty(),
+                    branchName = branch?.optString("name").orEmpty()
+                )
+                if (next != current) {
+                    saveSession(next)
+                    session = next
+                }
+            }
+            loading = false
+            if (!staffNeedsBranch) {
+                fetchOrders(session ?: current)
+                startOrderWatch()
+            }
+        }
+    }
+
+    // ----- New-order ringtone + notification -----
+
+    /** Checks for new orders every 20 seconds while the app is open or was used recently. */
+    private fun startOrderWatch() {
+        if (watchJob?.isActive == true) return
+        watchJob = viewModelScope.launch {
+            while (isActive) {
+                delay(20_000)
+                val current = session ?: break
+                if (current.isStaff && staffNeedsBranch) continue
+                fetchOrders(current, quiet = true)
+            }
+        }
+    }
+
+    private fun seenKey(current: OwnerSession) = "seenOrders:${current.slug}:${current.role}:${current.branchId}"
+
+    /** Rings for orders this phone has not seen yet. The first load after sign-in only remembers what is already there. */
+    private fun ringForNew(current: OwnerSession, list: List<LiveOrder>) {
+        val key = seenKey(current)
+        val stored = prefs.getString(key, null)
+        val seen = stored?.split(",")?.filter { it.isNotBlank() }?.toMutableSet() ?: mutableSetOf()
+        val fresh = if (stored == null) emptyList() else list.filter { order ->
+            order.id !in seen && order.status == "new" && recent(order.createdAt) &&
+                (current.isStaff || order.branchId !in mutedBranches)
+        }
+        seen.addAll(list.map { it.id })
+        prefs.edit().putString(key, seen.toList().takeLast(400).joinToString(",")).apply()
+        if (fresh.isEmpty() || !alertsOn) return
+        val context = getApplication<Application>()
+        if (!OrderAlerts.announce(context, fresh)) {
+            alertsNote = "Notifications are off for LoyaltyTree, so new orders only chime while the app is open."
+        }
+    }
+
+    /** Ignore old "new" orders (e.g. the phone was off overnight): only ring for the last 3 hours. */
+    private fun recent(createdAt: String): Boolean {
+        if (createdAt.length < 19) return true
+        val format = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
+        format.timeZone = TimeZone.getTimeZone("UTC")
+        val base = runCatching { format.parse(createdAt.take(19).replace(' ', 'T'))?.time }.getOrNull() ?: return true
+        val offset = Regex("([+-])(\\d{2}):?(\\d{2})$").find(createdAt)?.destructured?.let { (sign, h, m) ->
+            (h.toLong() * 60 + m.toLong()) * 60_000L * (if (sign == "-") -1 else 1)
+        } ?: 0L
+        return base - offset > System.currentTimeMillis() - 3 * 3600_000L
+    }
+
+    fun setAlerts(on: Boolean) {
+        alertsOn = on
+        prefs.edit().putBoolean("orderAlerts", on).apply()
+    }
+
+    fun setBranchAlert(branchId: String, on: Boolean) {
+        mutedBranches = if (on) mutedBranches - branchId else mutedBranches + branchId
+        prefs.edit().putStringSet("mutedBranches", mutedBranches).apply()
+    }
+
+    fun openOrdersFromNotification() {
+        openOrdersTick += 1
+        loadOrders()
+    }
+
     private suspend fun loadSetup(current: OwnerSession) {
         io { API.get("/api/v1/business/${current.slug}/analytics?range=$period", current.token) }?.let { applyAnalytics(it.second, it.first) }
         io { API.get("/api/v1/business/${current.slug}/retention-settings", current.token) }?.let { applyGreetings(it.second, it.first) }
@@ -350,6 +513,10 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     }
 
     private suspend fun fetchSummary(current: OwnerSession) {
+        if (!current.canReport) {
+            daySummary = null
+            return
+        }
         val branch = java.net.URLEncoder.encode(ordersBranch, "UTF-8")
         val result = io { API.get("/api/v1/business/${current.slug}/menu-orders/summary?branch=$branch", current.token) }
         if (result == null || result.first >= 400) {
@@ -729,7 +896,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
             var error = ""
             if (delta > 0) {
                 for (i in 0 until delta) {
-                    val body = JSONObject().put("customer_public_id", customer.id).put("as_owner", true)
+                    val body = JSONObject().put("customer_public_id", customer.id).put("as_owner", current.isOwner)
                     val result = io { API.post("/api/v1/business/${current.slug}/stamp", current.token, body) }
                     if (result == null || result.first >= 400) {
                         error = if (result == null) "Could not reach the server." else API.message(result.second, "Could not add the stamp.")
@@ -738,8 +905,8 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
                     added += 1
                 }
             } else {
-                val body = JSONObject().put("customer_public_id", customer.id).put("as_owner", true).put("delta", delta)
-                    .put("reason", "Owner correction in the LoyaltyTree app")
+                val body = JSONObject().put("customer_public_id", customer.id).put("as_owner", current.isOwner).put("delta", delta)
+                    .put("reason", "${current.roleLabel} correction in the LoyaltyTree app")
                 val result = io { API.post("/api/v1/business/${current.slug}/stamp/adjust", current.token, body) }
                 if (result == null || result.first >= 400) {
                     error = if (result == null) "Could not reach the server." else API.message(result.second, "Could not remove the stamp.")
@@ -769,7 +936,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             scanBusy = true
             scanNote = ""
-            val body = JSONObject().put("customer_public_id", customer.id).put("as_owner", true).put("amount_spent", amount)
+            val body = JSONObject().put("customer_public_id", customer.id).put("as_owner", current.isOwner).put("amount_spent", amount)
             val result = io { API.post("/api/v1/business/${current.slug}/points-sale", current.token, body) }
             scanBusy = false
             if (result == null || result.first >= 400) {
@@ -789,7 +956,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             scanBusy = true
             scanNote = ""
-            val body = JSONObject().put("customer_public_id", customer.id).put("as_owner", true)
+            val body = JSONObject().put("customer_public_id", customer.id).put("as_owner", current.isOwner)
             val result = io { API.post("/api/v1/business/${current.slug}/reward/redeem", current.token, body) }
             scanBusy = false
             if (result == null || result.first >= 400) {
@@ -835,11 +1002,22 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private suspend fun fetchOrders(current: OwnerSession) {
+    private suspend fun fetchOrders(current: OwnerSession, quiet: Boolean = false) {
         val menu = io { API.get("/api/v1/business/${current.slug}/menu-orders", current.token) }
         val ahead = io { API.get("/api/v1/business/${current.slug}/order-ahead/orders?limit=100", current.token) }
         if (menu == null && ahead == null) {
-            ordersNote = "Could not reach orders."
+            if (!quiet) ordersNote = "Could not reach orders."
+            return
+        }
+        if (session != current) return
+        if (current.isStaff && menu != null && menu.first == 401) {
+            signOut()
+            status = "Your 12-hour shift sign-in ended. Sign in again."
+            return
+        }
+        if (current.isStaff && menu != null && menu.first == 403 && API.message(menu.second, "").contains("assign your branch", ignoreCase = true)) {
+            staffNeedsBranch = true
+            orders = emptyList()
             return
         }
         val combined = buildList {
@@ -847,6 +1025,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
             if (ahead != null && ahead.first < 400) addAll(parseOrders(ahead.second, "ahead"))
         }
         orders = combined.distinctBy { it.id }
+        if (menu != null && menu.first < 400) ringForNew(current, orders)
         fetchSummary(current)
         val blocked = listOfNotNull(menu, ahead).filter { it.first >= 400 }
             .map { API.message(it.second, "Could not load orders.") }

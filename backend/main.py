@@ -18806,9 +18806,14 @@ async def owner_update_order_ahead_item_availability(
 try:
     from .menu_order_insights import insert_order as _menu_order_insert, resolve_branch as _menu_order_resolve_branch, member_from_card_token as _menu_order_member, payment_fields as _menu_order_payment, cash_awaiting_payment as _menu_order_cash_unpaid
     from .menu_card_link import read_token as _menu_card_read_token
+    from .menu_order_access import make_menu_order_operator, check_order_branch as _menu_order_check_branch
 except ImportError:
     from menu_order_insights import insert_order as _menu_order_insert, resolve_branch as _menu_order_resolve_branch, member_from_card_token as _menu_order_member, payment_fields as _menu_order_payment, cash_awaiting_payment as _menu_order_cash_unpaid
     from menu_card_link import read_token as _menu_card_read_token
+    from menu_order_access import make_menu_order_operator, check_order_branch as _menu_order_check_branch
+
+# Owner: every branch. Manager / cashier (staff PIN session, 12 h): their own branch only.
+_menu_order_operator = make_menu_order_operator(db=supabase, get_business=safe_get_business, get_claims=get_staff_session_claims)
 
 
 @app.post('/api/v1/public/menu/{public_id}/orders')
@@ -18915,44 +18920,47 @@ def _menu_counter_order_public(row: dict) -> dict:
 
 @app.get('/api/v1/business/{public_id}/menu-orders')
 async def owner_list_menu_orders(public_id: str, authorization: str = Header(default='')):
-    require_owner_session(public_id, authorization)
-    business = safe_get_business(public_id)
-    if not business:
-        raise HTTPException(status_code=404, detail='Business not found')
+    business, order_scope = await asyncio.to_thread(_menu_order_operator, public_id, authorization)
     try:
+        query = supabase.table('menu_counter_orders').select('*').eq('business_id', business.get('id'))
+        if order_scope.get('branch'):
+            query = query.eq('branch_public_id', order_scope['branch'])
         rows = (
-            supabase.table('menu_counter_orders').select('*')
-            .eq('business_id', business.get('id'))
+            query
             .order('created_at', desc=True)
             .limit(100)
             .execute().data or []
         )
     except Exception as e:
         raise HTTPException(status_code=503, detail=f'Menu orders are not ready yet: {friendly_db_error(e)}')
-    return {'orders': [_menu_counter_order_public(row) for row in rows], 'total': len(rows)}
+    return {'orders': [_menu_counter_order_public(row) for row in rows], 'total': len(rows),
+            'scope': {'role': order_scope.get('role'), 'branch': order_scope.get('branch') or '',
+                      'branch_name': order_scope.get('branch_name') or ''}}
 
 
 @app.patch('/api/v1/business/{public_id}/menu-orders/{order_public_id}/status')
 async def owner_update_menu_order_status(public_id: str, order_public_id: str, request: Request, authorization: str = Header(default='')):
-    require_owner_session(public_id, authorization)
-    business = safe_get_business(public_id)
-    if not business:
-        raise HTTPException(status_code=404, detail='Business not found')
+    business, order_scope = await asyncio.to_thread(_menu_order_operator, public_id, authorization)
     payload = await request.json()
     target = str((payload or {}).get('status') or '')
     if target not in ('preparing', 'ready', 'completed', 'cancelled'):
         raise HTTPException(status_code=400, detail='Invalid order status')
+    try:
+        current_order = _supabase_first_row(
+            supabase.table('menu_counter_orders').select('*')
+            .eq('public_id', order_public_id)
+            .eq('business_id', business.get('id'))
+            .limit(1).execute()
+        )
+    except Exception:
+        current_order = None
+    if order_scope.get('branch'):
+        # Staff can only touch orders of their own branch.
+        if not current_order:
+            raise HTTPException(status_code=404, detail='Order not found')
+        _menu_order_check_branch(order_scope, current_order)
     if target != 'cancelled':
         # Cash orders are prepared only after the cashier confirms payment.
-        try:
-            current_order = _supabase_first_row(
-                supabase.table('menu_counter_orders').select('*')
-                .eq('public_id', order_public_id)
-                .eq('business_id', business.get('id'))
-                .limit(1).execute()
-            )
-        except Exception:
-            current_order = None
         if _menu_order_cash_unpaid(current_order):
             raise HTTPException(status_code=409, detail='Waiting for payment. Tap "Mark as paid" after the customer pays at the counter.')
     try:
@@ -51718,7 +51726,12 @@ try:
 except ImportError:
     from menu_order_insights import register_menu_order_insight_routes
 register_menu_order_insight_routes(app, db=supabase, get_business=safe_get_business,
-    require_owner=require_owner_session, friendly_error=friendly_db_error)
+    require_owner=require_owner_session, friendly_error=friendly_db_error, operator=_menu_order_operator)
+try:
+    from .menu_order_access import register_menu_order_access_routes
+except ImportError:
+    from menu_order_access import register_menu_order_access_routes
+register_menu_order_access_routes(app, operator=_menu_order_operator)
 register_menu_card_routes(app, db=supabase, get_business=safe_get_business,
     has_feature=business_has_plan_feature, on_hold=billing_hold, send_email=send_email,
     frontend_url=FRONTEND_URL or 'https://theloyaltytree.com')

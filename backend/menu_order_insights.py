@@ -17,8 +17,10 @@ from fastapi import Header, HTTPException, Response
 
 try:
     from .customer_demographics import AGE_LABELS, GENDER_LABELS, OCCUPATION_LABELS, age_bracket
+    from .menu_order_access import check_order_branch, scoped_branch
 except ImportError:  # running from backend/
     from customer_demographics import AGE_LABELS, GENDER_LABELS, OCCUPATION_LABELS, age_bracket
+    from menu_order_access import check_order_branch, scoped_branch
 
 MANILA = ZoneInfo('Asia/Manila')
 OPTIONAL_ORDER_COLUMNS = ('branch_public_id', 'branch_name', 'member_customer_public_id', 'payment_method')
@@ -695,7 +697,7 @@ def _branch_name(db, business_id, branch, rows):
     return str((found[0].get('name') if found else '') or 'Branch')
 
 
-def register_menu_order_insight_routes(app, *, db, get_business, require_owner, friendly_error=str):
+def register_menu_order_insight_routes(app, *, db, get_business, require_owner, friendly_error=str, operator=None):
     def business_for(public_id, authorization):
         require_owner(public_id, authorization)
         business = get_business(public_id)
@@ -703,9 +705,16 @@ def register_menu_order_insight_routes(app, *, db, get_business, require_owner, 
             raise HTTPException(status_code=404, detail='Business not found')
         return business
 
+    def scoped_for(public_id, authorization, branch, allow):
+        """Owner sees any branch. Managers and cashiers are held to their own branch."""
+        if operator is None:
+            return business_for(public_id, authorization), str(branch or '').strip(), None
+        business, scope = operator(public_id, authorization, allow=allow)
+        return business, scoped_branch(scope, branch), scope
+
     @app.get('/api/v1/business/{public_id}/menu-orders/summary')
     def menu_orders_summary(public_id: str, date: str = '', branch: str = '', period: str = '', authorization: str = Header(default='')):
-        business = business_for(public_id, authorization)
+        business, branch, _ = scoped_for(public_id, authorization, branch, ('owner', 'manager'))
         chosen = normalize_period(period)
         if chosen and not date:
             start_day, end_day, _, _ = period_days(chosen, datetime.now(MANILA).date())
@@ -733,7 +742,7 @@ def register_menu_order_insight_routes(app, *, db, get_business, require_owner, 
     def menu_orders_report(public_id: str, date: str = '', branch: str = '', period: str = '', format: str = 'csv',
                            authorization: str = Header(default='')):
         """Download a sales report: one day (default today, Manila) or this week / this month."""
-        business = business_for(public_id, authorization)
+        business, branch, _ = scoped_for(public_id, authorization, branch, ('owner', 'manager'))
         today = datetime.now(MANILA).date()
         chosen = normalize_period(period)
         if chosen and not date:
@@ -760,8 +769,8 @@ def register_menu_order_insight_routes(app, *, db, get_business, require_owner, 
 
     @app.patch('/api/v1/business/{public_id}/menu-orders/{order_public_id}/payment')
     def menu_order_mark_paid(public_id: str, order_public_id: str, authorization: str = Header(default='')):
-        """Owner confirms a cash order was paid at the counter."""
-        business = business_for(public_id, authorization)
+        """Owner, manager or cashier confirms a cash order was paid at the counter (own branch only for staff)."""
+        business, _, scope = scoped_for(public_id, authorization, '', ('owner', 'manager', 'cashier'))
         try:
             rows = (db.table('menu_counter_orders').select('*').eq('business_id', business['id'])
                     .eq('public_id', order_public_id).limit(1).execute().data or [])
@@ -769,6 +778,8 @@ def register_menu_order_insight_routes(app, *, db, get_business, require_owner, 
             raise HTTPException(status_code=503, detail=f'Could not load the order: {friendly_error(exc)}')
         if not rows:
             raise HTTPException(status_code=404, detail='Order not found')
+        if scope is not None:
+            check_order_branch(scope, rows[0])
         if str(rows[0].get('payment_status') or '') in PAID_STATUSES:
             return {'success': True, 'payment_status': rows[0].get('payment_status')}
         try:

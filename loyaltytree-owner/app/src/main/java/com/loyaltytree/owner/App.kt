@@ -49,6 +49,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Restaurant
@@ -78,6 +79,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
@@ -126,8 +128,17 @@ private sealed class Page {
     data object Points : Page()
     data object Cashiers : Page()
     data object Stamp : Page()
+    data object Alerts : Page()
     data class Customer(val id: String) : Page()
 }
+
+private val OwnerDock = listOf(
+    "Home" to Icons.Default.Store,
+    "Orders" to Icons.Default.Receipt,
+    "Menu" to Icons.Default.Restaurant,
+    "Customers" to Icons.Default.Person,
+    "More" to Icons.Default.MoreHoriz
+)
 
 private sealed class MenuSheet {
     data object Closed : MenuSheet()
@@ -157,7 +168,192 @@ fun LoyaltyTreeApp(store: CounterStore = viewModel()) {
         }
         return
     }
-    if (store.session == null) LoginScreen(store) else Shell(store)
+    val current = store.session
+    when {
+        current == null -> LoginScreen(store)
+        current.isStaff -> StaffShell(store)
+        else -> Shell(store)
+    }
+}
+
+/** Asks for the Android 13+ notification permission once, and opens Orders when a new-order notification is tapped. */
+@Composable
+private fun OrderAlertHooks(store: CounterStore) {
+    val context = LocalContext.current
+    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        store.alertsNote = if (granted) "" else "Notifications are off. New orders only chime while the app is open."
+    }
+    LaunchedEffect(store.session?.slug) {
+        OrderAlerts.ensureChannel(context)
+        if (Build.VERSION.SDK_INT >= 33 && !OrderAlerts.permissionGranted(context)) {
+            runCatching { ask.launch(Manifest.permission.POST_NOTIFICATIONS) }
+        }
+    }
+    val activity = remember(context) { context.findActivity() }
+    LaunchedEffect(activity) {
+        val intent = activity?.intent
+        if (intent?.getStringExtra(OrderAlerts.EXTRA_OPEN) == OrderAlerts.OPEN_ORDERS) {
+            intent.removeExtra(OrderAlerts.EXTRA_OPEN)
+            store.openOrdersFromNotification()
+        }
+    }
+    androidx.compose.runtime.DisposableEffect(activity) {
+        val listener = androidx.core.util.Consumer<Intent> { intent ->
+            if (intent.getStringExtra(OrderAlerts.EXTRA_OPEN) == OrderAlerts.OPEN_ORDERS) store.openOrdersFromNotification()
+        }
+        activity?.addOnNewIntentListener(listener)
+        onDispose { activity?.removeOnNewIntentListener(listener) }
+    }
+}
+
+private fun Context.findActivity(): androidx.activity.ComponentActivity? {
+    var current: Context? = this
+    while (current is android.content.ContextWrapper) {
+        if (current is androidx.activity.ComponentActivity) return current
+        current = current.baseContext
+    }
+    return null
+}
+
+private val StaffDock = listOf(
+    "Orders" to Icons.Default.Receipt,
+    "Stamps" to Icons.Default.Star,
+    "Me" to Icons.Default.Person
+)
+
+/** Managers and cashiers: Orders first, plus scan-to-stamp and their account. No menu, customers, billing or settings. */
+@Composable
+private fun StaffShell(store: CounterStore) {
+    var tab by remember { mutableIntStateOf(0) }
+    val view = LocalView.current
+    LaunchedEffect(store.session?.slug) { store.refresh() }
+    LaunchedEffect(store.openOrdersTick) { if (store.openOrdersTick > 0) tab = 0 }
+    OrderAlertHooks(store)
+    BackHandler(tab != 0) { tab = 0 }
+    Scaffold(containerColor = Ivory, bottomBar = {
+        Dock(tab, StaffDock) {
+            tick(view)
+            if (it == 1 && tab != 1) store.clearScan()
+            tab = it
+        }
+    }) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding).background(Ivory)) {
+            StaffHeader(store)
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                when (tab) {
+                    0 -> OrdersScreen(store)
+                    1 -> if (store.staffNeedsBranch) NeedsBranch(store) else StampScreen(store)
+                    else -> StaffMeScreen(store)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StaffHeader(store: CounterStore) {
+    val current = store.session ?: return
+    val branch = if (current.branchName.isNotBlank()) branchLabel(current.branchName) else if (current.role == "manager") "All branches" else "No branch yet"
+    Row(Modifier.fillMaxWidth().background(Forest).padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(current.staffName.ifBlank { current.email }, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text("${current.roleLabel} · $branch", color = Lime, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Text(current.businessName, color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(start = 8.dp))
+    }
+}
+
+@Composable
+private fun NeedsBranch(store: CounterStore) {
+    Scroll {
+        Card {
+            Text("No branch yet", color = Forest, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Text("Ask the owner to assign your branch.", color = Ink, fontSize = 15.sp)
+            Text("The owner does this in the LoyaltyTree app under More, then Cashiers. Then tap Check again.", color = Muted, fontSize = 13.sp, lineHeight = 18.sp)
+        }
+        Primary(if (store.loading) "Checking" else "Check again", enabled = !store.loading) { store.refresh() }
+        Secondary("Log out") { store.signOut() }
+    }
+}
+
+@Composable
+private fun StaffMeScreen(store: CounterStore) {
+    val current = store.session ?: return
+    Scroll {
+        Text("Me", color = Forest, fontSize = 32.sp, fontWeight = FontWeight.Bold)
+        Card {
+            Info("Name", current.staffName.ifBlank { "Staff" })
+            Info("Role", current.roleLabel)
+            Info("Branch", if (current.branchName.isNotBlank()) current.branchName else if (current.role == "manager") "All branches" else "Not assigned")
+            Info("Business", current.businessName)
+            Info("Email", current.email)
+        }
+        Card {
+            Text("WHAT YOU CAN DO", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            Text("• See and update orders for your branch", color = Ink, fontSize = 14.sp)
+            Text("• Mark cash orders as paid", color = Ink, fontSize = 14.sp)
+            Text("• Scan a card to add stamps or points", color = Ink, fontSize = 14.sp)
+            if (current.canReport) {
+                Text("• See today's sales and download the sales report", color = Ink, fontSize = 14.sp)
+                Text("• Correct stamps", color = Ink, fontSize = 14.sp)
+            }
+            Text("Menu, customers, billing and settings stay with the owner.", color = Muted, fontSize = 12.sp)
+        }
+        AlertSettings(store)
+        Text("You stay signed in for 12 hours, then sign in again with your PIN.", color = Muted, fontSize = 12.sp)
+        Secondary("Log out") { store.signOut() }
+    }
+}
+
+@Composable
+private fun AlertsScreen(store: CounterStore) {
+    Scroll { AlertSettings(store) }
+}
+
+@Composable
+private fun AlertSettings(store: CounterStore) {
+    val context = LocalContext.current
+    val current = store.session ?: return
+    val allowed = OrderAlerts.canNotify(context)
+    Card {
+        Text("NEW ORDER ALERTS", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Ring for new orders", color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                Text(
+                    if (current.isStaff) "Only orders for ${if (current.branchName.isNotBlank()) branchLabel(current.branchName) else "your branches"}."
+                    else "Every branch. The notification names the branch.",
+                    color = Muted, fontSize = 13.sp
+                )
+            }
+            Switch(store.alertsOn, { store.setAlerts(it) }, colors = switchColors())
+        }
+        if (current.isOwner && store.alertsOn && store.branches.size > 1) {
+            Text("Branches", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            store.branches.forEach { place ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(branchLabel(place.name), color = Ink, fontSize = 15.sp, modifier = Modifier.weight(1f))
+                    Switch(place.id !in store.mutedBranches, { store.setBranchAlert(place.id, it) }, colors = switchColors())
+                }
+            }
+        }
+        if (!allowed) {
+            Text("Notifications are off for LoyaltyTree. Turn them on so new orders ring even when the screen is off.", color = Bad, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Secondary("Turn on notifications") {
+                val intent = if (Build.VERSION.SDK_INT >= 26) {
+                    Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
+                } else {
+                    Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
+                }
+                runCatching { context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+            }
+        }
+        Secondary("Play test alert") {
+            OrderAlerts.test(context, current.branchName.ifBlank { store.branches.firstOrNull()?.name.orEmpty() })
+        }
+        if (store.alertsNote.isNotBlank()) Text(store.alertsNote, color = Muted, fontSize = 12.sp)
+        Text("Alerts work while the LoyaltyTree app is open or was used recently. If the phone closes the app, open it again to keep getting alerts.", color = Muted, fontSize = 12.sp, lineHeight = 17.sp)
+    }
 }
 
 @Composable
@@ -166,6 +362,13 @@ private fun Shell(store: CounterStore) {
     var page by remember { mutableStateOf<Page>(Page.None) }
     val view = LocalView.current
     LaunchedEffect(store.session?.slug) { store.refresh() }
+    LaunchedEffect(store.openOrdersTick) {
+        if (store.openOrdersTick > 0) {
+            tab = 1
+            page = Page.None
+        }
+    }
+    OrderAlertHooks(store)
     BackHandler(page !is Page.None) { page = Page.None }
     val saving = page is Page.Guest || page is Page.Billboard || page is Page.Card
     Scaffold(containerColor = Ivory, bottomBar = {
@@ -211,6 +414,7 @@ private fun Shell(store: CounterStore) {
                     Page.Points -> PointsScreen()
                     Page.Cashiers -> CashiersScreen(store)
                     Page.Stamp -> StampScreen(store)
+                    Page.Alerts -> AlertsScreen(store)
                     is Page.Customer -> CustomerScreen(store, current.id)
                 }
             }
@@ -235,6 +439,7 @@ private fun pageTitle(page: Page, store: CounterStore): String = when (page) {
     Page.Points -> "LT Points"
     Page.Cashiers -> "Cashiers"
     Page.Stamp -> if (store.cardType == "points") "Add points" else "Add a stamp"
+    Page.Alerts -> "Order alerts"
     is Page.Customer -> store.members.firstOrNull { it.id == page.id }?.name ?: "Customer"
     Page.None -> ""
 }
@@ -244,26 +449,47 @@ private fun LoginScreen(store: CounterStore) {
     val context = LocalContext.current
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var staff by remember { mutableStateOf(false) }
     val ready = email.contains("@") && password.length >= 4
-    Column(Modifier.fillMaxSize().background(Ivory).padding(24.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(Modifier.fillMaxSize().background(Ivory).imePadding().padding(24.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
         Mark(72)
         Spacer(Modifier.height(16.dp))
         Text("Sign in", color = Forest, fontSize = 32.sp, fontWeight = FontWeight.Bold)
-        Text("Use the email for this business.", color = Muted, fontSize = 15.sp)
+        Text(if (staff) "Managers and cashiers: use the email and PIN from the owner." else "Use the email for this business.", color = Muted, fontSize = 15.sp, textAlign = TextAlign.Center)
         Spacer(Modifier.height(18.dp))
+        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Track).padding(4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            listOf("Owner" to false, "Staff" to true).forEach { (label, value) ->
+                Box(
+                    Modifier.weight(1f).clip(RoundedCornerShape(9.dp)).background(if (staff == value) Forest else Color.Transparent).clickable {
+                        staff = value
+                        password = ""
+                        store.status = ""
+                    }.padding(vertical = 10.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(label, color = if (staff == value) Color.White else Forest, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
         Column(Modifier.fillMaxWidth().clip(Shape).background(Color.White).border(1.dp, Line, Shape).padding(18.dp)) {
             Field("Email", email, { email = it })
             Spacer(Modifier.height(12.dp))
-            Field("Password", password, { password = it }, password = true)
+            if (staff) Field("PIN", password, { password = it.filter { ch -> ch.isDigit() }.take(12) }, password = true, number = true)
+            else Field("Password", password, { password = it }, password = true)
             if (store.status.isNotBlank()) Text(store.status, color = Bad, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, modifier = Modifier.padding(top = 10.dp))
             Spacer(Modifier.height(12.dp))
             Primary(if (store.loading) "Signing in" else "Sign in", enabled = ready && !store.loading) {
-                store.signIn(email.trim(), password)
+                store.signIn(email.trim(), password, staff)
             }
-            TextButton(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://theloyaltytree.com/signup"))) }, modifier = Modifier.fillMaxWidth()) {
-                Text("Create a business account", color = Forest, fontWeight = FontWeight.SemiBold)
+            if (staff) {
+                Text("Staff see orders for their branch and can add stamps. You stay signed in for 12 hours.", color = Muted, fontSize = 12.sp, modifier = Modifier.fillMaxWidth().padding(top = 10.dp), textAlign = TextAlign.Center)
+            } else {
+                TextButton(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://theloyaltytree.com/signup"))) }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Create a business account", color = Forest, fontWeight = FontWeight.SemiBold)
+                }
+                Text("Registration and payment stay on the website.", color = Muted, fontSize = 12.sp, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
             }
-            Text("Registration and payment stay on the website.", color = Muted, fontSize = 12.sp, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
         }
     }
 }
@@ -363,20 +589,33 @@ private fun HomeScreen(store: CounterStore, openAnalytics: () -> Unit, openCampa
 @Composable
 private fun OrdersScreen(store: CounterStore) {
     LaunchedEffect(store.session?.slug) { store.loadOrders() }
+    val who = store.session
+    if (who != null && who.isStaff && store.staffNeedsBranch) {
+        NeedsBranch(store)
+        return
+    }
+    val canReport = who?.canReport == true
     val shown = if (store.ordersBranch.isBlank()) store.orders else store.orders.filter { it.branchId == store.ordersBranch }
     val current = shown.filter { it.status == "new" || it.status == "preparing" || it.status == "ready" }
     val earlier = shown.filter { it.status != "new" && it.status != "preparing" && it.status != "ready" }
     Scroll {
         Text("Orders", color = Forest, fontSize = 32.sp, fontWeight = FontWeight.Bold)
-        Text("Orders placed on the digital menu show up here.", color = Muted, fontSize = 15.sp)
-        if (store.branches.size > 1) {
+        Text(
+            if (who != null && who.isStaff && who.branchName.isNotBlank()) "Digital menu orders for ${branchLabel(who.branchName)}."
+            else "Orders placed on the digital menu show up here.",
+            color = Muted, fontSize = 15.sp
+        )
+        if (store.alertsNote.isNotBlank()) Text(store.alertsNote, color = Amber, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        if (who?.isOwner == true && store.branches.size > 1) {
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 BranchChip("All", store.ordersBranch.isBlank()) { store.chooseOrdersBranch("") }
                 store.branches.forEach { place -> BranchChip(place.name, store.ordersBranch == place.id) { store.chooseOrdersBranch(place.id) } }
             }
         }
-        store.daySummary?.let { DaySummaryCard(it, showBranches = store.ordersBranch.isBlank() && store.branches.size > 1) }
-        SalesReportCard(store)
+        if (canReport) {
+            store.daySummary?.let { DaySummaryCard(it, showBranches = who?.isOwner == true && store.ordersBranch.isBlank() && store.branches.size > 1) }
+            SalesReportCard(store)
+        }
         if (store.ordersNote.isNotBlank()) Text(store.ordersNote, color = Bad, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
         if (current.isEmpty()) Text("No current orders.", color = Muted)
         current.forEach { OrderCard(store, it) }
@@ -430,6 +669,7 @@ private fun BranchChip(title: String, selected: Boolean, onClick: () -> Unit) {
 private fun SalesReportCard(store: CounterStore) {
     val context = LocalContext.current
     val branchName = store.branches.firstOrNull { it.id == store.ordersBranch }?.name
+        ?: store.session?.branchName?.takeIf { store.session?.isStaff == true && it.isNotBlank() }
     Card {
         Text("SALES REPORT", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
         Text("Download a file with every order, totals, top items and who bought what. Send it on Messenger, Viber or email.", color = Muted, fontSize = 13.sp, lineHeight = 18.sp)
@@ -994,6 +1234,7 @@ private fun MoreScreen(store: CounterStore, open: (Page) -> Unit, openMenu: () -
             RowLink("Card setup", store.cardName) { open(Page.Card) }
             RowLink("LT Points", "1 per visit") { open(Page.Points) }
             RowLink("Cashiers", "Assign each cashier to a branch") { open(Page.Cashiers) }
+            RowLink("Order alerts", if (store.alertsOn) "Ring + notification for new orders" else "Off") { open(Page.Alerts) }
         }
         Card { Column { Text("Loyalty Tree benefits", fontWeight = FontWeight.SemiBold, color = Muted); Text("Coming soon", color = Muted, fontSize = 13.sp) } }
         Card { RowLink("Account management", "Billing, details, and account") { open(Page.Account) } }
@@ -1236,6 +1477,7 @@ private fun StampScreen(store: CounterStore) {
             Primary(if (store.scanBusy) "Reading card" else "Scan customer's card", enabled = !store.scanBusy) { scan() }
             Text("Scan the QR on the customer's Apple or Google Wallet card.", color = Muted, fontSize = 13.sp)
             if (store.scanNote.isNotBlank()) Text(store.scanNote, color = Bad, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+            if (store.session?.isOwner != true) return@Scroll
             Text("Or find the customer", color = Forest, fontSize = 16.sp, fontWeight = FontWeight.Bold)
             Field("Name or phone", query, { query = it })
             val clean = query.trim().lowercase()
@@ -1303,7 +1545,8 @@ private fun StampScreen(store: CounterStore) {
             }
         } else {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-                val lowest = -customer.stamps.coerceIn(0, 10)
+                // Removing stamps is a correction for the owner and managers only.
+                val lowest = if (store.session?.canCorrectStamps == true) -customer.stamps.coerceIn(0, 10) else 1
                 StepButton("−", enabled = (if (stampCount == 1) -1 else stampCount - 1) >= lowest) {
                     stampCount = (stampCount - 1).let { if (it == 0) -1 else it }
                 }
@@ -1779,14 +2022,7 @@ private fun NavBar(title: String, onBack: () -> Unit, action: String? = null, on
 }
 
 @Composable
-private fun Dock(tab: Int, onSelect: (Int) -> Unit) {
-    val items = listOf(
-        "Home" to Icons.Default.Store,
-        "Orders" to Icons.Default.Receipt,
-        "Menu" to Icons.Default.Restaurant,
-        "Customers" to Icons.Default.Person,
-        "More" to Icons.Default.MoreHoriz
-    )
+private fun Dock(tab: Int, items: List<Pair<String, ImageVector>> = OwnerDock, onSelect: (Int) -> Unit) {
     Row(
         Modifier.fillMaxWidth().background(Ivory).padding(horizontal = 14.dp, vertical = 8.dp)
             .shadow(12.dp, RoundedCornerShape(28.dp), ambientColor = Color(0x22123C32), spotColor = Color(0x22123C32))
@@ -1822,6 +2058,7 @@ private fun Field(label: String, value: String, onChange: (String) -> Unit, pass
             cursorBrush = SolidColor(Forest),
             visualTransformation = if (password) PasswordVisualTransformation() else VisualTransformation.None,
             keyboardOptions = KeyboardOptions(keyboardType = when {
+                password && number -> KeyboardType.NumberPassword
                 password -> KeyboardType.Password
                 number -> KeyboardType.Decimal
                 else -> KeyboardType.Text
