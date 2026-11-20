@@ -65,6 +65,47 @@ data class DaySummary(
 )
 data class Cashier(val id: String, val name: String, val email: String, val role: String, val active: Boolean, val branchId: String, val branchName: String)
 data class InsightSection(val id: String, val title: String, val note: String, val rows: List<NamedCount>)
+data class Kpi(val label: String, val value: String, val change: Double?, val inPoints: Boolean = false)
+data class TrendBar(val label: String, val sales: Double, val orders: Int)
+data class RankedItem(val name: String, val quantity: Int, val sales: String)
+data class InsightGroup(val label: String, val orders: Int, val share: Double, val topItem: String)
+data class InsightCard(val id: String, val title: String, val note: String, val groups: List<InsightGroup>, val hiddenGroups: Int)
+data class ScanCustomer(
+    val id: String,
+    val name: String,
+    val phone: String,
+    val cardType: String,
+    val stamps: Int,
+    val goal: Int,
+    val points: Int,
+    val rewardReady: Boolean,
+    val rewardName: String,
+    val nextPrize: String,
+    val nextPrizeCost: Int,
+    val pointsPer: Double,
+    val pesosPer: Double
+) {
+    val usesPoints get() = cardType == "points"
+}
+
+/** The customer id inside a wallet card QR: https://…/stamp/<id>, a bare id, or a URL. Null for gift cards / blanks. */
+fun customerIdFromScan(raw: String): String? {
+    val text = raw.trim()
+    if (text.isEmpty()) return null
+    if (Regex("^LTGC:", RegexOption.IGNORE_CASE).containsMatchIn(text)) return null
+    if (Regex("/gift(-scan)?/", RegexOption.IGNORE_CASE).containsMatchIn(text)) return null
+    if (Regex("^GC-[A-Z0-9-]+$", RegexOption.IGNORE_CASE).matches(text)) return null
+    if (Regex("[?&]gift=").containsMatchIn(text)) return null
+    var id = text.substringBefore('#').substringBefore('?').trimEnd('/')
+    if (id.contains('/')) id = id.substringAfterLast('/')
+    id = id.trim()
+    return if (id.isEmpty() || id.length > 80 || !Regex("^[A-Za-z0-9_-]+$").matches(id)) null else id
+}
+
+fun isGiftCardScan(raw: String): Boolean {
+    val text = raw.trim()
+    return Regex("^LTGC:|/gift(-scan)?/|^GC-|[?&]gift=", RegexOption.IGNORE_CASE).containsMatchIn(text)
+}
 
 class CounterStore(app: Application) : AndroidViewModel(app) {
     private val prefs = app.getSharedPreferences("lt", Context.MODE_PRIVATE)
@@ -80,6 +121,18 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     var insights by mutableStateOf<List<InsightSection>>(emptyList())
     var insightsTop by mutableStateOf<List<NamedCount>>(emptyList())
     var insightsNote by mutableStateOf("")
+    var analyticsBranch by mutableStateOf("")
+    var insightKpis by mutableStateOf<List<Kpi>>(emptyList())
+    var insightTrend by mutableStateOf<List<TrendBar>>(emptyList())
+    var insightTrendUnit by mutableStateOf("day")
+    var insightItems by mutableStateOf<List<RankedItem>>(emptyList())
+    var insightCards by mutableStateOf<List<InsightCard>>(emptyList())
+    var insightRange by mutableStateOf("")
+    var insightsLoading by mutableStateOf(false)
+    var scanCustomer by mutableStateOf<ScanCustomer?>(null)
+    var scanNote by mutableStateOf("")
+    var scanDone by mutableStateOf("")
+    var scanBusy by mutableStateOf(false)
     var cashiers by mutableStateOf<List<Cashier>>(emptyList())
     var cashiersNote by mutableStateOf("")
     var cashierBusy by mutableStateOf("")
@@ -323,7 +376,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
                     val row = rows.optJSONObject(i) ?: continue
                     val cancelled = row.optInt("cancelled")
                     val extra = if (cancelled > 0) " · $cancelled cancelled" else ""
-                    add(NamedCount(row.optString("public_id").ifBlank { "none-$i" }, row.optString("name").ifBlank { "No branch saved" }, "${row.optInt("orders")} orders · ${pesos(row.opt("sales"))}$extra"))
+                    add(NamedCount(row.optString("public_id").ifBlank { "none-$i" }, row.optString("name").ifBlank { "Before branches" }, "${row.optInt("orders")} ${if (row.optInt("orders") == 1) "order" else "orders"} · ${pesos(row.opt("sales"))}$extra"))
                 }
             }
         )
@@ -387,52 +440,295 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun chooseAnalyticsBranch(id: String) {
+        analyticsBranch = id
+        loadInsights()
+    }
+
     fun loadInsights() {
         val current = session ?: return
-        val days = when (period) {
-            "today" -> 1
-            "7d" -> 7
-            "90d" -> 90
-            else -> 30
+        val apiPeriod = when (period) {
+            "today" -> "today"
+            "7d" -> "week"
+            "90d" -> "3months"
+            else -> "month"
         }
+        val branch = java.net.URLEncoder.encode(analyticsBranch, "UTF-8")
         viewModelScope.launch {
-            val result = io { API.get("/api/v1/business/${current.slug}/menu-orders/insights?days=$days", current.token) }
+            insightsLoading = true
+            val result = io { API.get("/api/v1/business/${current.slug}/menu-orders/insights?period=$apiPeriod&branch=$branch", current.token) }
+            insightsLoading = false
             if (result == null || result.first >= 400) {
                 insights = emptyList()
                 insightsTop = emptyList()
+                insightKpis = emptyList()
+                insightTrend = emptyList()
+                insightItems = emptyList()
+                insightCards = emptyList()
                 insightsNote = if (result == null) "Could not reach menu order insights." else API.message(result.second, "Menu order insights are not ready yet.")
                 return@launch
             }
             val json = result.second as? JSONObject ?: return@launch
-            insightsTop = namedItems(json.optJSONArray("top_items"))
-            val sections = json.optJSONArray("sections") ?: JSONArray()
-            insights = buildList {
-                for (i in 0 until sections.length()) {
-                    val section = sections.optJSONObject(i) ?: continue
-                    val groups = section.optJSONArray("groups") ?: JSONArray()
-                    val rows = buildList {
-                        for (j in 0 until groups.length()) {
-                            val group = groups.optJSONObject(j) ?: continue
-                            val count = group.optInt("orders")
-                            val detail = if (group.optBoolean("hidden")) {
-                                "$count orders · not enough people yet to show"
-                            } else {
-                                val top = namedItems(group.optJSONArray("top_items")).joinToString(", ") { "${it.name} ×${it.detail}" }
-                                "$count orders · ${top.ifBlank { "—" }}"
-                            }
-                            add(NamedCount(group.optString("key").ifBlank { "g$j" }, group.optString("label"), detail))
+            applyInsights(json)
+        }
+    }
+
+    private fun num(value: Any?): Double? = if (value == null || value == JSONObject.NULL) null else API.plain(value)?.toDoubleOrNull()
+
+    private fun applyInsights(json: JSONObject) {
+        val now = json.optJSONObject("kpis") ?: JSONObject()
+        val change = json.optJSONObject("change") ?: JSONObject()
+        insightKpis = listOf(
+            Kpi("Sales", pesos(now.opt("sales")), num(change.opt("sales"))),
+            Kpi("Orders", now.optInt("orders").toString(), num(change.opt("orders"))),
+            Kpi("Avg order", pesos(now.opt("avg_order")), num(change.opt("avg_order"))),
+            Kpi("Members", "${(num(now.opt("members_percent")) ?: 0.0).toInt()}%", num(change.opt("members_percent")), inPoints = true)
+        )
+        insightTrendUnit = json.optString("trend_unit").ifBlank { "day" }
+        insightTrend = buildList {
+            val rows = json.optJSONArray("trend") ?: JSONArray()
+            for (i in 0 until rows.length()) {
+                val row = rows.optJSONObject(i) ?: continue
+                add(TrendBar(row.optString("label"), num(row.opt("sales")) ?: 0.0, row.optInt("orders")))
+            }
+        }
+        insightItems = buildList {
+            val rows = json.optJSONArray("top_items") ?: JSONArray()
+            for (i in 0 until rows.length()) {
+                val row = rows.optJSONObject(i) ?: continue
+                add(RankedItem(row.optString("name").ifBlank { "Item" }, row.optInt("quantity"), pesos(row.opt("sales"))))
+            }
+        }
+        insightsTop = insightItems.map { NamedCount(it.name, it.name, it.quantity.toString()) }
+        val titles = mapOf(
+            "age" to "Age", "gender" to "Gender", "occupation" to "Occupation", "membership" to "Members vs walk-ins",
+            "tenure" to "New vs returning", "time" to "Time of day", "weekday" to "Day of week", "branch" to "Branch"
+        )
+        val order = listOf("age", "gender", "occupation", "membership", "tenure", "time", "weekday", "branch")
+        val sections = json.optJSONArray("sections") ?: JSONArray()
+        insightCards = buildList {
+            for (i in 0 until sections.length()) {
+                val section = sections.optJSONObject(i) ?: continue
+                val groups = section.optJSONArray("groups") ?: JSONArray()
+                var hidden = 0
+                val shown = buildList {
+                    for (j in 0 until groups.length()) {
+                        val group = groups.optJSONObject(j) ?: continue
+                        val count = group.optInt("orders")
+                        if (count <= 0) continue
+                        if (group.optBoolean("hidden")) {
+                            hidden += 1
+                            continue
                         }
+                        val label = group.optString("label").let { if (it == "No branch saved") "Before branches" else it }
+                        add(InsightGroup(label, count, num(group.opt("share_percent")) ?: 0.0, group.optString("top_item")))
                     }
-                    if (rows.isNotEmpty()) add(InsightSection(section.optString("key"), section.optString("title"), section.optString("note"), rows))
+                }
+                if (shown.isEmpty() && hidden == 0) continue
+                val key = section.optString("key")
+                add(InsightCard(key, titles[key] ?: section.optString("title"), section.optString("note"), shown.sortedByDescending { it.orders }, hidden))
+            }
+        }.sortedBy { order.indexOf(it.id).let { index -> if (index < 0) 99 else index } }
+        insights = emptyList()
+        insightRange = listOf(json.optString("start"), json.optString("end")).filter { it.isNotBlank() }.distinct().joinToString(" – ") { shortDate(it) }
+        val orders = json.optInt("orders")
+        insightsNote = if (orders == 0) "No digital menu orders in this period yet." else
+            "Age, gender and occupation come only from loyalty cards connected on the menu. City is not collected."
+    }
+
+    private fun shortDate(iso: String): String {
+        val parts = iso.split("-")
+        if (parts.size != 3) return iso
+        val months = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+        val month = parts[1].toIntOrNull()?.let { months.getOrNull(it - 1) } ?: return iso
+        return "$month ${parts[2].toIntOrNull() ?: parts[2]}"
+    }
+
+    // ----- Add a stamp / points (owner session, no cashier login) -----
+
+    fun clearScan() {
+        scanCustomer = null
+        scanNote = ""
+        scanDone = ""
+    }
+
+    fun scanFailed(message: String) {
+        scanCustomer = null
+        scanDone = ""
+        scanNote = message
+    }
+
+    fun lookupScan(raw: String) {
+        if (isGiftCardScan(raw)) {
+            scanFailed("That is a gift card. Gift cards are not handled here yet.")
+            return
+        }
+        val id = customerIdFromScan(raw)
+        if (id == null) {
+            scanFailed("That code is not a LoyaltyTree card. Scan the QR on the customer's Apple or Google Wallet card.")
+            return
+        }
+        loadScanCustomer(id)
+    }
+
+    fun loadScanCustomer(id: String, done: String = "") {
+        val current = session ?: return
+        viewModelScope.launch {
+            scanBusy = true
+            scanNote = ""
+            val result = io { API.get("/api/v1/customer/${java.net.URLEncoder.encode(id, "UTF-8")}", current.token) }
+            scanBusy = false
+            if (result == null) {
+                scanFailed("Could not reach the server. Check the connection and scan again.")
+                return@launch
+            }
+            if (result.first == 404) {
+                scanFailed("Card not found. Ask the customer to open their wallet card and scan again.")
+                return@launch
+            }
+            if (result.first >= 400) {
+                scanFailed(API.message(result.second, "Could not read that card."))
+                return@launch
+            }
+            val json = result.second as? JSONObject ?: return@launch scanFailed("Could not read that card.")
+            val owner = json.optJSONObject("business")?.optString("public_id").orEmpty()
+            if (owner.isNotBlank() && owner != current.slug) {
+                scanFailed("This card belongs to another business.")
+                return@launch
+            }
+            val customer = json.optJSONObject("customer") ?: JSONObject()
+            val program = json.optJSONObject("program") ?: JSONObject()
+            val programType = program.optString("card_type")
+            val type = when {
+                programType == "hybrid" -> if (program.optString("hybrid_loyalty_type") == "stamp") "stamp" else "points"
+                programType.isNotBlank() -> programType
+                else -> json.optString("current_card_type").ifBlank { "stamp" }
+            }
+            if (type != "stamp" && type != "points") {
+                scanFailed("This is a ${type.replaceFirstChar { it.uppercase() }} card. Only stamp and points cards can be updated here.")
+                return@launch
+            }
+            val goal = program.optInt("stamp_goal", 8).coerceAtLeast(1)
+            val stamps = customer.optInt("stamp_count")
+            val points = customer.optInt("points_balance")
+            val prizes = program.optJSONArray("points_prizes") ?: JSONArray()
+            var ready = ""
+            var next = ""
+            var nextCost = 0
+            for (i in 0 until prizes.length()) {
+                val prize = prizes.optJSONObject(i) ?: continue
+                val cost = prize.optInt("points_cost")
+                val name = prize.optString("name").ifBlank { "Reward" }
+                if (cost <= 0) continue
+                if (cost <= points && (ready.isBlank())) ready = name
+                if (cost > points && (nextCost == 0 || cost < nextCost)) {
+                    next = name
+                    nextCost = cost
                 }
             }
-            val orders = json.optInt("orders")
-            val coverage = json.opt("member_coverage_percent")
-            insightsNote = when {
-                orders == 0 -> "No digital menu orders in this period yet."
-                coverage == null || coverage == JSONObject.NULL -> ""
-                else -> "$orders menu orders · ${API.plain(coverage) ?: "0"}% from loyalty card members. Age, gender and occupation come only from cards connected on the menu. City is not collected."
+            val rewardReady = if (type == "points") ready.isNotBlank() else (customer.optBoolean("reward_unlocked") || stamps >= goal)
+            scanCustomer = ScanCustomer(
+                id = customer.optString("public_id").ifBlank { id },
+                name = customer.optString("name").ifBlank { "Customer" },
+                phone = customer.optString("phone"),
+                cardType = type,
+                stamps = stamps,
+                goal = goal,
+                points = points,
+                rewardReady = rewardReady,
+                rewardName = if (type == "points") ready else program.optString("reward_name").ifBlank { rewardName },
+                nextPrize = next,
+                nextPrizeCost = nextCost,
+                pointsPer = num(program.opt("points_per_amount")) ?: 0.0,
+                pesosPer = (num(program.opt("points_amount_pesos")) ?: 1.0).coerceAtLeast(1.0)
+            )
+            scanDone = done
+        }
+    }
+
+    /** Same formula as the server's /points-sale: int(amount / pesos * points). */
+    fun previewPoints(amount: Double, customer: ScanCustomer): Int =
+        if (amount <= 0 || customer.pointsPer <= 0) 0 else ((amount / customer.pesosPer) * customer.pointsPer).toInt()
+
+    fun changeStamps(delta: Int) {
+        val current = session ?: return
+        val customer = scanCustomer ?: return
+        if (delta == 0) return
+        viewModelScope.launch {
+            scanBusy = true
+            scanNote = ""
+            var added = 0
+            var error = ""
+            if (delta > 0) {
+                for (i in 0 until delta) {
+                    val body = JSONObject().put("customer_public_id", customer.id).put("as_owner", true)
+                    val result = io { API.post("/api/v1/business/${current.slug}/stamp", current.token, body) }
+                    if (result == null || result.first >= 400) {
+                        error = if (result == null) "Could not reach the server." else API.message(result.second, "Could not add the stamp.")
+                        break
+                    }
+                    added += 1
+                }
+            } else {
+                val body = JSONObject().put("customer_public_id", customer.id).put("as_owner", true).put("delta", delta)
+                    .put("reason", "Owner correction in the LoyaltyTree app")
+                val result = io { API.post("/api/v1/business/${current.slug}/stamp/adjust", current.token, body) }
+                if (result == null || result.first >= 400) {
+                    error = if (result == null) "Could not reach the server." else API.message(result.second, "Could not remove the stamp.")
+                } else {
+                    added = delta
+                }
             }
+            scanBusy = false
+            val done = when {
+                added > 0 -> "Added $added stamp${if (added == 1) "" else "s"} for ${customer.name}."
+                added < 0 -> "Removed ${-added} stamp${if (added == -1) "" else "s"} from ${customer.name}."
+                else -> ""
+            }
+            if (added != 0) loadScanCustomer(customer.id, done)
+            scanNote = if (error.isNotBlank() && added > 0) "Stopped after $added: $error" else error
+        }
+    }
+
+    fun addSalePoints(amountText: String) {
+        val current = session ?: return
+        val customer = scanCustomer ?: return
+        val amount = amountText.trim().replace(",", "").toDoubleOrNull()
+        if (amount == null || amount <= 0) {
+            scanNote = "Enter the amount spent in pesos."
+            return
+        }
+        viewModelScope.launch {
+            scanBusy = true
+            scanNote = ""
+            val body = JSONObject().put("customer_public_id", customer.id).put("as_owner", true).put("amount_spent", amount)
+            val result = io { API.post("/api/v1/business/${current.slug}/points-sale", current.token, body) }
+            scanBusy = false
+            if (result == null || result.first >= 400) {
+                scanNote = if (result == null) "Could not reach the server." else API.message(result.second, "Could not add points.")
+                return@launch
+            }
+            val json = result.second as? JSONObject
+            val earned = json?.optInt("points_earned") ?: 0
+            val done = if (earned > 0) "+$earned points for ${customer.name}." else "${customer.name} is at the points cap. No points added."
+            loadScanCustomer(customer.id, done)
+        }
+    }
+
+    fun redeemStampReward() {
+        val current = session ?: return
+        val customer = scanCustomer ?: return
+        viewModelScope.launch {
+            scanBusy = true
+            scanNote = ""
+            val body = JSONObject().put("customer_public_id", customer.id).put("as_owner", true)
+            val result = io { API.post("/api/v1/business/${current.slug}/reward/redeem", current.token, body) }
+            scanBusy = false
+            if (result == null || result.first >= 400) {
+                scanNote = if (result == null) "Could not reach the server." else API.message(result.second, "Could not redeem the reward.")
+                return@launch
+            }
+            loadScanCustomer(customer.id, "Reward redeemed for ${customer.name}.")
         }
     }
 

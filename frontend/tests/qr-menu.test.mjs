@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { menuItemAvailable, filterMenuItems, groupMenuCategories, menuItemPrice, toggleMenuOption, validMenuPayload, addCartItem, changeCartQuantity, cartSubtotal, buildMenuOrder, digitalMenuHref, menuOrderRequest, sendMenuOrder, MENU_ORDER_OFFLINE, pickupTimeLabel, resolveMenuBranch, paymentStatusFor, paymentReceiptLabel } from '../src/components/qrMenuModel.js'
+import { readFileSync } from 'node:fs'
+import { menuItemAvailable, filterMenuItems, groupMenuCategories, menuItemPrice, toggleMenuOption, validMenuPayload, addCartItem, changeCartQuantity, cartSubtotal, buildMenuOrder, digitalMenuHref, menuOrderRequest, sendMenuOrder, MENU_ORDER_OFFLINE, pickupTimeLabel, resolveMenuBranch, paymentStatusFor, paymentReceiptLabel, CASH_NOTICE, payButtonLabel, receiptCopy } from '../src/components/qrMenuModel.js'
 import { createFixtureTransport, fixtureSlug } from '../dev/owner-dashboard-fixtures.js'
 const size={public_id:'size',selection_type:'single',max_selections:1,options:[{public_id:'small',price_delta:0},{public_id:'large',price_delta:25}]}
 const extras={public_id:'extras',selection_type:'multiple',max_selections:1,options:[{public_id:'oat',price_delta:20},{public_id:'syrup',price_delta:10}]}
@@ -254,4 +255,26 @@ test('payment method: cash is unpaid at the counter, QR Ph and card are test pay
   assert.equal(paymentReceiptLabel('cash'),'Cash · Pay at the counter')
   assert.match(paymentReceiptLabel('qrph'),/QR Ph/)
   assert.match(paymentReceiptLabel('card'),/test/)
+})
+
+test('cash orders wait for the cashier: notice, button and receipt', () => {
+  assert.equal(CASH_NOTICE, 'Pay at the counter first. Your order will be prepared only after the cashier confirms your payment.')
+  assert.equal(payButtonLabel('cash', '₱180.00'), 'Place order · pay at counter')
+  assert.equal(payButtonLabel('qrph', '₱180.00'), 'Pay ₱180.00 (test)')
+  assert.equal(payButtonLabel('', '₱180.00'), 'Choose how you’ll pay')
+  const cash = receiptCopy('cash', '₱180.00', 'Kape')
+  assert.equal(cash.waiting, true)
+  assert.equal(cash.title, 'Waiting for payment')
+  assert.equal(cash.sub, 'Show this order number at the counter and pay ₱180.00. The shop will start preparing once the cashier confirms.')
+  const card = receiptCopy('card', '₱180.00', 'Kape')
+  assert.equal(card.waiting, false)
+  assert.equal(card.badge, 'Order sent')
+  assert.equal(card.title, 'Order sent to Kape')
+})
+
+test('the menu page shows the amber cash notice instead of a green check', () => {
+  const page = readFileSync(new URL('../src/components/QRMenuPage.jsx', import.meta.url), 'utf8')
+  assert.match(page, /lt-qr-cash-notice/)
+  assert.match(page, /receipt\.waiting/)
+  assert.match(page, /lt-qr-wait-badge/)
 })

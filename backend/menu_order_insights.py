@@ -5,6 +5,7 @@ Only data that really exists is used: the order rows themselves, plus the
 customer fields saved on a loyalty card (age range, gender, occupation, card
 join date) when the buyer connected their card on the menu.
 """
+import calendar
 from collections import Counter, defaultdict
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -153,7 +154,8 @@ def branch_key(row):
 
 
 def branch_label(row):
-    return str(row.get('branch_name') or '').strip() or 'No branch saved'
+    # Orders placed before branches were saved on menu orders.
+    return str(row.get('branch_name') or '').strip() or 'Before branches'
 
 
 def filter_branch(rows, branch):
@@ -237,8 +239,22 @@ def payment_breakdown(rows):
 def _group(key, label, rows, members_needed=False):
     people = {str(row.get('member_customer_public_id')) for row in rows if row.get('member_customer_public_id')}
     hidden = members_needed and (len(rows) < MIN_GROUP_ORDERS or len(people) < MIN_GROUP_MEMBERS)
+    items = [] if hidden else top_items(rows, 3)
     return {'key': key, 'label': label, 'orders': len(rows), 'hidden': hidden,
-            'top_items': [] if hidden else top_items(rows, 3)}
+            'top_items': items, 'top_item': items[0]['name'] if items else ''}
+
+
+def _finish_sections(sections):
+    """Share of orders per group, and how many groups are too small to show."""
+    for section in sections:
+        groups = section.get('groups') or []
+        total = sum(group['orders'] for group in groups)
+        for group in groups:
+            group['share_percent'] = round(group['orders'] / total * 100, 1) if total else 0.0
+        section['total_orders'] = total
+        section['hidden_groups'] = sum(1 for group in groups if group['hidden'])
+        section['empty'] = total == 0
+    return sections
 
 
 def order_insights(rows, customers, today, branch='', days=30):
@@ -307,8 +323,174 @@ def order_insights(rows, customers, today, branch='', days=30):
             'Age range, gender and occupation come only from loyalty cards connected on the menu.',
             'Customer city is not collected, so there is no location breakdown.',
         ],
-        'sections': sections,
+        'sections': _finish_sections(sections),
     }
+
+
+# ---------------------------------------------------------------- periods ---
+
+PERIODS = {'today': 'Today', 'week': 'This week', 'month': 'This month', '3months': 'Last 3 months'}
+PERIOD_ALIASES = {'1d': 'today', '7d': 'week', '30d': 'month', '90d': '3months', 'this_week': 'week',
+                  'this_month': 'month', '3m': '3months', 'quarter': '3months'}
+
+
+def normalize_period(value):
+    key = str(value or '').strip().lower()
+    key = PERIOD_ALIASES.get(key, key)
+    return key if key in PERIODS else ''
+
+
+def _shift_months(day, months):
+    index = day.month - 1 + months
+    year, month = day.year + index // 12, index % 12 + 1
+    return date(year, month, min(day.day, calendar.monthrange(year, month)[1]))
+
+
+def period_days(period, today):
+    """(start, end, previous_start, previous_end) as Manila dates; end is exclusive.
+
+    The previous period covers the same number of elapsed days, so "This month"
+    on Nov 21 is compared with Oct 1-21, not with all of October.
+    """
+    period = normalize_period(period) or 'month'
+    end = today + timedelta(days=1)
+    if period == 'today':
+        return today, end, today - timedelta(days=1), today
+    if period == 'week':
+        start = today - timedelta(days=today.weekday())
+        return start, end, start - timedelta(days=7), end - timedelta(days=7)
+    start = today.replace(day=1) if period == 'month' else _shift_months(today.replace(day=1), -2)
+    months = 1 if period == 'month' else 3
+    previous_start = _shift_months(start, -months)
+    previous_end = min(_shift_months(today, -months) + timedelta(days=1), start)
+    return start, end, previous_start, previous_end
+
+
+def manila_range_bounds(start_day, end_day):
+    start = datetime.combine(start_day, dtime.min, tzinfo=MANILA)
+    end = datetime.combine(end_day, dtime.min, tzinfo=MANILA)
+    return start.astimezone(timezone.utc), end.astimezone(timezone.utc)
+
+
+def split_period(rows, start_day, previous_end=None):
+    """Rows from one read of previous+current period -> (current, previous).
+
+    Rows between previous_end and start_day (not the same elapsed days) are left out.
+    """
+    current, previous = [], []
+    for row in rows:
+        placed = parse_when(row.get('created_at'))
+        if placed is None:
+            continue
+        if placed.date() >= start_day:
+            current.append(row)
+        elif previous_end is None or placed.date() < previous_end:
+            previous.append(row)
+    return current, previous
+
+
+def kpis(rows):
+    live = [row for row in rows if row.get('status') != 'cancelled']
+    sales = round(sum(_money(row.get('total')) for row in live), 2)
+    members = sum(1 for row in live if row.get('member_customer_public_id'))
+    return {'sales': sales, 'orders': len(live), 'avg_order': round(sales / len(live), 2) if live else 0.0,
+            'members_percent': round(members / len(live) * 100, 1) if live else 0.0}
+
+
+def _change(now, before):
+    if not before:
+        return None
+    return round((now - before) / before * 100, 1)
+
+
+def kpi_changes(current, previous):
+    """Percent change per KPI; members is the change in percentage points. None = no earlier data."""
+    return {
+        'sales': _change(current['sales'], previous['sales']),
+        'orders': _change(current['orders'], previous['orders']),
+        'avg_order': _change(current['avg_order'], previous['avg_order']),
+        'members_percent': round(current['members_percent'] - previous['members_percent'], 1) if previous['orders'] else None,
+    }
+
+
+def _hour_label(hour):
+    suffix = 'AM' if hour < 12 else 'PM'
+    return f"{(hour % 12) or 12} {suffix}"
+
+
+def sales_trend(rows, period, start_day, today):
+    """Bars for the chart: hours for today, days for week/month, weeks for 3 months."""
+    period = normalize_period(period) or 'month'
+    live = [row for row in rows if row.get('status') != 'cancelled']
+    placed = [(parse_when(row.get('created_at')), _money(row.get('total'))) for row in live]
+    placed = [(when, amount) for when, amount in placed if when is not None]
+    buckets = []
+    if period == 'today':
+        hours = [when.hour for when, _ in placed]
+        first, last = (min(hours + [9]), max(hours + [18])) if hours else (9, 18)
+        for hour in range(first, last + 1):
+            hits = [amount for when, amount in placed if when.hour == hour]
+            buckets.append({'label': _hour_label(hour), 'key': f'{hour:02d}', 'orders': len(hits), 'sales': round(sum(hits), 2)})
+        return 'hour', buckets
+    if period == '3months':
+        week = start_day - timedelta(days=start_day.weekday())
+        while week <= today:
+            stop = week + timedelta(days=7)
+            hits = [amount for when, amount in placed if week <= when.date() < stop]
+            buckets.append({'label': f"{week.strftime('%b')} {week.day}", 'key': week.isoformat(), 'orders': len(hits), 'sales': round(sum(hits), 2)})
+            week = stop
+        return 'week', buckets
+    day = start_day
+    while day <= today:
+        hits = [amount for when, amount in placed if when.date() == day]
+        label = WEEKDAYS[day.weekday()][:3] if period == 'week' else str(day.day)
+        buckets.append({'label': label, 'key': day.isoformat(), 'orders': len(hits), 'sales': round(sum(hits), 2)})
+        day += timedelta(days=1)
+    return 'day', buckets
+
+
+def ranked_items(rows, limit=10):
+    """Top items with quantity and pesos (line totals as saved on the order)."""
+    quantity, sales = Counter(), Counter()
+    for row in rows:
+        if row.get('status') == 'cancelled':
+            continue
+        for item in row.get('items') or []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get('item_name') or item.get('name') or 'Item').strip() or 'Item'
+            try:
+                qty = max(1, int(item.get('quantity') or 1))
+            except (TypeError, ValueError):
+                qty = 1
+            quantity[name] += qty
+            sales[name] += _money(item.get('line_total'))
+    ordered = sorted(quantity.items(), key=lambda kv: (-kv[1], -sales[kv[0]], kv[0]))[:limit]
+    return [{'name': name, 'quantity': qty, 'sales': round(sales[name], 2)} for name, qty in ordered]
+
+
+def period_report(rows, previous_rows, customers, period, today, branch=''):
+    """Everything the Analytics screen needs for one period and (optional) branch."""
+    period = normalize_period(period) or 'month'
+    start, end, previous_start, previous_end = period_days(period, today)
+    scoped = filter_branch(rows, branch)
+    earlier = filter_branch(previous_rows, branch)
+    report = order_insights(rows, customers, today, branch, (end - start).days)
+    current, before = kpis(scoped), kpis(earlier)
+    unit, trend = sales_trend(scoped, period, start, today)
+    report.update({
+        'period': period, 'period_label': PERIODS[period],
+        'start': start.isoformat(), 'end': (end - timedelta(days=1)).isoformat(),
+        'previous_start': previous_start.isoformat(), 'previous_end': (previous_end - timedelta(days=1)).isoformat(),
+        'kpis': current, 'previous': before, 'change': kpi_changes(current, before),
+        'trend_unit': unit, 'trend': trend, 'top_items': ranked_items(scoped, 10),
+    })
+    return report
+
+
+def cash_awaiting_payment(row):
+    """A cash order the cashier has not confirmed yet. It must not be prepared."""
+    return bool(row) and str(row.get('payment_method') or '') == 'cash' and str(row.get('payment_status') or '') == 'unpaid'
 
 
 def read_customers(db, business_id, public_ids):
@@ -339,8 +521,20 @@ def register_menu_order_insight_routes(app, *, db, get_business, require_owner, 
         return business
 
     @app.get('/api/v1/business/{public_id}/menu-orders/summary')
-    def menu_orders_summary(public_id: str, date: str = '', branch: str = '', authorization: str = Header(default='')):
+    def menu_orders_summary(public_id: str, date: str = '', branch: str = '', period: str = '', authorization: str = Header(default='')):
         business = business_for(public_id, authorization)
+        chosen = normalize_period(period)
+        if chosen and not date:
+            start_day, end_day, _, _ = period_days(chosen, datetime.now(MANILA).date())
+            start, end = manila_range_bounds(start_day, end_day)
+            try:
+                rows = read_orders(db, business['id'], start, end)
+            except Exception as exc:
+                raise HTTPException(status_code=503, detail=f'Menu orders are not ready yet: {friendly_error(exc)}')
+            summary = daily_summary(rows, start_day, branch.strip())
+            summary.update({'period': chosen, 'period_label': PERIODS[chosen], 'start': start_day.isoformat(),
+                            'end': (end_day - timedelta(days=1)).isoformat()})
+            return summary
         try:
             day = datetime.strptime(date, '%Y-%m-%d').date() if date else datetime.now(MANILA).date()
         except ValueError:
@@ -373,8 +567,20 @@ def register_menu_order_insight_routes(app, *, db, get_business, require_owner, 
         return {'success': True, 'payment_status': 'paid'}
 
     @app.get('/api/v1/business/{public_id}/menu-orders/insights')
-    def menu_orders_insights(public_id: str, days: int = 30, branch: str = '', authorization: str = Header(default='')):
+    def menu_orders_insights(public_id: str, days: int = 30, branch: str = '', period: str = '', authorization: str = Header(default='')):
         business = business_for(public_id, authorization)
+        chosen = normalize_period(period)
+        if chosen:
+            today = datetime.now(MANILA).date()
+            start_day, end_day, previous_start, previous_end = period_days(chosen, today)
+            since, until = manila_range_bounds(previous_start, end_day)
+            try:
+                rows = read_orders(db, business['id'], since, until)
+                current, previous = split_period(rows, start_day, previous_end)
+                customers = read_customers(db, business['id'], [row.get('member_customer_public_id') for row in current])
+            except Exception as exc:
+                raise HTTPException(status_code=503, detail=f'Menu orders are not ready yet: {friendly_error(exc)}')
+            return period_report(current, previous, customers, chosen, today, branch.strip())
         days = max(1, min(365, int(days or 30)))
         today = datetime.now(MANILA).date()
         since = datetime.now(timezone.utc) - timedelta(days=days)

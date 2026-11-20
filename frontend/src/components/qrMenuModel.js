@@ -111,6 +111,23 @@ export function paymentStatusFor(method) {
   if (method === 'qrph' || method === 'card') return 'paid_test'
   return ''
 }
+// Cash orders are not prepared until the cashier confirms the payment.
+export const CASH_NOTICE = 'Pay at the counter first. Your order will be prepared only after the cashier confirms your payment.'
+export function payButtonLabel(method, totalText) {
+  if (!PAYMENT_METHODS[method]) return 'Choose how you’ll pay'
+  if (method === 'cash') return 'Place order · pay at counter'
+  return `Pay ${totalText} (test)`
+}
+export function receiptCopy(method, totalText, businessName = 'the shop') {
+  if (method === 'cash') return {
+    waiting: true,
+    title: 'Waiting for payment',
+    badge: 'Waiting for payment',
+    sub: `Show this order number at the counter and pay ${totalText}. The shop will start preparing once the cashier confirms.`,
+    totalLabel: 'To pay at the counter',
+  }
+  return { waiting: false, title: `Order sent to ${businessName}`, badge: 'Order sent', sub: 'The shop has received your order.', totalLabel: 'Total paid' }
+}
 export function paymentReceiptLabel(method) {
   if (method === 'cash') return 'Cash · Pay at the counter'
   if (method === 'qrph') return 'Paid (test) · GCash / Maya / Bank (QR Ph)'

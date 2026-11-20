@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from backend.menu_order_insights import (
     daily_summary, insert_order, manila_day_bounds, member_from_card_token, missing_column,
     order_insights, payment_breakdown, payment_fields, register_menu_order_insight_routes, resolve_branch, top_items,
+    cash_awaiting_payment, kpi_changes, kpis, normalize_period, period_days, period_report, ranked_items, sales_trend, split_period,
 )
 
 
@@ -146,7 +147,7 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(summary['top_items'], [{'name': 'Latte', 'quantity': 3}, {'name': 'Mocha Matcha', 'quantity': 2}, {'name': 'Croissant', 'quantity': 1}])
         branches = {b['name']: b for b in summary['branches']}
         self.assertEqual(branches['BGC'], {'public_id': 'bgc', 'name': 'BGC', 'orders': 1, 'sales': 750.0, 'cancelled': 1})
-        self.assertEqual(branches['No branch saved']['orders'], 1)
+        self.assertEqual(branches['Before branches']['orders'], 1)
         bgc = daily_summary(rows, date(2026, 11, 21), 'bgc')
         self.assertEqual((bgc['orders'], bgc['sales'], bgc['cancelled']), (1, 750.0, 1))
 
@@ -199,6 +200,11 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/v1/business/biz/menu-orders/summary?date=nope', headers={'Authorization': 'Bearer ok'}).status_code, 400)
         insights = self.client.get('/api/v1/business/biz/menu-orders/insights?days=7&branch=bgc', headers={'Authorization': 'Bearer ok'}).json()
         self.assertEqual(insights['orders'], 1)
+        report = self.client.get('/api/v1/business/biz/menu-orders/insights?period=today', headers={'Authorization': 'Bearer ok'}).json()
+        self.assertEqual((report['period'], report['kpis']['orders'], report['kpis']['sales']), ('today', 1, 200.0))
+        self.assertEqual(report['trend_unit'], 'hour')
+        week = self.client.get('/api/v1/business/biz/menu-orders/summary?period=week', headers={'Authorization': 'Bearer ok'}).json()
+        self.assertEqual((week['period'], week['orders']), ('week', 1))
 
 
 class PaymentTests(unittest.TestCase):
@@ -238,6 +244,69 @@ class PaymentTests(unittest.TestCase):
         body = client.patch('/api/v1/business/b/menu-orders/o1/payment', headers={'Authorization': 'Bearer ok'}).json()
         self.assertEqual(body['payment_status'], 'paid')
         self.assertEqual(db.rows['menu_counter_orders'][0]['payment_status'], 'paid')
+
+
+class PeriodTests(unittest.TestCase):
+    def test_periods_use_manila_calendar_and_same_elapsed_days(self):
+        today = date(2026, 11, 21)  # a Saturday
+        self.assertEqual(normalize_period('30d'), 'month')
+        self.assertEqual(normalize_period('nope'), '')
+        self.assertEqual(period_days('today', today), (today, date(2026, 11, 22), date(2026, 11, 20), today))
+        self.assertEqual(period_days('week', today), (date(2026, 11, 16), date(2026, 11, 22), date(2026, 11, 9), date(2026, 11, 15)))
+        self.assertEqual(period_days('month', today), (date(2026, 11, 1), date(2026, 11, 22), date(2026, 10, 1), date(2026, 10, 22)))
+        self.assertEqual(period_days('3months', today), (date(2026, 9, 1), date(2026, 11, 22), date(2026, 6, 1), date(2026, 8, 22)))
+        # March 31 compares with Feb 1-28, never past the period start.
+        self.assertEqual(period_days('month', date(2027, 3, 31))[2:], (date(2027, 2, 1), date(2027, 3, 1)))
+
+    def test_kpis_changes_trend_and_ranked_items(self):
+        rows = [
+            order(1, '2026-11-20T02:00:00+00:00', 100, member='c1'),
+            order(2, '2026-11-21T03:00:00+00:00', 300, items=(('Mocha Matcha', 2),)),
+            order(3, '2026-11-21T04:00:00+00:00', 999, status='cancelled'),
+        ]
+        rows[1]['items'][0]['line_total'] = 300
+        current = kpis(rows)
+        self.assertEqual(current, {'sales': 400.0, 'orders': 2, 'avg_order': 200.0, 'members_percent': 50.0})
+        change = kpi_changes(current, {'sales': 200.0, 'orders': 4, 'avg_order': 50.0, 'members_percent': 25.0})
+        self.assertEqual(change, {'sales': 100.0, 'orders': -50.0, 'avg_order': 300.0, 'members_percent': 25.0})
+        self.assertIsNone(kpi_changes(current, kpis([]))['sales'])
+        unit, bars = sales_trend(rows, 'week', date(2026, 11, 16), date(2026, 11, 21))
+        self.assertEqual(unit, 'day')
+        self.assertEqual([b['label'] for b in bars], ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'])
+        self.assertEqual(bars[-1]['sales'], 300.0)
+        unit, bars = sales_trend(rows, '3months', date(2026, 9, 1), date(2026, 11, 21))
+        self.assertEqual(unit, 'week')
+        self.assertEqual(bars[0]['label'], 'Aug 31')
+        self.assertEqual(sum(b['orders'] for b in bars), 2)
+        self.assertEqual(ranked_items(rows)[0], {'name': 'Mocha Matcha', 'quantity': 2, 'sales': 300.0})
+
+    def test_report_shares_top_item_and_split(self):
+        rows = [order(i, '2026-11-0%dT03:00:00+00:00' % (i % 9 + 1), 100, member=f'c{i % 3}', items=(('Spanish Latte', 1),)) for i in range(6)]
+        customers = [{'public_id': f'c{i}', 'created_at': '2025-01-01T00:00:00+00:00', 'age_bracket': '25_34'} for i in range(3)]
+        report = period_report(rows, [], customers, 'month', date(2026, 11, 21))
+        self.assertEqual(report['period_label'], 'This month')
+        self.assertIsNone(report['change']['sales'])
+        age = next(s for s in report['sections'] if s['key'] == 'age')
+        self.assertEqual(age['groups'][0]['top_item'], 'Spanish Latte')
+        self.assertEqual(age['groups'][0]['share_percent'], 100.0)
+        self.assertEqual(age['hidden_groups'], 0)
+        gender = next(s for s in report['sections'] if s['key'] == 'gender')
+        self.assertTrue(gender['empty'])
+        branch = next(s for s in report['sections'] if s['key'] == 'branch')
+        self.assertEqual(branch['groups'][0]['label'], 'Before branches')
+        current, previous = split_period([order(1, '2026-10-05T03:00:00+00:00'), order(2, '2026-10-28T03:00:00+00:00'),
+                                          order(3, '2026-11-02T03:00:00+00:00')], date(2026, 11, 1), date(2026, 10, 22))
+        self.assertEqual(([r['public_id'] for r in current], [r['public_id'] for r in previous]), (['o3'], ['o1']))
+
+    def test_cash_orders_wait_for_payment(self):
+        self.assertTrue(cash_awaiting_payment({'payment_method': 'cash', 'payment_status': 'unpaid'}))
+        self.assertFalse(cash_awaiting_payment({'payment_method': 'cash', 'payment_status': 'paid'}))
+        self.assertFalse(cash_awaiting_payment({'payment_method': 'qrph', 'payment_status': 'paid_test'}))
+        self.assertFalse(cash_awaiting_payment(None))
+        source = open(__file__.replace('tests/test_menu_order_insights.py', 'main.py'), encoding='utf-8').read()
+        route = source[source.index('async def owner_update_menu_order_status'):source.index("@app.get('/api/v1/business/{public_id}/order-ahead/orders')")]
+        self.assertIn('_menu_order_cash_unpaid(current_order)', route)
+        self.assertIn('status_code=409', route)
 
 
 class MainSourceTests(unittest.TestCase):

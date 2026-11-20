@@ -18804,10 +18804,10 @@ async def owner_update_order_ahead_item_availability(
 
 
 try:
-    from .menu_order_insights import insert_order as _menu_order_insert, resolve_branch as _menu_order_resolve_branch, member_from_card_token as _menu_order_member, payment_fields as _menu_order_payment
+    from .menu_order_insights import insert_order as _menu_order_insert, resolve_branch as _menu_order_resolve_branch, member_from_card_token as _menu_order_member, payment_fields as _menu_order_payment, cash_awaiting_payment as _menu_order_cash_unpaid
     from .menu_card_link import read_token as _menu_card_read_token
 except ImportError:
-    from menu_order_insights import insert_order as _menu_order_insert, resolve_branch as _menu_order_resolve_branch, member_from_card_token as _menu_order_member, payment_fields as _menu_order_payment
+    from menu_order_insights import insert_order as _menu_order_insert, resolve_branch as _menu_order_resolve_branch, member_from_card_token as _menu_order_member, payment_fields as _menu_order_payment, cash_awaiting_payment as _menu_order_cash_unpaid
     from menu_card_link import read_token as _menu_card_read_token
 
 
@@ -18942,6 +18942,19 @@ async def owner_update_menu_order_status(public_id: str, order_public_id: str, r
     target = str((payload or {}).get('status') or '')
     if target not in ('preparing', 'ready', 'completed', 'cancelled'):
         raise HTTPException(status_code=400, detail='Invalid order status')
+    if target != 'cancelled':
+        # Cash orders are prepared only after the cashier confirms payment.
+        try:
+            current_order = _supabase_first_row(
+                supabase.table('menu_counter_orders').select('*')
+                .eq('public_id', order_public_id)
+                .eq('business_id', business.get('id'))
+                .limit(1).execute()
+            )
+        except Exception:
+            current_order = None
+        if _menu_order_cash_unpaid(current_order):
+            raise HTTPException(status_code=409, detail='Waiting for payment. Tap "Mark as paid" after the customer pays at the counter.')
     try:
         saved = _supabase_first_row(
             supabase.table('menu_counter_orders').update({'status': target})

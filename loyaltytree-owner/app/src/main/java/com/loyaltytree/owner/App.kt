@@ -21,6 +21,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -71,6 +72,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
@@ -87,6 +91,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import kotlinx.coroutines.delay
@@ -118,6 +125,7 @@ private sealed class Page {
     data object Billing : Page()
     data object Points : Page()
     data object Cashiers : Page()
+    data object Stamp : Page()
     data class Customer(val id: String) : Page()
 }
 
@@ -186,7 +194,7 @@ private fun Shell(store: CounterStore) {
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when (val current = page) {
                     Page.None -> when (tab) {
-                        0 -> HomeScreen(store, { page = Page.Analytics }, { page = Page.Campaign })
+                        0 -> HomeScreen(store, { page = Page.Analytics }, { page = Page.Campaign }) { page = Page.Stamp }
                         1 -> OrdersScreen(store)
                         2 -> MenuScreen(store)
                         3 -> CustomersScreen(store) { page = Page.Customer(it) }
@@ -202,6 +210,7 @@ private fun Shell(store: CounterStore) {
                     Page.Billing -> BillingScreen(store)
                     Page.Points -> PointsScreen()
                     Page.Cashiers -> CashiersScreen(store)
+                    Page.Stamp -> StampScreen(store)
                     is Page.Customer -> CustomerScreen(store, current.id)
                 }
             }
@@ -225,6 +234,7 @@ private fun pageTitle(page: Page, store: CounterStore): String = when (page) {
     Page.Billing -> "Billing"
     Page.Points -> "LT Points"
     Page.Cashiers -> "Cashiers"
+    Page.Stamp -> if (store.cardType == "points") "Add points" else "Add a stamp"
     is Page.Customer -> store.members.firstOrNull { it.id == page.id }?.name ?: "Customer"
     Page.None -> ""
 }
@@ -259,7 +269,7 @@ private fun LoginScreen(store: CounterStore) {
 }
 
 @Composable
-private fun HomeScreen(store: CounterStore, openAnalytics: () -> Unit, openCampaign: () -> Unit) {
+private fun HomeScreen(store: CounterStore, openAnalytics: () -> Unit, openCampaign: () -> Unit, openStamp: () -> Unit) {
     val context = LocalContext.current
     val view = LocalView.current
     var enlarged by remember { mutableStateOf(false) }
@@ -303,9 +313,9 @@ private fun HomeScreen(store: CounterStore, openAnalytics: () -> Unit, openCampa
             "points" -> "Add points"
             else -> "Add a stamp / points"
         }) {
-            // Reuses the existing LoyaltyTree cashier (scan the customer's QR or wallet card, or look them up).
-            val slug = Uri.encode(store.session?.slug.orEmpty())
-            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://theloyaltytree.com/cashier?business=$slug")))
+            // Opens the in-app scanner right away. The owner is already signed in, so no cashier login.
+            store.clearScan()
+            openStamp()
         }
         Text("${store.memberCount} members  ·  ${store.cameBackRate.toInt()}% came back", color = Forest, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -480,7 +490,13 @@ private fun OrderCard(store: CounterStore, order: LiveOrder) {
         }
         if (order.payment == "pending") Text("Unpaid · confirm the test payment on the menu", color = Bad, fontSize = 13.sp)
         val unpaid = order.payment == "unpaid"
-        paymentBadge(order.paymentMethod, order.payment)?.let { badge ->
+        val awaitingCash = order.source == "menu" && order.paymentMethod == "cash" && unpaid && order.status != "cancelled"
+        if (awaitingCash) {
+            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color(0xFFFFF1C2)).border(1.dp, Color(0xFFE0A400), RoundedCornerShape(12.dp)).padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Awaiting payment", color = Color(0xFF5C3D00), fontWeight = FontWeight.Bold, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                Text("Cash · ${order.total}", color = Color(0xFF5C3D00), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            }
+        } else paymentBadge(order.paymentMethod, order.payment)?.let { badge ->
             Box(Modifier.clip(RoundedCornerShape(99.dp)).background(if (unpaid) Color(0xFFFFF1D6) else Track).padding(horizontal = 10.dp, vertical = 4.dp)) {
                 Text(badge, color = if (unpaid) Color(0xFF7A4E00) else Forest, fontSize = 12.sp, fontWeight = FontWeight.Bold)
             }
@@ -493,11 +509,17 @@ private fun OrderCard(store: CounterStore, order: LiveOrder) {
         }
         if (order.note.isNotBlank()) Text(order.note, color = Muted, fontSize = 13.sp)
         Text(order.total, color = Forest, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-        if (order.source == "menu" && order.payment == "unpaid" && order.status != "cancelled") {
+        if (awaitingCash) {
+            // Cash first: the kitchen can start only after the cashier confirms the payment.
+            Primary(if (busy) "Saving" else "Mark as paid", enabled = !busy) { store.markPaid(order.id) }
+            Text("Start preparing unlocks after the payment is marked paid.", color = Muted, fontSize = 12.sp)
+        } else if (order.source == "menu" && order.payment == "unpaid" && order.status != "cancelled") {
             Secondary(if (busy) "Saving" else "Mark as paid") { if (!busy) store.markPaid(order.id) }
         }
-        if (next != null) {
+        if (next != null && !awaitingCash) {
             Primary(if (busy) "Saving" else next.second, enabled = !busy) { store.setOrderStatus(order.id, next.first) }
+        }
+        if (next != null) {
             if (order.status == "new" || order.status == "preparing") {
                 Secondary(if (busy) "Saving" else "Cancel order") { if (!busy) store.setOrderStatus(order.id, "cancelled") }
             }
@@ -954,23 +976,56 @@ private fun AnalyticsScreen(store: CounterStore) {
     val month = java.util.Calendar.getInstance().get(java.util.Calendar.MONTH) + 1
     val birthdays = store.members.filter { it.birthdayMonth == month && it.birthdayDay > 0 }.sortedBy { it.birthdayDay }
     val months = listOf("", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+    val previous = when (store.period) {
+        "today" -> "vs yesterday"
+        "7d" -> "vs last week"
+        "90d" -> "vs the 3 months before"
+        else -> "vs last month"
+    }
     Scroll {
         Text(store.analyticsProgram.ifBlank { "This business" }, color = Forest, fontSize = 28.sp, fontWeight = FontWeight.Bold)
-        Text(when (store.period) {
-            "today" -> "Today, counted from the daily list."
-            "7d" -> "Last 7 days."
-            "90d" -> "Last 90 days."
-            else -> "Last 30 days."
-        }, color = Muted, fontSize = 14.sp)
         Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Track).padding(4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            listOf("Today" to "today", "7 days" to "7d", "30 days" to "30d", "90 days" to "90d").forEach { (label, id) ->
+            listOf("Today" to "today", "This week" to "7d", "This month" to "30d", "3 months" to "90d").forEach { (label, id) ->
                 val on = store.period == id
-                Box(Modifier.weight(1f).clip(RoundedCornerShape(9.dp)).background(if (on) Forest else Color.Transparent).clickable { tick(view); store.selectRange(id) }.padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+                Box(Modifier.weight(1f).clip(RoundedCornerShape(9.dp)).background(if (on) Forest else Color.Transparent).clickable { tick(view); store.selectRange(id) }.padding(vertical = 9.dp), contentAlignment = Alignment.Center) {
                     Text(label, color = if (on) Color.White else Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
                 }
             }
         }
-        Text("This period", color = Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        if (store.branches.size > 1) {
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                BranchChip("All branches", store.analyticsBranch.isBlank()) { store.chooseAnalyticsBranch("") }
+                store.branches.forEach { branch -> BranchChip(branch.name, store.analyticsBranch == branch.id) { store.chooseAnalyticsBranch(branch.id) } }
+            }
+        }
+        if (store.insightRange.isNotBlank()) Text("Menu orders · ${store.insightRange} · Manila time", color = Muted, fontSize = 13.sp)
+
+        if (store.insightKpis.isNotEmpty()) {
+            store.insightKpis.chunked(2).forEach { pair ->
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    pair.forEach { KpiCard(it, previous, Modifier.weight(1f)) }
+                }
+            }
+        }
+        if (store.insightTrend.any { it.orders > 0 }) {
+            Text(when (store.insightTrendUnit) { "hour" -> "Sales by hour"; "week" -> "Sales by week"; else -> "Sales by day" }, color = Forest, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            Card { TrendChart(store.insightTrend) }
+        }
+        if (store.insightItems.isNotEmpty()) {
+            Text("Top items", color = Forest, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            Card {
+                val peak = store.insightItems.maxOf { it.quantity }.coerceAtLeast(1)
+                store.insightItems.forEachIndexed { index, item -> RankedRow(index + 1, item, peak) }
+            }
+        }
+        if (store.insightCards.isNotEmpty()) {
+            Text("Who orders what", color = Forest, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            store.insightCards.forEach { InsightCardView(it) }
+        }
+        if (store.insightsLoading && store.insightKpis.isEmpty()) Text("Loading menu orders…", color = Muted, fontSize = 13.sp)
+        if (store.insightsNote.isNotBlank()) Text(store.insightsNote, color = Muted, fontSize = 12.sp)
+
+        Text("Loyalty card", color = Forest, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Metric("Stamps", if (store.period == "today") store.todayStamps else store.cardStamps, Modifier.weight(1f))
             Metric("Rewards", if (store.period == "today") store.todayRewards else store.cardRewards, Modifier.weight(1f))
@@ -979,7 +1034,6 @@ private fun AnalyticsScreen(store: CounterStore) {
             Metric("New", if (store.period == "today") store.todayNew else store.cardNew, Modifier.weight(1f))
             Metric("Active", if (store.period == "today") "—" else store.cardActive, Modifier.weight(1f))
         }
-        Text("Customers", color = Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Metric("Members", store.memberCount, Modifier.weight(1f))
             Metric("Gone quiet", store.churnCount.toString(), Modifier.weight(1f))
@@ -989,7 +1043,7 @@ private fun AnalyticsScreen(store: CounterStore) {
             Metric("Per active", if (store.period == "today") "—" else store.cardAverage, Modifier.weight(1f))
         }
         Text("Birthdays this month", color = Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-        Text(if (birthdays.isEmpty()) "No birthdays this month." else "${birthdays.size} members.", color = Forest, fontWeight = FontWeight.SemiBold)
+        Text(if (birthdays.isEmpty()) "No birthdays this month." else "${birthdays.size} ${if (birthdays.size == 1) "member" else "members"}.", color = Forest, fontWeight = FontWeight.SemiBold)
         birthdays.take(6).forEach { member ->
             Card { Info(member.name, "${months.getOrElse(member.birthdayMonth) { "" }} ${member.birthdayDay}") }
         }
@@ -997,38 +1051,260 @@ private fun AnalyticsScreen(store: CounterStore) {
             Text("Most stamps on a card", color = Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             Card { store.topMembers.forEach { Info(it.name, it.detail) } }
         }
-        if (store.period != "today" && store.dailyBars.isNotEmpty()) {
-            Text("Daily activity", color = Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-            Card {
-                val peak = store.dailyBars.maxOf { it.count }.coerceAtLeast(1)
-                store.dailyBars.take(12).forEach { MiniBar(it.label, it.count, peak) }
-            }
-        }
         if (store.hourBars.isNotEmpty() && store.period != "today") {
-            Text("By hour", color = Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Text("Card activity by hour", color = Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             Card {
                 val peak = store.hourBars.maxOf { it.count }.coerceAtLeast(1)
                 store.hourBars.forEach { MiniBar(it.label, it.count, peak) }
             }
         }
-        if (store.branchFacts.isNotEmpty()) {
-            Text("Branches", color = Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-            Card { store.branchFacts.forEach { Info(it.name, it.detail) } }
+        if (store.analyticsNote.isNotBlank()) Text(store.analyticsNote, color = Muted, fontSize = 13.sp)
+    }
+}
+
+private fun plural(count: Int, word: String): String = "$count ${if (count == 1) word else word + "s"}"
+
+private fun peso(amount: Double): String {
+    val whole = amount.toLong()
+    return if (amount - whole < 0.005) "₱" + String.format(Locale.US, "%,d", whole) else "₱" + String.format(Locale.US, "%,.2f", amount)
+}
+
+private val Amber = Color(0xFF8A5A00)
+
+@Composable
+private fun KpiCard(kpi: Kpi, previous: String, modifier: Modifier) {
+    Column(modifier.clip(Shape).background(Color.White).border(1.dp, Line, Shape).padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(kpi.label, color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        Text(kpi.value, color = Forest, fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        val change = kpi.change
+        if (change == null) {
+            Text("No earlier data", color = Muted, fontSize = 11.sp)
+        } else {
+            val up = change >= 0
+            val amount = if (kpi.inPoints) "${String.format(Locale.US, "%.0f", kotlin.math.abs(change))} pts" else "${String.format(Locale.US, "%.0f", kotlin.math.abs(change))}%"
+            Text("${if (up) "▲" else "▼"} $amount $previous", color = if (up) Gold else Bad, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        Text("What people order", color = Forest, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-        if (store.insightsTop.isNotEmpty()) {
-            Text("Most ordered on the digital menu", color = Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-            Card { store.insightsTop.forEachIndexed { index, item -> Info("${index + 1}. ${item.name}", "× ${item.detail}") } }
-        }
-        store.insights.forEach { section ->
-            Text(section.title, color = Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-            Card {
-                section.rows.forEach { Info(it.name, it.detail) }
-                if (section.note.isNotBlank()) Text(section.note, color = Muted, fontSize = 12.sp)
+    }
+}
+
+@Composable
+private fun TrendChart(bars: List<TrendBar>) {
+    val peak = bars.maxOf { it.sales }.coerceAtLeast(1.0)
+    val best = bars.maxByOrNull { it.sales }
+    if (best != null && best.sales > 0) Text("Best: ${best.label} · ${peso(best.sales)}", color = Ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+    Canvas(Modifier.fillMaxWidth().height(140.dp)) {
+        val count = bars.size.coerceAtLeast(1)
+        val slot = size.width / count
+        val barWidth = (slot * 0.64f).coerceAtLeast(2f)
+        drawLine(Line, Offset(0f, size.height - 1f), Offset(size.width, size.height - 1f), strokeWidth = 2f)
+        bars.forEachIndexed { index, bar ->
+            val h = (bar.sales / peak).toFloat() * (size.height - 6f)
+            if (h > 0f) {
+                drawRoundRect(
+                    color = if (bar == best) Forest else Gold.copy(alpha = 0.55f),
+                    topLeft = Offset(index * slot + (slot - barWidth) / 2f, size.height - h),
+                    size = Size(barWidth, h),
+                    cornerRadius = CornerRadius(barWidth / 4f, barWidth / 4f)
+                )
             }
         }
-        if (store.insightsNote.isNotBlank()) Text(store.insightsNote, color = Muted, fontSize = 13.sp)
-        if (store.analyticsNote.isNotBlank()) Text(store.analyticsNote, color = Muted, fontSize = 13.sp)
+    }
+    // A few labels under the chart, so it stays readable with 30+ bars.
+    val step = when {
+        bars.size <= 8 -> 1
+        bars.size <= 16 -> 2
+        else -> (bars.size + 5) / 6
+    }
+    Row(Modifier.fillMaxWidth()) {
+        bars.forEachIndexed { index, bar ->
+            Text(if (index % step == 0) bar.label else "", color = Muted, fontSize = 10.sp, maxLines = 1, textAlign = TextAlign.Center, modifier = Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun ShareBar(fraction: Float, strong: Boolean) {
+    Box(Modifier.fillMaxWidth().height(10.dp).clip(RoundedCornerShape(99.dp)).background(Track)) {
+        Box(Modifier.fillMaxWidth(fraction.coerceIn(0.02f, 1f)).height(10.dp).clip(RoundedCornerShape(99.dp)).background(if (strong) Forest else Gold.copy(alpha = 0.7f)))
+    }
+}
+
+@Composable
+private fun RankedRow(rank: Int, item: RankedItem, peak: Int) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("$rank", color = if (rank == 1) Forest else Muted, fontWeight = FontWeight.Bold, fontSize = 15.sp, modifier = Modifier.width(24.dp))
+            Text(item.name, color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            Text("×${item.quantity}", color = Forest, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            if (item.sales != "₱0") Text("  ${item.sales}", color = Muted, fontSize = 13.sp)
+        }
+        Box(Modifier.padding(start = 24.dp)) { ShareBar(item.quantity.toFloat() / peak, rank == 1) }
+    }
+}
+
+@Composable
+private fun InsightCardView(card: InsightCard) {
+    Card {
+        Text(card.title, color = Forest, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        if (card.groups.isEmpty()) {
+            Text("Need more orders to show this", color = Muted, fontSize = 13.sp)
+        } else {
+            val leader = card.groups.maxOf { it.orders }
+            card.groups.forEach { group ->
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(group.label, color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                        Text("${group.share.toInt()}%", color = Forest, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        Text("  ${plural(group.orders, "order")}", color = Muted, fontSize = 12.sp)
+                    }
+                    ShareBar((group.share / 100.0).toFloat(), group.orders == leader)
+                    if (group.topItem.isNotBlank()) Text("Most ordered: ${group.topItem}", color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            if (card.hiddenGroups > 0) Text("Need more orders to show ${if (card.hiddenGroups == 1) "1 more group" else "${card.hiddenGroups} more groups"}", color = Muted, fontSize = 12.sp)
+        }
+        if (card.note.isNotBlank() && card.groups.isNotEmpty()) Text(card.note, color = Muted, fontSize = 11.sp)
+    }
+}
+
+private fun startCodeScan(context: Context, onCode: (String) -> Unit, onFail: (String) -> Unit) {
+    // Google code scanner: Play services shows the camera UI, so the app needs no camera permission.
+    val options = GmsBarcodeScannerOptions.Builder()
+        .setBarcodeFormats(Barcode.FORMAT_QR_CODE, Barcode.FORMAT_AZTEC, Barcode.FORMAT_PDF417, Barcode.FORMAT_CODE_128)
+        .build()
+    runCatching {
+        GmsBarcodeScanning.getClient(context, options).startScan()
+            .addOnSuccessListener { code ->
+                val raw = code.rawValue
+                if (raw.isNullOrBlank()) onFail("Could not read that code. Try again.") else onCode(raw)
+            }
+            .addOnCanceledListener { }
+            .addOnFailureListener { error ->
+                onFail("The scanner could not start${error.message?.let { ": $it" } ?: ""}. Make sure Google Play services is up to date, then try again.")
+            }
+    }.onFailure { onFail("The scanner could not start on this phone. Search the customer by name instead.") }
+}
+
+@Composable
+private fun StampScreen(store: CounterStore) {
+    val context = LocalContext.current
+    val view = LocalView.current
+    var query by remember { mutableStateOf("") }
+    var stampCount by remember { mutableIntStateOf(1) }
+    var amount by remember { mutableStateOf("") }
+    fun scan() {
+        store.clearScan()
+        startCodeScan(context, { code -> stampCount = 1; amount = ""; store.lookupScan(code) }) { message -> store.scanFailed(message) }
+    }
+    LaunchedEffect(Unit) { if (store.scanCustomer == null) scan() }
+    LaunchedEffect(store.scanDone) { if (store.scanDone.isNotBlank()) confirm(view) }
+    val customer = store.scanCustomer
+    Scroll {
+        if (customer == null) {
+            Primary(if (store.scanBusy) "Reading card" else "Scan customer's card", enabled = !store.scanBusy) { scan() }
+            Text("Scan the QR on the customer's Apple or Google Wallet card.", color = Muted, fontSize = 13.sp)
+            if (store.scanNote.isNotBlank()) Text(store.scanNote, color = Bad, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+            Text("Or find the customer", color = Forest, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            Field("Name or phone", query, { query = it })
+            val clean = query.trim().lowercase()
+            val digits = clean.filter { it.isDigit() }
+            if (clean.length >= 2) {
+                val hits = store.members.filter { member ->
+                    member.name.lowercase().contains(clean) || (digits.length >= 3 && member.phone.filter { it.isDigit() }.contains(digits))
+                }.take(12)
+                if (hits.isEmpty()) Text("No customer matches \"${query.trim()}\".", color = Muted, fontSize = 13.sp)
+                hits.forEach { member ->
+                    RowLink(member.name, listOf(member.phone, if (store.cardType == "points") "${member.points} pts" else plural(member.stamps, "stamp")).filter { it.isNotBlank() }.joinToString(" · ")) {
+                        stampCount = 1
+                        amount = ""
+                        store.loadScanCustomer(member.id)
+                    }
+                }
+            }
+            return@Scroll
+        }
+        Card {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(customer.name, color = Forest, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (customer.phone.isNotBlank()) Text(customer.phone, color = Muted, fontSize = 13.sp)
+                }
+                if (customer.rewardReady) {
+                    Box(Modifier.clip(RoundedCornerShape(99.dp)).background(Lime).padding(horizontal = 12.dp, vertical = 6.dp)) {
+                        Text("Reward ready", color = Forest, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    }
+                }
+            }
+            if (customer.usesPoints) {
+                Text("${String.format(Locale.US, "%,d", customer.points)} points", color = Ink, fontSize = 30.sp, fontWeight = FontWeight.Bold)
+                when {
+                    customer.rewardReady && customer.rewardName.isNotBlank() -> Text("Can redeem: ${customer.rewardName}", color = Forest, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    customer.nextPrizeCost > 0 -> {
+                        ShareBar(customer.points.toFloat() / customer.nextPrizeCost, true)
+                        Text("${customer.nextPrizeCost - customer.points} more points for ${customer.nextPrize}", color = Muted, fontSize = 13.sp)
+                    }
+                }
+            } else {
+                Text("${customer.stamps} / ${customer.goal} stamps", color = Ink, fontSize = 30.sp, fontWeight = FontWeight.Bold)
+                ShareBar(customer.stamps.toFloat() / customer.goal, true)
+                Text(
+                    if (customer.rewardReady) "${customer.rewardName} is ready to claim."
+                    else "${plural(customer.goal - customer.stamps, "more stamp")} for ${customer.rewardName}",
+                    color = if (customer.rewardReady) Forest else Muted, fontSize = 13.sp, fontWeight = if (customer.rewardReady) FontWeight.SemiBold else FontWeight.Normal
+                )
+            }
+        }
+        if (store.scanDone.isNotBlank()) Text(store.scanDone, color = Forest, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+        if (store.scanNote.isNotBlank()) Text(store.scanNote, color = Bad, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+        if (customer.usesPoints) {
+            Field("Amount spent (₱)", amount, { amount = it.filter { ch -> ch.isDigit() || ch == '.' } }, number = true)
+            val spent = amount.toDoubleOrNull() ?: 0.0
+            val earn = store.previewPoints(spent, customer)
+            Text(
+                if (customer.pointsPer > 0) "${peso(customer.pesosPer)} = ${plural(customer.pointsPer.toInt(), "point")}" + (if (spent > 0) " · this sale earns ${plural(earn, "point")}" else "")
+                else "Points rule not set. Set it in Card settings.",
+                color = Muted, fontSize = 13.sp
+            )
+            Primary(if (store.scanBusy) "Saving" else if (earn > 0) "Add ${plural(earn, "point")}" else "Add points", enabled = !store.scanBusy && spent > 0) {
+                store.addSalePoints(amount)
+                amount = ""
+            }
+        } else {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                val lowest = -customer.stamps.coerceIn(0, 10)
+                StepButton("−", enabled = (if (stampCount == 1) -1 else stampCount - 1) >= lowest) {
+                    stampCount = (stampCount - 1).let { if (it == 0) -1 else it }
+                }
+                Text(if (stampCount > 0) "+$stampCount" else "$stampCount", color = if (stampCount < 0) Bad else Forest, fontSize = 34.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, modifier = Modifier.width(96.dp))
+                StepButton("+", enabled = stampCount < 10) {
+                    stampCount = (stampCount + 1).let { if (it == 0) 1 else it }
+                }
+            }
+            Primary(
+                when {
+                    store.scanBusy -> "Saving"
+                    stampCount > 0 -> "Add ${plural(stampCount, "stamp")}"
+                    else -> "Remove ${plural(-stampCount, "stamp")}"
+                },
+                enabled = !store.scanBusy
+            ) {
+                store.changeStamps(stampCount)
+                stampCount = 1
+            }
+            if (customer.rewardReady) Secondary(if (store.scanBusy) "Saving" else "Redeem reward") { if (!store.scanBusy) store.redeemStampReward() }
+        }
+        Secondary("Scan next customer") { scan() }
+    }
+}
+
+@Composable
+private fun StepButton(label: String, enabled: Boolean, onClick: () -> Unit) {
+    val view = LocalView.current
+    Box(
+        Modifier.size(56.dp).clip(CircleShape).background(if (enabled) Track else Line).clickable(enabled = enabled) { tick(view); onClick() },
+        contentAlignment = Alignment.Center
+    ) {
+        Text(label, color = if (enabled) Forest else Muted, fontSize = 28.sp, fontWeight = FontWeight.Bold)
     }
 }
 

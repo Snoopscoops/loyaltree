@@ -1,6 +1,6 @@
 import React, { useEffect, useId, useRef, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
-import { filterMenuItems, groupMenuCategories, menuItemAvailable, menuItemPrice, toggleMenuOption, validMenuPayload, addCartItem, changeCartQuantity, cartSubtotal, buildMenuOrder, sendMenuOrder, pickupTimeLabel, resolveMenuBranch, PAYMENT_METHODS, paymentReceiptLabel } from './qrMenuModel'
+import { filterMenuItems, groupMenuCategories, menuItemAvailable, menuItemPrice, toggleMenuOption, validMenuPayload, addCartItem, changeCartQuantity, cartSubtotal, buildMenuOrder, sendMenuOrder, pickupTimeLabel, resolveMenuBranch, PAYMENT_METHODS, paymentReceiptLabel, CASH_NOTICE, payButtonLabel, receiptCopy } from './qrMenuModel'
 import loyaltyTreeLogo from './logo-192.png'
 import { requestJsonResponse } from './requestTimeout'
 import './qr-menu.css'
@@ -332,7 +332,8 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   }
 
   const step = payStep === 'done' ? 'done' : !cart.length ? 'empty' : payStep
-  const title = step === 'done' ? 'Order sent' : step === 'service' ? 'How will you get it?' : step === 'payment' ? 'Review & pay' : 'Your order'
+  const receipt = order ? receiptCopy(order.payment_method, money(order.subtotal), business.name) : null
+  const title = step === 'done' ? (receipt?.waiting ? 'Waiting for payment' : 'Order sent') : step === 'service' ? 'How will you get it?' : step === 'payment' ? 'Review & pay' : 'Your order'
   const stepIndex = CHECKOUT_STEPS.findIndex(([value]) => value === payStep)
   const nameFromCard = cardName && buyerName.trim() === cardName && !editingName
   // No connected card: the shop needs a name to call the order.
@@ -471,13 +472,17 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
                 <span><strong>{method.label}</strong><small>{method.detail}</small></span>
               </label>)}
             </fieldset>
-            <p className="lt-qr-test-note">{paymentMethod === 'cash' ? 'Your order will be sent to the shop. Pay at the counter.' : 'Test payment. Nothing is charged. Your order will be sent to the shop.'}</p>
+            {paymentMethod === 'cash'
+              ? <div className="lt-qr-cash-notice" role="alert"><span className="lt-qr-cash-icon" aria-hidden="true">!</span><p><strong>Pay at the counter first.</strong> Your order will be prepared only after the cashier confirms your payment.</p></div>
+              : paymentMethod && <p className="lt-qr-test-note">Test payment. Nothing is charged. Your order will be sent to the shop.</p>}
           </div>}
 
-          {step === 'done' && order && <div className="lt-qr-receipt" role="status">
-            <span className="lt-qr-receipt-check" aria-hidden="true"><CheckIcon size={34} /></span>
-            <h3>Order sent to {business.name}</h3>
-            <p className="lt-qr-receipt-sub">{order.payment_method === 'cash' ? 'The shop has received your order. Pay at the counter.' : 'The shop has received your order.'}</p>
+          {step === 'done' && order && <div className={`lt-qr-receipt${receipt.waiting ? ' is-waiting' : ''}`} role="status">
+            {receipt.waiting
+              ? <span className="lt-qr-wait-badge"><span aria-hidden="true">⏳</span>{receipt.badge}</span>
+              : <span className="lt-qr-receipt-check" aria-hidden="true"><CheckIcon size={34} /></span>}
+            <h3>{receipt.title}</h3>
+            <p className="lt-qr-receipt-sub">{receipt.sub}</p>
             <div className="lt-qr-receipt-number">
               <span>Order number</span>
               <strong>{order.order_number}</strong>
@@ -491,7 +496,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
               <div><dt>Payment</dt><dd><span className={`lt-qr-paid-pill${order.payment_method === 'cash' ? ' is-unpaid' : ''}`}>{paymentReceiptLabel(order.payment_method)}</span></dd></div>
             </dl>
             <ul className="lt-qr-cart-lines is-compact" aria-label="Items ordered">{(order.lines || []).map(line => <CartLine key={line.key} line={line} money={money} />)}</ul>
-            <dl className="lt-qr-totals"><div className="is-total"><dt>Total paid</dt><dd>{money(order.subtotal)}</dd></div></dl>
+            <dl className="lt-qr-totals"><div className="is-total"><dt>{receipt.totalLabel}</dt><dd>{money(order.subtotal)}</dd></div></dl>
           </div>}
         </div>
 
@@ -507,7 +512,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
               <p><strong>Order not sent.</strong> {submitError}</p>
               <button type="button" onClick={submitOrder} disabled={submitting}>Try again</button>
             </div>}
-            {!submitError && <button type="button" className="lt-qr-primary lt-qr-wide" disabled={submitting || !paymentMethod} aria-busy={submitting} onClick={submitOrder}>{submitting ? <><span className="lt-qr-spinner" aria-hidden="true" />Sending order…</> : !paymentMethod ? 'Choose how you’ll pay' : paymentMethod === 'cash' ? `Place order · ${money(total)}` : `Pay ${money(total)} (test)`}</button>}
+            {!submitError && <button type="button" className="lt-qr-primary lt-qr-wide" disabled={submitting || !paymentMethod} aria-busy={submitting} onClick={submitOrder}>{submitting ? <><span className="lt-qr-spinner" aria-hidden="true" />Sending order…</> : payButtonLabel(paymentMethod, money(total))}</button>}
             <button type="button" className="lt-qr-back-button" disabled={submitting} onClick={() => { setSubmitError(''); setPayStep('service') }}>Back</button>
           </>}
           {step === 'done' && <button type="button" className="lt-qr-primary lt-qr-wide" onClick={closeCart}>Back to menu</button>}
