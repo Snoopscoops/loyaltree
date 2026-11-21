@@ -12,3 +12,11 @@
 .lt-menu-rewards li em{flex-shrink:0;font-style:normal;font-size:.72rem;color:#676e6b;background:#e8eaeb;padding:4px 8px;border-radius:12px}
 .lt-menu-rewards li em.is-ready{color:#165f38;background:#d5f4df}
 @media (prefers-color-scheme:dark){.lt-menu-rewards{background:#182f25;color:#e7f9eb;border-color:#3b6b51}.lt-menu-rewards>p,.lt-menu-rewards li small,.lt-menu-rewards-footnote{color:#c3d4ca}.lt-menu-rewards-balances span{background:#254c35}.lt-menu-rewards li{border-color:#385b46}.lt-menu-rewards li em{background:#434948;color:#e1e7e2}.lt-menu-rewards li em.is-ready{background:#235839;color:#d8ffe4}}
+
+/* owner-v12: actual checkout selection, cash-only until verified online payments. */
+.lt-menu-reward-choice{display:flex;align-items:center;gap:10px;flex:1;cursor:pointer;min-width:0}
+.lt-menu-reward-choice input{accent-color:#117343;width:18px;height:18px;flex-shrink:0}
+.lt-menu-reward-choice input:disabled{cursor:not-allowed;opacity:.5}
+.lt-menu-reward-choice.is-picked span b{color:#117343}
+.lt-menu-reward-clear{justify-self:start;background:transparent;border:1px solid #94ba9d;border-radius:9px;color:inherit;padding:6px 10px;font-size:.78rem;cursor:pointer}
+.lt-menu-reward-clear:disabled{opacity:.5}

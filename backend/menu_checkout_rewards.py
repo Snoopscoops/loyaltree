@@ -1,7 +1,8 @@
-"""Minimal, read-only LoyaltyTree rewards snapshot for Digital Menu checkout.
+"""Connected-card Digital Menu snapshot: merchant-validated eligibility + choice IDs.
 
-All entitlements come from the existing loyalty engine; this module does not
-reserve, spend, or change points, coupons, cash prices, or staff permissions.
+This GET endpoint itself never reserves or spends rewards. owner-v12 separately
+reserves only eligible points prizes/stamp milestones on a CASH order and
+redeems only upon staff-confirmed paid+completed via a restricted database RPC.
 """
 
 
@@ -24,8 +25,11 @@ def checkout_rewards_payload(customer, program, available_rewards, uses_points, 
         detail = str(reward.get('detail') or '').strip()[:180]
         if kind == 'points_prize':
             seen_prizes.add(str(reward.get('id') or ''))
-        result.append({'kind': kind, 'name': name, 'detail': detail,
-                       'available': True})
+        selectable = (kind in ('points_prize', 'stamp_reward')
+                      and bool(str(reward.get('id') or '').strip()))
+        result.append({'kind': kind, 'id': str(reward.get('id') or '')[:100] if selectable else '',
+                       'name': name, 'detail': detail, 'available': True,
+                       'selectable': selectable})
     # Show upcoming point prizes as locked, not accidentally redeemable.
     if points_enabled:
         for prize in (program.get('points_prizes') or [])[:40]:
@@ -38,8 +42,9 @@ def checkout_rewards_payload(customer, program, available_rewards, uses_points, 
                 continue
             if name and cost > 0 and cost > points_balance:
                 result.append({'kind': 'points_prize', 'name': name,
-                               'detail': f'{cost:,} points', 'available': False})
+                               'detail': f'{cost:,} points', 'available': False,
+                               'selectable': False, 'id': ''})
     return {'points_balance': points_balance, 'stamp_count': stamp_count,
             'points_enabled': points_enabled, 'stamps_enabled': stamps_enabled,
-            'rewards': result[:60], 'redemption_mode': 'at_counter',
-            'notice': 'Show your reward to the staff. No points or discounts are deducted online.'}
+            'rewards': result[:60], 'redemption_mode': 'checkout_cash_only',
+            'notice': 'Choose one Points or Stamp reward for cash checkout. Redeemed only after confirmed payment and completion. No price discounts are applied online.'}

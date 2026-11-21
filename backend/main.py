@@ -1,3 +1,4 @@
+import math  # owner-v12: reject non-finite checkout totals before reserving rewards
 try:
     from .runtime_profiling import profiler, register_profiling_routes
 except ImportError:
@@ -18811,10 +18812,12 @@ async def owner_update_order_ahead_item_availability(
 try:
     from .menu_order_insights import insert_order as _menu_order_insert, resolve_branch as _menu_order_resolve_branch, member_from_card_token as _menu_order_member, payment_fields as _menu_order_payment, cash_awaiting_payment as _menu_order_cash_unpaid
     from .menu_card_link import read_token as _menu_card_read_token
+    from .menu_checkout_redemption import selected_reward as _menu_reward_select, reward_order_item as _menu_reward_line, is_reward_order as _menu_has_reward, reserve_reward_order as _menu_reward_reserve, finalize_reward_order as _menu_reward_finish
     from .menu_order_access import make_menu_order_operator, check_order_branch as _menu_order_check_branch
 except ImportError:
     from menu_order_insights import insert_order as _menu_order_insert, resolve_branch as _menu_order_resolve_branch, member_from_card_token as _menu_order_member, payment_fields as _menu_order_payment, cash_awaiting_payment as _menu_order_cash_unpaid
     from menu_card_link import read_token as _menu_card_read_token
+    from menu_checkout_redemption import selected_reward as _menu_reward_select, reward_order_item as _menu_reward_line, is_reward_order as _menu_has_reward, reserve_reward_order as _menu_reward_reserve, finalize_reward_order as _menu_reward_finish
     from menu_order_access import make_menu_order_operator, check_order_branch as _menu_order_check_branch
 
 # Owner: every branch. Manager / cashier (staff PIN session, 12 h): their own branch only.
@@ -18833,6 +18836,20 @@ async def public_place_menu_order(public_id: str, request: Request, background_t
     member_customer_public_id = _menu_order_member(payload.get('card_token'), business.get('public_id'), _menu_card_read_token)
     # Test payments only: cash is paid at the counter, QR Ph / card are mock "paid (test)".
     payment_method, payment_status = _menu_order_payment(payload.get('payment_method'))
+    # Only an existing, verified card can select a real reward. No client-supplied
+    # price, points cost, or prize name is ever trusted.
+    selected_checkout_reward = None
+    selected_customer = None
+    if payload.get('reward_selection') is not None:
+        selected_customer = safe_get_customer(member_customer_public_id) if member_customer_public_id else None
+        if selected_customer and str(selected_customer.get('business_id')) == str(business.get('id')):
+            selected_program = safe_get_customer_program(selected_customer, business.get('id')) or {}
+            selected_available = get_current_card_redeemables(business, selected_customer, selected_program)
+        else:
+            selected_program, selected_available = {}, []
+        selected_checkout_reward = _menu_reward_select(
+            payload.get('reward_selection'), selected_available, selected_customer,
+            selected_program, payment_method=payment_method, valid_member=member_customer_public_id)
     items = payload.get('items') if isinstance(payload.get('items'), list) else []
     if not items:
         raise HTTPException(status_code=400, detail='Your cart is empty')
@@ -18852,10 +18869,18 @@ async def public_place_menu_order(public_id: str, request: Request, background_t
             line_total = float(raw.get('line_total') or 0)
         except (TypeError, ValueError):
             line_total = 0.0
+        if selected_checkout_reward and (not math.isfinite(line_total) or line_total < 0 or qty > 20):
+            raise HTTPException(status_code=400, detail='Invalid item price or quantity in reward checkout.')
         total += line_total
         clean_items.append({'item_name': name, 'quantity': qty, 'line_total': line_total, 'options': raw.get('options') or []})
     if not clean_items:
         raise HTTPException(status_code=400, detail='Your cart is empty')
+    if selected_checkout_reward:
+        if not math.isfinite(total) or total <= 0:
+            raise HTTPException(status_code=400, detail='A qualifying purchase is required to redeem checkout rewards.')
+        if len(clean_items) >= 40:
+            raise HTTPException(status_code=400, detail='Remove one item to apply your loyalty reward.')
+        clean_items.append(_menu_reward_line(selected_checkout_reward))
     row = {
         'public_id': uuid.uuid4().hex,
         'business_id': business.get('id'),
@@ -18875,11 +18900,22 @@ async def public_place_menu_order(public_id: str, request: Request, background_t
         'branch_name': branch_name,
         'member_customer_public_id': member_customer_public_id,
     }
+    if selected_checkout_reward:
+        row.update(checkout_reward_kind=selected_checkout_reward['kind'],
+                   checkout_reward_id=selected_checkout_reward['id'],
+                   checkout_reward_name=selected_checkout_reward['name'])
     try:
-        # Drops the three optional columns if menu_order_branches.sql has not run yet.
-        saved, _ = _menu_order_insert(supabase, row)
-        saved = saved or row
+        if selected_checkout_reward:
+            # SQL RPC inserts the order + reserves its selected reward in one
+            # transaction. Never fall back to an unprotected order insert.
+            saved = _menu_reward_reserve(supabase, row, business_id=business.get('id'),
+                customer_id=selected_customer['id'], reward=selected_checkout_reward)
+        else:
+            saved, _ = _menu_order_insert(supabase, row)
+            saved = saved or row
     except Exception as e:
+        if selected_checkout_reward:
+            raise HTTPException(status_code=409, detail='Reward reservation failed. Refresh checkout or remove the reward and try again.') from e
         raise HTTPException(status_code=503, detail=f'Menu orders are not ready yet: {friendly_db_error(e)}')
     # owner-v6 menu_order_push: ring the owner / branch phones after the response (never blocks the order).
     background_tasks.add_task(_menu_order_push, dict(business), {**row, **saved})
@@ -18909,6 +18945,11 @@ def _menu_counter_order_public(row: dict) -> dict:
         'pickup_label': row.get('pickup_label') or '',
         'created_at': row.get('created_at') or '',
         'is_member': bool(row.get('member_customer_public_id')),
+        'reward': ({'kind': row.get('checkout_reward_kind'),
+                    'name': row.get('checkout_reward_name'),
+                    'status': ('pending' if (row.get('status') or 'new') not in ('completed','cancelled')
+                               else 'redeemed' if row.get('status') == 'completed' else 'released')}
+                   if row.get('checkout_reward_kind') else None),
         'items': [
             {
                 'item_name': item.get('item_name') or 'Item',
@@ -18972,18 +19013,46 @@ async def owner_update_menu_order_status(public_id: str, order_public_id: str, r
         if _menu_order_cash_unpaid(current_order):
             raise HTTPException(status_code=409, detail='Waiting for payment. Tap "Mark as paid" after the customer pays at the counter.')
     try:
-        saved = _supabase_first_row(
-            supabase.table('menu_counter_orders').update({'status': target})
-            .eq('public_id', order_public_id)
-            .eq('business_id', business.get('id'))
-            .execute()
-        )
+        if _menu_has_reward(current_order) and target in ('completed', 'cancelled'):
+            # Staff auth and branch restrictions were checked above. SQL atomically
+            # closes the order and consumes/releases the reward exactly once.
+            saved = _menu_reward_finish(supabase, business_id=business.get('id'),
+                order_public_id=order_public_id, target=target)
+        else:
+            if _menu_has_reward(current_order) and str(current_order.get('status') or '') in ('completed','cancelled'):
+                raise HTTPException(status_code=409, detail='A redeemed or cancelled reward order cannot be reopened.')
+            update_query = (supabase.table('menu_counter_orders').update({'status': target})
+                .eq('public_id', order_public_id)
+                .eq('business_id', business.get('id')))
+            if _menu_has_reward(current_order):
+                # A stale prepare/ready request must not reopen a redeemed order.
+                update_query = update_query.eq('status', current_order.get('status') or 'new')
+            saved = _supabase_first_row(update_query.execute())
+    except HTTPException:
+        raise
     except Exception as e:
+        if _menu_has_reward(current_order):
+            raise HTTPException(status_code=409, detail='Reward could not be redeemed. Check payment and points, or cancel this order.') from e
         raise HTTPException(status_code=503, detail=f'Could not update the order: {friendly_db_error(e)}')
     if not saved:
         raise HTTPException(status_code=404, detail='Order not found')
     background_tasks.add_task(_menu_order_wallet.status_changed, dict(business), {**(current_order or {}), **saved},
                               str((current_order or {}).get('status') or ''))
+    if (_menu_has_reward(saved) and target == 'completed'
+            and str((current_order or {}).get('status') or '') != 'completed'):
+        # A redeemed reward must refresh the Wallet even if earning was skipped
+        # by the merchant's program rules; queue after ordinary order earning.
+        try:
+            redeemed_customer = safe_get_customer(saved.get('member_customer_public_id'))
+            if redeemed_customer and redeemed_customer.get('business_id') == business.get('id'):
+                redeemed_program = safe_get_customer_program(redeemed_customer, business.get('id')) or {}
+                background_tasks.add_task(sync_loyalty_wallets_background,
+                    dict(redeemed_customer), dict(business), dict(redeemed_program),
+                    'menu_checkout_reward', 'Reward redeemed 🎁',
+                    'Your checkout reward was redeemed.',
+                    f"menu-reward-{saved.get('public_id')}")
+        except Exception:
+            pass  # Wallet sync is best-effort; the committed redemption stands.
     return {'success': True, 'order': _menu_counter_order_public(saved)}
 
 

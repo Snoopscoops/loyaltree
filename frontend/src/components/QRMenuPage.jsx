@@ -4,6 +4,7 @@ import { filterMenuItems, groupMenuCategories, menuItemAvailable, menuItemPrice,
 import loyaltyTreeLogo from './logo-192.png'
 import { requestJsonResponse } from './requestTimeout'
 import './qr-menu.css'
+import { checkoutRewardIsEligible, checkoutRewardSelectionPayload } from './qrMenuRedemption'
 import './qr-menu-rewards.css' // owner-v11
 
 function MenuItemPhoto({ item, available }) {
@@ -159,7 +160,7 @@ function CartLine({ line, money, onQuantity, disabled = false }) {
   </li>
 }
 
-function CheckoutRewards({ snapshot, loading, error }) {
+function CheckoutRewards({ snapshot, loading, error, paymentMethod, selectedReward, onSelect, disabled }) {
   if (loading) return <section className="lt-menu-rewards" aria-live="polite"><strong>Your loyalty rewards</strong><p>Checking your card…</p></section>
   if (error) return <section className="lt-menu-rewards" aria-live="polite"><strong>Your loyalty rewards</strong><p>{error}</p></section>
   if (!snapshot) return <section className="lt-menu-rewards"><strong>Your loyalty rewards</strong><p>Connect your LoyaltyTree card before checkout to see your rewards.</p></section>
@@ -170,11 +171,23 @@ function CheckoutRewards({ snapshot, loading, error }) {
       {snapshot.points_enabled && <span><b>{snapshot.points_balance}</b> points</span>}
       {snapshot.stamps_enabled && <span><b>{snapshot.stamp_count}</b> stamps</span>}
     </div>
-    {rewards.length ? <ul>{rewards.map((reward, index) => <li key={`${reward.kind}-${index}`}>
-      <span><b>{reward.name}</b>{reward.detail && <small>{reward.detail}</small>}</span>
-      <em className={reward.available ? 'is-ready' : ''}>{reward.available ? 'Available' : 'Not yet'}</em>
-    </li>)}</ul> : <p>No rewards are available yet. Keep earning with your card!</p>}
-    <small className="lt-menu-rewards-footnote">Show an available reward to staff to redeem it. No rewards or discounts are automatically applied to this online total.</small>
+    {rewards.length ? <ul>{rewards.map((reward, index) => {
+      const eligible = checkoutRewardIsEligible(reward)
+      const isSelected = eligible && selectedReward?.kind === reward.kind && selectedReward?.id === reward.id
+      const pickable = eligible && paymentMethod === 'cash'
+      return <li key={`${reward.kind}-${reward.id || index}`}>
+        {eligible ? <label className={`lt-menu-reward-choice${isSelected ? ' is-picked' : ''}`}>
+          <input type="radio" name="lt-menu-reward" value={`${reward.kind}:${reward.id}`} checked={isSelected}
+            disabled={!pickable || disabled} onChange={() => onSelect({ kind: reward.kind, id: reward.id })} />
+          <span><b>{reward.name}</b>{reward.detail && <small>{reward.detail}</small>}</span>
+        </label> : <span><b>{reward.name}</b>{reward.detail && <small>{reward.detail}</small>}</span>}
+        <em className={eligible ? 'is-ready' : ''}>{!reward.available ? 'Not yet' : eligible ? (isSelected ? 'Selected' : 'Available') : 'At counter'}</em>
+      </li>
+    })}</ul> : <p>No rewards are available yet. Keep earning with your card!</p>}
+    {selectedReward && paymentMethod === 'cash' && <button type="button" className="lt-menu-reward-clear" disabled={disabled} onClick={() => onSelect(null)}>Remove selected reward</button>}
+    <small className="lt-menu-rewards-footnote">{paymentMethod === 'cash'
+      ? 'Select one eligible Points or Stamp reward. The counter fulfills it after confirmed payment and completion. No online price discounts.'
+      : 'Select Pay at counter to use an eligible reward. Card and QR Ph methods are test-only and cannot redeem real rewards.'}</small>
   </section>
 }
 
@@ -207,6 +220,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   const [slots, setSlots] = useState([])
   const [checkingCard, setCheckingCard] = useState(false)
   const [checkoutRewards, setCheckoutRewards] = useState(null)
+  const [selectedReward, setSelectedReward] = useState(null)
   const [rewardsLoading, setRewardsLoading] = useState(false)
   const [rewardsError, setRewardsError] = useState('')
   const rewardsRequest = useRef(0)
@@ -298,6 +312,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
 
   const startCheckout = async () => {
     if (!cart.length || checkingCard || needsBranch) return
+    setSelectedReward(null)
     setCheckingCard(true)
     let saved = ''
     let token = ''
@@ -351,6 +366,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
       branch_name: branch?.name || '',
       card_token: cardToken(),
       payment_method: paymentMethod,
+      ...checkoutRewardSelectionPayload(selectedReward, paymentMethod),
     }
     submittingRef.current = true
     setSubmitting(true)
@@ -365,7 +381,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
     if (!result.ok) { setSubmitError(result.error); return }
     // Only a saved order (response.ok) reaches the receipt.
     const saved = result.order || {}
-    setOrder({ ...placedOrder, order_number: saved.order_number || placedOrder.order_id, server_order_id: saved.public_id || '', status: saved.status || 'new' })
+    setOrder({ ...placedOrder, order_number: saved.order_number || placedOrder.order_id, server_order_id: saved.public_id || '', status: saved.status || 'new', reward: saved.reward || null })
     pendingIds.current = null
     setCopied(false)
     setCart([])
@@ -513,11 +529,13 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
               <div><dt>Subtotal</dt><dd>{money(total)}</dd></div>
               <div className="is-total"><dt>Total</dt><dd>{money(total)}</dd></div>
             </dl>
-            <CheckoutRewards snapshot={checkoutRewards} loading={rewardsLoading} error={rewardsError} />
+            <CheckoutRewards snapshot={checkoutRewards} loading={rewardsLoading} error={rewardsError}
+              paymentMethod={paymentMethod} selectedReward={selectedReward} disabled={submitting}
+              onSelect={choice => { setSelectedReward(choice); pendingIds.current = null; setSubmitError('') }} />
             <fieldset className="lt-qr-pay-methods">
               <legend>How will you pay?</legend>
               {Object.entries(PAYMENT_METHODS).map(([value, method]) => <label key={value} className={paymentMethod === value ? 'is-on' : ''}>
-                <input type="radio" name="lt-qr-payment" value={value} checked={paymentMethod === value} disabled={submitting} onChange={() => { setPaymentMethod(value); setSubmitError('') }} />
+                <input type="radio" name="lt-qr-payment" value={value} checked={paymentMethod === value} disabled={submitting} onChange={() => { setPaymentMethod(value); if (value !== 'cash') setSelectedReward(null); pendingIds.current = null; setSubmitError('') }} />
                 <span><strong>{method.label}</strong><small>{method.detail}</small></span>
               </label>)}
             </fieldset>
@@ -543,6 +561,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
               <div><dt>Order type</dt><dd>{serviceLine(order.service, order.table_no, order.pickup_label)}</dd></div>
               <div><dt>Name</dt><dd>{order.buyer_name || '—'}</dd></div>
               <div><dt>Payment</dt><dd><span className={`lt-qr-paid-pill${order.payment_method === 'cash' ? ' is-unpaid' : ''}`}>{paymentReceiptLabel(order.payment_method)}</span></dd></div>
+              {order.reward && <div><dt>Reward</dt><dd>🎁 {order.reward.name} (reserved until paid and completed)</dd></div>}
             </dl>
             <ul className="lt-qr-cart-lines is-compact" aria-label="Items ordered">{(order.lines || []).map(line => <CartLine key={line.key} line={line} money={money} />)}</ul>
             <dl className="lt-qr-totals"><div className="is-total"><dt>{receipt.totalLabel}</dt><dd>{money(order.subtotal)}</dd></div></dl>

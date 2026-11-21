@@ -1,4 +1,4 @@
-"""owner-v11: checkout reward snapshots are never redemptions."""
+"""owner-v12: reward snapshots distinguish available, selectable and locked prizes."""
 from backend.menu_checkout_rewards import checkout_rewards_payload
 
 
@@ -22,7 +22,11 @@ def test_available_and_locked_prizes():
     assert value['stamp_count'] == 7
     assert [(r['name'], r['available']) for r in value['rewards']] == [
         ('Free latte', True), ('Free drink', True), ('Free cake', False)]
-    assert value['redemption_mode'] == 'at_counter'
+    assert value['redemption_mode'] == 'checkout_cash_only'
+    assert value['rewards'][0]['id'] == 'a'
+    assert value['rewards'][0]['selectable'] is True
+    assert value['rewards'][1]['selectable'] is False  # fixture has no stable milestone id
+    assert value['rewards'][2]['selectable'] is False
 
 
 def test_missing_program_does_not_expose_balances():
