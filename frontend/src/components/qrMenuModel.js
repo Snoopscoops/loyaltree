@@ -1,4 +1,5 @@
 import { requestJsonResponse } from './requestTimeout.js'
+import { checkoutRewardSelectionPayload } from './qrMenuRedemption.js'
 
 export function menuItemOfferedAt(item, branchId) {
   if (!branchId || branchId === 'all') return true
@@ -153,6 +154,7 @@ export function menuOrderRequest(order) {
     card_token: order?.card_token || '',
     payment_method: PAYMENT_METHODS[order?.payment_method] ? order.payment_method : '',
     payment_status: paymentStatusFor(order?.payment_method),
+    ...checkoutRewardSelectionPayload(order?.reward_selection, order?.payment_method),
     items: (order?.items || []).map(line => ({
       name: line.name,
       quantity: line.quantity,
