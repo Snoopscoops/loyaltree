@@ -15,20 +15,28 @@ import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
+import androidx.compose.runtime.mutableStateOf
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 
 /**
- * New-order ringtone + notification ("New order #123 · BGC branch").
+ * New-order ring + notification ("New order #123 · BGC branch").
  *
- * The sound is res/raw/lt_new_order.ogg (copied in by the owner-v5 apply script).
- * It is looked up by name, so the app still builds without it and falls back to
- * the phone's default notification sound plus an in-app chime.
- * A channel's sound can't change after it is created, so a new sound needs a new id.
+ * owner-v9: the app plays res/raw/lt_new_order.ogg itself at ALARM volume
+ * (rings even when the phone is on vibrate), for both the push and the
+ * 20-second check. The "New orders" channel is silent so it never rings twice;
+ * it still pops up and vibrates. Optional "ring until opened": repeats for up to
+ * 30 seconds, stops when the app is opened or "Stop ringing" is tapped.
+ * The sound is looked up by name, so the app still builds without it (then: beeps).
+ * A channel's sound can't change after it is created, so v1 is deleted and v2 is new.
  */
 object OrderAlerts {
-    const val CHANNEL_ID = "lt_new_orders_v1"
+    const val CHANNEL_ID = "lt_new_orders_v2"
+    private val OLD_CHANNELS = listOf("lt_new_orders_v1")
+    const val PREF_RING_UNTIL_OPENED = "ringUntilOpened"
+    private const val RING_LIMIT_MS = 30_000L
     const val EXTRA_OPEN = "lt_open"
     const val OPEN_ORDERS = "orders"
     private const val SUMMARY_ID = 7_000_001
@@ -69,21 +77,37 @@ object OrderAlerts {
     fun ensureChannel(context: Context) {
         if (Build.VERSION.SDK_INT < 26) return
         val manager = context.getSystemService(NotificationManager::class.java) ?: return
+        OLD_CHANNELS.forEach { old -> runCatching { manager.deleteNotificationChannel(old) } }
         if (manager.getNotificationChannel(CHANNEL_ID) != null) return
         val channel = NotificationChannel(CHANNEL_ID, "New orders", NotificationManager.IMPORTANCE_HIGH).apply {
-            description = "Rings when a customer places an order on the digital menu."
+            description = "Shows new digital menu orders. The LoyaltyTree app plays the ring itself at alarm volume."
             enableVibration(true)
             vibrationPattern = longArrayOf(0, 400, 200, 400, 200, 600)
             enableLights(true)
             lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
-            val attributes = AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_NOTIFICATION_EVENT)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                .build()
-            setSound(soundUri(context) ?: android.provider.Settings.System.DEFAULT_NOTIFICATION_URI, attributes)
+            setSound(null, null) // the app rings (ring()), so the notification itself stays quiet
         }
         manager.createNotificationChannel(channel)
     }
+
+    /** "high", "low" (no pop-up) or "off" for the New orders channel. Older Android: "high". */
+    fun channelState(context: Context): String {
+        if (Build.VERSION.SDK_INT < 26) return "high"
+        ensureChannel(context)
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return "high"
+        val channel = manager.getNotificationChannel(CHANNEL_ID) ?: return "off"
+        if (Build.VERSION.SDK_INT >= 28) {
+            val group = channel.group?.let { manager.getNotificationChannelGroup(it) }
+            if (group?.isBlocked == true) return "off"
+        }
+        return when {
+            channel.importance == NotificationManager.IMPORTANCE_NONE -> "off"
+            channel.importance < NotificationManager.IMPORTANCE_HIGH -> "low"
+            else -> "high"
+        }
+    }
+
+    fun hasRingtone(context: Context): Boolean = rawSound(context) != 0
 
     private fun smallIcon(context: Context): Int {
         val id = context.resources.getIdentifier("ic_lt_order", "drawable", context.packageName)
@@ -126,10 +150,8 @@ object OrderAlerts {
     @android.annotation.SuppressLint("MissingPermission")
     fun announce(context: Context, fresh: List<LiveOrder>): Boolean {
         if (fresh.isEmpty()) return true
-        if (!canNotify(context)) {
-            chime(context)
-            return false
-        }
+        ring(context) // once per batch, alarm volume; the notification below is quiet
+        if (!canNotify(context)) return false
         ensureChannel(context)
         val manager = NotificationManagerCompat.from(context)
         val shown = fresh.take(4)
@@ -145,9 +167,8 @@ object OrderAlerts {
                     .setCategory(NotificationCompat.CATEGORY_MESSAGE)
                     .setAutoCancel(true)
                     .setOnlyAlertOnce(false)
-                    .setSilent(index > 0) // ring once per batch
+                    .setSilent(index > 0) // pop up once per batch
                     .setContentIntent(openOrders(context, order.id.hashCode()))
-                soundUri(context)?.let { note.setSound(it) } // Android 7 and older use this instead of the channel
                 manager.notify(order.id.hashCode(), note.build())
             }
             if (fresh.size > shown.size) {
@@ -162,7 +183,6 @@ object OrderAlerts {
                 manager.notify(SUMMARY_ID, note.build())
             }
         } catch (_: SecurityException) {
-            chime(context)
             return false
         }
         return true
@@ -177,22 +197,95 @@ object OrderAlerts {
         announce(context, listOf(sample))
     }
 
-    /** In-app chime when notifications are off. Uses the LoyaltyTree tone, or three quick beeps. */
-    fun chime(context: Context) {
-        val raw = rawSound(context)
-        if (raw != 0) {
-            val player = runCatching { MediaPlayer.create(context, raw) }.getOrNull()
-            if (player != null) {
-                player.setOnCompletionListener { it.release() }
-                runCatching { player.start() }.onFailure { player.release() }
-                return
+    // ----- The ring itself (owner-v9) -----
+
+    private val main = Handler(Looper.getMainLooper())
+    private var player: MediaPlayer? = null
+    private var startedHidden = false
+
+    /** True while the order ring is playing (the app shows "Stop ringing"). */
+    val ringing = mutableStateOf(false)
+
+    /** Set by the app screen: true while LoyaltyTree is open on screen. */
+    @Volatile
+    var appVisible = false
+        private set
+
+    private val stopLater = Runnable { stopNow() }
+
+    private val alarmAttributes: AudioAttributes = AudioAttributes.Builder()
+        .setUsage(AudioAttributes.USAGE_ALARM)
+        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+        .build()
+
+    fun ringUntilOpened(context: Context): Boolean =
+        context.getSharedPreferences("lt", Context.MODE_PRIVATE).getBoolean(PREF_RING_UNTIL_OPENED, false)
+
+    /** Plays the LoyaltyTree order tone at alarm volume. Safe from any thread. */
+    fun ring(context: Context) {
+        val app = context.applicationContext
+        main.post { start(app) }
+    }
+
+    /** Stops the ring (Stop ringing button, or the app was opened). */
+    fun stopRinging() {
+        main.post { stopNow() }
+    }
+
+    /** Called when the app screen opens or closes. Opening the app stops a ring that started while it was closed. */
+    fun onAppVisible(visible: Boolean) {
+        appVisible = visible
+        if (visible) main.post { if (ringing.value && startedHidden) stopNow() }
+    }
+
+    private fun start(context: Context) {
+        stopNow()
+        val loop = ringUntilOpened(context)
+        val uri = soundUri(context)
+        if (uri == null) {
+            beep()
+            return
+        }
+        val next = MediaPlayer()
+        val ok = runCatching {
+            next.setAudioAttributes(alarmAttributes)
+            next.setDataSource(context, uri)
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.WAKE_LOCK) == PackageManager.PERMISSION_GRANTED) {
+                next.setWakeMode(context, PowerManager.PARTIAL_WAKE_LOCK)
             }
+            next.isLooping = loop
+            next.setOnCompletionListener { done -> if (player === done) stopNow() }
+            next.setOnErrorListener { failed, _, _ -> if (player === failed) stopNow(); true }
+            next.prepare()
+            next.start()
+        }.isSuccess
+        if (!ok) {
+            runCatching { next.release() }
+            beep()
+            return
         }
-        val tone = runCatching { ToneGenerator(AudioManager.STREAM_NOTIFICATION, 90) }.getOrNull() ?: return
-        val handler = Handler(Looper.getMainLooper())
+        player = next
+        startedHidden = !appVisible
+        ringing.value = true
+        main.postDelayed(stopLater, if (loop) RING_LIMIT_MS else 6_000L)
+    }
+
+    private fun stopNow() {
+        main.removeCallbacks(stopLater)
+        player?.let { current ->
+            runCatching { if (current.isPlaying) current.stop() }
+            runCatching { current.release() }
+        }
+        player = null
+        ringing.value = false
+    }
+
+    /** Fallback when the tone file is missing or can't play: three quick beeps at alarm volume. */
+    private fun beep() {
+        val tone = runCatching { ToneGenerator(AudioManager.STREAM_ALARM, 90) }.getOrNull() ?: return
         listOf(0L, 260L, 520L).forEach { at ->
-            handler.postDelayed({ runCatching { tone.startTone(ToneGenerator.TONE_PROP_BEEP2, 180) } }, at)
+            main.postDelayed({ runCatching { tone.startTone(ToneGenerator.TONE_PROP_BEEP2, 180) } }, at)
         }
-        handler.postDelayed({ tone.release() }, 1100L)
+        main.postDelayed({ runCatching { tone.release() } }, 1100L)
     }
 }

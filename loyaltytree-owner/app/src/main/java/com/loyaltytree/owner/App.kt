@@ -181,7 +181,7 @@ fun LoyaltyTreeApp(store: CounterStore = viewModel()) {
 private fun OrderAlertHooks(store: CounterStore) {
     val context = LocalContext.current
     val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        store.alertsNote = if (granted) "" else "Notifications are off. New orders only chime while the app is open."
+        store.alertsNote = if (granted) "" else "Notifications are off. New orders still ring, but nothing pops up."
     }
     LaunchedEffect(store.session?.slug) {
         OrderAlerts.ensureChannel(context)
@@ -203,6 +203,38 @@ private fun OrderAlertHooks(store: CounterStore) {
         }
         activity?.addOnNewIntentListener(listener)
         onDispose { activity?.removeOnNewIntentListener(listener) }
+    }
+    // owner-v9: opening the app stops a ring that started while it was closed, and refreshes the Sound check.
+    androidx.compose.runtime.DisposableEffect(activity) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            when (event) {
+                androidx.lifecycle.Lifecycle.Event.ON_RESUME -> {
+                    OrderAlerts.onAppVisible(true)
+                    SoundCheckTick.intValue++
+                }
+                androidx.lifecycle.Lifecycle.Event.ON_PAUSE -> OrderAlerts.onAppVisible(false)
+                else -> Unit
+            }
+        }
+        activity?.lifecycle?.addObserver(observer)
+        if (activity?.lifecycle?.currentState?.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED) == true) OrderAlerts.onAppVisible(true)
+        onDispose { activity?.lifecycle?.removeObserver(observer) }
+    }
+}
+
+/** Bumped every time the app comes back on screen, so the Sound check re-reads the phone settings. */
+private val SoundCheckTick = mutableIntStateOf(0)
+
+/** owner-v9: shown while an order is ringing. */
+@Composable
+private fun RingingBar() {
+    if (!OrderAlerts.ringing.value) return
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Forest).clickable { OrderAlerts.stopRinging() }.padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text("New order ringing", color = Color.White, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+        Text("Stop ringing", color = Color.White, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -307,7 +339,9 @@ private fun StaffMeScreen(store: CounterStore) {
 
 @Composable
 private fun AlertsScreen(store: CounterStore) {
-    Scroll { AlertSettings(store) }
+    Scroll {
+        AlertSettings(store)
+    }
 }
 
 @Composable
@@ -348,11 +382,176 @@ private fun AlertSettings(store: CounterStore) {
                 runCatching { context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
             }
         }
+        if (store.alertsOn) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Ring until opened", color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                    Text("Keeps ringing for up to 30 seconds, or until you open the app.", color = Muted, fontSize = 13.sp)
+                }
+                Switch(store.ringUntilOpened, { store.chooseRingUntilOpened(it) }, colors = switchColors())
+            }
+        }
+        RingingBar()
         Secondary("Play test alert") {
             OrderAlerts.test(context, current.branchName.ifBlank { store.branches.firstOrNull()?.name.orEmpty() })
         }
         if (store.alertsNote.isNotBlank()) Text(store.alertsNote, color = Muted, fontSize = 12.sp)
-        Text("Alerts work while the LoyaltyTree app is open or was used recently. If the phone closes the app, open it again to keep getting alerts.", color = Muted, fontSize = 12.sp, lineHeight = 17.sp)
+        Text("The ring plays at alarm volume, so it still rings when the phone is on vibrate. With push set up, orders ring even when the app is closed.", color = Muted, fontSize = 12.sp, lineHeight = 17.sp)
+    }
+    SoundCheck(store)
+}
+
+private enum class Health { Good, Warn, Bad }
+
+@Composable
+private fun SoundRow(title: String, value: String, health: Health, action: String? = null, onAction: () -> Unit = {}) {
+    val color = when (health) { Health.Good -> Forest; Health.Warn -> Amber; Health.Bad -> Bad }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(10.dp).clip(CircleShape).background(color))
+        Column(Modifier.weight(1f).padding(start = 10.dp)) {
+            Text(title, color = Ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            Text(value, color = if (health == Health.Good) Muted else color, fontSize = 12.sp, lineHeight = 16.sp)
+        }
+        if (action != null) TextButton(onClick = onAction) { Text(action, color = Forest, fontWeight = FontWeight.SemiBold, fontSize = 13.sp) }
+    }
+}
+
+private fun openSettings(context: Context, vararg intents: Intent) {
+    for (intent in intents) {
+        if (runCatching { context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }.isSuccess) return
+    }
+}
+
+private fun appDetails(context: Context) =
+    Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
+
+/** owner-v9: one place to see why the order ring might be quiet, with a button to the right setting. */
+@Composable
+private fun SoundCheck(store: CounterStore) {
+    val context = LocalContext.current
+    var bump by remember { mutableIntStateOf(0) }
+    val key = SoundCheckTick.intValue + bump // re-read when the app comes back from Settings
+    val audio = remember(key) { context.getSystemService(android.media.AudioManager::class.java) }
+    val notifications = remember(key) { context.getSystemService(android.app.NotificationManager::class.java) }
+    val power = remember(key) { context.getSystemService(android.os.PowerManager::class.java) }
+    val activityManager = remember(key) { context.getSystemService(android.app.ActivityManager::class.java) }
+    LaunchedEffect(Unit) { if (store.pushState.isBlank()) store.recheckPush() }
+    Card {
+        Text("SOUND CHECK", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+
+        val permission = OrderAlerts.permissionGranted(context) && androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled()
+        SoundRow(
+            "Notifications", if (permission) "Allowed" else "Off. Orders ring but nothing pops up.",
+            if (permission) Health.Good else Health.Bad, if (permission) null else "Turn on"
+        ) {
+            openSettings(context,
+                Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName),
+                appDetails(context))
+        }
+
+        val channel = remember(key) { OrderAlerts.channelState(context) }
+        SoundRow(
+            "\"New orders\" pop-up",
+            when (channel) { "high" -> "On, pops up on screen"; "low" -> "Turned down, won't pop up"; else -> "Turned off for this app" },
+            when (channel) { "high" -> Health.Good; "low" -> Health.Warn; else -> Health.Bad },
+            if (Build.VERSION.SDK_INT >= 26) "Settings" else null
+        ) {
+            openSettings(context,
+                Intent(android.provider.Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                    .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
+                    .putExtra(android.provider.Settings.EXTRA_CHANNEL_ID, OrderAlerts.CHANNEL_ID),
+                Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName))
+        }
+
+        SoundRow(
+            "Order tone", if (OrderAlerts.hasRingtone(context)) "LoyaltyTree tone" else "Tone file missing in this build, using beeps",
+            if (OrderAlerts.hasRingtone(context)) Health.Good else Health.Warn
+        )
+
+        if (audio != null) {
+            val alarm = runCatching { audio.getStreamVolume(android.media.AudioManager.STREAM_ALARM) }.getOrDefault(0)
+            val alarmMax = runCatching { audio.getStreamMaxVolume(android.media.AudioManager.STREAM_ALARM) }.getOrDefault(1).coerceAtLeast(1)
+            val percent = alarm * 100 / alarmMax
+            SoundRow(
+                "Alarm volume (the order ring)", "$percent%" + if (percent == 0) ", the ring is silent" else if (percent < 50) ", may be hard to hear" else "",
+                when { percent == 0 -> Health.Bad; percent < 50 -> Health.Warn; else -> Health.Good },
+                if (percent < 80) "Turn up" else null
+            ) {
+                val ok = runCatching {
+                    audio.setStreamVolume(android.media.AudioManager.STREAM_ALARM, (alarmMax * 8 + 9) / 10, android.media.AudioManager.FLAG_SHOW_UI)
+                }.isSuccess
+                if (!ok) openSettings(context, Intent(android.provider.Settings.ACTION_SOUND_SETTINGS))
+                bump++
+            }
+            val notifyVolume = runCatching { audio.getStreamVolume(android.media.AudioManager.STREAM_NOTIFICATION) }.getOrDefault(0)
+            val notifyMax = runCatching { audio.getStreamMaxVolume(android.media.AudioManager.STREAM_NOTIFICATION) }.getOrDefault(1).coerceAtLeast(1)
+            val mode = when (audio.ringerMode) {
+                android.media.AudioManager.RINGER_MODE_SILENT -> "Silent"
+                android.media.AudioManager.RINGER_MODE_VIBRATE -> "Vibrate"
+                else -> "Sound on"
+            }
+            SoundRow(
+                "Phone sound mode", "$mode · notification volume ${notifyVolume * 100 / notifyMax}%. Orders still ring at alarm volume.",
+                Health.Good
+            )
+        }
+
+        if (notifications != null && Build.VERSION.SDK_INT >= 23) {
+            val filter = notifications.currentInterruptionFilter
+            val alarmsAllowed = when (filter) {
+                android.app.NotificationManager.INTERRUPTION_FILTER_ALL, android.app.NotificationManager.INTERRUPTION_FILTER_UNKNOWN -> true
+                android.app.NotificationManager.INTERRUPTION_FILTER_NONE -> false
+                android.app.NotificationManager.INTERRUPTION_FILTER_ALARMS -> true
+                else -> runCatching {
+                    Build.VERSION.SDK_INT < 28 ||
+                        notifications.notificationPolicy.priorityCategories and android.app.NotificationManager.Policy.PRIORITY_CATEGORY_ALARMS != 0
+                }.getOrDefault(true)
+            }
+            val dndOff = filter == android.app.NotificationManager.INTERRUPTION_FILTER_ALL || filter == android.app.NotificationManager.INTERRUPTION_FILTER_UNKNOWN
+            SoundRow(
+                "Do Not Disturb",
+                when {
+                    dndOff -> "Off"
+                    alarmsAllowed -> "On. Alarms still ring, but pop-ups may be hidden."
+                    else -> "On and blocking alarms. Orders will not ring."
+                },
+                when { dndOff -> Health.Good; alarmsAllowed -> Health.Warn; else -> Health.Bad },
+                if (dndOff) null else "Settings"
+            ) {
+                openSettings(context, Intent("android.settings.ZEN_MODE_SETTINGS"), Intent(android.provider.Settings.ACTION_SOUND_SETTINGS))
+            }
+        }
+
+        val unrestricted = power == null || Build.VERSION.SDK_INT < 23 || power.isIgnoringBatteryOptimizations(context.packageName)
+        val background = Build.VERSION.SDK_INT >= 28 && activityManager?.isBackgroundRestricted == true
+        SoundRow(
+            "Battery",
+            when {
+                background -> "Restricted. Android may block alerts when the app is closed."
+                unrestricted -> "Not restricted"
+                else -> "Optimized. Alerts can be late when the app is closed. Set LoyaltyTree to Unrestricted."
+            },
+            when { background -> Health.Bad; unrestricted -> Health.Good; else -> Health.Warn },
+            if (unrestricted && !background) null else "Settings"
+        ) {
+            if (background || Build.VERSION.SDK_INT < 23) openSettings(context, appDetails(context))
+            else openSettings(context, Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS), appDetails(context))
+        }
+
+        SoundRow(
+            "Push (rings when the app is closed)",
+            when (store.pushState) {
+                "on" -> "This phone is registered"
+                "no_firebase" -> "Not set up in this build (google-services.json). Rings only while the app is open."
+                "server" -> "The server did not accept this phone. Rings only while the app is open."
+                else -> "Checking"
+            },
+            when (store.pushState) { "on" -> Health.Good; "checking", "" -> Health.Warn; else -> Health.Bad },
+            if (store.pushState == "on" || store.pushState == "checking") null else "Retry"
+        ) { store.recheckPush() }
+
+        Text("Xiaomi, Oppo, Vivo, Realme: also allow Autostart for LoyaltyTree in the phone's app settings.", color = Muted, fontSize = 12.sp, lineHeight = 17.sp)
+        Secondary("Open LoyaltyTree app settings") { openSettings(context, appDetails(context)) }
     }
 }
 
@@ -605,6 +804,7 @@ private fun OrdersScreen(store: CounterStore) {
             else "Orders placed on the digital menu show up here.",
             color = Muted, fontSize = 15.sp
         )
+        RingingBar()
         if (store.alertsNote.isNotBlank()) Text(store.alertsNote, color = Amber, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
         if (who?.isOwner == true && store.branches.size > 1) {
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {

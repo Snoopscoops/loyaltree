@@ -13,7 +13,8 @@ import java.util.concurrent.TimeUnit
  *
  * The server sends data-only messages, so this service always builds the
  * notification itself: "New order #123 · BGC branch" on the "New orders" channel
- * with the lt_new_order chime (OrderAlerts). Tapping it opens the Orders tab.
+ * and the app plays the lt_new_order ring at alarm volume (OrderAlerts.ring).
+ * Tapping it opens the Orders tab.
  * Works while the app is closed or the phone is locked.
  *
  * The phone decides if it rings: signed in to that business, alerts switched on,
@@ -80,13 +81,13 @@ object OrderPush {
         )
     }
 
-    /** Gets this phone's FCM token. Quietly does nothing if Firebase is not set up in this build. */
-    fun currentToken(context: Context, done: (String) -> Unit) {
+    /** Gets this phone's FCM token. Calls [failed] (never throws) if Firebase is not set up in this build. */
+    fun currentToken(context: Context, failed: () -> Unit = {}, done: (String) -> Unit) {
         runCatching {
-            FirebaseMessaging.getInstance().token.addOnSuccessListener { token ->
-                if (!token.isNullOrBlank()) done(token)
-            }
-        }
+            FirebaseMessaging.getInstance().token
+                .addOnSuccessListener { token -> if (!token.isNullOrBlank()) done(token) else failed() }
+                .addOnFailureListener { failed() }
+        }.onFailure { failed() }
     }
 
     private fun appVersion(context: Context): String = runCatching {

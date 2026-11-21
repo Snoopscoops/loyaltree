@@ -266,6 +266,10 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     var alertsOn by mutableStateOf(prefs.getBoolean("orderAlerts", true))
     var mutedBranches by mutableStateOf(prefs.getStringSet("mutedBranches", emptySet())?.toSet() ?: emptySet())
     var alertsNote by mutableStateOf("")
+    /** owner-v9: repeat the order ring for up to 30 seconds until the app is opened. */
+    var ringUntilOpened by mutableStateOf(prefs.getBoolean(OrderAlerts.PREF_RING_UNTIL_OPENED, false))
+    /** owner-v9 Sound check: "" (not checked yet), "checking", "on", "no_firebase", "server" (server did not accept). */
+    var pushState by mutableStateOf("")
     /** Bumped when a new-order notification is tapped, so the app jumps to Orders. */
     var openOrdersTick by mutableStateOf(0)
 
@@ -345,6 +349,8 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         // Stop pushes to this phone first (works even if the 12-hour shift sign-in already ended).
         session?.let { OrderPush.signOut(getApplication<Application>(), it.slug) }
         pushRegistered = ""
+        pushState = ""
+        OrderAlerts.stopRinging()
         watchJob?.cancel()
         watchJob = null
         session = null
@@ -440,14 +446,38 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     /** Tells the server this phone should ring for new orders (owner: all branches, staff: their branch). */
     private fun registerPush(current: OwnerSession) {
         val context = getApplication<Application>()
-        OrderPush.currentToken(context) { token ->
+        if (pushState.isBlank()) pushState = "checking"
+        OrderPush.currentToken(context, failed = { pushState = "no_firebase" }) { token ->
             val signature = "${current.slug}|${current.role}|${current.branchId}|$token"
-            if (signature == pushRegistered || session?.slug != current.slug) return@currentToken
+            if (session?.slug != current.slug) return@currentToken
+            if (signature == pushRegistered) {
+                pushState = "on"
+                return@currentToken
+            }
             viewModelScope.launch {
                 val result = io { OrderPush.register(context, current.slug, current.token, token) }
-                if (result != null && result.first < 400) pushRegistered = signature
+                if (result != null && result.first < 400) {
+                    pushRegistered = signature
+                    pushState = "on"
+                } else {
+                    pushState = "server"
+                }
             }
         }
+    }
+
+    /** Sound check: register this phone for push again (e.g. after turning notifications on). */
+    fun recheckPush() {
+        val current = session ?: return
+        pushRegistered = ""
+        pushState = "checking"
+        registerPush(current)
+    }
+
+    fun chooseRingUntilOpened(on: Boolean) {
+        ringUntilOpened = on
+        prefs.edit().putBoolean(OrderAlerts.PREF_RING_UNTIL_OPENED, on).apply()
+        if (!on) OrderAlerts.stopRinging()
     }
 
     // ----- New-order ringtone + notification -----
@@ -480,7 +510,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         }
         if (fresh.isEmpty() || !alertsOn) return
         if (!OrderAlerts.announce(context, fresh)) {
-            alertsNote = "Notifications are off for LoyaltyTree, so new orders only chime while the app is open."
+            alertsNote = "Notifications are off for LoyaltyTree. New orders still ring, but nothing pops up. Turn them on in Order alerts."
         }
     }
 
