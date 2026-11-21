@@ -12,10 +12,11 @@ Setup (done by the owner, never in code or chat):
 Safety:
 - No env var, bad JSON, or no table yet: push is a silent no-op. Saving the order
   never waits for, or fails because of, a push.
-- Data-only messages, so the app always builds its own notification on the
-  "New orders" channel with the LoyaltyTree chime.
-- The phone itself checks the owner's per-branch mute and the alerts switch
-  (stored on the phone, not on the server) before it rings.
+- Android gets data-only messages so the app plays its own new-order chime.
+- iOS gets an APNs alert via FCM with the bundled lt_new_order.caf sound,
+  time-sensitive interruption level, and a per-branch notification thread.
+- The Android app checks its own local mute/settings. For iOS, the server
+  respects alerts_on and muted_branches saved during device registration.
 - Tokens Firebase reports as UNREGISTERED are deleted.
 
 Who gets a push for an order of branch B:
@@ -117,13 +118,32 @@ class FcmSender:
             self._expires = now + float((body or {}).get('expires_in') or 3600)
             return token
 
-    def send(self, device_token, data):
+    def send(self, device_token, data, *, platform='android'):
         """Returns 'ok', 'unregistered' (delete the token) or 'error'."""
         message = {'message': {
             'token': device_token,
             'data': {str(k): str(v if v is not None else '') for k, v in data.items()},
-            'android': {'priority': 'HIGH', 'ttl': '3600s'},
         }}
+        if platform == 'ios':
+            # FCM forwards the platform-specific alert to APNs. An iPhone can
+            # display this while locked, without app code running in background.
+            branch = str(data.get('branch_public_id') or 'all')[:80]
+            body = ' · '.join(part for part in (
+                str(data.get('note') or ''), str(data.get('total') or ''),
+                str(data.get('items') or '') + ' item(s)' if data.get('items') else '',
+            ) if part)[:190] or 'New Digital Menu order'
+            message['message']['apns'] = {
+                'headers': {'apns-push-type': 'alert', 'apns-priority': '10'},
+                'payload': {'aps': {
+                    'alert': {'title': str(data.get('title') or 'New order')[:120], 'body': body},
+                    'sound': 'lt_new_order.caf',
+                    'interruption-level': 'time-sensitive',
+                    'thread-id': 'lt-orders-' + branch,
+                }},
+            }
+        else:
+            # Preserve the owner-v9 Android data-only ringtone behavior.
+            message['message']['android'] = {'priority': 'HIGH', 'ttl': '3600s'}
         for attempt in range(2):
             resp = self.post(self.url, json=message, headers={
                 'Authorization': f'Bearer {self.access_token(force=attempt > 0)}',
@@ -277,8 +297,18 @@ def make_order_pusher(*, db, environ=None, sender_factory=None):
                 token = device.get('token')
                 if not token:
                     continue
+                platform = str(device.get('platform') or 'android').lower()
+                if platform == 'ios':
+                    if device.get('alerts_on') is False:
+                        continue
+                    muted = device.get('muted_branches') or []
+                    if isinstance(muted, list) and str(order.get('branch_public_id') or '') in muted:
+                        continue
                 try:
-                    result = fcm.send(token, data)
+                    if platform == 'ios':
+                        result = fcm.send(token, data, platform='ios')
+                    else:
+                        result = fcm.send(token, data)
                 except Exception as e:
                     _log(f'send failed: {e}')
                     result = 'error'
@@ -317,16 +347,29 @@ def register_menu_order_push_routes(app, *, db, operator, get_business, environ=
         token = _clean_token((payload or {}).get('token'))
         business, scope = await asyncio.to_thread(operator, public_id, authorization, need_branch=False)
         now = datetime.now(timezone.utc).isoformat()
+        platform = str((payload or {}).get('platform') or 'android').strip().lower()
+        if platform in ('iphone', 'ipad'):
+            platform = 'ios'
         row = {
             'token': token,
             'business_id': business.get('id'),
             'role': scope.get('role') if scope.get('role') in ROLES else 'owner',
             'staff_id': scope.get('staff_id'),
             'branch_public_id': scope.get('branch') or '',
-            'platform': str((payload or {}).get('platform') or 'android')[:20],
+            'platform': platform[:20],
             'app_version': str((payload or {}).get('app_version') or '')[:40],
             'updated_at': now,
         }
+        if platform == 'ios':
+            alerts = (payload or {}).get('alerts_on', True)
+            muted = (payload or {}).get('muted_branches', [])
+            if not isinstance(alerts, bool):
+                raise HTTPException(status_code=400, detail='alerts_on must be boolean')
+            if (not isinstance(muted, list) or len(muted) > 100
+                    or any(not isinstance(b, str) or not b.strip() or len(b) > 128 for b in muted)):
+                raise HTTPException(status_code=400, detail='muted_branches must be a list of branch IDs')
+            row['alerts_on'] = alerts
+            row['muted_branches'] = list(dict.fromkeys(muted))
         try:
             await asyncio.to_thread(lambda: db.table(TABLE).upsert(row, on_conflict='token').execute())
         except Exception as e:

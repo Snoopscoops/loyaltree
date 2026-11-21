@@ -51768,9 +51768,13 @@ def _menu_order_wallet_field(customer, business):
         return _menu_order_apple_field(supabase, customer, business)
     except Exception:
         return None
+# owner-v11: verified, read-only checkout rewards for connected cards.
 register_menu_card_routes(app, db=supabase, get_business=safe_get_business,
     has_feature=business_has_plan_feature, on_hold=billing_hold, send_email=send_email,
-    frontend_url=FRONTEND_URL or 'https://theloyaltytree.com')
+    frontend_url=FRONTEND_URL or 'https://theloyaltytree.com',
+    get_customer_by_public_id=safe_get_customer, get_program=safe_get_customer_program,
+    get_redeemables=get_current_card_redeemables,
+    uses_points=program_reward_uses_points, uses_stamps=program_reward_uses_stamps)
 try:
     from .menu_payments import register_menu_payment_routes
 except ImportError:

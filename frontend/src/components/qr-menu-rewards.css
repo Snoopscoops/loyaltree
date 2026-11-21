@@ -1,0 +1,14 @@
+/* owner-v11: lightweight checkout rewards panel (Android/mobile web + iOS web) */
+.lt-menu-rewards{margin:14px 0;padding:14px;border:1px solid #d8e6de;border-radius:14px;background:#f7fbf8;color:#163b2c;display:grid;gap:10px}
+.lt-menu-rewards>strong{font-size:1rem}
+.lt-menu-rewards>p{font-size:.88rem;margin:0;color:#486457}
+.lt-menu-rewards-balances{display:flex;gap:8px;flex-wrap:wrap}
+.lt-menu-rewards-balances span{background:#e5f3eb;border-radius:18px;padding:6px 11px;font-size:.84rem}
+.lt-menu-rewards ul{list-style:none;padding:0;margin:0;display:grid;gap:6px;max-height:260px;overflow:auto}
+.lt-menu-rewards li{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 0;border-bottom:1px solid #e0ece5}
+.lt-menu-rewards li span{display:grid;gap:3px;min-width:0}
+.lt-menu-rewards li b{font-size:.88rem;overflow-wrap:anywhere}
+.lt-menu-rewards li small,.lt-menu-rewards-footnote{color:#5b6b63;font-size:.76rem;font-style:normal}
+.lt-menu-rewards li em{flex-shrink:0;font-style:normal;font-size:.72rem;color:#676e6b;background:#e8eaeb;padding:4px 8px;border-radius:12px}
+.lt-menu-rewards li em.is-ready{color:#165f38;background:#d5f4df}
+@media (prefers-color-scheme:dark){.lt-menu-rewards{background:#182f25;color:#e7f9eb;border-color:#3b6b51}.lt-menu-rewards>p,.lt-menu-rewards li small,.lt-menu-rewards-footnote{color:#c3d4ca}.lt-menu-rewards-balances span{background:#254c35}.lt-menu-rewards li{border-color:#385b46}.lt-menu-rewards li em{background:#434948;color:#e1e7e2}.lt-menu-rewards li em.is-ready{background:#235839;color:#d8ffe4}}

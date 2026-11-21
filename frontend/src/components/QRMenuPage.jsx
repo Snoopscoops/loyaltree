@@ -4,6 +4,7 @@ import { filterMenuItems, groupMenuCategories, menuItemAvailable, menuItemPrice,
 import loyaltyTreeLogo from './logo-192.png'
 import { requestJsonResponse } from './requestTimeout'
 import './qr-menu.css'
+import './qr-menu-rewards.css' // owner-v11
 
 function MenuItemPhoto({ item, available }) {
   const [failedSource, setFailedSource] = useState(null)
@@ -158,6 +159,25 @@ function CartLine({ line, money, onQuantity, disabled = false }) {
   </li>
 }
 
+function CheckoutRewards({ snapshot, loading, error }) {
+  if (loading) return <section className="lt-menu-rewards" aria-live="polite"><strong>Your loyalty rewards</strong><p>Checking your card…</p></section>
+  if (error) return <section className="lt-menu-rewards" aria-live="polite"><strong>Your loyalty rewards</strong><p>{error}</p></section>
+  if (!snapshot) return <section className="lt-menu-rewards"><strong>Your loyalty rewards</strong><p>Connect your LoyaltyTree card before checkout to see your rewards.</p></section>
+  const rewards = snapshot.rewards || []
+  return <section className="lt-menu-rewards" aria-label="Your loyalty rewards">
+    <strong>Your loyalty rewards</strong>
+    <div className="lt-menu-rewards-balances">
+      {snapshot.points_enabled && <span><b>{snapshot.points_balance}</b> points</span>}
+      {snapshot.stamps_enabled && <span><b>{snapshot.stamp_count}</b> stamps</span>}
+    </div>
+    {rewards.length ? <ul>{rewards.map((reward, index) => <li key={`${reward.kind}-${index}`}>
+      <span><b>{reward.name}</b>{reward.detail && <small>{reward.detail}</small>}</span>
+      <em className={reward.available ? 'is-ready' : ''}>{reward.available ? 'Available' : 'Not yet'}</em>
+    </li>)}</ul> : <p>No rewards are available yet. Keep earning with your card!</p>}
+    <small className="lt-menu-rewards-footnote">Show an available reward to staff to redeem it. No rewards or discounts are automatically applied to this online total.</small>
+  </section>
+}
+
 function CheckIcon({ size = 16 }) {
   return <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5 10 17.5 19 7" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
 }
@@ -186,6 +206,10 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   const [pickupAt, setPickupAt] = useState('')
   const [slots, setSlots] = useState([])
   const [checkingCard, setCheckingCard] = useState(false)
+  const [checkoutRewards, setCheckoutRewards] = useState(null)
+  const [rewardsLoading, setRewardsLoading] = useState(false)
+  const [rewardsError, setRewardsError] = useState('')
+  const rewardsRequest = useRef(0)
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState('')
   const [copied, setCopied] = useState(false)
@@ -255,6 +279,23 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
   }
 
+  const loadCheckoutRewards = async token => {
+    const seq = ++rewardsRequest.current
+    setCheckoutRewards(null)
+    setRewardsError('')
+    if (!token || !apiBase) { setRewardsLoading(false); return }
+    setRewardsLoading(true)
+    try {
+      const response = await fetch(`${apiBase}/api/v1/public/menu/${encodeURIComponent(business.public_id)}/card/rewards`,
+        { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' })
+      if (!response.ok) throw new Error(response.status === 401 ? 'Card connection expired. Please reconnect.' : 'Rewards unavailable. You can still place your order.')
+      const body = await response.json()
+      if (seq === rewardsRequest.current) setCheckoutRewards(body)
+    } catch (error) {
+      if (seq === rewardsRequest.current) setRewardsError(error.message || 'Rewards unavailable. You can still place your order.')
+    } finally { if (seq === rewardsRequest.current) setRewardsLoading(false) }
+  }
+
   const startCheckout = async () => {
     if (!cart.length || checkingCard || needsBranch) return
     setCheckingCard(true)
@@ -267,9 +308,13 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
         if (response.ok) {
           const body = await response.json()
           if (body.name && body.name !== 'Loyalty card') { saved = body.name; try { localStorage.setItem(`lt-menu-card-name:${business.public_id}`, saved) } catch { /* storage is optional */ } }
+        } else if (response.status === 401) {
+          token = ''; saved = ''
+          try { localStorage.removeItem(`lt-menu-card:${business.public_id}`); localStorage.removeItem(`lt-menu-card-name:${business.public_id}`) } catch { /* ignore */ }
         }
-      } catch { /* the saved name is optional; keep the stored one */ }
+      } catch { /* temporary connection problem: rewards remain unavailable */ }
     }
+    void loadCheckoutRewards(token)
     setCheckingCard(false)
     setCardName(saved)
     setEditingName(false)
@@ -342,6 +387,9 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   const connectedCard = value => {
     const name = value?.name && value.name !== 'Loyalty card' ? value.name : ''
     if (!name) return
+    let token = ''
+    try { token = localStorage.getItem(`lt-menu-card:${business.public_id}`) || '' } catch { /* ignore */ }
+    void loadCheckoutRewards(token)
     try { localStorage.setItem(`lt-menu-card-name:${business.public_id}`, name) } catch { /* storage is optional */ }
     setCardName(name)
     setEditingName(false)
@@ -465,6 +513,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
               <div><dt>Subtotal</dt><dd>{money(total)}</dd></div>
               <div className="is-total"><dt>Total</dt><dd>{money(total)}</dd></div>
             </dl>
+            <CheckoutRewards snapshot={checkoutRewards} loading={rewardsLoading} error={rewardsError} />
             <fieldset className="lt-qr-pay-methods">
               <legend>How will you pay?</legend>
               {Object.entries(PAYMENT_METHODS).map(([value, method]) => <label key={value} className={paymentMethod === value ? 'is-on' : ''}>

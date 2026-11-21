@@ -52,7 +52,9 @@ def normalize_email(value):
         raise HTTPException(422, "Enter the email on your loyalty card.")
     return email
 
-def register_menu_card_routes(app, *, db, get_business, has_feature, on_hold, send_email, frontend_url):
+def register_menu_card_routes(app, *, db, get_business, has_feature, on_hold, send_email, frontend_url,
+                              get_customer_by_public_id=None, get_program=None, get_redeemables=None,
+                              uses_points=None, uses_stamps=None):
     def business_for(public_id):
         business = get_business(public_id)
         if not business or not has_feature(business, "qr_menu"):
@@ -130,3 +132,34 @@ def register_menu_card_routes(app, *, db, get_business, has_feature, on_hold, se
             name = ""
         # customer_public_id lets the tap/scan page say "Welcome back" with card progress.
         return dict(name=name, email_masked=mask_email(payload.get("email") or ""), customer_public_id=customer_public_id)
+
+    @app.get("/api/v1/public/menu/{public_id}/card/rewards")
+    def card_checkout_rewards(public_id: str, authorization: str = Header(default="")):
+        """Read-only rewards for a verified member at this exact business."""
+        from fastapi.responses import JSONResponse
+        try:
+            from .menu_checkout_rewards import checkout_rewards_payload
+        except ImportError:
+            from menu_checkout_rewards import checkout_rewards_payload
+        business = business_for(public_id)
+        parts = authorization.split(" ", 1)
+        if len(parts) != 2 or parts[0].lower() != 'bearer':
+            raise HTTPException(401, "Connect your loyalty card to see rewards.")
+        payload = read_token(parts[1], 'session')
+        if str(payload.get('business_public_id') or '') != str(business.get('public_id')):
+            raise HTTPException(401, "Connect your loyalty card to see rewards.")
+        if not all([get_customer_by_public_id, get_program, get_redeemables, uses_points, uses_stamps]):
+            raise HTTPException(503, "Rewards are not available right now.")
+        customer_id = str(payload.get('customer_public_id') or '')
+        try:
+            customer = get_customer_by_public_id(customer_id)
+            if not customer or str(customer.get('business_id')) != str(business.get('id')) or str(customer.get('public_id')) != customer_id:
+                raise HTTPException(401, "Reconnect your loyalty card.")
+            program = get_program(customer, business.get('id')) or {}
+            available = get_redeemables(business, customer, program) if program else []
+            body = checkout_rewards_payload(customer, program, available, uses_points, uses_stamps)
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(503, "Rewards could not be loaded. Your order can still proceed.")
+        return JSONResponse(content=body, headers={'Cache-Control': 'private, no-store'})
