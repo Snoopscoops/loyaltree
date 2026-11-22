@@ -211,7 +211,7 @@ def register_menu_card_routes(app, *, db, get_business, has_feature, on_hold, se
                 # Checkout reward redemptions are separate from classic redemption_events.
                 # Only finalized 'redeemed' rows are customer-visible; no pending/reserved entries.
                 query = (db.table('menu_order_redemptions')
-                    .select('id,kind,status,completed_at,required_stamps,points_cost')
+                    .select('order_public_id,kind,status,completed_at,required_stamps,points_cost')
                     .eq('business_id', business['id']).eq('customer_id', customer['id'])
                     .eq('status', 'redeemed').order('completed_at', desc=True).limit(30))
                 for item in query.execute().data or []:
@@ -219,7 +219,7 @@ def register_menu_card_routes(app, *, db, get_business, has_feature, on_hold, se
                     if kind not in ('stamp_reward', 'points_prize') or (kind == 'stamp_reward' and not use_stamps) or (kind == 'points_prize' and not use_points):
                         continue
                     amount = int(item.get('points_cost') or 0) if kind == 'points_prize' else None
-                    history.append({'id': f"menu-redemption-{item.get('id')}", 'type': 'redeemed',
+                    history.append({'id': f"menu-redemption-{item.get('order_public_id')}", 'type': 'redeemed',
                         'label': 'Reward redeemed', 'amount': -amount if amount else None,
                         'unit': 'points' if amount else '', 'created_at': item.get('completed_at')})
             history = [item for item in history if item.get('created_at')]

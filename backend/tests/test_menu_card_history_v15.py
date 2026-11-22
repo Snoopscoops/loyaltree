@@ -26,8 +26,8 @@ class DB:
     def __init__(self): self.calls=[];self.tables={
       'stamp_events':[{'id':1,'business_id':10,'customer_id':9,'created_at':'2026-11-22T01:35:45Z'}, {'id':2,'business_id':11,'customer_id':88,'created_at':'2026-11-22T01:50:00Z'}],
       'redemption_events':[],
-      'menu_order_redemptions':[{'id':44,'business_id':10,'customer_id':9,'status':'redeemed','kind':'stamp_reward','completed_at':'2026-11-21T23:57:55Z','required_stamps':8,'points_cost':0},
-          {'id':45,'business_id':10,'customer_id':9,'status':'pending','kind':'stamp_reward','completed_at':None,'required_stamps':8,'points_cost':0}],
+      'menu_order_redemptions':[{'order_public_id':'order-44','business_id':10,'customer_id':9,'status':'redeemed','kind':'stamp_reward','completed_at':'2026-11-21T23:57:55Z','required_stamps':8,'points_cost':0},
+          {'order_public_id':'order-45','business_id':10,'customer_id':9,'status':'pending','kind':'stamp_reward','completed_at':None,'required_stamps':8,'points_cost':0}],
       'points_events':[],
     }
     def table(self,name): return Query(self.tables[name],self.calls)
@@ -55,7 +55,8 @@ def test_history_requires_connected_card_and_never_enumerates_other_members():
     assert body['card_type']=='stamp' and body['stamp_goal']==8 and body['stamp_count']==2
     assert body['card_name']=='JUS Drink Card'
     assert [row['type'] for row in body['events']]==['earned','redeemed']
-    assert all(row['id'] not in ('stamp-2','menu-redemption-45') for row in body['events'])
+    assert any(row['id'] == 'menu-redemption-order-44' for row in body['events'])
+    assert all(row['id'] not in ('stamp-2','menu-redemption-order-45') for row in body['events'])
     assert all(('business_id',10) in entry and ('customer_id',9) in entry for entry in db.calls)
     assert client.get(url,headers=auth).headers['cache-control']=='private, no-store'
 
