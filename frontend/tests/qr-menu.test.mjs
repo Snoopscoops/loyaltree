@@ -275,6 +275,7 @@ test('cash orders wait for the cashier: notice, button and receipt', () => {
 test('the menu page shows the amber cash notice instead of a green check', () => {
   const page = readFileSync(new URL('../src/components/QRMenuPage.jsx', import.meta.url), 'utf8')
   assert.match(page, /lt-qr-cash-notice/)
-  assert.match(page, /receipt\.waiting/)
-  assert.match(page, /lt-qr-wait-badge/)
+  assert.match(page, /phase\?\.awaitingPayment/)
+  assert.match(page, /is-payment-waiting/)
+  assert.match(page, /lt-qr-track-badge/)
 })

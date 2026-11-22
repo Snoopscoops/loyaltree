@@ -18823,6 +18823,13 @@ except ImportError:
 # Owner: every branch. Manager / cashier (staff PIN session, 12 h): their own branch only.
 _menu_order_operator = make_menu_order_operator(db=supabase, get_business=safe_get_business, get_claims=get_staff_session_claims)
 
+# Customer receipt order tracker (no staff credentials or customer PII).
+try:
+    from .menu_customer_order_tracking import register_menu_customer_order_tracking_routes
+except ImportError:
+    from menu_customer_order_tracking import register_menu_customer_order_tracking_routes
+register_menu_customer_order_tracking_routes(app, db=supabase, get_business=safe_get_business)
+
 
 @app.post('/api/v1/public/menu/{public_id}/orders')
 async def public_place_menu_order(public_id: str, request: Request, background_tasks: BackgroundTasks):

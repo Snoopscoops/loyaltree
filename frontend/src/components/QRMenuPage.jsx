@@ -3,6 +3,7 @@ import { useParams, useSearchParams } from 'react-router-dom'
 import { filterMenuItems, groupMenuCategories, menuItemAvailable, menuItemPrice, toggleMenuOption, validMenuPayload, addCartItem, changeCartQuantity, cartSubtotal, buildMenuOrder, sendMenuOrder, pickupTimeLabel, resolveMenuBranch, PAYMENT_METHODS, paymentReceiptLabel, CASH_NOTICE, payButtonLabel, receiptCopy } from './qrMenuModel'
 import loyaltyTreeLogo from './logo-192.png'
 import { requestJsonResponse } from './requestTimeout'
+import { ORDER_TRACKING_STEPS, menuOrderPhase, fetchMenuOrderPhase } from './qrMenuOrderTracking'
 import './qr-menu.css'
 import { checkoutRewardIsEligible, checkoutRewardSelectionPayload } from './qrMenuRedemption'
 import './qr-menu-rewards.css' // owner-v11
@@ -210,6 +211,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   const [cart, setCart] = useState([])
   const [cartOpen, setCartOpen] = useState(false)
   const [order, setOrder] = useState(null)
+  const [trackingError, setTrackingError] = useState('')
   const [payStep, setPayStep] = useState('')
   const [service, setService] = useState('dine-in')
   const [buyerName, setBuyerName] = useState('')
@@ -267,9 +269,40 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   const closeCart = () => {
     if (submittingRef.current) return
     setCartOpen(false); setSubmitError(''); setCopied(false)
-    if (payStep === 'done') { setOrder(null); setPayStep('') }
-    else if (!cart.length) setPayStep('')
+    // Preserve the saved order for the customer-facing tracking dock.
+    if (payStep !== 'done' && !cart.length) setPayStep('')
   }
+
+  // Poll the actual saved order, not a visual timer. Works while the receipt is
+  // open or minimized, stops on completion/cancellation and cleans up on unmount.
+  useEffect(() => {
+    const id = order?.server_order_id
+    if (!id || !apiBase || preview || order.status === 'completed' || order.status === 'cancelled') return undefined
+    let disposed = false
+    let busy = false
+    const controller = new AbortController()
+    const load = async () => {
+      if (busy || disposed || document.visibilityState === 'hidden') return
+      busy = true
+      try {
+        const next = await fetchMenuOrderPhase({ fetchImpl: fetch, apiBase,
+          businessId: business.public_id, orderId: id, signal: controller.signal })
+        if (!disposed) {
+          setTrackingError('')
+          setOrder(current => current?.server_order_id !== id ? current
+            : current.status === next.status && current.payment_status === next.payment_status
+              ? current : { ...current, ...next })
+        }
+      } catch {
+        if (!disposed) setTrackingError('Live updates temporarily unavailable. Last known status shown.')
+      } finally { busy = false }
+    }
+    void load()
+    const timer = window.setInterval(load, 6000)
+    const onVisible = () => { if (document.visibilityState === 'visible') void load() }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => { disposed = true; controller.abort(); window.clearInterval(timer); document.removeEventListener('visibilitychange', onVisible) }
+  }, [apiBase, business.public_id, order?.server_order_id, order?.status, preview])
 
   // Focus the sheet when it opens, trap Tab inside it, and give focus back.
   useEffect(() => {
@@ -381,7 +414,8 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
     if (!result.ok) { setSubmitError(result.error); return }
     // Only a saved order (response.ok) reaches the receipt.
     const saved = result.order || {}
-    setOrder({ ...placedOrder, order_number: saved.order_number || placedOrder.order_id, server_order_id: saved.public_id || '', status: saved.status || 'new', reward: saved.reward || null })
+    setTrackingError('')
+    setOrder({ ...placedOrder, order_number: saved.order_number || placedOrder.order_id, server_order_id: saved.public_id || '', status: saved.status || 'new', payment_status: saved.payment_status || '', reward: saved.reward || null })
     pendingIds.current = null
     setCopied(false)
     setCart([])
@@ -394,7 +428,8 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
 
   const step = payStep === 'done' ? 'done' : !cart.length ? 'empty' : payStep
   const receipt = order ? receiptCopy(order.payment_method, money(order.subtotal), business.name) : null
-  const title = step === 'done' ? (receipt?.waiting ? 'Waiting for payment' : 'Order sent') : step === 'service' ? 'How will you get it?' : step === 'payment' ? 'Review & pay' : 'Your order'
+  const phase = order ? menuOrderPhase(order) : null
+  const title = step === 'done' ? (phase?.title || 'Your order') : step === 'service' ? 'How will you get it?' : step === 'payment' ? 'Review & pay' : 'Your order'
   const stepIndex = CHECKOUT_STEPS.findIndex(([value]) => value === payStep)
   const nameFromCard = cardName && buyerName.trim() === cardName && !editingName
   // No connected card: the shop needs a name to call the order.
@@ -469,7 +504,15 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
       <footer className="lt-qr-footer"><img src={loyaltyTreeLogo} alt="" /><span>Menu by <strong>Loyalty Tree</strong></span></footer>
     </main>
     {item && <ItemDetails key={item.public_id} item={item} available={menuItemAvailable(item, branchId)} money={money} onClose={() => setItem(null)} onAdd={addItem} />}
-    {count > 0 && !cartOpen && !needsBranch && <div className="lt-qr-dock">
+    {order && !cartOpen && !needsBranch && <div className="lt-qr-dock lt-qr-tracking-dock">
+      <button type="button" className="lt-qr-dock-card" onClick={() => { setPayStep('done'); setCartOpen(true) }}
+        aria-label={`Track order ${order.order_number}, ${phase?.title || 'Order status'}`}>
+        <span className="lt-qr-dock-count" aria-hidden="true">✓</span>
+        <span className="lt-qr-dock-label" aria-hidden="true">{phase?.title}<small>Order {order.order_number} · Tap to track</small></span>
+        <strong aria-hidden="true">›</strong>
+      </button>
+    </div>}
+    {count > 0 && !order && !cartOpen && !needsBranch && <div className="lt-qr-dock">
       <button type="button" ref={dockRef} className="lt-qr-dock-card" onClick={openCart} aria-label={`View cart, ${count} ${count === 1 ? 'item' : 'items'}, ${money(total)}`}>
         <span className="lt-qr-dock-count" aria-hidden="true">{count}</span>
         <span className="lt-qr-dock-label" aria-hidden="true">View cart<small>{count} {count === 1 ? 'item' : 'items'}</small></span>
@@ -544,12 +587,21 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
               : paymentMethod && <p className="lt-qr-test-note">Test payment. Nothing is charged. Your order will be sent to the shop.</p>}
           </div>}
 
-          {step === 'done' && order && <div className={`lt-qr-receipt${receipt.waiting ? ' is-waiting' : ''}`} role="status">
-            {receipt.waiting
-              ? <span className="lt-qr-wait-badge"><span aria-hidden="true">⏳</span>{receipt.badge}</span>
-              : <span className="lt-qr-receipt-check" aria-hidden="true"><CheckIcon size={34} /></span>}
-            <h3>{receipt.title}</h3>
-            <p className="lt-qr-receipt-sub">{receipt.sub}</p>
+          {step === 'done' && order && <div className={`lt-qr-receipt${phase?.awaitingPayment ? ' is-waiting' : ''}`} role="status">
+            {phase?.done
+              ? <span className="lt-qr-receipt-check" aria-hidden="true"><CheckIcon size={34} /></span>
+              : <span className={`lt-qr-track-badge${phase?.cancelled ? ' is-cancelled' : phase?.awaitingPayment ? ' is-payment-waiting' : ''}`}><span aria-hidden="true">{phase?.cancelled ? '!' : '◷'}</span> {phase?.title}</span>}
+            <h3 aria-live="polite">{phase?.title}</h3>
+            <p className="lt-qr-receipt-sub">{phase?.sub}</p>
+            {!phase?.cancelled && <ol className="lt-qr-tracker" aria-label="Live order progress">
+              {ORDER_TRACKING_STEPS.map((label, index) => <li key={label}
+                className={index < phase.stage ? 'is-complete' : index === phase.stage ? 'is-current' : ''}
+                aria-current={index === phase.stage ? 'step' : undefined}>
+                <span className="lt-qr-tracker-dot" aria-hidden="true">{index < phase.stage || (phase.done && index === phase.stage) ? '✓' : index + 1}</span>
+                <strong>{label}</strong>
+              </li>)}
+            </ol>}
+            {trackingError && <p className="lt-qr-tracking-error" role="status">{trackingError}</p>}
             <div className="lt-qr-receipt-number">
               <span>Order number</span>
               <strong>{order.order_number}</strong>
@@ -560,11 +612,11 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
               {order.branch_name && branches.length > 1 && <div><dt>Branch</dt><dd>{order.branch_name}</dd></div>}
               <div><dt>Order type</dt><dd>{serviceLine(order.service, order.table_no, order.pickup_label)}</dd></div>
               <div><dt>Name</dt><dd>{order.buyer_name || '—'}</dd></div>
-              <div><dt>Payment</dt><dd><span className={`lt-qr-paid-pill${order.payment_method === 'cash' ? ' is-unpaid' : ''}`}>{paymentReceiptLabel(order.payment_method)}</span></dd></div>
-              {order.reward && <div><dt>Reward</dt><dd>🎁 {order.reward.name} (reserved until paid and completed)</dd></div>}
+              <div><dt>Payment</dt><dd><span className={`lt-qr-paid-pill${order.payment_method === 'cash' && order.payment_status !== 'paid' ? ' is-unpaid' : ''}`}>{order.payment_method === 'cash' && order.payment_status === 'paid' ? 'Cash · Paid' : paymentReceiptLabel(order.payment_method)}</span></dd></div>
+              {order.reward && <div><dt>Reward</dt><dd>🎁 {order.reward.name} ({phase?.cancelled ? 'not redeemed' : order.status === 'completed' ? 'redeemed' : 'reserved until paid and completed'})</dd></div>}
             </dl>
             <ul className="lt-qr-cart-lines is-compact" aria-label="Items ordered">{(order.lines || []).map(line => <CartLine key={line.key} line={line} money={money} />)}</ul>
-            <dl className="lt-qr-totals"><div className="is-total"><dt>{receipt.totalLabel}</dt><dd>{money(order.subtotal)}</dd></div></dl>
+            <dl className="lt-qr-totals"><div className="is-total"><dt>{order.payment_method === 'cash' && order.payment_status === 'paid' ? 'Order total' : receipt.totalLabel}</dt><dd>{money(order.subtotal)}</dd></div></dl>
           </div>}
         </div>
 
