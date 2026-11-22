@@ -104,7 +104,7 @@ export function buildMenuOrder({ merchantId, cart, orderId }) {
 // confirmations. The server decides the stored status from the method.
 export const PAYMENT_METHODS = {
   cash: { label: 'Cash', detail: 'Pay at the counter' },
-  qrph: { label: 'GCash / Maya / Bank transfer', detail: 'QR Ph · test payment' },
+  qrph: { label: 'QRPh', detail: 'GCash, Maya, or other QRPh-enabled apps · test only' },
   card: { label: 'Card', detail: 'Test payment · no card details needed' },
 }
 export function paymentStatusFor(method) {
@@ -131,7 +131,7 @@ export function receiptCopy(method, totalText, businessName = 'the shop') {
 }
 export function paymentReceiptLabel(method) {
   if (method === 'cash') return 'Cash · Pay at the counter'
-  if (method === 'qrph') return 'Paid (test) · GCash / Maya / Bank (QR Ph)'
+  if (method === 'qrph') return 'QRPh · test payment'
   if (method === 'card') return 'Paid (test) · Card'
   return 'Paid · test'
 }

@@ -163,3 +163,80 @@ def register_menu_card_routes(app, *, db, get_business, has_feature, on_hold, se
         except Exception:
             raise HTTPException(503, "Rewards could not be loaded. Your order can still proceed.")
         return JSONResponse(content=body, headers={'Cache-Control': 'private, no-store'})
+
+
+    @app.get("/api/v1/public/menu/{public_id}/card/history")
+    def card_history(public_id: str, authorization: str = Header(default="")):
+        """Verified connected customer's own loyalty ledger; read-only, no public enumeration.
+
+        Never use a customer id from the query string. Every data access is
+        constrained by both the business resolved from the URL and the signed
+        card-session customer identity.
+        """
+        from fastapi.responses import JSONResponse
+        business = business_for(public_id)
+        parts = authorization.split(' ', 1)
+        if len(parts) != 2 or parts[0].lower() != 'bearer':
+            raise HTTPException(401, "Connect your loyalty card to view history.")
+        payload = read_token(parts[1], 'session')
+        if str(payload.get('business_public_id') or '') != str(business.get('public_id')):
+            raise HTTPException(401, "Reconnect your loyalty card.")
+        if not all([get_customer_by_public_id, get_program, uses_points, uses_stamps]):
+            raise HTTPException(503, "Card history is not available right now.")
+        customer_public_id = str(payload.get('customer_public_id') or '')
+        try:
+            customer = get_customer_by_public_id(customer_public_id)
+            if not customer or str(customer.get('business_id')) != str(business.get('id')) or str(customer.get('public_id')) != customer_public_id:
+                raise HTTPException(401, "Reconnect your loyalty card.")
+            program = get_program(customer, business.get('id')) or {}
+            use_stamps = bool(program and uses_stamps(program))
+            use_points = bool(program and uses_points(program))
+            history = []
+            def ledger(table, columns, kind, *, status=None):
+                query = db.table(table).select(columns).eq('business_id', business['id']).eq('customer_id', customer['id'])
+                if status:
+                    query = query.eq('status', status)
+                return query.order('created_at' if table != 'menu_order_redemptions' else 'completed_at', desc=True).limit(30).execute().data or []
+            if use_stamps:
+                for item in ledger('stamp_events', 'id,created_at', 'stamp'):
+                    history.append({'id': f"stamp-{item.get('id')}", 'type': 'earned', 'label': 'Stamp earned', 'amount': 1, 'unit': 'stamps', 'created_at': item.get('created_at')})
+            if use_points:
+                for item in ledger('points_events', 'id,created_at,points_earned', 'points'):
+                    points = int(item.get('points_earned') or 0)
+                    history.append({'id': f"points-{item.get('id')}", 'type': 'earned', 'label': 'Points earned', 'amount': points, 'unit': 'points', 'created_at': item.get('created_at')})
+            if use_stamps or use_points:
+                for item in ledger('redemption_events', 'id,created_at,points_spent', 'redeemed'):
+                    spent = int(item.get('points_spent') or 0) if use_points else 0
+                    history.append({'id': f"redemption-{item.get('id')}", 'type': 'redeemed', 'label': 'Reward redeemed', 'amount': -spent if spent else None, 'unit': 'points' if spent else '', 'created_at': item.get('created_at')})
+                # Checkout reward redemptions are separate from classic redemption_events.
+                # Only finalized 'redeemed' rows are customer-visible; no pending/reserved entries.
+                query = (db.table('menu_order_redemptions')
+                    .select('id,kind,status,completed_at,required_stamps,points_cost')
+                    .eq('business_id', business['id']).eq('customer_id', customer['id'])
+                    .eq('status', 'redeemed').order('completed_at', desc=True).limit(30))
+                for item in query.execute().data or []:
+                    kind = str(item.get('kind') or '')
+                    if kind not in ('stamp_reward', 'points_prize') or (kind == 'stamp_reward' and not use_stamps) or (kind == 'points_prize' and not use_points):
+                        continue
+                    amount = int(item.get('points_cost') or 0) if kind == 'points_prize' else None
+                    history.append({'id': f"menu-redemption-{item.get('id')}", 'type': 'redeemed',
+                        'label': 'Reward redeemed', 'amount': -amount if amount else None,
+                        'unit': 'points' if amount else '', 'created_at': item.get('completed_at')})
+            history = [item for item in history if item.get('created_at')]
+            history.sort(key=lambda item: str(item['created_at']), reverse=True)
+            try:
+                stamp_goal = int(program.get('stamp_goal')) if use_stamps else None
+                if stamp_goal is not None and stamp_goal <= 0: stamp_goal = None
+            except (TypeError, ValueError, OverflowError): stamp_goal = None
+            result = {'card_type': str(program.get('card_type') or '').lower()[:32],
+                'card_name': str(program.get('name') or program.get('program_name') or 'Loyalty card')[:100],
+                'business_name': str(business.get('name') or '')[:120],
+                'points_balance': max(0, int(customer.get('points_balance') or 0)) if use_points else None,
+                'stamp_count': max(0, int(customer.get('stamp_count') or 0)) if use_stamps else None,
+                'stamp_goal': stamp_goal, 'points_enabled': use_points, 'stamps_enabled': use_stamps,
+                'events': history[:40], 'limit': 40}
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(503, 'Card history is temporarily unavailable. Try again later.') from exc
+        return JSONResponse(result, headers={'Cache-Control': 'private, no-store'})

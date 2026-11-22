@@ -44,7 +44,15 @@ def checkout_rewards_payload(customer, program, available_rewards, uses_points, 
                 result.append({'kind': 'points_prize', 'name': name,
                                'detail': f'{cost:,} points', 'available': False,
                                'selectable': False, 'id': ''})
-    return {'points_balance': points_balance, 'stamp_count': stamp_count,
+    card_type = str(program.get('card_type') or '').lower()[:32]
+    raw_goal = program.get('stamp_goal') if stamps_enabled else None
+    try:
+        stamp_goal = max(1, min(9999, int(raw_goal))) if raw_goal is not None and int(raw_goal) > 0 else None
+    except (TypeError, ValueError, OverflowError):
+        stamp_goal = None
+    card_name = str(program.get('name') or program.get('program_name') or 'Loyalty card')[:100]
+    return {'card_type': card_type, 'card_name': card_name, 'stamp_goal': stamp_goal,
+            'points_balance': points_balance, 'stamp_count': stamp_count,
             'points_enabled': points_enabled, 'stamps_enabled': stamps_enabled,
             'rewards': result[:60], 'redemption_mode': 'checkout_cash_only',
             'notice': 'Choose one Points or Stamp reward for cash checkout. Redeemed only after confirmed payment and completion. No price discounts are applied online.'}

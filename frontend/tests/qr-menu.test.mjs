@@ -253,7 +253,7 @@ test('payment method: cash is unpaid at the counter, QR Ph and card are test pay
   const bad=menuOrderRequest({...placed,payment_method:'crypto'})
   assert.deepEqual([bad.payment_method,bad.payment_status],['',''])
   assert.equal(paymentReceiptLabel('cash'),'Cash · Pay at the counter')
-  assert.match(paymentReceiptLabel('qrph'),/QR Ph/)
+  assert.match(paymentReceiptLabel('qrph'),/QRPh/)
   assert.match(paymentReceiptLabel('card'),/test/)
 })
 
