@@ -52,6 +52,8 @@ data class StatFact(val id: String, val label: String, val value: String)
 data class BillPrice(val id: String, val label: String, val pesos: Int)
 data class BillPay(val id: String, val title: String, val detail: String)
 data class ActivityLine(val id: String, val title: String, val detail: String, val whenText: String)
+data class CustomerMenuOrder(val number: String, val status: String, val paymentStatus: String, val total: String, val spent: String, val whenText: String, val branch: String, val items: String)
+data class CustomerOrderHistory(val orderCount: Int, val paidCount: Int, val totalSpent: String, val complete: Boolean, val orders: List<CustomerMenuOrder>)
 data class OrderLine(val name: String, val detail: String)
 data class LiveOrder(
     val id: String,
@@ -1514,6 +1516,40 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
             val result = io { API.delete("/api/v1/business/${current.slug}/order-ahead/modifier-groups/$id", current.token) }
             if (result == null || result.first >= 400) setupStatus = if (result == null) "Could not reach the server." else API.message(result.second, "Could not delete that option group.")
             else refresh()
+        }
+    }
+
+    fun customerMenuOrders(id: String, done: (CustomerOrderHistory?, String) -> Unit) {
+        val current = session ?: return done(null, "Please sign in again.")
+        if (!current.isOwner) return done(null, "Only the owner can see customer spending.")
+        viewModelScope.launch {
+            val result = io { API.get("/api/v1/business/${current.slug}/customers/$id/menu-order-history", current.token) }
+            val body = result?.second as? JSONObject
+            if (result == null || result.first >= 400 || body == null) {
+                done(null, if (result == null) "Could not connect to the server." else API.message(result.second, "Orders unavailable. Try again."))
+                return@launch
+            }
+            val summary = body.optJSONObject("summary")
+            val rows = body.optJSONArray("orders") ?: JSONArray()
+            val orders = mutableListOf<CustomerMenuOrder>()
+            for (i in 0 until rows.length()) {
+                val row = rows.optJSONObject(i) ?: continue
+                val items = row.optJSONArray("items") ?: JSONArray()
+                val names = mutableListOf<String>()
+                for (j in 0 until minOf(items.length(), 40)) {
+                    val item = items.optJSONObject(j) ?: continue
+                    names.add("${item.optInt("quantity", 1)}× ${item.optString("name", "Item")}")
+                }
+                orders.add(CustomerMenuOrder(
+                    row.optString("order_number"), row.optString("status"), row.optString("payment_status"),
+                    API.plain(row.opt("total")) ?: "—", API.plain(row.opt("verified_spent")) ?: "0",
+                    row.optString("created_at"), row.optString("branch_name"), names.joinToString(", ")
+                ))
+            }
+            done(CustomerOrderHistory(summary?.optInt("total_orders") ?: orders.size,
+                summary?.optInt("completed_paid_orders") ?: 0,
+                API.plain(summary?.opt("total_spent")) ?: "0",
+                summary?.optBoolean("complete", false) ?: false, orders), "")
         }
     }
 

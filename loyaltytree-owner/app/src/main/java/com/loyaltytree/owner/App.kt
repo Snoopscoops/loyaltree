@@ -1381,10 +1381,14 @@ private fun CustomersScreen(store: CounterStore, open: (String) -> Unit) {
 private fun CustomerScreen(store: CounterStore, id: String) {
     val member = store.members.firstOrNull { it.id == id }
     var lines by remember { mutableStateOf<List<ActivityLine>>(emptyList()) }
+    var menuHistory by remember(id) { mutableStateOf<CustomerOrderHistory?>(null) }
+    var menuHistoryError by remember(id) { mutableStateOf("") }
+    var historyTab by remember(id) { mutableStateOf("Activity") }
     var coupon by remember { mutableStateOf("") }
     var note by remember { mutableStateOf("") }
     val context = LocalContext.current
     LaunchedEffect(id) { store.activity(id) { lines = it } }
+    LaunchedEffect(id) { store.customerMenuOrders(id) { result, error -> menuHistory = result; menuHistoryError = error } }
     if (member == null) { Scroll { Text("Member not loaded.", color = Muted) }; return }
     val months = listOf("", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
     val birthday = if (member.birthdayMonth in 1..12 && member.birthdayDay > 0) "${months[member.birthdayMonth]} ${member.birthdayDay}" else ""
@@ -1409,6 +1413,27 @@ private fun CustomerScreen(store: CounterStore, id: String) {
             Secondary("Add coupon") { store.giveCoupon(member.id, coupon) { note = it } }
             if (note.isNotBlank()) Text(note, color = Forest, fontWeight = FontWeight.SemiBold)
         }
+        Text("Customer History", color = Forest, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+        Card {
+            if (menuHistory == null) {
+                Text(menuHistoryError.ifBlank { "Loading linked menu orders…" }, color = Muted, fontSize = 13.sp)
+            } else {
+                val summary = menuHistory!!
+                Info("Linked orders", "${summary.orderCount}")
+                Info("Completed paid orders", "${summary.paidCount}")
+                Info("Verified spent", "₱${summary.totalSpent}")
+                if (!summary.complete) Text("Recent linked orders only. Totals are not lifetime totals.", color = Muted, fontSize = 12.sp)
+                Text("Excludes unpaid, cancelled and test payments. Other purchasing channels are not included.", color = Muted, fontSize = 12.sp)
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf("Activity", "Orders").forEach { choice ->
+                Box(Modifier.weight(1f)) {
+                    Secondary(if (historyTab == choice) "✓ $choice" else choice) { historyTab = choice }
+                }
+            }
+        }
+        if (historyTab == "Activity") {
         Text("Activity", color = Forest, fontWeight = FontWeight.Bold, fontSize = 16.sp)
         if (lines.isEmpty()) Text(if (member.stamps > 0) "Stamps are on the card. Recent activity is still loading." else "No stamps yet.", color = Muted)
         lines.forEach { line ->
@@ -1419,6 +1444,18 @@ private fun CustomerScreen(store: CounterStore, id: String) {
                     Text(line.title, fontWeight = FontWeight.SemiBold, color = Ink)
                     if (detail.isNotBlank()) Text(detail, color = Muted, fontSize = 13.sp)
                     if (whenText.isNotBlank()) Text(whenText, color = Muted, fontSize = 12.sp)
+                }
+            }
+        }
+        } else {
+            if (menuHistory == null) Text(menuHistoryError.ifBlank { "Loading orders…" }, color = Muted)
+            else if (menuHistory!!.orders.isEmpty()) Text("No linked menu orders yet.", color = Muted)
+            else menuHistory!!.orders.forEach { order ->
+                Card {
+                    Text(order.number.ifBlank { "Order" }, color = Forest, fontWeight = FontWeight.Bold)
+                    Text("₱${order.total} · ${order.status} · ${order.paymentStatus}", color = Ink)
+                    if (order.items.isNotBlank()) Text(order.items, color = Muted, fontSize = 13.sp)
+                    Text(listOf(tidy(order.whenText), order.branch).filter { it.isNotBlank() }.joinToString(" · "), color = Muted, fontSize = 12.sp)
                 }
             }
         }

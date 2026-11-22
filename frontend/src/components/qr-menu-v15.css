@@ -120,3 +120,10 @@
 @keyframes lt-v15-appear {from{transform:translateY(7px);opacity:.8}to{transform:translateY(0);opacity:1}}
 @media(max-width:420px) { .lt-qr-v15 .lt-v15-business-row h1{font-size:15px} .lt-qr-v15 .lt-qr-cafe-side{width:130px;max-width:130px}.lt-v15-loyalty-top>button{padding:7px}.lt-v15-section-head h2{font-size:20px}.lt-v15-product-photo,.lt-v15-product-photo .lt-qr-item-visual,.lt-v15-product-photo .lt-qr-item-photo,.lt-v15-product-photo .lt-qr-item-placeholder{width:74px;height:74px}.lt-v15-product-info h3{font-size:15px!important} }
 @media(prefers-reduced-motion:reduce){.lt-qr-v15 button,.lt-v15-history-sheet button{transition:none!important}.lt-v15-stamps span.is-filled,.lt-qr-v15 .lt-v15-product,.lt-v15-add.is-added,.lt-qr-v15 .lt-qr-receipt-check,.lt-v15-history-sheet{animation:none!important}.lt-v15-bottom-nav{backdrop-filter:none}}
+
+/* v16: real linked order history and spending */
+.lt-v16-order-totals{display:flex;gap:12px;flex-wrap:wrap;margin:14px 0}
+.lt-v16-order-totals span{flex:1;min-width:125px;padding:12px;border:1px solid #e1e8de;border-radius:12px;font-size:12px;color:#52685c}
+.lt-v16-order-totals b{display:block;font-size:20px;color:#07543e;margin-bottom:3px}
+.lt-v16-orders li{align-items:flex-start}.lt-v16-orders small{overflow-wrap:anywhere}
+.lt-v16-retry{margin:12px 0;border-radius:20px;border:1px solid #086048;padding:9px 18px;background:white;color:#07543e;font-weight:700}

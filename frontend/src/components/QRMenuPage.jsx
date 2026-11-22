@@ -126,46 +126,66 @@ function MenuCardLink({ apiBase, business, label, className = 'lt-qr-card-link',
 
 function CardHistorySheet({ apiBase, businessId, token, onClose }) {
   const dialog = useRef(null)
+  const [tab, setTab] = useState('activity')
   const [filter, setFilter] = useState('all')
   const [record, setRecord] = useState(null)
+  const [orderHistory, setOrderHistory] = useState(null)
   const [error, setError] = useState('')
+  const [ordersError, setOrdersError] = useState('')
+  const [refresh, setRefresh] = useState(0)
   useEffect(() => {
     dialog.current?.showModal()
     const controller = new AbortController()
-    const load = async () => {
-      try {
-        const response = await fetch(`${apiBase}/api/v1/public/menu/${encodeURIComponent(businessId)}/card/history`, {
-          headers: { Authorization: `Bearer ${token}` }, cache: 'no-store', signal: controller.signal,
-        })
-        if (!response.ok) throw new Error(response.status === 401 ? 'Card connection expired. Reconnect your card.' : 'History temporarily unavailable.')
-        const result = await response.json()
-        if (!controller.signal.aborted) setRecord(result)
-      } catch { if (!controller.signal.aborted) setError('Could not load your card history. Please try again.') }
+    const load = async (path) => {
+      const response = await fetch(`${apiBase}/api/v1/public/menu/${encodeURIComponent(businessId)}/card/${path}`, {
+        headers: { Authorization: `Bearer ${token}` }, cache: 'no-store', signal: controller.signal,
+      })
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}))
+        throw new Error(response.status === 401 ? 'Card connection expired. Reconnect your card.' :
+          (typeof body.detail === 'string' ? body.detail : 'History temporarily unavailable.'))
+      }
+      return response.json()
     }
-    void load()
+    void load('history').then(value => { if (!controller.signal.aborted) setRecord(value) })
+      .catch(e => { if (!controller.signal.aborted) setError(e.message || 'Card history unavailable.') })
+    void load('orders').then(value => { if (!controller.signal.aborted) setOrderHistory(value) })
+      .catch(e => { if (!controller.signal.aborted) setOrdersError(e.message || 'Order history unavailable.') })
     return () => { controller.abort(); dialog.current?.close() }
-  }, [apiBase, businessId, token])
+  }, [apiBase, businessId, token, refresh])
   const progress = loyaltyProgress(record)
   const events = historyEvents(record?.events, filter)
+  const peso = value => typeof value === 'number' && Number.isFinite(value) ? `₱${value.toLocaleString('en-PH', {minimumFractionDigits:2,maximumFractionDigits:2})}` : '—'
+  const formatDate = value => { const date = new Date(value); return value && Number.isFinite(date.getTime()) ? date.toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}) : '' }
   return <dialog ref={dialog} className="lt-v15-history-sheet" aria-label="Loyalty card history" onCancel={event => { event.preventDefault(); onClose() }} onClick={event => { if (event.target === dialog.current) onClose() }}>
     <div className="lt-v15-history-inner">
       <header className="lt-v15-history-head"><div><span>YOUR LOYALTY CARD</span><h2>Card History</h2></div><button type="button" onClick={onClose} aria-label="Close card history">×</button></header>
-      {!record && !error && <p role="status" className="lt-v15-history-state">Checking your card activity…</p>}
-      {error && <p role="alert" className="lt-v15-history-state">{error}</p>}
-      {record && <>
-        <div className="lt-v15-history-card"><strong>{record.card_name || record.business_name || 'Loyalty card'}</strong><p>{progress.label}</p>
-          {progress.goal > 0 && progress.goal <= 20 && <div className="lt-v15-stamps" aria-label={progress.label}>{Array.from({ length:progress.goal }, (_,i) => <span key={i} className={i<progress.filled?'is-filled':''} aria-hidden="true">{i<progress.filled?'✓':''}</span>)}</div>}
-        </div>
-        <div className="lt-v15-history-filters" role="group" aria-label="Filter card activity">
-          {[['all','All'],['earned','Earned'],['redeemed','Redeemed']].map(([key,label]) => <button type="button" key={key} aria-pressed={filter===key} onClick={()=>setFilter(key)}>{label}</button>)}
-        </div>
-        {events.length ? <ul className="lt-v15-history-events">{events.map(event => <li key={event.id}>
-          <span className="lt-v15-history-symbol" aria-hidden="true">{event.type==='redeemed'?'↗':'✦'}</span>
-          <span><strong>{event.label}</strong><small>{new Date(event.created_at).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'})}</small></span>
-          {Number.isFinite(event.amount) && event.amount !== 0 && <b>{event.amount>0?'+':''}{event.amount} {event.unit||''}</b>}
-        </li>)}</ul> : <p className="lt-v15-history-state">{filter === 'all' ? 'No recorded card activity yet.' : `No ${filter} activity yet.`}</p>}
-        <p className="lt-v15-history-help">Only recorded activity for your connected card at this business is shown. Balances are read from the server.</p>
+      {record && <div className="lt-v15-history-card"><strong>{record.card_name || record.business_name || 'Loyalty card'}</strong><p>{progress.label}</p>
+        {progress.goal > 0 && progress.goal <= 20 && <div className="lt-v15-stamps" aria-label={progress.label}>{Array.from({length:progress.goal},(_,i)=><span key={i} className={i<progress.filled?'is-filled':''} aria-hidden="true">{i<progress.filled?'✓':''}</span>)}</div>}
+      </div>}
+      <div className="lt-v15-history-filters" role="group" aria-label="History section">
+        {[['activity','Activity'],['orders','Orders'],['rewards','Rewards']].map(([key,label])=><button key={key} type="button" aria-pressed={tab===key} onClick={()=>setTab(key)}>{label}</button>)}
+      </div>
+      {tab === 'orders' ? <>
+        {!orderHistory && !ordersError && <p role="status" className="lt-v15-history-state">Loading your orders…</p>}
+        {ordersError && <p role="alert" className="lt-v15-history-state">{ordersError}</p>}
+        {orderHistory && <>
+          <div className="lt-v16-order-totals"><span><b>{orderHistory.summary?.total_orders ?? '—'}</b> Linked orders</span><span><b>{peso(orderHistory.summary?.total_spent)}</b> Verified spent</span></div>
+          {!orderHistory.summary?.complete && <p className="lt-v15-history-help">Showing recent linked orders only; totals are not lifetime totals.</p>}
+          <p className="lt-v15-history-help">Only linked digital-menu orders. Cash spending is counted once the order is completed and marked paid. Test payments and unpaid orders are excluded.</p>
+          {(orderHistory.orders || []).length ? <ul className="lt-v15-history-events lt-v16-orders">{orderHistory.orders.map((order,index)=><li key={`${order.order_number}-${index}`}><span className="lt-v15-history-symbol" aria-hidden="true">▤</span><span><strong>{order.order_number || 'Order'}</strong><small>{formatDate(order.created_at)} · {order.status} · {order.payment_status}</small><small>{order.branch_name || 'Branch not recorded'} · {order.payment_method || 'Payment method unknown'}</small><small>{(order.items||[]).map(item=>`${item.quantity}× ${item.name}`).join(', ')}</small></span><b>{peso(order.total)}</b></li>)}</ul>
+            : <p className="lt-v15-history-state">No linked menu orders yet.</p>}
+        </>}
+      </> : <>
+        {!record && !error && <p role="status" className="lt-v15-history-state">Checking your card activity…</p>}
+        {error && <p role="alert" className="lt-v15-history-state">{error}</p>}
+        {record && <>
+          {tab === 'activity' && <div className="lt-v15-history-filters" role="group" aria-label="Filter card activity">{[['all','All'],['earned','Earned'],['redeemed','Redeemed']].map(([key,label])=><button type="button" key={key} aria-pressed={filter===key} onClick={()=>setFilter(key)}>{label}</button>)}</div>}
+          {(() => { const shown = tab === 'rewards' ? historyEvents(record.events,'redeemed') : events; return shown.length ? <ul className="lt-v15-history-events">{shown.map(event=><li key={event.id}><span className="lt-v15-history-symbol" aria-hidden="true">{event.type==='redeemed'?'↗':'✦'}</span><span><strong>{event.label}</strong><small>{formatDate(event.created_at)}</small></span>{Number.isFinite(event.amount) && event.amount!==0 && <b>{event.amount>0?'+':''}{event.amount} {event.unit||''}</b>}</li>)}</ul> : <p className="lt-v15-history-state">No recorded {tab === 'rewards' ? 'redemptions' : 'card activity'} yet.</p> })()}
+          {record.partial && <p className="lt-v15-history-help">Some activity sources are currently unavailable. This is a partial history.</p>}
+        </>}
       </>}
+      {(error || ordersError) && <button type="button" className="lt-v16-retry" onClick={()=>{setRecord(null);setOrderHistory(null);setError('');setOrdersError('');setRefresh(v=>v+1)}}>Try again</button>}
     </div>
   </dialog>
 }

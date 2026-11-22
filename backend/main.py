@@ -51851,6 +51851,13 @@ register_menu_card_routes(app, db=supabase, get_business=safe_get_business,
     get_customer_by_public_id=safe_get_customer, get_program=safe_get_customer_program,
     get_redeemables=get_current_card_redeemables,
     uses_points=program_reward_uses_points, uses_stamps=program_reward_uses_stamps)
+# v16: card-scoped and owner-authorized linked digital-menu order history.
+try:
+    from .menu_customer_history import register_customer_order_history_routes
+except ImportError:
+    from menu_customer_history import register_customer_order_history_routes
+register_customer_order_history_routes(app, db=supabase, get_business=safe_get_business,
+    get_customer=safe_get_customer, operator=_menu_order_operator, read_card_token=_menu_card_read_token)
 try:
     from .menu_payments import register_menu_payment_routes
 except ImportError:
