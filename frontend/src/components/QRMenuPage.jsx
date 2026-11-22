@@ -229,7 +229,7 @@ function MenuLoyaltyCard({ apiBase, business, refreshKey }) {
   }, [apiBase, business.public_id, token, refreshKey])
   const progress = loyaltyProgress(snapshot)
   return <section ref={region} className="lt-v15-loyalty" aria-label="Your loyalty card">
-    <div className="lt-v15-loyalty-top"><span className="lt-v15-loyalty-icon" aria-hidden="true">▣</span><div><span className="lt-v15-loyalty-kicker">LOYALTY CARD</span><strong>{snapshot?.card_name && snapshot.card_name !== 'Loyalty card' ? snapshot.card_name : business.name}</strong><p>{pending ? 'Checking card…' : snapshot ? progress.label : token ? 'Card details temporarily unavailable' : 'Connect your card to see rewards'}</p></div>
+    <div className="lt-v15-loyalty-top"><span className="lt-v15-loyalty-icon" aria-hidden="true">{business.logo_url ? <img src={business.logo_url} alt="" loading="lazy" /> : "▣"}</span><div><span className="lt-v15-loyalty-kicker">LOYALTY CARD</span><strong>{snapshot?.card_name && snapshot.card_name !== 'Loyalty card' ? snapshot.card_name : business.name}</strong><p>{pending ? 'Checking card…' : snapshot ? progress.label : token ? 'Card details temporarily unavailable' : 'Connect your card to see rewards'}</p></div>
       {token && apiBase && <button type="button" onClick={()=>setOpen(true)}>History <span aria-hidden="true">›</span></button>}
     </div>
     {snapshot && progress.goal > 0 && progress.goal <= 20 && <div className="lt-v15-stamps" aria-label={progress.label}>{Array.from({length:progress.goal},(_,i)=><span key={i} className={i<progress.filled?'is-filled':''} aria-hidden="true">{i<progress.filled?'✓':''}</span>)}</div>}
@@ -665,11 +665,9 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
           </div>
         </div>
         <div className="lt-v15-service-row" role="group" aria-label="Order service">
-          <button type="button" aria-pressed={service==='pickup'} onClick={()=>setService('pickup')}>♧ Pickup</button>
-          <button type="button" aria-pressed={service==='dine-in'} onClick={()=>setService('dine-in')}>⌂ Dine in</button>
-          <span>Delivery coming soon</span>
+          <button type="button" className="lt-v17-instore" aria-pressed={service==='pickup' || service==='dine-in'} onClick={()=>setService('dine-in')}>⌂ Dine in / Pick up</button>
+          <button type="button" className="lt-v17-delivery" disabled aria-disabled="true" title="Delivery coming soon"><span aria-hidden="true">▤</span><span>Delivery<small>Coming soon</small></span></button>
         </div>
-        {(!needsBranch && service==='pickup') && <p className="lt-v15-service-help">Order for in-store pickup. Choose your pickup time at checkout.</p>}
         <label className="lt-qr-cafe-search lt-v15-search"><span aria-hidden="true">⌕</span><input type="search" aria-label="Search menu" placeholder="Search the menu" value={search} onChange={event=>setSearch(event.target.value)} /></label>
         <div className="lt-v15-filter-row">
           {quickItems.length>0 && <button type="button" onClick={()=>document.querySelector('.lt-v15-usual')?.scrollIntoView({behavior:'smooth'})}>↻ Quick Reorder</button>}
