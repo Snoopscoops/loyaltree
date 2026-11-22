@@ -805,6 +805,13 @@ private fun OrdersScreen(store: CounterStore) {
             color = Muted, fontSize = 15.sp
         )
         RingingBar()
+        // owner-v14: UI-only placeholder. No NextPay integration, redirect,
+        // refund API request, payment mutation or refund action is wired.
+        Card {
+            Text("Refunds", color = Forest, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            Primary("Refunds · Coming soon", enabled = false) { }
+            Text("Refund processing is not available yet. Awaiting NextPay refund protocols. No refunds can be started from this app.", color = Muted, fontSize = 12.sp)
+        }
         if (store.alertsNote.isNotBlank()) Text(store.alertsNote, color = Amber, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
         if (who?.isOwner == true && store.branches.size > 1) {
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
