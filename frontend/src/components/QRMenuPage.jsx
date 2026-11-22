@@ -4,6 +4,7 @@ import { filterMenuItems, groupMenuCategories, menuItemAvailable, menuItemPrice,
 import loyaltyTreeLogo from './logo-192.png'
 import { requestJsonResponse } from './requestTimeout'
 import { ORDER_TRACKING_STEPS, menuOrderPhase, fetchMenuOrderPhase } from './qrMenuOrderTracking'
+import { saveRecentOrder, readRecentOrder, forgetRecentOrder, buildReorderDraft } from './qrMenuRecentOrder'
 import './qr-menu.css'
 import { checkoutRewardIsEligible, checkoutRewardSelectionPayload } from './qrMenuRedemption'
 import './qr-menu-rewards.css' // owner-v11
@@ -41,6 +42,9 @@ function ItemDetails({ item, available, money, onClose, onAdd }) {
   </dialog>
 }
 
+
+// Browser privacy modes can throw even while reading window.localStorage.
+function recentReceiptStorage() { try { return window.localStorage } catch { return null } }
 
 const CARD_EVENT = 'lt-menu-card-change'
 
@@ -212,6 +216,10 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   const [cartOpen, setCartOpen] = useState(false)
   const [order, setOrder] = useState(null)
   const [trackingError, setTrackingError] = useState('')
+  const [savedReceipt, setSavedReceipt] = useState(null)
+  const [resumeBusy, setResumeBusy] = useState(false)
+  const [resumeError, setResumeError] = useState('')
+  const [reorderNote, setReorderNote] = useState('')
   const [payStep, setPayStep] = useState('')
   const [service, setService] = useState('dine-in')
   const [buyerName, setBuyerName] = useState('')
@@ -259,19 +267,32 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   const pickupLabel = slots.find(slot => slot.value === pickupAt)?.label || ''
   const updateCart = change => { pendingIds.current = null; setSubmitError(''); setCart(change) }
   const addItem = (value, selected = {}, quantity = 1) => {
+    setReorderNote('')
     if (needsBranch || !menuItemAvailable(value, branchId)) return
     updateCart(current => addCartItem(current, value, selected, quantity))
     setOrder(null)
   }
   const changeLine = (key, quantity) => updateCart(current => changeCartQuantity(current, key, quantity))
 
-  const openCart = () => { setOrder(null); setPayStep(''); setSubmitError(''); setCartOpen(true) }
+  const openCart = () => { setOrder(null); setReorderNote(''); setPayStep(''); setSubmitError(''); setCartOpen(true) }
   const closeCart = () => {
     if (submittingRef.current) return
     setCartOpen(false); setSubmitError(''); setCopied(false)
     // Preserve the saved order for the customer-facing tracking dock.
     if (payStep !== 'done' && !cart.length) setPayStep('')
   }
+
+  // v14: browser-local last receipt, strictly scoped to this business. Never
+  // restore the saved status as authoritative; verify it with the v13 API first.
+  useEffect(() => {
+    if (preview) return undefined
+    setSavedReceipt(readRecentOrder(recentReceiptStorage(), business.public_id))
+    setResumeError('')
+    return undefined
+  }, [business.public_id, preview])
+  useEffect(() => {
+    if (!preview && order?.server_order_id) saveRecentOrder(recentReceiptStorage(), business.public_id, order)
+  }, [business.public_id, order, preview])
 
   // Poll the actual saved order, not a visual timer. Works while the receipt is
   // open or minimized, stops on completion/cancellation and cleans up on unmount.
@@ -415,6 +436,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
     // Only a saved order (response.ok) reaches the receipt.
     const saved = result.order || {}
     setTrackingError('')
+    setSavedReceipt(null)
     setOrder({ ...placedOrder, order_number: saved.order_number || placedOrder.order_id, server_order_id: saved.public_id || '', status: saved.status || 'new', payment_status: saved.payment_status || '', reward: saved.reward || null })
     pendingIds.current = null
     setCopied(false)
@@ -425,6 +447,41 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   const copyOrderNumber = async value => {
     try { await navigator.clipboard.writeText(value); setCopied(true) } catch { setCopied(false) }
   }
+
+  const resumeLastOrder = async () => {
+    if (!savedReceipt || resumeBusy || preview) return
+    setResumeBusy(true); setResumeError('')
+    try {
+      // A cached status is not proof that the order is still in that stage.
+      const next = await fetchMenuOrderPhase({ fetchImpl: fetch, apiBase,
+        businessId: business.public_id, orderId: savedReceipt.server_order_id })
+      setOrder({ ...savedReceipt, ...next })
+      setSavedReceipt(null)
+      setPayStep('done')
+      setCartOpen(true)
+    } catch {
+      setResumeError('Cannot verify this order right now. Check your connection and try again.')
+    } finally { setResumeBusy(false) }
+  }
+  const forgetLastOrder = () => {
+    forgetRecentOrder(recentReceiptStorage(), business.public_id)
+    setSavedReceipt(null); setResumeError(''); setOrder(null)
+    setCartOpen(false); setPayStep('')
+  }
+  const orderAgain = () => {
+    // Never replay an old payment, reward reservation or order ID.
+    // Rebuild only an unsubmitted draft with the current menu and prices.
+    const { cart: draft, skipped } = buildReorderDraft(order?.lines, data.items || [], branchId,
+      menuItemAvailable, addCartItem)
+    setCart(draft); setSelectedReward(null); setCheckoutRewards(null)
+    pendingIds.current = null; setSubmitError(''); setOrder(null); setPayStep('')
+    setCartOpen(draft.length > 0)
+    setReorderNote(skipped
+      ? `${skipped} previous item${skipped === 1 ? '' : 's'} could not be added because availability or options changed. Review your cart and current prices.`
+      : draft.length ? 'Review your reorder cart. Prices and availability are updated; nothing has been submitted.'
+        : 'Choose your items from the current menu to order again.')
+  }
+
 
   const step = payStep === 'done' ? 'done' : !cart.length ? 'empty' : payStep
   const receipt = order ? receiptCopy(order.payment_method, money(order.subtotal), business.name) : null
@@ -450,6 +507,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   return <div className={`lt-qr-public lt-qr-cafe${preview ? ' lt-qr-is-preview' : ''}${count ? ' lt-qr-has-cart' : ''}`}>
     <main className="lt-qr-page">
       {preview && <div className="lt-qr-preview-note">Owner preview · {data.is_published ? 'Published' : 'Not published'}</div>}
+      {reorderNote && <p className="lt-qr-reorder-notice" role="status">{reorderNote}</p>}
       <header className="lt-qr-cafe-head">
         <div className="lt-qr-cafe-title">
           {business.logo_url && <img className="lt-qr-cafe-logo" src={business.logo_url} alt="" />}
@@ -504,6 +562,14 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
       <footer className="lt-qr-footer"><img src={loyaltyTreeLogo} alt="" /><span>Menu by <strong>Loyalty Tree</strong></span></footer>
     </main>
     {item && <ItemDetails key={item.public_id} item={item} available={menuItemAvailable(item, branchId)} money={money} onClose={() => setItem(null)} onAdd={addItem} />}
+    {!order && savedReceipt && !cartOpen && !needsBranch && count === 0 && <div className="lt-qr-resume-dock" role="region" aria-label="Recent order tracking">
+      <p><strong>Recent order saved on this device</strong><small>Tap to securely check its latest status. Available for 3 days.</small></p>
+      <div className="lt-qr-resume-actions">
+        <button type="button" className="lt-qr-resume-main" disabled={resumeBusy} onClick={resumeLastOrder}>{resumeBusy ? 'Checking order…' : 'Track last order'}</button>
+        <button type="button" className="lt-qr-resume-forget" disabled={resumeBusy} onClick={forgetLastOrder}>Forget</button>
+      </div>
+      {resumeError && <small role="alert">{resumeError}</small>}
+    </div>}
     {order && !cartOpen && !needsBranch && <div className="lt-qr-dock lt-qr-tracking-dock">
       <button type="button" className="lt-qr-dock-card" onClick={() => { setPayStep('done'); setCartOpen(true) }}
         aria-label={`Track order ${order.order_number}, ${phase?.title || 'Order status'}`}>
@@ -608,15 +674,18 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
               <button type="button" className="lt-qr-text-button" onClick={() => copyOrderNumber(order.order_number)}>{copied ? 'Copied' : 'Copy'}</button>
             </div>
             <dl className="lt-qr-summary">
-              <div><dt>Payment reference</dt><dd>{order.payment_reference}</dd></div>
+              {order.payment_reference && <div><dt>Payment reference</dt><dd>{order.payment_reference}</dd></div>}
               {order.branch_name && branches.length > 1 && <div><dt>Branch</dt><dd>{order.branch_name}</dd></div>}
               <div><dt>Order type</dt><dd>{serviceLine(order.service, order.table_no, order.pickup_label)}</dd></div>
-              <div><dt>Name</dt><dd>{order.buyer_name || '—'}</dd></div>
+              {order.buyer_name && <div><dt>Name</dt><dd>{order.buyer_name}</dd></div>}
               <div><dt>Payment</dt><dd><span className={`lt-qr-paid-pill${order.payment_method === 'cash' && order.payment_status !== 'paid' ? ' is-unpaid' : ''}`}>{order.payment_method === 'cash' && order.payment_status === 'paid' ? 'Cash · Paid' : paymentReceiptLabel(order.payment_method)}</span></dd></div>
               {order.reward && <div><dt>Reward</dt><dd>🎁 {order.reward.name} ({phase?.cancelled ? 'not redeemed' : order.status === 'completed' ? 'redeemed' : 'reserved until paid and completed'})</dd></div>}
+              {order.status === 'completed' && <div><dt>Loyalty</dt><dd>Check your connected Wallet card for the latest stamps or points.</dd></div>}
             </dl>
             <ul className="lt-qr-cart-lines is-compact" aria-label="Items ordered">{(order.lines || []).map(line => <CartLine key={line.key} line={line} money={money} />)}</ul>
             <dl className="lt-qr-totals"><div className="is-total"><dt>{order.payment_method === 'cash' && order.payment_status === 'paid' ? 'Order total' : receipt.totalLabel}</dt><dd>{money(order.subtotal)}</dd></div></dl>
+            {order.status === 'completed' && <p className="lt-qr-complete-note">Thanks for ordering! Your receipt is saved on this device for up to 3 days. You can order again using the current menu.</p>}
+            {order.status === 'completed' && <button type="button" className="lt-qr-privacy-clear" onClick={forgetLastOrder}>Forget this order on this device</button>}
           </div>}
         </div>
 
@@ -635,7 +704,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
             {!submitError && <button type="button" className="lt-qr-primary lt-qr-wide" disabled={submitting || !paymentMethod} aria-busy={submitting} onClick={submitOrder}>{submitting ? <><span className="lt-qr-spinner" aria-hidden="true" />Sending order…</> : payButtonLabel(paymentMethod, money(total))}</button>}
             <button type="button" className="lt-qr-back-button" disabled={submitting} onClick={() => { setSubmitError(''); setPayStep('service') }}>Back</button>
           </>}
-          {step === 'done' && <button type="button" className="lt-qr-primary lt-qr-wide" onClick={closeCart}>Back to menu</button>}
+          {step === 'done' && <>{order?.status === 'completed' && <button type="button" className="lt-qr-primary lt-qr-wide" onClick={orderAgain}>Order again · review cart</button>}<button type="button" className={order?.status === 'completed' ? 'lt-qr-back-button' : 'lt-qr-primary lt-qr-wide'} onClick={closeCart}>Back to menu</button></>}
         </footer>
       </div>
     </div>}

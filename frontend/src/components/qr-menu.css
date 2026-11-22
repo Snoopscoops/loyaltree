@@ -531,3 +531,17 @@
 .lt-qr-tracking-dock .lt-qr-dock-label { flex:1; min-width:0; }
 .lt-qr-tracking-dock .lt-qr-dock-label small { white-space:normal; }
 .lt-qr-track-badge.is-payment-waiting { background:#ffe9a8; border:1px solid #e0a400; color:#5c3d00; }
+
+/* Owner-v14: safe local receipt recovery and completion actions. */
+.lt-qr-resume-dock { position:fixed; z-index:45; left:max(14px, env(safe-area-inset-left)); right:max(14px, env(safe-area-inset-right)); bottom:calc(16px + env(safe-area-inset-bottom)); max-width:540px; margin:auto; padding:15px; border-radius:18px; background:#fff; border:1px solid #d5e4d8; box-shadow:0 14px 45px rgba(11,49,35,.18); color:#183c2d; }
+.lt-qr-resume-dock p { margin:0 0 11px; display:grid; gap:4px; }
+.lt-qr-resume-dock p strong { font-size:15px; }
+.lt-qr-resume-dock small { font-size:12px; line-height:1.4; color:#55665a; }
+.lt-qr-resume-actions { display:flex; gap:10px; }
+.lt-qr-resume-actions button { border-radius:12px; font-weight:750; cursor:pointer; min-height:42px; padding:8px 15px; }
+.lt-qr-resume-main { background:#145940; color:#fff; border:1px solid #145940; flex:1; }
+.lt-qr-resume-forget { color:#4d5e53; border:1px solid #d3dfd6; background:white; }
+.lt-qr-resume-actions button:disabled { opacity:.6; cursor:not-allowed; }
+.lt-qr-reorder-notice { margin:10px 14px; border:1px solid #c6dfc9; border-radius:11px; padding:12px 14px; background:#ecf6eb; color:#24513b; font-weight:650; font-size:13px; }
+.lt-qr-complete-note { font-size:13px; line-height:1.5; color:#1c593e; background:#eff7f0; padding:14px; border-radius:13px; margin-top:12px; }
+.lt-qr-privacy-clear { font-size:12px; color:#6b5044; text-decoration:underline; background:transparent; border:0; padding:7px 0; cursor:pointer; }
