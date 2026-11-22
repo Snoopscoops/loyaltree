@@ -231,7 +231,12 @@ def make_menu_order_wallet(*, db, get_customer, get_program, uses_points, uses_s
                 summary['points_balance'] = (result or {}).get('points_balance')
             except HTTPException as e:
                 summary['points_skipped'] = str(e.detail)
-        if stamps_on:
+        # The final stamp reward already reset the card atomically when the
+        # order was completed. Do not immediately earn a stamp on that same
+        # redemption order; subsequent normal purchases still earn as before.
+        if stamps_on and order.get('_stamp_cycle_reset') is True:
+            summary['stamp_skipped'] = 'final_stamp_reward_cycle_reset'
+        elif stamps_on:
             try:
                 result = await add_stamp(business.get('public_id'),
                                          stamp_request(customer_public_id=customer.get('public_id'), as_owner=True, stamp_kind='reward'),
