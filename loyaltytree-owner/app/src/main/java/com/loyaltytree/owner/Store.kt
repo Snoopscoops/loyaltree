@@ -38,6 +38,10 @@ data class OwnerSession(
     val roleLabel get() = role.replaceFirstChar { it.uppercase() }
 }
 data class Member(val id: String, val name: String, val phone: String, val email: String, val stamps: Int, val points: String, val lastVisit: String, val birthdayMonth: Int = 0, val birthdayDay: Int = 0)
+data class MenuStockOption(val id: String, val name: String)
+data class MenuStockItem(val id: String, val name: String, val variants: List<MenuStockOption>)
+data class MenuStockRow(val branchId: String, val itemId: String, val variantKey: String,
+                        val opening: Int, val reserved: Int, val consumed: Int, val remaining: Int)
 data class MenuRow(val id: String, val categoryId: String, val category: String, val name: String, val price: String, val priceNumber: String, val detail: String, val available: Boolean, val shown: Boolean, val sortOrder: Int = 0, val directGroups: List<String> = emptyList(), val excludedGroups: List<String> = emptyList(), val unavailableBranches: List<String> = emptyList())
 data class OptionChoice(val id: String, val name: String, val price: String)
 data class OptionGroup(val id: String, val name: String, val required: Boolean, val appliesToAll: Boolean, val categoryIds: List<String>, val options: List<OptionChoice>) {
@@ -137,6 +141,13 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     var session by mutableStateOf<OwnerSession?>(null)
     var members by mutableStateOf<List<Member>>(emptyList())
     var menuRows by mutableStateOf<List<MenuRow>>(emptyList())
+    var menuStockItems by mutableStateOf<List<MenuStockItem>>(emptyList())
+    var menuStockRows by mutableStateOf<List<MenuStockRow>>(emptyList())
+    var menuStockBranches by mutableStateOf<List<BranchPlace>>(emptyList())
+    var menuStockDay by mutableStateOf("")
+    var menuStockNote by mutableStateOf("")
+    var menuStockBusy by mutableStateOf(false)
+
     var orders by mutableStateOf<List<LiveOrder>>(emptyList())
     var ordersNote by mutableStateOf("")
     var orderBusy by mutableStateOf("")
@@ -1187,6 +1198,70 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
             if (result.first >= 400) { status = API.message(result.second, "Could not save the billboard."); return@launch }
             applyBoard(result.second, result.first)
             status = if (billboardOn) "Saved. Nearby alerts are on." else "Saved. Nearby alerts are off."
+        }
+    }
+
+    /** Daily serving limits: the server validates branch permissions and saves atomically. */
+    fun loadMenuStock() {
+        val current = session ?: return
+        viewModelScope.launch {
+            menuStockBusy = true
+            val result = io { API.get("/api/v1/business/${current.slug}/menu-inventory", current.token) }
+            menuStockBusy = false
+            if (result == null || result.first >= 400) {
+                menuStockNote = if (result == null) "Could not reach daily inventory." else API.message(result.second, "Daily inventory unavailable.")
+                return@launch
+            }
+            val body = result.second as? JSONObject ?: return@launch
+            menuStockDay = body.optString("service_day")
+            val bs = body.optJSONArray("branches") ?: JSONArray()
+            menuStockBranches = buildList { for (i in 0 until bs.length()) {
+                val b = bs.optJSONObject(i) ?: continue
+                add(BranchPlace(b.optString("public_id"),b.optString("name","Branch")))
+            } }
+            val items = body.optJSONArray("items") ?: JSONArray()
+            menuStockItems = buildList { for (i in 0 until items.length()) {
+                val x = items.optJSONObject(i) ?: continue
+                val vars = x.optJSONArray("variants") ?: JSONArray()
+                val options = buildList { for (j in 0 until vars.length()) {
+                    val v = vars.optJSONObject(j) ?: continue
+                    add(MenuStockOption(v.optString("public_id"),v.optString("name","Variant")))
+                } }
+                add(MenuStockItem(x.optString("public_id"),x.optString("name","Item"),options))
+            } }
+            val rows = body.optJSONArray("rows") ?: JSONArray()
+            menuStockRows = buildList { for (i in 0 until rows.length()) {
+                val x = rows.optJSONObject(i) ?: continue
+                add(MenuStockRow(x.optString("branch_public_id"),x.optString("item_public_id"),
+                    x.optString("variant_key","*"), x.optInt("initial_servings"),
+                    x.optInt("reserved"),x.optInt("consumed"),x.optInt("remaining")))
+            } }
+            menuStockNote = ""
+        }
+    }
+
+    fun setMenuStock(branchId: String, itemId: String, variantKey: String, opening: String, repeatDaily: Boolean) {
+        val current = session ?: return
+        val number = opening.toIntOrNull()
+        if (number == null || number !in 0..100000) {
+            menuStockNote = "Enter a whole number from 0 to 100000."
+            return
+        }
+        if (branchId.isBlank() || itemId.isBlank()) {
+            menuStockNote = "Choose a branch and menu item."
+            return
+        }
+        viewModelScope.launch {
+            menuStockBusy = true
+            val body = JSONObject().put("branch_public_id",branchId).put("item_public_id",itemId)
+                .put("variant_key",variantKey).put("initial_servings",number).put("repeat_daily",repeatDaily)
+            val result = io { API.put("/api/v1/business/${current.slug}/menu-inventory",current.token,body) }
+            menuStockBusy = false
+            if (result == null || result.first >= 400) {
+                menuStockNote = if (result == null) "Could not reach daily inventory." else API.message(result.second,"Could not save servings.")
+                return@launch
+            }
+            loadMenuStock()
         }
     }
 

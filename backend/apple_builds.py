@@ -7,7 +7,7 @@ from fastapi import HTTPException
 
 
 class AppleBuilds:
-    def __init__(self, concurrency=2, queue_size=16):
+    def __init__(self, concurrency=2, queue_size=24):
         self.semaphore = asyncio.Semaphore(concurrency)
         self.capacity = concurrency + queue_size
         self.inflight = {}

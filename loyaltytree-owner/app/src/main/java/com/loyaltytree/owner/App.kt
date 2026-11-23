@@ -1031,6 +1031,18 @@ private fun MenuScreen(store: CounterStore) {
     var unavailable by remember { mutableStateOf<Set<String>>(emptySet()) }
     var shown by remember { mutableStateOf(true) }
     var inStock by remember { mutableStateOf(true) }
+    var stockVisible by remember { mutableStateOf(false) }
+    var stockBranch by remember { mutableStateOf("") }
+    var stockItem by remember { mutableStateOf("") }
+    var stockVariant by remember { mutableStateOf("*") }
+    var stockOpening by remember { mutableStateOf("") }
+    var stockRepeat by remember { mutableStateOf(true) }
+    val selectedStockItem = store.menuStockItems.find { it.id == stockItem }
+    val stockRow = store.menuStockRows.find { it.branchId == stockBranch && it.itemId == stockItem && it.variantKey == stockVariant }
+    LaunchedEffect(store.menuStockBranches,store.menuStockItems) {
+        if (store.menuStockBranches.none { it.id == stockBranch }) stockBranch = store.menuStockBranches.firstOrNull()?.id.orEmpty()
+        if (store.menuStockItems.none { it.id == stockItem }) stockItem = store.menuStockItems.firstOrNull()?.id.orEmpty()
+    }
     val view = LocalView.current
     fun go(next: Int) {
         forward = next >= step
@@ -1078,6 +1090,36 @@ private fun MenuScreen(store: CounterStore) {
             }
             Box(Modifier.size(40.dp).clip(CircleShape).background(Forest).clickable { openAdd() }, contentAlignment = Alignment.Center) {
                 Text("+", color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Medium)
+            }
+        }
+        Card {
+            Text("Daily servings", color = Forest, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+            Text("Prevent sold-out orders per branch and size. Set the opening count once, or repeat it every day.",color=Muted,fontSize=13.sp)
+            Secondary(if (stockVisible) "Hide daily stock" else "Manage daily stock") {
+                stockVisible = !stockVisible
+                if (stockVisible) store.loadMenuStock()
+            }
+            if (stockVisible) {
+                Text("${store.menuStockDay} · Philippine time", color=Muted,fontSize=12.sp)
+                if (store.menuStockBusy) Text("Loading…", color=Muted)
+                if (store.menuStockNote.isNotBlank()) Text(store.menuStockNote, color=Bad,fontSize=13.sp)
+                Text("Branch",fontWeight=FontWeight.SemiBold,color=Ink)
+                store.menuStockBranches.forEach { branch -> Choice(branch.name,stockBranch==branch.id) {stockBranch=branch.id;stockOpening=""} }
+                Text("Item",fontWeight=FontWeight.SemiBold,color=Ink)
+                store.menuStockItems.forEach { item -> Choice(item.name,stockItem==item.id) {stockItem=item.id;stockVariant="*";stockOpening=""} }
+                Text("Stock pool",fontWeight=FontWeight.SemiBold,color=Ink)
+                Choice("Shared item · all variants",stockVariant=="*") {stockVariant="*";stockOpening=""}
+                selectedStockItem?.variants?.forEach { option -> Choice(option.name,stockVariant==option.id) {stockVariant=option.id;stockOpening=""} }
+                if (stockRow != null) Text("${stockRow.remaining} remaining · ${stockRow.reserved} reserved · ${stockRow.consumed} consumed · ${stockRow.opening} opening",color=Forest,fontSize=13.sp)
+                Field("Initial servings",stockOpening,{stockOpening=it},hint=stockRow?.opening?.toString() ?: "e.g. 30",number=true)
+                Row(verticalAlignment=Alignment.CenterVertically) {
+                    Text("Repeat every day",modifier=Modifier.weight(1f),color=Ink,fontWeight=FontWeight.SemiBold)
+                    Switch(stockRepeat,{stockRepeat=it},colors=switchColors())
+                }
+                Primary(if (store.menuStockBusy) "Saving…" else "Save servings",enabled=!store.menuStockBusy) {
+                    store.setMenuStock(stockBranch,stockItem,stockVariant,stockOpening,stockRepeat)
+                }
+                Text("Shared stock and option stock are independent limits. The backend reserves quantities when orders are placed.",color=Muted,fontSize=12.sp)
             }
         }
         Card {

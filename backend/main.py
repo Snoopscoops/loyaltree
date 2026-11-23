@@ -12889,7 +12889,7 @@ def sync_apple_wallet_pass(customer: dict):
         print(f"APPLE WALLET sync error: {e}")
         return {"status": "error", "stage": "exception", "detail": str(e), "registrations": 0, "pushes_sent": 0}
 
-def _log_google_push_outcome(target_kind, *, response=None, error=None, skipped_reason=None):
+def _log_google_push_outcome(target_kind, *, response=None, error=None, skipped_reason=None, target_id=None):
     """Log provider acknowledgement without identifiers, content or response bodies."""
     try:
         status = response.status_code if response is not None else None
@@ -12904,8 +12904,12 @@ def _log_google_push_outcome(target_kind, *, response=None, error=None, skipped_
                     error_code = provider_status
             except Exception:
                 pass
+        # A short fingerprint allows restricted diagnostics to correlate a
+        # failed object without leaking customer or Wallet identifiers.
+        import hashlib
+        fingerprint = hashlib.sha256(str(target_id).encode()).hexdigest()[:16] if target_id else None
         log_event('google_push_summary', 'info' if accepted or skipped_reason else 'warning',
-            target_kind=target_kind, attempted=int(not skipped_reason), google_accepted=int(accepted),
+            target_kind=target_kind, target_fingerprint=fingerprint, attempted=int(not skipped_reason), google_accepted=int(accepted),
             failed=int(not accepted and not skipped_reason), skipped=int(bool(skipped_reason)),
             status=status, error_code=error_code, error_type=type(error).__name__ if error else None,
             skipped_reason=skipped_reason, delivery_status='unconfirmed', count_basis='provider_requests')
@@ -13014,10 +13018,10 @@ def send_wallet_object_message(
                 headers={"Authorization": f"Bearer {access_token}"},
                 json=payload
             )
-            _log_google_push_outcome('object', response=resp)
+            _log_google_push_outcome('object', response=resp, target_id=object_id)
             return resp.status_code in (200, 201)
     except Exception as e:
-        _log_google_push_outcome('object', error=e)
+        _log_google_push_outcome('object', error=e, target_id=object_id)
         return False
 
 # CAR LENDING / SHOWROOM - WALLET PASSES
@@ -18823,6 +18827,13 @@ except ImportError:
 # Owner: every branch. Manager / cashier (staff PIN session, 12 h): their own branch only.
 _menu_order_operator = make_menu_order_operator(db=supabase, get_business=safe_get_business, get_claims=get_staff_session_claims)
 
+# v18: owner/cashier branch-scoped daily serving inventory.
+try:
+    from .menu_daily_inventory import register_menu_inventory_routes
+except ImportError:
+    from menu_daily_inventory import register_menu_inventory_routes
+register_menu_inventory_routes(app, db=supabase, operator=_menu_order_operator, menu_snapshot=_oa_menu_snapshot)
+
 # Customer receipt order tracker (no staff credentials or customer PII).
 try:
     from .menu_customer_order_tracking import register_menu_customer_order_tracking_routes
@@ -18879,7 +18890,7 @@ async def public_place_menu_order(public_id: str, request: Request, background_t
         if selected_checkout_reward and (not math.isfinite(line_total) or line_total < 0 or qty > 20):
             raise HTTPException(status_code=400, detail='Invalid item price or quantity in reward checkout.')
         total += line_total
-        clean_items.append({'item_name': name, 'quantity': qty, 'line_total': line_total, 'options': raw.get('options') or []})
+        clean_items.append({'item_id': str(raw.get('item_id') or '')[:96], 'item_name': name, 'quantity': qty, 'line_total': line_total, 'options': raw.get('options') or []})
     if not clean_items:
         raise HTTPException(status_code=400, detail='Your cart is empty')
     if selected_checkout_reward:
@@ -18888,6 +18899,7 @@ async def public_place_menu_order(public_id: str, request: Request, background_t
         if len(clean_items) >= 40:
             raise HTTPException(status_code=400, detail='Remove one item to apply your loyalty reward.')
         clean_items.append(_menu_reward_line(selected_checkout_reward))
+    note = str(payload.get('customer_note') or '').strip()[:500]
     row = {
         'public_id': uuid.uuid4().hex,
         'business_id': business.get('id'),
@@ -18896,6 +18908,7 @@ async def public_place_menu_order(public_id: str, request: Request, background_t
         'buyer_name': str(payload.get('buyer_name') or 'Customer')[:120],
         'service': 'dine-in' if str(payload.get('service') or '') == 'dine-in' else 'pickup',
         'table_no': str(payload.get('table_no') or '')[:40],
+        'customer_note': note,
         'pickup_label': str(payload.get('pickup_label') or '')[:80],
         'status': 'new',
         'payment_status': payment_status,
@@ -18921,6 +18934,10 @@ async def public_place_menu_order(public_id: str, request: Request, background_t
             saved, _ = _menu_order_insert(supabase, row)
             saved = saved or row
     except Exception as e:
+        # Stock is enforced by an atomic DB trigger for regular and reward orders.
+        # A stock conflict is customer-correctable, not an infrastructure 503.
+        if any(reason in str(e).lower() for reason in ('not enough servings','missing item id','menu item has changed','invalid serving quantity')):
+            raise HTTPException(status_code=409, detail='An item is sold out or needs a fresh menu. Refresh and review your cart.') from e
         if selected_checkout_reward:
             raise HTTPException(status_code=409, detail='Reward reservation failed. Refresh checkout or remove the reward and try again.') from e
         raise HTTPException(status_code=503, detail=f'Menu orders are not ready yet: {friendly_db_error(e)}')
@@ -18943,7 +18960,8 @@ def _menu_counter_order_public(row: dict) -> dict:
         'payment_status': row.get('payment_status') or 'paid',
         'payment_method': row.get('payment_method') or '',
         'total': float(row.get('total') or 0),
-        'customer_note': where,
+        'customer_note': where + (' · Note: ' + str(row.get('customer_note') or '') if row.get('customer_note') else ''),
+        'note': str(row.get('customer_note') or ''),
         'pickup_at': '',
         'customer': {'name': row.get('buyer_name') or 'Customer'},
         'branch': {'public_id': row.get('branch_public_id') or '', 'name': row.get('branch_name') or ''},
@@ -51798,9 +51816,18 @@ def _qr_menu_branding(business):
     }
 
 
+def _qr_menu_inventory_snapshot(business):
+    try:
+        from .menu_daily_inventory import inventory_rows, service_day
+    except ImportError:
+        from menu_daily_inventory import inventory_rows, service_day
+    return inventory_rows(supabase, business['id'], service_day())
+
+
 register_qr_menu_routes(app, db=supabase, get_business=safe_get_business,
     require_owner=require_owner_session, has_feature=business_has_plan_feature,
     on_hold=billing_hold, menu_snapshot=_oa_menu_snapshot, branding=_qr_menu_branding,
+    inventory_snapshot=_qr_menu_inventory_snapshot,
     frontend_url=FRONTEND_URL or 'https://theloyaltytree.com')
 
 try:

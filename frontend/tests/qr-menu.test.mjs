@@ -123,7 +123,7 @@ const placed={order_id:'LT-ABC',payment_reference:'REF-ABC',buyer_name:'John',se
 
 test('order request body matches the server contract exactly',()=>{
   const body=menuOrderRequest(placed)
-  assert.deepEqual(Object.keys(body).sort(),['branch_public_id','buyer_name','card_token','items','order_number','payment_method','payment_reference','payment_status','pickup_label','service','table_no'])
+  assert.deepEqual(Object.keys(body).sort(),['branch_public_id','buyer_name','card_token','customer_note','items','order_number','payment_method','payment_reference','payment_status','pickup_label','service','table_no'])
   assert.equal(body.branch_public_id,'')
   assert.equal(body.card_token,'')
   assert.equal(body.order_number,'LT-ABC')
@@ -131,7 +131,8 @@ test('order request body matches the server contract exactly',()=>{
   assert.equal(body.service,'dine-in')
   assert.equal(body.table_no,'5')
   assert.equal(body.pickup_label,'')
-  assert.deepEqual(body.items,[{name:'Mocha',quantity:2,line_total:300,options:[{public_id:'oat',name:'Oat',price_delta:20}]}])
+  assert.equal(body.customer_note,'')
+  assert.deepEqual(body.items,[{item_id:'mocha',name:'Mocha',quantity:2,line_total:300,options:[{public_id:'oat',name:'Oat',price_delta:20}]}])
   const pickup=menuOrderRequest({...placed,service:'pickup'})
   assert.equal(pickup.service,'pickup'); assert.equal(pickup.table_no,''); assert.equal(pickup.pickup_label,'3:30 PM')
 })
@@ -229,7 +230,7 @@ test('menu page has no All branches option and blocks ordering until a branch is
   const source=await readFile(new URL('../src/components/QRMenuPage.jsx',import.meta.url),'utf8')
   assert.equal(source.includes('All branches'),false)
   assert.ok(source.includes('Choose your branch'))
-  assert.ok(source.includes('if (needsBranch || !menuItemAvailable(value, branchId)) return'))
+  assert.ok(source.includes('if (needsBranch || !menuSelectionAvailable(value, branchId, selected)) return'))
   assert.ok(source.includes('disabled={checkingCard || needsBranch}'))
   assert.ok(source.includes("!cartOpen && !needsBranch"))
   assert.equal(source.includes('Location unavailable'),false)

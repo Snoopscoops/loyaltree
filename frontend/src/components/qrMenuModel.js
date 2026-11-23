@@ -6,7 +6,20 @@ export function menuItemOfferedAt(item, branchId) {
   return !(item.unavailable_branch_public_ids || []).includes(branchId)
 }
 export function menuItemAvailable(item, branchId) {
-  return item.is_available !== false && menuItemOfferedAt(item, branchId)
+  if (item.is_available === false || !menuItemOfferedAt(item, branchId)) return false
+  const stock = item?.branch_stock?.[branchId] || []
+  return !stock.some(row => row.variant_key === '*' && row.remaining <= 0)
+}
+// Extra independent variant rows (e.g. Medium size) may be stocked out while
+// another size remains available. The backend still validates atomically.
+export function menuSelectionAvailable(item, branchId, selected = {}) {
+  if (!menuItemAvailable(item, branchId)) return false
+  const stock = item?.branch_stock?.[branchId] || []
+  const optionIds = Object.values(selected).flatMap(ids => Array.isArray(ids) ? ids : [])
+  return !stock.some(row => row.variant_key !== '*' && optionIds.includes(row.variant_key) && row.remaining <= 0)
+}
+export function menuOptionAvailable(item, branchId, optionId) {
+  return !(item?.branch_stock?.[branchId] || []).some(row => row.variant_key === optionId && row.remaining <= 0)
 }
 export function filterMenuItems(items, category, search) {
   const needle = search.trim().toLocaleLowerCase()
@@ -147,6 +160,7 @@ export function menuOrderRequest(order) {
     buyer_name: order?.buyer_name || '',
     service,
     table_no: service === 'dine-in' ? order?.table_no || '' : '',
+    customer_note: String(order?.customer_note || '').trim().slice(0, 500),
     pickup_label: service === 'pickup' ? order?.pickup_label || '' : '',
     // The branch the customer chose, and their connected card (if any) so the
     // shop can see which branch and which members ordered. Both optional.
@@ -156,6 +170,7 @@ export function menuOrderRequest(order) {
     payment_status: paymentStatusFor(order?.payment_method),
     ...checkoutRewardSelectionPayload(order?.reward_selection, order?.payment_method),
     items: (order?.items || []).map(line => ({
+      item_id: line.item_id || '',
       name: line.name,
       quantity: line.quantity,
       line_total: line.line_total,

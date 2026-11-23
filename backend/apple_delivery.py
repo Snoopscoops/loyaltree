@@ -44,7 +44,7 @@ class AppleDelivery:
         if self.last_warning is None or now-self.last_warning >= 60:
             self.last_warning = now
             self.log('apple_push_queue_unavailable', 'warning', error_type=type(exc).__name__,
-                durable=False, action='Apply apple_wallet_delivery.sql; durable handoff is not confirmed.')
+                durable=False, action='Check Supabase RPC permissions/connectivity; durable handoff is not confirmed.')
 
     def _remember(self, token, context):
         self.fallback[(context['business_id'], token)] = dict(context)
@@ -113,6 +113,10 @@ class AppleDelivery:
         scope = str(business_id) if business_id is not None else 'serial:' + str(serial_scope or 'legacy')
         context = dict(business_id=scope, business_slug=business_slug, reason=reason, pass_type_identifier=pass_type)
         counts, errors = self._counts(len(tokens)), Counter()
+        # Large marketing campaigns wake many phones simultaneously. This
+        # slows campaign pushes only, not normal order/loyalty updates.
+        delay = max(self.batch_delay, .75) if len(tokens) >= 60 and reason in {
+            'announcement', 'cl_announcement', 'targeted_announcement'} else self.batch_delay
         if not tokens: return DeliveryCount()
         queued, fallback = [], []
         # Persist before sending. A killed worker leaves pending/expired leased
@@ -130,7 +134,7 @@ class AppleDelivery:
         counts['queued'] = len(queued)
         if not self.paused():
             for offset in range(0, len(queued), self.batch_size):
-                if offset: self.sleep(self.batch_delay)
+                if offset: self.sleep(delay)
                 if self.paused(): break
                 try:
                     jobs = self._rpc('claim', ids=queued[offset:offset+self.batch_size], limit=self.batch_size).get('jobs', [])
@@ -149,7 +153,7 @@ class AppleDelivery:
         # Missing migration/outage must not fail a committed stamp. Retain a
         # bounded fallback and explicitly require upstream wallet-job retry.
         for offset in range(0, len(fallback), self.batch_size):
-            if offset: self.sleep(self.batch_delay)
+            if offset: self.sleep(delay)
             chunk = fallback[offset:offset+self.batch_size]
             if self.paused():
                 outcomes = [dict(outcome='deferred', attempted=False, status=None, reason='memory_pressure') for _ in chunk]

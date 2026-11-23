@@ -1,7 +1,9 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { Html5QrcodeScanner } from 'html5-qrcode'
 import { useLocation, useNavigate } from 'react-router-dom'
 import BenefitsCashier from './BenefitsCashier'
+import MenuDailyServings from './MenuDailyServings'
+import './menu-daily-servings.css'
 import { validBenefitCoupons } from './benefitsManagementModel'
 import { cashierActsAsOwner, cashierAttemptKey, cashierBillAmount, cashierNewAttemptKey, cashierStampBill } from './cashierBenefitsModel'
 
@@ -81,6 +83,7 @@ function giftIdentifierFromScan(value) {
 function CashierApp({ API_BASE }) {
   const location = useLocation()
   const navigate = useNavigate()
+  const [showDailyStock, setShowDailyStock] = useState(false)
   // When the owner taps "Scan Leaf" from their own dashboard, we're handed
   // their business slug and name via router state - they've already
   // authenticated as the business owner, so there's no reason to make them
@@ -122,6 +125,7 @@ function CashierApp({ API_BASE }) {
   // Session token from /staff/verify-pin - sent instead of the raw PIN on
   // every scan, so the PIN itself only crosses the wire once per shift.
   const [sessionToken, setSessionToken] = useState(ownerState?.ownerToken || restoredCashierSession?.sessionToken || '')
+  const inventoryRequest = useCallback((url,options) => fetch(url,{...options,headers:{...options?.headers,Authorization:`Bearer ${sessionToken}`}}),[sessionToken])
   const lastScanRef = useRef({ id: null, time: 0 })
   const lastNfcRef = useRef({ token: null, time: 0 })
   const [customerData, setCustomerData] = useState(null)
@@ -1352,6 +1356,11 @@ function CashierApp({ API_BASE }) {
           {isOwner ? '← Dashboard' : 'Switch'}
         </button>
       </header>
+
+      {sessionToken && businessSlug && <section style={{padding:'8px 16px'}}>
+        <button type="button" style={{...styles.btn,width:'100%',marginBottom:6}} onClick={()=>setShowDailyStock(value=>!value)} aria-expanded={showDailyStock}>{showDailyStock?'Hide daily serving inventory':'Daily serving inventory'}</button>
+        {showDailyStock && <MenuDailyServings API_BASE={API_BASE} slug={businessSlug} request={inventoryRequest} />}
+      </section>}
 
       {/* Message Area */}
       {message && (

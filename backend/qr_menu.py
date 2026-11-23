@@ -112,7 +112,7 @@ def menu_link(frontend_url, public_id, branch=None):
 
 
 def register_qr_menu_routes(app, *, db, get_business, require_owner, has_feature, on_hold,
-                            menu_snapshot, branding, frontend_url):
+                            menu_snapshot, branding, frontend_url, inventory_snapshot=None):
     def eligible(business):
         return bool(business and has_feature(business, 'qr_menu') and str(business.get('status') or '').upper() == 'ACTIVE' and not on_hold(business))
 
@@ -151,6 +151,24 @@ def register_qr_menu_routes(app, *, db, get_business, require_owner, has_feature
         catalog = snapshot(business)
         if branch and not any(b['public_id'] == branch for b in catalog['branches']):
             raise HTTPException(404, 'Branch not found')
+        # Optional dependency keeps existing catalog callers compatible.
+        # On production this is wired to the DB inventory service and must be
+        # migrated first; failures must not present stale stock as available.
+        if inventory_snapshot is not None:
+            try:
+                stock_rows = inventory_snapshot(business)
+            except Exception as exc:
+                raise HTTPException(503, 'Daily inventory temporarily unavailable. Try again.') from exc
+            by_item = {}
+            for row in stock_rows:
+                if branch and row.get('branch_public_id') != branch:
+                    continue
+                key = row.get('item_public_id')
+                by_item.setdefault(key, {}).setdefault(row.get('branch_public_id'), []).append({
+                    'variant_key':row.get('variant_key') or '*',
+                    'remaining':max(0,int(row.get('initial_servings') or 0)-int(row.get('consumed') or 0)-int(row.get('reserved') or 0))})
+            for item in catalog['items']:
+                item['branch_stock'] = by_item.get(item['public_id'], {})
         brand = branding(business)
         return dict(**catalog, business=dict(public_id=business['public_id'], name=business.get('name') or 'Business',
                 logo_url=safe_image(brand.get('logo_url')), hero_url=safe_image(brand.get('hero_url')),

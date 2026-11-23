@@ -133,3 +133,5 @@
 .lt-v16-order-totals b{display:block;font-size:20px;color:#07543e;margin-bottom:3px}
 .lt-v16-orders li{align-items:flex-start}.lt-v16-orders small{overflow-wrap:anywhere}
 .lt-v16-retry{margin:12px 0;border-radius:20px;border:1px solid #086048;padding:9px 18px;background:white;color:#07543e;font-weight:700}
+
+.lt-v18-reorder {display:inline-flex;margin-top:7px;padding:7px 12px;border:1px solid #15785a;border-radius:999px;color:#076044;background:#f3fff7;font-size:12px;font-weight:800;}

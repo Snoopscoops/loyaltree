@@ -43,7 +43,10 @@ def serialize_order(row):
         'service': row.get('service') or '',
         'total': total,
         'verified_spent': float(spend),
-        'items': [{'name': item.get('item_name') or 'Item', 'quantity': item.get('quantity') or 1}
+        'items': [{'name': item.get('item_name') or 'Item', 'item_id': item.get('item_id') or '',
+                   'quantity': item.get('quantity') or 1,
+                   'options': [{'public_id': opt.get('public_id') or '', 'name': opt.get('name') or ''}
+                               for opt in (item.get('options') or []) if isinstance(opt, dict)][:15]}
                   for item in row.get('items') or [] if isinstance(item, dict)][:40],
     }
 
