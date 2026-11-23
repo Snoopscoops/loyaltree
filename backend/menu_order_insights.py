@@ -789,6 +789,37 @@ def register_menu_order_insight_routes(app, *, db, get_business, require_owner, 
             raise HTTPException(status_code=503, detail=f'Could not update the payment: {friendly_error(exc)}')
         return {'success': True, 'payment_status': 'paid'}
 
+    @app.get('/api/v1/business/{public_id}/menu-orders/customer-pulse')
+    def menu_orders_customer_pulse(public_id: str, days: int = 30, branch: str = '',
+                                   product_id: str = '', weekday: int = -1, hour: int = -1,
+                                   authorization: str = Header(default='')):
+        """Private, real purchase aggregates; never expose customer identities."""
+        business = business_for(public_id, authorization)
+        if not (1 <= days <= 90):
+            raise HTTPException(status_code=400, detail='Days must be between 1 and 90.')
+        if weekday not in (-1, 0, 1, 2, 3, 4, 5, 6) or hour not in range(-1, 24):
+            raise HTTPException(status_code=400, detail='Invalid day or hour filter.')
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+        try:
+            rows = read_orders(db, business['id'], since)
+            scoped = filter_branch(rows, branch.strip())
+            customers = read_customers(db, business['id'], [r.get('member_customer_public_id') for r in scoped])
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f'Could not load purchase analytics: {friendly_error(exc)}')
+        try:
+            from .menu_customer_pulse_v192 import customer_pulse
+        except ImportError:
+            from menu_customer_pulse_v192 import customer_pulse
+        report = customer_pulse(scoped, customers, days=days, branch=branch.strip(),
+                                product_id=product_id.strip()[:80],
+                                weekday=None if weekday == -1 else weekday,
+                                hour=None if hour == -1 else hour,
+                                today=datetime.now(MANILA).date())
+        report['limited_to_max_orders'] = len(rows) >= MAX_ROWS
+        if report['limited_to_max_orders']:
+            report['notes'].append('Reporting source reached its row limit; reduce the date window for complete results.')
+        return report
+
     @app.get('/api/v1/business/{public_id}/menu-orders/insights')
     def menu_orders_insights(public_id: str, days: int = 30, branch: str = '', period: str = '', authorization: str = Header(default='')):
         business = business_for(public_id, authorization)
