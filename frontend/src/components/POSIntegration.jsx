@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
+import { requestJsonResponse } from './requestTimeout'
 import { DeviceRegisterEditor, RegisterIdField, isActivePosDevice, registerConflict, seenRegisterIds } from './POSRegisterControls'
 
 const PROVIDERS = [
@@ -147,7 +148,7 @@ function POSIntegration({
   )
 
   const integrationStatus = String(integration?.status || 'not_connected').toLowerCase()
-  const hasSavedStoreHubCredentials = Boolean(storeHubConnection?.credentials_saved || (provider === 'storehub' && integration?.config?.real_api_tested))
+  const hasSavedStoreHubCredentials = Boolean(storeHubConnection?.credentials_saved ?? (provider === 'storehub' && integration?.config?.real_api_tested))
   const hasSavedLoyverseCredentials = Boolean(loyverseConnection?.credentials_saved || (provider === 'loyverse' && integration?.config?.real_api_tested))
   const hasSavedCredentials = provider === 'loyverse' ? hasSavedLoyverseCredentials : hasSavedStoreHubCredentials
   const simulatorReady = provider === 'storehub' && integration?.mode === 'test' && integration?.config?.simulator === true
@@ -410,7 +411,7 @@ function POSIntegration({
       else if (data.branch_mappings?.length) setSetupStep(3)
       else if (data.integration) setSetupStep(2)
     } catch (err) {
-      setError(err.message || 'Could not load POS integration.')
+      setError(err instanceof TypeError ? 'LoyaltyTree could not refresh the POS settings.' : err.message || 'Could not load POS integration.')
     } finally {
       setLoading(false)
     }
@@ -464,6 +465,21 @@ function POSIntegration({
     } finally { setSaving(false) }
   }
 
+  const postStoreHub = async (path, body, timeoutMs = 45000) => {
+    const { response, payload } = await requestJsonResponse(
+      call,
+      `${API_BASE}/api/v1/business/${slug}/pos/storehub/${path}`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+      { timeoutMs, message: 'The StoreHub check timed out. Check the saved connection before trying again.' },
+    )
+    if (!response.ok || !payload?.ok) {
+      throw new Error(typeof payload?.detail === 'string'
+        ? payload.detail
+        : `LoyaltyTree could not verify the StoreHub response (HTTP ${response.status}).`)
+    }
+    return payload
+  }
+
   const connectStoreHub = async () => {
     if (!slug) return
     const storeName = storeHubCredentials.store_name.trim()
@@ -477,24 +493,23 @@ function POSIntegration({
     setMessage('')
     setStoreHubRealResult(null)
     try {
-      const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/storehub/connect`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ store_name: storeName, api_token: apiToken }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.detail || 'Could not connect StoreHub.')
+      const data = await postStoreHub('connect', { store_name: storeName, api_token: apiToken })
       setIntegration(data.integration || null)
       setStoreHubRealResult(data)
       setStoreHubOutlets(data.stores || [])
       setLoyaltyContract(data.loyalty_contract || null)
-      setStoreHubCredentials({ store_name: storeName, api_token: '' })
+      setStoreHubCredentials({ store_name: data.store_name || storeName, api_token: '' })
+      setStoreHubConnection(current => ({ ...current, credentials_saved: true, store_name: data.store_name || storeName }))
       setShowReconnect(false)
-      setSetupStep(2)
-      setMessage(`StoreHub connected securely. ${data.store_count ?? 0} outlet(s) detected.`)
+      if (!data.used_saved_credentials) setSetupStep(2)
+      setMessage(data.used_saved_credentials
+        ? data.message || 'StoreHub reads work with the saved connection.'
+        : `StoreHub connected securely. ${data.store_count ?? 0} outlet(s) detected.`)
       await loadPOS()
     } catch (err) {
-      setError(err.message || 'Could not connect StoreHub.')
+      setError(err instanceof TypeError
+        ? 'Your browser could not read the StoreHub connection response from LoyaltyTree. Check the backend request log before retrying.'
+        : err.message || 'Could not connect StoreHub.')
     } finally {
       setSaving(false)
     }
@@ -507,21 +522,17 @@ function POSIntegration({
     setMessage('')
     setStoreHubRealResult(null)
     try {
-      const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/storehub/connection-test`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.detail || 'StoreHub API connection test failed.')
+      const data = await postStoreHub('connection-test', { provider: 'storehub' })
       setStoreHubRealResult(data)
       setIntegration(data.integration || integration)
       setStoreHubOutlets(data.stores || [])
       setLoyaltyContract(data.loyalty_contract || loyaltyContract)
-      setMessage(`StoreHub API connected. ${data.store_count ?? 0} outlet(s) detected.`)
+      setMessage(`Saved StoreHub connection can read transactions. ${data.store_count ?? 0} outlet(s) detected.`)
       await loadPOS()
     } catch (err) {
-      setError(err.message || 'StoreHub API connection test failed.')
+      setError(err instanceof TypeError
+        ? 'Your browser could not read the StoreHub test response from LoyaltyTree. Check the backend request log before retrying.'
+        : err.message || 'StoreHub API connection test failed.')
     } finally {
       setSaving(false)
     }
@@ -673,17 +684,13 @@ function POSIntegration({
     setError('')
     setMessage('')
     try {
-      const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/storehub/transactions-preview`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ days: 1, limit: 10 }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.detail || 'Could not read StoreHub transactions.')
+      const data = await postStoreHub('transactions-preview', { days: 1, limit: 10 }, 75000)
       setStoreHubTransactions(data.transactions || [])
       setMessage(`Read ${data.returned ?? 0} recent StoreHub transaction(s). No loyalty balances changed.`)
     } catch (err) {
-      setError(err.message || 'Could not read StoreHub transactions.')
+      setError(err instanceof TypeError
+        ? 'LoyaltyTree could not receive the StoreHub transaction preview. Try previewing again.'
+        : err.message || 'Could not read StoreHub transactions.')
     } finally {
       setSaving(false)
     }
@@ -1157,7 +1164,7 @@ function POSIntegration({
               })}
             </div>
 
-            {activeProvider.id === 'storehub' && !isConnected && (
+            {activeProvider.id === 'storehub' && !isConnected && !hasSavedStoreHubCredentials && (
               <div style={{marginTop:18,display:'grid',gap:12}}>
                 <div style={s.ruleBox}>
                   <b>Connect your own StoreHub account</b>
@@ -1175,7 +1182,7 @@ function POSIntegration({
                     <span style={s.smallMuted}>StoreHub store name</span>
                     <input
                       style={s.input}
-                      placeholder="e.g. angkan"
+                      placeholder="Account name from your StoreHub BackOffice URL"
                       autoComplete="off"
                       value={storeHubCredentials.store_name}
                       onChange={e => setStoreHubCredentials(current => ({ ...current, store_name: e.target.value }))}
@@ -1248,19 +1255,19 @@ function POSIntegration({
             )}
           </section>
 
-          {isConnected && provider === 'storehub' && (
+          {(isConnected || hasSavedStoreHubCredentials) && provider === 'storehub' && (
             <section style={s.card}>
               <div style={s.sectionHeader}>
                 <div>
                   <div style={s.stepLabel}>STOREHUB ACCOUNT</div>
-                  <h3 style={s.sectionTitle}>Connected securely</h3>
+                  <h3 style={s.sectionTitle}>{hasSavedStoreHubCredentials ? 'Saved StoreHub connection' : 'StoreHub simulator'}</h3>
                 </div>
-                <span style={s.connectedPill}>Connected</span>
+                <span style={s.connectedPill}>{hasSavedStoreHubCredentials ? 'Credentials saved' : 'Test mode'}</span>
               </div>
               <div style={s.ruleBox}>
                 <b>{integration?.external_account_name || storeHubConnection?.store_name || 'StoreHub'}</b>
                 <div style={s.smallMuted}>
-                  API token: •••••••••••• · Stored encrypted on Loyalty Tree's backend
+                  {hasSavedStoreHubCredentials ? 'API token stored securely on the LoyaltyTree backend.' : 'Add a StoreHub API token to read real transactions.'}
                 </div>
               </div>
 
@@ -1269,7 +1276,7 @@ function POSIntegration({
                   <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:10}}>
                     <input
                       style={s.input}
-                      placeholder="StoreHub store name"
+                      placeholder="StoreHub BackOffice account name"
                       value={storeHubCredentials.store_name}
                       onChange={e => setStoreHubCredentials(current => ({ ...current, store_name: e.target.value }))}
                     />
@@ -1289,10 +1296,10 @@ function POSIntegration({
               )}
 
               <div style={s.actionRow}>
-                <button type="button" style={s.secondaryButton} disabled={saving} onClick={testSavedStoreHubConnection}>
+                <button type="button" style={s.secondaryButton} disabled={saving || !hasSavedStoreHubCredentials} onClick={testSavedStoreHubConnection}>
                   Test saved connection
                 </button>
-                <button type="button" style={s.secondaryButton} disabled={saving} onClick={previewStoreHubTransactions}>
+                <button type="button" style={s.secondaryButton} disabled={saving || !hasSavedStoreHubCredentials} onClick={previewStoreHubTransactions}>
                   Preview recent transactions
                 </button>
                 <button type="button" style={s.secondaryButton} disabled={saving} onClick={() => setShowReconnect(value => !value)}>

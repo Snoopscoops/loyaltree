@@ -4239,11 +4239,23 @@ def _storehub_safe_response_headers(response) -> dict:
     return result
 
 
+class StoreHubAuthenticationError(HTTPException):
+    def __init__(self, provider_status: int, path: str):
+        super().__init__(status_code=502, detail=f'StoreHub API returned HTTP {provider_status} for {path}.')
+
+
+class StoreHubCredentialDenied(HTTPException):
+    def __init__(self, detail: str):
+        super().__init__(status_code=422, detail=detail)
+
+
 def _storehub_request_with_credentials(
     store_name: str,
     api_token: str,
     path: str,
     params: Optional[dict] = None,
+    *,
+    timeout: float = 20,
 ):
     """Experimental read-only StoreHub request using explicit credentials.
 
@@ -4265,13 +4277,12 @@ def _storehub_request_with_credentials(
     }
 
     try:
-        with pooled_client(timeout=20) as client:
+        with pooled_client(timeout=timeout) as client:
             res = client.get(url, headers=headers, params=params or {})
-    except Exception as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f'Could not reach StoreHub API: {exc}',
-        )
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail=f'StoreHub did not respond in time for {safe_path}.') from None
+    except httpx.RequestError:
+        raise HTTPException(status_code=502, detail=f'LoyaltyTree could not reach StoreHub for {safe_path}.') from None
 
     # ANGKAN pilot diagnostic: StoreHub currently returns the same historical
     # 5,000 transaction rows despite a current date window. Log only safe
@@ -4298,6 +4309,9 @@ def _storehub_request_with_credentials(
                 sort_keys=True,
             )
         )
+
+    if res.status_code in (401, 403):
+        raise StoreHubAuthenticationError(res.status_code, safe_path)
 
     if res.status_code >= 400:
         provider_text = (res.text or '').strip()
@@ -4382,64 +4396,57 @@ def _storehub_outlets_from_transactions(rows: list) -> list:
     return outlets
 
 
-def _storehub_discover_outlets_with_credentials(store_name: str, api_token: str) -> tuple[list, str, Optional[str]]:
-    """Return (outlets, source, warning), preferring /stores then transaction storeId fallback."""
-    stores_error = None
-    stores = []
+def _storehub_read_connection_transactions(store_name: str, api_token: str) -> list:
+    """Confirm the credentials can read the transaction feed Companion needs."""
+    end = datetime.now(timezone.utc)
     try:
-        stores_payload = _storehub_request_with_credentials(store_name, api_token, '/stores')
-        stores = [
-            summary
-            for summary in (_storehub_store_summary(row) for row in _storehub_list(stores_payload))
-            if str(summary.get('id') or '').strip()
-        ]
-    except HTTPException as exc:
-        stores_error = str(exc.detail)
+        payload = _storehub_request_with_credentials(store_name, api_token, '/transactions', params={
+            'from': (end - timedelta(days=1)).strftime('%Y-%m-%d'),
+            'to': end.strftime('%Y-%m-%d'),
+        }, timeout=8)
+    except StoreHubAuthenticationError as exc:
+        raise StoreHubCredentialDenied(
+            f'{exc.detail} Check the StoreHub BackOffice account name and its transaction-read access.'
+        ) from None
+    if not isinstance(payload, list) and not (
+        isinstance(payload, dict) and any(
+            isinstance(payload.get(key), list) for key in ('data', 'items', 'results', 'transactions')
+        )
+    ):
+        raise HTTPException(status_code=502, detail='StoreHub returned an unexpected response for /transactions.')
+    return _storehub_list(payload)
 
+
+def _storehub_discover_outlets_with_credentials(store_name: str, api_token: str) -> tuple[list, str, Optional[str]]:
+    """Verify transaction read access, then discover outlets."""
+    rows = _storehub_read_connection_transactions(store_name, api_token)
+    try:
+        payload = _storehub_request_with_credentials(store_name, api_token, '/stores', timeout=5)
+        stores = [_storehub_store_summary(row) for row in _storehub_list(payload)]
+        stores = [row for row in stores if str(row.get('id') or '').strip()]
+    except HTTPException:
+        stores = []
     if stores:
         return stores[:200], 'stores', None
 
-    now = datetime.now(timezone.utc)
-    transactions_error = None
-    try:
-        transactions_payload = _storehub_request_with_credentials(
-            store_name,
-            api_token,
-            '/transactions',
-            params={
-                'from': (now - timedelta(days=1)).strftime('%Y-%m-%d'),
-                'to': now.strftime('%Y-%m-%d'),
-            },
-        )
-        stores = _storehub_outlets_from_transactions(_storehub_list(transactions_payload))
-    except HTTPException as exc:
-        transactions_error = str(exc.detail)
+    outlets = _storehub_outlets_from_transactions(rows)
+    if outlets:
+        return outlets[:200], 'transactions', 'Outlet IDs were discovered from the StoreHub transaction feed.'
+    return [], 'none', 'StoreHub transaction access works. No outlet IDs were returned in the recent feed.'
 
-    if stores:
-        warning = (
-            f'StoreHub /stores was unavailable, so outlet ids were discovered from real transactions. {stores_error}'
-            if stores_error
-            else 'StoreHub /stores returned no usable outlets, so outlet ids were discovered from real transactions.'
-        )
-        return stores[:200], 'transactions', warning
 
-    if stores_error and transactions_error:
-        raise HTTPException(
-            status_code=502,
-            detail=(
-                'StoreHub credential validation could not discover an outlet. '
-                f'/stores: {stores_error} /transactions: {transactions_error}'
-            ),
-        )
-    if transactions_error:
-        raise HTTPException(status_code=502, detail=transactions_error)
-
-    warning = (
-        f'StoreHub /stores was unavailable ({stores_error}), and /transactions returned no outlet ids.'
-        if stores_error
-        else 'StoreHub API authenticated, but neither /stores nor /transactions returned a usable outlet id.'
-    )
-    return [], 'none', warning
+def _storehub_test_previous_credentials(integration: Optional[dict], submitted_name: str, submitted_token: str) -> Optional[list]:
+    """Read with a different saved token for the same active account, if available."""
+    if not integration or not integration.get('credentials_ciphertext'):
+        return None
+    if str(integration.get('status') or '').lower() not in ('connected', 'testing', 'live'):
+        return None
+    saved = _decrypt_pos_credentials(integration)
+    saved_name = _normalize_storehub_store_name(saved.get('store_name'))
+    saved_token = str(saved.get('api_token') or '').strip()
+    if not saved_name or saved_name.casefold() != submitted_name.casefold() or not saved_token or saved_token == submitted_token:
+        return None
+    return _storehub_read_connection_transactions(saved_name, saved_token)
 
 
 def _storehub_transaction_summary(row: dict) -> dict:
@@ -30409,7 +30416,7 @@ async def update_pos_settings(public_id: str, req: POSSettingsUpdate, authorizat
 
 
 @app.post('/api/v1/business/{public_id}/pos/storehub/connect')
-async def connect_storehub_account(
+def connect_storehub_account(
     public_id: str,
     req: POSStoreHubConnectRequest,
     authorization: str = Header(default=''),
@@ -30427,15 +30434,33 @@ async def connect_storehub_account(
     # persist credentials.
     _pos_credentials_cipher()
 
-    stores, outlet_source, outlet_warning = _storehub_discover_outlets_with_credentials(
-        store_name,
-        api_token,
-    )
-    encrypted = _encrypt_pos_credentials({
-        'store_name': store_name,
-        'api_token': api_token,
-    })
+    try:
+        stores, outlet_source, outlet_warning = _storehub_discover_outlets_with_credentials(store_name, api_token)
+    except StoreHubCredentialDenied as submitted_error:
+        existing = _get_pos_integration(business.get('id'), 'storehub')
+        try:
+            rows = _storehub_test_previous_credentials(existing, store_name, api_token)
+        except StoreHubCredentialDenied:
+            raise StoreHubCredentialDenied('StoreHub denied transaction read access for both the submitted and saved tokens.') from None
+        except HTTPException:
+            raise submitted_error from None
+        if rows is None:
+            raise
+        cached = (existing.get('config') or {}).get('storehub_outlets') or []
+        outlets = (cached or _storehub_outlets_from_transactions(rows))[:200]
+        return {
+            'ok': True,
+            'provider': 'storehub',
+            'used_saved_credentials': True,
+            'store_name': existing.get('external_account_name'),
+            'store_count': len(outlets),
+            'stores': outlets,
+            'integration': _pos_public_integration(existing),
+            'loyalty_contract': _pos_loyalty_contract(business),
+            'message': 'StoreHub reads work with the saved connection. StoreHub declined the submitted token.',
+        }
 
+    encrypted = _encrypt_pos_credentials({'store_name': store_name, 'api_token': api_token})
     now = datetime.utcnow().isoformat()
     existing = _get_pos_integration(business.get('id'), 'storehub')
     existing_config = (existing or {}).get('config') if isinstance((existing or {}).get('config'), dict) else {}
@@ -30557,14 +30582,14 @@ async def disconnect_storehub_account(
 
 
 @app.post('/api/v1/business/{public_id}/pos/storehub/connection-test')
-async def storehub_connection_test(
+def storehub_connection_test(
     public_id: str,
     req: POSStoreHubConnectionTestRequest,
     authorization: str = Header(default=''),
 ):
     """Read-only first handshake with ANGKAN's real StoreHub API.
 
-    This verifies backend credentials by requesting StoreHub outlets/stores.
+    This verifies backend credentials against the StoreHub transaction feed.
     It never awards loyalty points and never returns the API token.
     """
     business = _require_pos_pro_business(public_id, authorization)
@@ -30577,6 +30602,12 @@ async def storehub_connection_test(
         credentials.get('store_name'),
         credentials.get('api_token'),
     )
+
+    if not stores:
+        saved_config = integration.get('config') or {}
+        stores = saved_config.get('storehub_outlets') or []
+        if stores:
+            outlet_source = saved_config.get('storehub_outlet_source') or 'saved'
 
     now = datetime.utcnow().isoformat()
     config = _merge_pos_config(integration, {
@@ -30637,7 +30668,7 @@ async def storehub_connection_test(
 
 
 @app.post('/api/v1/business/{public_id}/pos/storehub/transactions-preview')
-async def storehub_transactions_preview(
+def storehub_transactions_preview(
     public_id: str,
     req: POSStoreHubPreviewRequest,
     authorization: str = Header(default=''),
@@ -30647,8 +30678,8 @@ async def storehub_transactions_preview(
     integration = _get_pos_integration(business.get('id'), 'storehub')
     if not integration:
         raise HTTPException(status_code=409, detail='Set up StoreHub first.')
-    if not (integration.get('config') or {}).get('real_api_tested'):
-        raise HTTPException(status_code=409, detail='Test the StoreHub API connection first.')
+    if not integration.get('credentials_ciphertext'):
+        raise HTTPException(status_code=409, detail='Connect a StoreHub account before reading transactions.')
 
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=int(req.days))
