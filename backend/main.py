@@ -2871,6 +2871,9 @@ class POSBranchMappingInput(BaseModel):
 class POSBranchMappingsUpdate(BaseModel):
     provider: Literal['storehub', 'loyverse'] = 'storehub'
     mappings: List[POSBranchMappingInput] = Field(default_factory=list, max_length=100)
+    # Only the Simple Setup single-branch save uses this flag. The advanced
+    # bulk editor retains its existing replace-all semantics by default.
+    preserve_other_mappings: bool = False
 
 
 class ManagerPOSBranchMappingUpdate(BaseModel):
@@ -3850,6 +3853,8 @@ def _pos_device_profile(device_model: Optional[str]) -> dict:
 def _pos_redemption_config(integration: Optional[dict]) -> dict:
     config = (integration or {}).get('config') if isinstance((integration or {}).get('config'), dict) else {}
     test_mode_redemption = str((integration or {}).get('mode') or '').lower() == 'test'
+    if (integration or {}).get('provider') == 'storehub' and (integration or {}).get('credentials_ciphertext'):
+        test_mode_redemption = False
 
     def _num(key, default, cast=float):
         try:
@@ -4239,11 +4244,23 @@ def _storehub_safe_response_headers(response) -> dict:
     return result
 
 
+class StoreHubAuthenticationError(HTTPException):
+    def __init__(self, provider_status: int, path: str):
+        super().__init__(status_code=502, detail=f'StoreHub API returned HTTP {provider_status} for {path}.')
+
+
+class StoreHubCredentialDenied(HTTPException):
+    def __init__(self, detail: str):
+        super().__init__(status_code=422, detail=detail)
+
+
 def _storehub_request_with_credentials(
     store_name: str,
     api_token: str,
     path: str,
     params: Optional[dict] = None,
+    *,
+    timeout: float = 20,
 ):
     """Experimental read-only StoreHub request using explicit credentials.
 
@@ -4265,13 +4282,12 @@ def _storehub_request_with_credentials(
     }
 
     try:
-        with pooled_client(timeout=20) as client:
+        with pooled_client(timeout=timeout) as client:
             res = client.get(url, headers=headers, params=params or {})
-    except Exception as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f'Could not reach StoreHub API: {exc}',
-        )
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail=f'StoreHub did not respond in time for {safe_path}.') from None
+    except httpx.RequestError:
+        raise HTTPException(status_code=502, detail=f'LoyaltyTree could not reach StoreHub for {safe_path}.') from None
 
     # ANGKAN pilot diagnostic: StoreHub currently returns the same historical
     # 5,000 transaction rows despite a current date window. Log only safe
@@ -4298,6 +4314,9 @@ def _storehub_request_with_credentials(
                 sort_keys=True,
             )
         )
+
+    if res.status_code in (401, 403):
+        raise StoreHubAuthenticationError(res.status_code, safe_path)
 
     if res.status_code >= 400:
         provider_text = (res.text or '').strip()
@@ -4382,64 +4401,147 @@ def _storehub_outlets_from_transactions(rows: list) -> list:
     return outlets
 
 
-def _storehub_discover_outlets_with_credentials(store_name: str, api_token: str) -> tuple[list, str, Optional[str]]:
-    """Return (outlets, source, warning), preferring /stores then transaction storeId fallback."""
-    stores_error = None
+def _storehub_read_connection_transactions(store_name: str, api_token: str) -> list:
+    """Confirm the credentials can read the transaction feed Companion needs."""
+    end = datetime.now(timezone.utc)
+    try:
+        payload = _storehub_request_with_credentials(store_name, api_token, '/transactions', params={
+            'from': (end - timedelta(days=1)).strftime('%Y-%m-%d'),
+            'to': end.strftime('%Y-%m-%d'),
+        }, timeout=8)
+    except StoreHubAuthenticationError as exc:
+        raise StoreHubCredentialDenied(
+            f'{exc.detail} Check the StoreHub BackOffice account name and its transaction-read access.'
+        ) from None
+    if not isinstance(payload, list) and not (
+        isinstance(payload, dict) and any(
+            isinstance(payload.get(key), list) for key in ('data', 'items', 'results', 'transactions')
+        )
+    ):
+        raise HTTPException(status_code=502, detail='StoreHub returned an unexpected response for /transactions.')
+    return _storehub_list(payload)
+
+
+def _storehub_discover_outlets_with_credentials(store_name: str, api_token: str) -> dict:
+    """Check account access and transaction permission independently."""
     stores = []
+    stores_read = False
+    stores_error = None
     try:
-        stores_payload = _storehub_request_with_credentials(store_name, api_token, '/stores')
-        stores = [
-            summary
-            for summary in (_storehub_store_summary(row) for row in _storehub_list(stores_payload))
-            if str(summary.get('id') or '').strip()
-        ]
+        payload = _storehub_request_with_credentials(store_name, api_token, '/stores', timeout=5)
+        if not isinstance(payload, list) and not (
+            isinstance(payload, dict) and any(
+                isinstance(payload.get(key), list) for key in ('data', 'items', 'results', 'stores')
+            )
+        ):
+            raise HTTPException(status_code=502, detail='StoreHub returned an unexpected response for /stores.')
+        stores_read = True
+        stores = [_storehub_store_summary(row) for row in _storehub_list(payload)]
+        stores = [row for row in stores if str(row.get('id') or '').strip()]
     except HTTPException as exc:
-        stores_error = str(exc.detail)
+        stores_error = exc
 
-    if stores:
-        return stores[:200], 'stores', None
-
-    now = datetime.now(timezone.utc)
-    transactions_error = None
+    rows = []
+    status = 'verified'
     try:
-        transactions_payload = _storehub_request_with_credentials(
-            store_name,
-            api_token,
-            '/transactions',
-            params={
-                'from': (now - timedelta(days=1)).strftime('%Y-%m-%d'),
-                'to': now.strftime('%Y-%m-%d'),
-            },
-        )
-        stores = _storehub_outlets_from_transactions(_storehub_list(transactions_payload))
+        rows = _storehub_read_connection_transactions(store_name, api_token)
+    except StoreHubCredentialDenied:
+        status = 'denied'
     except HTTPException as exc:
-        transactions_error = str(exc.detail)
+        status = 'timeout' if exc.status_code == 504 else 'unavailable'
 
-    if stores:
-        warning = (
-            f'StoreHub /stores was unavailable, so outlet ids were discovered from real transactions. {stores_error}'
-            if stores_error
-            else 'StoreHub /stores returned no usable outlets, so outlet ids were discovered from real transactions.'
-        )
-        return stores[:200], 'transactions', warning
+    verified = status == 'verified'
+    source = 'stores' if stores else 'none'
+    if not stores and verified:
+        stores = _storehub_outlets_from_transactions(rows)
+        if stores:
+            source = 'transactions'
+    linked = stores_read or verified
+    if not linked:
+        if isinstance(stores_error, StoreHubAuthenticationError) and status == 'denied':
+            raise StoreHubCredentialDenied('StoreHub denied access to both outlets and transactions.') from None
+        if status == 'timeout' or (stores_error is not None and stores_error.status_code == 504):
+            raise HTTPException(status_code=504, detail='StoreHub account verification timed out. Try the connection test again.')
+        raise HTTPException(status_code=502, detail='StoreHub account verification could not confirm access to outlets or transactions.')
 
-    if stores_error and transactions_error:
+    return {
+        'stores_read': stores_read,
+        'transactions_verified': verified,
+        'transaction_status': status,
+        'stores': stores[:200],
+        'outlet_source': source,
+    }
+
+
+def _storehub_test_previous_credentials(integration: dict, submitted_name: str) -> dict:
+    """Keep the saved token. It is the only token that can verify the linked account."""
+    if str(integration.get('status') or '').lower() not in ('connected', 'testing', 'live'):
+        raise HTTPException(status_code=409, detail='The saved StoreHub connection is inactive.')
+    saved = _decrypt_pos_credentials(integration)
+    saved_name = _normalize_storehub_store_name(saved.get('store_name'))
+    saved_token = str(saved.get('api_token') or '').strip()
+    if not saved_name or saved_name.casefold() != submitted_name.casefold() or not saved_token:
+        raise HTTPException(status_code=409, detail='This business already has a saved StoreHub account.')
+    return _storehub_discover_outlets_with_credentials(saved_name, saved_token)
+
+
+def _storehub_connection_result(business: dict, integration: dict, check: dict, *, saved: bool = False) -> dict:
+    stores = check['stores']
+    source = check['outlet_source']
+    if not stores:
+        config = integration.get('config') or {}
+        stores = config.get('storehub_outlets') or []
+        if stores:
+            source = 'saved'
+    messages = {
+        'verified': 'StoreHub account linked. Transaction access verified.',
+        'denied': 'StoreHub account linked. StoreHub denied transaction read access.',
+        'timeout': 'StoreHub account linked. The transaction permission check timed out.',
+        'unavailable': 'StoreHub account linked. Transaction access could not be verified.',
+    }
+    verified = check['transactions_verified']
+    public = _pos_public_integration(integration)
+    public['config'] = {
+        **(public.get('config') or {}),
+        'real_api_tested': verified,
+        'storehub_transaction_status': check['transaction_status'],
+    }
+    public['capabilities'] = {
+        **(public.get('capabilities') or {}),
+        'stores_read': check['stores_read'],
+        'transactions_read': verified,
+        'transactions': verified,
+        'real_api_tested': verified,
+    }
+    return {
+        'ok': True,
+        'provider': 'storehub',
+        'account_linked': True,
+        'credentials_saved': True,
+        'used_saved_credentials': saved,
+        'store_name': integration.get('external_account_name'),
+        'store_count': len(stores),
+        'stores': stores,
+        'outlet_source': source,
+        'stores_verified': check['stores_read'],
+        'transactions_verified': check['transactions_verified'],
+        'transaction_status': check['transaction_status'],
+        'integration': public,
+        'loyalty_contract': _pos_loyalty_contract(business),
+        'message': messages[check['transaction_status']],
+    }
+
+
+def _angkan_storehub_redemption_blocked(business: Optional[dict], provider: str) -> bool:
+    return provider == 'storehub' and (business or {}).get('public_id') == 'angkan-c5a1'
+
+
+def _require_angkan_storehub_redemption_ready(business: Optional[dict], provider: str) -> None:
+    if _angkan_storehub_redemption_blocked(business, provider):
         raise HTTPException(
-            status_code=502,
-            detail=(
-                'StoreHub credential validation could not discover an outlet. '
-                f'/stores: {stores_error} /transactions: {transactions_error}'
-            ),
+            status_code=409,
+            detail='Angkan redemption requires server verification of the open StoreHub cart.',
         )
-    if transactions_error:
-        raise HTTPException(status_code=502, detail=transactions_error)
-
-    warning = (
-        f'StoreHub /stores was unavailable ({stores_error}), and /transactions returned no outlet ids.'
-        if stores_error
-        else 'StoreHub API authenticated, but neither /stores nor /transactions returned a usable outlet id.'
-    )
-    return [], 'none', warning
 
 
 def _storehub_transaction_summary(row: dict) -> dict:
@@ -29974,6 +30076,10 @@ async def get_pos_integration_status(
     if provider == 'storehub':
         storehub_connection = {
             'credentials_saved': bool((integration or {}).get('credentials_ciphertext')),
+            'account_linked': bool((integration or {}).get('credentials_ciphertext')),
+            'transaction_status': config.get('storehub_transaction_status') or 'unchecked',
+            'transactions_verified': config.get('storehub_transaction_status') == 'verified',
+            'redemption_blocked': _angkan_storehub_redemption_blocked(business, provider),
             'encryption_configured': bool(POS_CREDENTIALS_ENCRYPTION_KEY),
             'store_name': (integration or {}).get('external_account_name'),
             'base_url': STOREHUB_API_BASE,
@@ -30027,6 +30133,9 @@ async def start_pos_integration(public_id: str, req: POSIntegrationCreate, autho
     label = 'StoreHub' if req.provider == 'storehub' else 'Loyverse'
     now = datetime.utcnow().isoformat()
     existing = _get_pos_integration(business.get('id'), req.provider)
+    if req.provider == 'storehub' and (_angkan_storehub_redemption_blocked(business, req.provider)
+                                       or (existing and _pos_storehub_register_required(existing))):
+        raise HTTPException(status_code=409, detail='Use the saved StoreHub connection for this business.')
     config = _merge_pos_config(existing or {}, {
         'member_identification': 'qr',
         'loyalty_source': 'existing_loyaltytree_program',
@@ -30098,14 +30207,14 @@ async def save_pos_branch_mappings(public_id: str, req: POSBranchMappingsUpdate,
         external_name = (item.external_branch_name or '').strip() or branch.get('name') or f'{provider_label} location'
         external_id = (item.external_branch_id or '').strip()
         integration_config = integration.get('config') if isinstance(integration.get('config'), dict) else {}
-        real_api_tested = bool(integration_config.get('real_api_tested'))
+        real_storehub = req.provider == 'storehub' and bool(integration.get('credentials_ciphertext') or integration_config.get('real_api_tested'))
         if not external_id:
             # Simulator-only integrations may use a deterministic LoyaltyTree id.
             # Once StoreHub's real API is connected, require a real provider outlet.
-            if integration.get('mode') != 'test' or (req.provider == 'storehub' and real_api_tested):
+            if integration.get('mode') != 'test' or real_storehub:
                 raise HTTPException(status_code=400, detail=f'POS location ID is required for {branch.get("name")}.')
             external_id = f'test-{item.branch_public_id}'
-        if req.provider == 'storehub' and real_api_tested and _storehub_is_placeholder_location_id(external_id):
+        if real_storehub and _storehub_is_placeholder_location_id(external_id):
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -30140,9 +30249,28 @@ async def save_pos_branch_mappings(public_id: str, req: POSBranchMappingsUpdate,
             checkout_mode = 'auto'
         prepared.append((branch, external_id, external_name, device_model, scanner_method, checkout_mode))
 
+    # Quick Setup sends one branch at a time. Never deactivate other ANGKAN
+    # mappings just because they were omitted from this incremental request.
+    # Check for a duplicate ACTIVE outlet before making any writes.
+    if req.preserve_other_mappings:
+        existing_mappings = _pos_branch_rows(business.get('id'), integration.get('id'))
+        for branch, external_id, *_ in prepared:
+            if any(
+                row.get('is_active') is not False
+                and str(row.get('external_branch_id') or '').strip() == external_id
+                and str(row.get('branch_id')) != str(branch.get('id'))
+                for row in existing_mappings
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail='This POS outlet is already mapped to another active LoyaltyTree branch.',
+                )
+
     try:
-        # Preserve history instead of deleting mappings: omitted rows become inactive.
-        supabase.table('pos_branch_mappings').update({'is_active': False}).eq('integration_id', integration.get('id')).execute()
+        # Bulk editor retains the original replace-all behavior; Quick Setup
+        # updates just the selected branch, preserving every other mapping.
+        if not req.preserve_other_mappings:
+            supabase.table('pos_branch_mappings').update({'is_active': False}).eq('integration_id', integration.get('id')).execute()
         for branch, external_id, external_name, device_model, scanner_method, checkout_mode in prepared:
             existing_res = (
                 supabase.table('pos_branch_mappings')
@@ -30224,6 +30352,7 @@ def _storehub_seamless_readiness(integration: dict, mapping: dict) -> dict:
     # Test mode can exercise the complete LT state machine as a seamless simulation.
     simulated_ready = bool(
         integration.get('mode') == 'test'
+        and not _pos_storehub_register_required(integration)
         and api_connected
         and outlet_mapped
     )
@@ -30368,8 +30497,12 @@ async def update_pos_settings(public_id: str, req: POSSettingsUpdate, authorizat
     if not integration:
         raise HTTPException(status_code=409, detail=f'Set up {req.provider.title()} before changing POS settings.')
     if req.redemption_enabled is True:
+        _require_angkan_storehub_redemption_ready(business, req.provider)
         capabilities = integration.get('capabilities') if isinstance(integration.get('capabilities'), dict) else {}
-        if integration.get('mode') != 'test' and not capabilities.get('discount_write'):
+        can_simulate = integration.get('mode') == 'test' and (
+            req.provider != 'storehub' or not _pos_storehub_register_required(integration)
+        )
+        if not can_simulate and not capabilities.get('discount_write'):
             raise HTTPException(
                 status_code=409,
                 detail=f'{req.provider.title()} live redemption requires verified discount write-back. Use Test Mode until the provider capability is confirmed.',
@@ -30409,78 +30542,68 @@ async def update_pos_settings(public_id: str, req: POSSettingsUpdate, authorizat
 
 
 @app.post('/api/v1/business/{public_id}/pos/storehub/connect')
-async def connect_storehub_account(
+def connect_storehub_account(
     public_id: str,
     req: POSStoreHubConnectRequest,
     authorization: str = Header(default=''),
 ):
-    """Validate and securely save one business owner's StoreHub credentials.
-
-    The token is tested before persistence, encrypted at the application layer,
-    and never returned to the browser after this request.
-    """
+    """Link a StoreHub account and separately report access to transactions."""
     business = _require_pos_pro_business(public_id, authorization)
     store_name = _normalize_storehub_store_name(req.store_name)
     api_token = req.api_token.strip()
-
-    # Fail before making the provider request if the platform cannot safely
-    # persist credentials.
+    existing = _get_pos_integration(business.get('id'), 'storehub')
     _pos_credentials_cipher()
 
-    stores, outlet_source, outlet_warning = _storehub_discover_outlets_with_credentials(
-        store_name,
-        api_token,
-    )
-    encrypted = _encrypt_pos_credentials({
-        'store_name': store_name,
-        'api_token': api_token,
-    })
+    if existing and existing.get('credentials_ciphertext'):
+        check = _storehub_test_previous_credentials(existing, store_name)
+        return _storehub_connection_result(business, existing, check, saved=True)
+    if existing and (existing.get('mode') == 'live' or existing.get('status') == 'live'):
+        raise HTTPException(status_code=409, detail='This live StoreHub account needs a saved connection.')
 
+    check = _storehub_discover_outlets_with_credentials(store_name, api_token)
+    stores = check['stores']
+    verified = check['transactions_verified']
+    encrypted = _encrypt_pos_credentials({'store_name': store_name, 'api_token': api_token})
     now = datetime.utcnow().isoformat()
-    existing = _get_pos_integration(business.get('id'), 'storehub')
     existing_config = (existing or {}).get('config') if isinstance((existing or {}).get('config'), dict) else {}
     existing_capabilities = (existing or {}).get('capabilities') if isinstance((existing or {}).get('capabilities'), dict) else {}
-    existing_mode = str((existing or {}).get('mode') or 'test').lower()
-    next_mode = 'live' if existing_mode == 'live' else 'test'
-    next_status = 'live' if next_mode == 'live' else 'connected'
-    simulator_enabled = next_mode == 'test'
-
     config = _merge_pos_config(existing or {}, {
         'member_identification': 'qr',
         'loyalty_source': 'existing_loyaltytree_program',
         'earning_enabled': existing_config.get('earning_enabled') is not False,
-        'redemption_enabled': bool(existing_config.get('redemption_enabled')) if existing else True,
+        'redemption_enabled': False,
         'redemption_value_per_point': float(existing_config.get('redemption_value_per_point') or 1.0),
         'redemption_min_points': int(existing_config.get('redemption_min_points') or 1),
         'redemption_increment_points': int(existing_config.get('redemption_increment_points') or 1),
         'redemption_max_percent': float(existing_config.get('redemption_max_percent') or 100.0),
         'reservation_hold_minutes': int(existing_config.get('reservation_hold_minutes') or 10),
         'earn_on_net_amount': existing_config.get('earn_on_net_amount') is not False,
-        'simulator': simulator_enabled,
-        'real_api_tested': True,
-        'real_api_tested_at': now,
-        'storehub_outlets': stores[:200],
-        'storehub_outlet_source': outlet_source,
-        'storehub_outlet_warning': outlet_warning,
+        'simulator': False,
+        'real_api_tested': verified,
+        'real_api_tested_at': now if verified else None,
+        'storehub_transaction_status': check['transaction_status'],
+        'storehub_outlets': stores,
+        'storehub_outlet_source': check['outlet_source'],
+        'storehub_outlet_warning': None,
         'setup_step': max(int(existing_config.get('setup_step') or 1), 2),
     })
     capabilities = {
         **existing_capabilities,
         'api_read': True,
-        'stores_read': outlet_source == 'stores',
-        'transactions': True,
-        'transactions_read': True,
-        'redemption': True,
-        'redemption_simulator': simulator_enabled,
-        'discount_write': bool(existing_capabilities.get('discount_write')),
-        'simulator': simulator_enabled,
-        'real_api_tested': True,
+        'stores_read': check['stores_read'],
+        'transactions': verified,
+        'transactions_read': verified,
+        'redemption': False,
+        'redemption_simulator': False,
+        'discount_write': False,
+        'simulator': False,
+        'real_api_tested': verified,
     }
     payload = {
         'business_id': business.get('id'),
         'provider': 'storehub',
-        'status': next_status,
-        'mode': next_mode,
+        'status': 'connected',
+        'mode': 'test',
         'external_account_name': store_name,
         'credentials_ciphertext': encrypted,
         'config': config,
@@ -30492,28 +30615,19 @@ async def connect_storehub_account(
     }
     try:
         if existing:
-            res = supabase.table('pos_integrations').update(payload).eq('id', existing.get('id')).execute()
+            res = (supabase.table('pos_integrations').update(payload).eq('id', existing.get('id'))
+                   .is_('credentials_ciphertext', 'null').neq('status', 'live').neq('mode', 'live').execute())
+            if not res.data:
+                raise HTTPException(status_code=409, detail='The StoreHub connection changed. Refresh it before retrying.')
         else:
             res = supabase.table('pos_integrations').insert(payload).execute()
         saved = (res.data or [None])[0] or {**(existing or {}), **payload}
+    except HTTPException:
+        raise
     except Exception as exc:
         raise _pos_schema_error(exc)
 
-    return {
-        'ok': True,
-        'provider': 'storehub',
-        'store_name': store_name,
-        'store_count': len(stores),
-        'stores': stores[:200],
-        'integration': _pos_public_integration(saved),
-        'loyalty_contract': _pos_loyalty_contract(business),
-        'outlet_source': outlet_source,
-        'outlet_warning': outlet_warning,
-        'message': (
-            'StoreHub account connected securely. API token was encrypted and saved. '
-            + ('Real outlet ids were discovered from the transaction feed because /stores was unavailable.' if outlet_source == 'transactions' else '')
-        ).strip(),
-    }
+    return _storehub_connection_result(business, saved, check)
 
 
 @app.post('/api/v1/business/{public_id}/pos/storehub/disconnect')
@@ -30557,87 +30671,24 @@ async def disconnect_storehub_account(
 
 
 @app.post('/api/v1/business/{public_id}/pos/storehub/connection-test')
-async def storehub_connection_test(
+def storehub_connection_test(
     public_id: str,
     req: POSStoreHubConnectionTestRequest,
     authorization: str = Header(default=''),
 ):
-    """Read-only first handshake with ANGKAN's real StoreHub API.
-
-    This verifies backend credentials by requesting StoreHub outlets/stores.
-    It never awards loyalty points and never returns the API token.
-    """
+    """Check saved account and transaction permissions without updating the merchant."""
     business = _require_pos_pro_business(public_id, authorization)
     integration = _get_pos_integration(business.get('id'), req.provider)
-    if not integration:
-        raise HTTPException(status_code=409, detail='Set up StoreHub Test Mode first.')
+    if not integration or not integration.get('credentials_ciphertext'):
+        raise HTTPException(status_code=409, detail='Link a StoreHub account before checking the saved connection.')
 
     credentials = _decrypt_pos_credentials(integration)
-    stores, outlet_source, outlet_warning = _storehub_discover_outlets_with_credentials(
-        credentials.get('store_name'),
-        credentials.get('api_token'),
-    )
-
-    now = datetime.utcnow().isoformat()
-    config = _merge_pos_config(integration, {
-        'real_api_tested': True,
-        'real_api_tested_at': now,
-        'storehub_store_name': integration.get('external_account_name'),
-        'storehub_outlets': stores[:200],
-        'storehub_outlet_source': outlet_source,
-        'storehub_outlet_warning': outlet_warning,
-        'simulator': str(integration.get('mode') or 'test').lower() != 'live',
-    })
-    capabilities = integration.get('capabilities') if isinstance(integration.get('capabilities'), dict) else {}
-    capabilities = {
-        **capabilities,
-        'api_read': True,
-        'stores_read': outlet_source == 'stores',
-        'transactions_read': True,
-        'real_api_tested': True,
-    }
-    preserved_status = 'live' if str(integration.get('mode') or '').lower() == 'live' else 'connected'
-
-    try:
-        res = supabase.table('pos_integrations').update({
-            'status': preserved_status,
-            'external_account_name': integration.get('external_account_name'),
-            'config': config,
-            'capabilities': capabilities,
-            'last_sync_at': now,
-            'last_error': None,
-        }).eq('id', integration.get('id')).execute()
-        updated = (res.data or [None])[0] or {
-            **integration,
-            'status': preserved_status,
-            'external_account_name': integration.get('external_account_name'),
-            'config': config,
-            'capabilities': capabilities,
-            'last_sync_at': now,
-        }
-    except Exception as exc:
-        raise _pos_schema_error(exc)
-
-    return {
-        'ok': True,
-        'provider': 'storehub',
-        'mode': 'read_only_test',
-        'store_name': integration.get('external_account_name'),
-        'stores': stores[:100],
-        'store_count': len(stores),
-        'outlet_source': outlet_source,
-        'outlet_warning': outlet_warning,
-        'integration': _pos_public_integration(updated),
-        'loyalty_contract': _pos_loyalty_contract(business),
-        'message': (
-            'StoreHub API authentication succeeded. No loyalty transaction was created. '
-            + ('Outlet ids were discovered from real transactions because /stores was unavailable.' if outlet_source == 'transactions' else '')
-        ).strip(),
-    }
+    check = _storehub_discover_outlets_with_credentials(credentials.get('store_name'), credentials.get('api_token'))
+    return _storehub_connection_result(business, integration, check, saved=True)
 
 
 @app.post('/api/v1/business/{public_id}/pos/storehub/transactions-preview')
-async def storehub_transactions_preview(
+def storehub_transactions_preview(
     public_id: str,
     req: POSStoreHubPreviewRequest,
     authorization: str = Header(default=''),
@@ -30647,18 +30698,17 @@ async def storehub_transactions_preview(
     integration = _get_pos_integration(business.get('id'), 'storehub')
     if not integration:
         raise HTTPException(status_code=409, detail='Set up StoreHub first.')
-    if not (integration.get('config') or {}).get('real_api_tested'):
-        raise HTTPException(status_code=409, detail='Test the StoreHub API connection first.')
+    if not integration.get('credentials_ciphertext'):
+        raise HTTPException(status_code=409, detail='Connect a StoreHub account before reading transactions.')
 
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=int(req.days))
-    payload, rows, fetch_meta = _storehub_fetch_recent_transaction_rows(
-        integration,
-        start=start,
-        end=end,
-        external_branch_id=None,
-        deep_probe=True,
-    )
+    try:
+        _, rows, fetch_meta = _storehub_fetch_recent_transaction_rows(
+            integration, start=start, end=end, external_branch_id=None, deep_probe=True, persist_paging_hint=False,
+        )
+    except StoreHubAuthenticationError:
+        raise StoreHubCredentialDenied('StoreHub denied transaction read access for the saved account.') from None
     # StoreHub does not reliably return the newest transaction first for this
     # merchant account, so preview the newest timestamps rather than rows[0:n].
     recent_rows = _storehub_recent_rows(rows, int(req.limit))
@@ -30671,14 +30721,6 @@ async def storehub_transactions_preview(
         register_id = _storehub_register_id(row)
         if outlet_id and register_id:
             seen_register_ids_by_outlet.setdefault(outlet_id, set()).add(register_id)
-
-    try:
-        supabase.table('pos_integrations').update({
-            'last_sync_at': datetime.utcnow().isoformat(),
-            'last_error': None,
-        }).eq('id', integration.get('id')).execute()
-    except Exception as exc:
-        print(f'STOREHUB preview sync timestamp warning: {exc}')
 
     return {
         'ok': True,
@@ -30978,6 +31020,7 @@ async def reserve_storehub_points_redemption(
     authorization: str = Header(default=''),
 ):
     business = _require_pos_pro_business(public_id, authorization)
+    _require_angkan_storehub_redemption_ready(business, 'storehub')
     integration = _get_pos_integration(business.get('id'), 'storehub')
     if not integration:
         raise HTTPException(status_code=409, detail='Connect StoreHub before testing redemption.')
@@ -31047,6 +31090,7 @@ async def apply_storehub_redemption_discount(
     authorization: str = Header(default=''),
 ):
     business = _require_pos_pro_business(public_id, authorization)
+    _require_angkan_storehub_redemption_ready(business, 'storehub')
     integration = _get_pos_integration(business.get('id'), 'storehub')
     if not integration:
         raise HTTPException(status_code=409, detail='StoreHub integration not found.')
@@ -31147,6 +31191,8 @@ async def storehub_test_transaction(
         raise HTTPException(status_code=409, detail='This endpoint is available only in StoreHub Test Mode.')
     if integration.get('status') in ('paused', 'disconnected'):
         raise HTTPException(status_code=409, detail=f'StoreHub integration is {integration.get("status")}.')
+    if _angkan_storehub_redemption_blocked(business, 'storehub') or _pos_storehub_register_required(integration):
+        raise HTTPException(status_code=409, detail='Simulated sales require an isolated StoreHub simulator.')
 
     config = integration.get('config') if isinstance(integration.get('config'), dict) else {}
     if config.get('earning_enabled') is False:
@@ -31644,8 +31690,8 @@ async def pos_go_live(public_id: str, req: POSGoLiveRequest, authorization: str 
         )
 
     config = integration.get('config') if isinstance(integration.get('config'), dict) else {}
-    if not config.get('real_api_tested'):
-        raise HTTPException(status_code=409, detail='Test the StoreHub API connection before enabling Go Live.')
+    credentials = _decrypt_pos_credentials(integration)
+    await asyncio.to_thread(_storehub_read_connection_transactions, credentials.get('store_name'), credentials.get('api_token'))
 
     try:
         mappings = (
@@ -31700,10 +31746,14 @@ async def pos_go_live(public_id: str, req: POSGoLiveRequest, authorization: str 
     live_config = {
         **config,
         'simulator': False,
+        'real_api_tested': True,
+        'real_api_tested_at': now,
+        'storehub_transaction_status': 'verified',
         'earning_enabled': config.get('earning_enabled') is not False,
         # Redemption needs a verified StoreHub write/discount capability; reading
         # sales is enough for earning but not enough to mutate the POS cart.
-        'redemption_enabled': bool(config.get('redemption_enabled') and (integration.get('capabilities') or {}).get('discount_write')),
+        'redemption_enabled': bool(not _angkan_storehub_redemption_blocked(business, provider)
+                                   and config.get('redemption_enabled') and (integration.get('capabilities') or {}).get('discount_write')),
         'live_transaction_polling': True,
         'live_enabled_at': now,
         # Keep verbose payload tracing off in production unless explicitly toggled
@@ -31714,7 +31764,6 @@ async def pos_go_live(public_id: str, req: POSGoLiveRequest, authorization: str 
     live_capabilities = {
         **capabilities,
         'api_read': True,
-        'stores_read': True,
         'transactions_read': True,
         'live_companion_earning': True,
     }
@@ -46608,6 +46657,8 @@ def pos_companion_device_config(x_lt_device_token: str = Header(default='', alia
     mapping = mapping_rows[0] if mapping_rows else {}
 
     redemption_debug = _pos_redemption_config(integration)
+    if _angkan_storehub_redemption_blocked(business, str(device.get('provider') or 'storehub')):
+        redemption_debug = {**redemption_debug, 'enabled': False, 'options': []}
     print(
         "COMPANION_CONFIG_DEBUG",
         {
@@ -46913,6 +46964,8 @@ def pos_companion_points_reserve(
     x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token'),
 ):
     device = _require_pos_device(x_lt_device_token)
+    if device.get('provider') == 'storehub':
+        _require_angkan_storehub_redemption_ready(_pos_business_by_id(device.get('business_id')), 'storehub')
     integration_rows = supabase.table('pos_integrations').select('*').eq('id', device.get('integration_id')).limit(1).execute().data or []
     integration = integration_rows[0] if integration_rows else None
     if not integration:
@@ -47009,6 +47062,8 @@ def pos_companion_coupon_reserve(
     x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token'),
 ):
     device = _require_pos_device(x_lt_device_token)
+    if device.get('provider') == 'storehub':
+        _require_angkan_storehub_redemption_ready(_pos_business_by_id(device.get('business_id')), 'storehub')
     customer = safe_get_customer(req.customer_public_id)
     if not customer or customer.get('business_id') != device.get('business_id'):
         raise HTTPException(status_code=404, detail='Program membership not found for this business.')
@@ -47105,6 +47160,8 @@ def pos_companion_benefit_reserve(
     x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token'),
 ):
     device = _require_pos_device(x_lt_device_token)
+    if device.get('provider') == 'storehub':
+        _require_angkan_storehub_redemption_ready(_pos_business_by_id(device.get('business_id')), 'storehub')
     business = _pos_business_by_id(device.get('business_id'))
     customer = safe_get_customer(req.customer_public_id)
     if not business or not customer or customer.get('business_id') != device.get('business_id'):
@@ -47822,6 +47879,7 @@ def _storehub_fetch_recent_transaction_rows(
     deep_probe: bool = False,
     row_observer=None,
     use_paging_hint: bool = True,
+    persist_paging_hint: bool = True,
 ) -> tuple[object, list, dict]:
     """Read the freshest StoreHub transaction page available.
 
@@ -47898,13 +47956,14 @@ def _storehub_fetch_recent_transaction_rows(
                 if next_rows and _storehub_page_fingerprint(next_rows) != _storehub_page_fingerprint(rows):
                     payload, rows = next_payload, next_rows
                     final_cursor = next_cursor
-                    _storehub_save_paging_hint(
-                        integration,
-                        strategy=hint_strategy,
-                        cursor=final_cursor,
-                        page_size=page_size,
-                        external_branch_id=store_id,
-                    )
+                    if persist_paging_hint:
+                        _storehub_save_paging_hint(
+                            integration,
+                            strategy=hint_strategy,
+                            cursor=final_cursor,
+                            page_size=page_size,
+                            external_branch_id=store_id,
+                        )
                     _storehub_tx_fetch_log(
                         event='storehub_tx_hint_advanced',
                         integration=integration,
@@ -48103,13 +48162,14 @@ def _storehub_fetch_recent_transaction_rows(
         current_rows = last_nonempty_rows
 
     final_cursor = cursor_for_page(strategy, current_page_number)
-    _storehub_save_paging_hint(
-        integration,
-        strategy=strategy,
-        cursor=final_cursor,
-        page_size=page_size,
-        external_branch_id=store_id,
-    )
+    if persist_paging_hint:
+        _storehub_save_paging_hint(
+            integration,
+            strategy=strategy,
+            cursor=final_cursor,
+            page_size=page_size,
+            external_branch_id=store_id,
+        )
 
     if collected:
         result_rows = _storehub_recent_rows(collected, 500, store_id or None)
@@ -49376,6 +49436,10 @@ def companion_mock_transaction(
     if not integration or integration.get('mode') != 'test':
         raise HTTPException(status_code=409, detail='Mock POS Bridge is available only while this POS integration is in Test Mode.')
 
+    if provider == 'storehub' and (_pos_storehub_register_required(integration)
+                                   or _angkan_storehub_redemption_blocked(_pos_business_by_id(device.get('business_id')), provider)):
+        raise HTTPException(status_code=409, detail='Mock sales require an isolated StoreHub simulator.')
+
     mapping = _companion_mock_mapping(device)
     external_branch_id = str(mapping.get('external_branch_id') or f'mock-{device.get("branch_id")}')
     branch_id = device.get('branch_id')
@@ -49478,6 +49542,9 @@ async def companion_session_test_sale(
     integration = _get_pos_integration(device.get('business_id'), provider)
     if not integration or integration.get('mode') != 'test':
         raise HTTPException(status_code=409, detail='Companion Test Sale is available only while the POS integration is in Test Mode.')
+    if provider == 'storehub' and (_pos_storehub_register_required(integration)
+                                   or _angkan_storehub_redemption_blocked(_pos_business_by_id(device.get('business_id')), provider)):
+        raise HTTPException(status_code=409, detail='Test sales require an isolated StoreHub simulator.')
     external_tx = (req.external_transaction_id or '').strip() or f'companion-test:{session.get("id")}'
     now = datetime.now(timezone.utc).isoformat()
     amount = float(Decimal(str(req.amount)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
@@ -50217,6 +50284,14 @@ class POSManualRewardReserve(BaseModel):
     item_amount: Optional[Decimal] = Field(default=None, ge=0, le=1000000000)
 
 
+class POSAngkanReserve(BaseModel):
+    session_id: uuid.UUID
+    request_id: uuid.UUID
+    cart_fingerprint: str = Field(min_length=64, max_length=64)
+    discount_points: int = Field(ge=1, le=1000000)
+    gross_amount: Decimal = Field(gt=0, le=1000000000, decimal_places=2)
+
+
 class POSManualRewardConfirm(BaseModel):
     receipt_reference: str = Field(default='', max_length=200)
 
@@ -50274,6 +50349,7 @@ def _manual_code_context(code):
 
 def _manual_options(device, session):
     ctx = _manual_code_context({'device_id': device['id'], 'session_id': session['id']})
+    _require_angkan_storehub_redemption_ready(ctx['business'], 'storehub')
     source = safe_get_customer(session.get('source_customer_public_id') or session.get('customer_public_id'))
     if not source or str(source.get('business_id')) != str(device['business_id']):
         raise HTTPException(status_code=404, detail='The scanned member is unavailable.')
@@ -50447,10 +50523,21 @@ def companion_redemption_reserve(req: POSManualRewardReserve, x_lt_device_token:
     return {'code':public_code(code), 'session':_companion_session_public(fresh)}
 
 
+@app.post('/api/v1/companion/angkan/reserve')
+@app.post('/api/v1/pos-companion/angkan/reserve')
+def companion_angkan_reserve(req: POSAngkanReserve, x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token')):
+    _require_pos_device(x_lt_device_token)
+    # This integration has no authenticated StoreHub open-cart read to bind a
+    # cashier's request to the register, member, discount and point cost.
+    raise HTTPException(status_code=409, detail='Angkan redemption requires server verification of the open StoreHub cart.')
+
+
 @app.post('/api/v1/companion/redemptions/{code_id}/confirm')
 @app.post('/api/v1/pos-companion/redemptions/{code_id}/confirm')
 def companion_redemption_confirm(code_id: str, req: POSManualRewardConfirm, x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token')):
     device = _require_pos_device(x_lt_device_token)
+    if device.get('provider') == 'storehub':
+        _require_angkan_storehub_redemption_ready(_pos_business_by_id(device.get('business_id')), 'storehub')
     try:
         code = _manual_code_rpc('pos_confirm_redemption_code', {'p_device_id':str(device['id']),
             'p_id':code_id, 'p_receipt_reference':req.receipt_reference.strip()})
