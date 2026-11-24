@@ -2871,6 +2871,9 @@ class POSBranchMappingInput(BaseModel):
 class POSBranchMappingsUpdate(BaseModel):
     provider: Literal['storehub', 'loyverse'] = 'storehub'
     mappings: List[POSBranchMappingInput] = Field(default_factory=list, max_length=100)
+    # Only the Simple Setup single-branch save uses this flag. The advanced
+    # bulk editor retains its existing replace-all semantics by default.
+    preserve_other_mappings: bool = False
 
 
 class ManagerPOSBranchMappingUpdate(BaseModel):
@@ -30246,9 +30249,28 @@ async def save_pos_branch_mappings(public_id: str, req: POSBranchMappingsUpdate,
             checkout_mode = 'auto'
         prepared.append((branch, external_id, external_name, device_model, scanner_method, checkout_mode))
 
+    # Quick Setup sends one branch at a time. Never deactivate other ANGKAN
+    # mappings just because they were omitted from this incremental request.
+    # Check for a duplicate ACTIVE outlet before making any writes.
+    if req.preserve_other_mappings:
+        existing_mappings = _pos_branch_rows(business.get('id'), integration.get('id'))
+        for branch, external_id, *_ in prepared:
+            if any(
+                row.get('is_active') is not False
+                and str(row.get('external_branch_id') or '').strip() == external_id
+                and str(row.get('branch_id')) != str(branch.get('id'))
+                for row in existing_mappings
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail='This POS outlet is already mapped to another active LoyaltyTree branch.',
+                )
+
     try:
-        # Preserve history instead of deleting mappings: omitted rows become inactive.
-        supabase.table('pos_branch_mappings').update({'is_active': False}).eq('integration_id', integration.get('id')).execute()
+        # Bulk editor retains the original replace-all behavior; Quick Setup
+        # updates just the selected branch, preserving every other mapping.
+        if not req.preserve_other_mappings:
+            supabase.table('pos_branch_mappings').update({'is_active': False}).eq('integration_id', integration.get('id')).execute()
         for branch, external_id, external_name, device_model, scanner_method, checkout_mode in prepared:
             existing_res = (
                 supabase.table('pos_branch_mappings')

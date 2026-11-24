@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { requestJsonResponse } from './requestTimeout'
+import { storehubQuickSetupStep } from './storehubQuickSetupStep.js'
 import { DeviceRegisterEditor, RegisterIdField, isActivePosDevice, registerConflict, seenRegisterIds } from './POSRegisterControls'
 
 const PROVIDERS = [
@@ -338,6 +339,7 @@ function POSIntegration({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           provider,
+          preserve_other_mappings: true,
           mappings: [{
             branch_public_id: branch.public_id,
             external_branch_id: externalBranchId || null,
@@ -350,7 +352,9 @@ function POSIntegration({
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.detail || 'Could not save branch mapping.')
-      setMessage(`${branch.name || 'Branch'} is linked. Next, activate the Companion tablet.`)
+      setMessage(provider === 'storehub' && !storeHubTransactionsVerified
+        ? `${branch.name || 'Branch'} outlet mapping saved. Transaction permission must be verified before Companion sale testing.`
+        : `${branch.name || 'Branch'} is linked. Next, pair the Companion tablet.`)
       await loadPOS()
     } catch (err) {
       setError(err.message || 'Could not save branch mapping.')
@@ -371,8 +375,16 @@ function POSIntegration({
       // Safe during rollout: the component can be deployed before main.py
       // receives the POS routes without breaking the owner dashboard.
       if (res.status === 404) {
+        const response = await res.json().catch(() => ({}))
         setApiAvailable(false)
         setIntegration(null)
+        setStoreHubConnection(null)
+        setStoreHubOutlets([])
+        setStoreHubRealResult(null)
+        setBranchMappings({})
+        setError(response?.detail === 'Business not found'
+          ? 'LoyaltyTree could not find this business for the owner POS request. Check the selected business and backend deployment.'
+          : 'POS status API returned HTTP 404. Check that the deployed backend supports the POS routes; this does not prove StoreHub credentials were deleted.')
         return
       }
 
@@ -1051,13 +1063,13 @@ function POSIntegration({
     ? registerDiscovery?.seen_register_ids || [] : []
   const registerSuggestions = seenRegisterIds(activeDevicesForQuickBranch, discoveredRegisters)
   const newRegisterConflict = registerConflict(activeDevicesForQuickBranch, newDeviceRegisterId)
-  const quickStep = !isConnected || (provider === 'storehub' && !simulatorReady && !storeHubTransactionsVerified)
-    ? 1
-    : !hasSavedMapping
-      ? 2
-      : activeDevicesForQuickBranch.length
-        ? 4
-        : 3
+  // Outlet mapping is safe before sales permissions are verified. Pair/sale
+  // steps remain withheld until the StoreHub transaction check passes.
+  const quickStep = storehubQuickSetupStep({
+    isConnected, hasSavedMapping, provider, simulatorReady,
+    transactionsVerified: storeHubTransactionsVerified,
+    activeDeviceCount: activeDevicesForQuickBranch.length,
+  })
 
   return (
     <div style={s.page}>
@@ -1070,14 +1082,15 @@ function POSIntegration({
             apply your existing loyalty rules, and update Wallet cards.
           </p>
         </div>
-        <StatusBadge status={integrationStatus} />
+        <StatusBadge status={!apiAvailable ? 'unavailable' : (provider === 'storehub' && isConnected && !storeHubTransactionsVerified ? 'linked' : integrationStatus)} />
       </div>
 
       {!apiAvailable && (
         <div style={s.infoBanner}>
-          <b>POS UI ready.</b> The database migration can be installed now. The
-          backend POS routes still need to be added to <code>main.py</code> before
-          the setup buttons become active.
+          <b>POS status unavailable.</b> The API returned HTTP 404. Confirm the
+          selected owner business and the deployed backend routes first. This
+          does not establish that StoreHub credentials were deleted or that a
+          database migration is needed.
         </div>
       )}
 
@@ -2040,7 +2053,7 @@ function QuickCompanionSetup({
           </div>
 
           {provider === 'storehub' && (
-            <div style={s.infoBanner}>Verify StoreHub transaction access before testing Companion on a register.</div>
+            <div style={s.infoBanner}>You can map StoreHub outlets without transaction access. Verify transaction permissions before running a Companion sale.</div>
           )}
         </div>
       )}
@@ -2279,6 +2292,10 @@ function StatusBadge({ status }) {
   const normalized = String(status || '').toLowerCase()
   const cfg = normalized === 'live'
     ? { label: '● Live', style: s.statusLive }
+    : normalized === 'unavailable'
+      ? { label: 'Status unavailable', style: s.statusIdle }
+      : normalized === 'linked'
+        ? { label: 'Account linked · sales unverified', style: s.statusIdle }
     : ['connected', 'testing'].includes(normalized)
       ? { label: normalized === 'testing' ? '● Test Mode' : '● Connected', style: s.statusConnected }
       : normalized === 'error'
