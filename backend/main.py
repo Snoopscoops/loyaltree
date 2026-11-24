@@ -45336,6 +45336,7 @@ class POSDeviceActivationCodeCreate(BaseModel):
     external_branch_name: Optional[str] = Field(default=None, max_length=200)
     external_terminal_id: Optional[str] = Field(default=None, max_length=120)
     device_name: Optional[str] = Field(default=None, max_length=200)
+    pending_verification: bool = False
 
 
 class ManagerCompanionActivationCodeCreate(BaseModel):
@@ -45466,9 +45467,26 @@ def _pos_device_seen_register_ids(device: dict, mapping: Optional[dict] = None) 
     return sorted({str(value).strip() for value in seen if isinstance(value, str) and 0 < len(value.strip()) <= 120})[:100]
 
 
+def _pos_pairing_pending(device: dict) -> bool:
+    """Explicit two-stage devices are fail-closed; legacy devices are unchanged."""
+    if str(device.get('provider') or '').lower() != 'storehub':
+        return False
+    metadata = device.get('metadata') if isinstance(device.get('metadata'), dict) else {}
+    if 'pairing_verification' not in metadata:
+        return False
+    return metadata.get('pairing_verification') != 'verified' or not _pos_device_register_id(device)
+
+
+def _pos_require_pairing_verified(device: dict):
+    if _pos_pairing_pending(device):
+        raise HTTPException(status_code=409, detail='POS register verification is pending. Use Check POS and ask the owner to verify this device before loyalty operations.')
+
+
 def _pos_public_device(device: dict, mapping: Optional[dict] = None) -> dict:
     return {
         **{key: value for key, value in device.items() if key != 'device_token_hash'},
+        **({'pairing_status': 'pending_verification', 'loyalty_actions_allowed': False} if _pos_pairing_pending(device) else
+           {'pairing_status': 'verified'} if (device.get('metadata') or {}).get('pairing_verification') == 'verified' else {}),
         'external_terminal_id': _pos_device_register_id(device) or None,
         'seen_register_ids': _pos_device_seen_register_ids(device, mapping),
     }
@@ -45554,6 +45572,8 @@ def _pos_current_register_device(device: dict, require_unambiguous: bool = True)
         if not rows:
             raise HTTPException(status_code=401, detail='POS device is invalid or revoked.')
         current = rows[0]
+        if require_unambiguous:
+            _pos_require_pairing_verified(current)
         integration = _get_pos_integration(current.get('business_id'), 'storehub') if not _pos_device_register_id(current) else None
         if require_unambiguous and not _pos_device_register_id(current) and not integration:
             raise HTTPException(status_code=409, detail='POS integration not found for this Companion device.')
@@ -45626,7 +45646,7 @@ def _pos_activation_row(code: str) -> Optional[dict]:
     if not expires_at or expires_at <= datetime.now(timezone.utc):
         return None
     metadata = row.get('metadata') if isinstance(row.get('metadata'), dict) else {}
-    if metadata.get('reactivate_device_id') and int(row.get('used_count') or 0) >= int(row.get('max_uses') or 1):
+    if (metadata.get('reactivate_device_id') or metadata.get('pending_pairing') is True) and int(row.get('used_count') or 0) >= int(row.get('max_uses') or 1):
         return None
     # Legacy activation debug mode remains compatible with existing pilot APKs.
     # Existing-device recovery codes are always one-time and consumed atomically.
@@ -45641,6 +45661,51 @@ def _pos_business_by_id(business_id: int) -> Optional[dict]:
         return rows[0] if rows else None
     except Exception:
         return None
+
+
+def _pos_require_pending_pairing_rpc():
+    try:
+        ready = supabase.rpc('pos_pending_pairing_ready', {}).execute().data
+    except Exception:
+        ready = False
+    if ready is not True:
+        raise HTTPException(status_code=503, detail='Pending POS pairing is not installed. Ask LoyaltyTree support to complete the deployment.')
+
+
+def _pos_pending_pairing_outlet(integration: dict, outlet: str):
+    config = integration.get('config') if isinstance(integration.get('config'), dict) else {}
+    known = {str(row.get('id') or '').strip() for row in (config.get('storehub_outlets') or []) if isinstance(row, dict)}
+    if (str(integration.get('provider') or '').lower() != 'storehub'
+            or not integration.get('credentials_ciphertext')
+            or str(integration.get('status') or '').lower() not in ('connected', 'testing', 'live')
+            or not outlet or _storehub_is_placeholder_location_id(outlet) or outlet not in known):
+        raise HTTPException(status_code=409, detail='Link StoreHub and save a verified real outlet before pending POS pairing.')
+
+
+def _pos_pending_activation_mapping(activation: dict, integration: dict) -> dict:
+    metadata = activation.get('metadata') or {}
+    if (metadata.get('pending_pairing') is not True
+            or metadata.get('generated_by') != 'owner'
+            or metadata.get('reactivate_device_id')
+            or str(metadata.get('pending_integration_id')) != str(integration.get('id'))
+            or str(activation.get('business_id')) != str(integration.get('business_id'))
+            or int(activation.get('max_uses') or 0) != 1
+            or int(activation.get('used_count') or 0) != 0
+            or not metadata.get('pending_mapping_id') or metadata.get('allowed_branch_id') is None
+            or not metadata.get('allowed_branch_public_id') or metadata.get('allowed_external_terminal_id')):
+        raise HTTPException(status_code=409, detail='This pending POS activation code has an invalid or changed scope. Generate a new code.')
+    outlet = str(metadata.get('allowed_external_branch_id') or '').strip()
+    _pos_pending_pairing_outlet(integration, outlet)
+    try:
+        rows = (supabase.table('pos_branch_mappings').select('*')
+                .eq('id', metadata['pending_mapping_id']).eq('business_id', activation.get('business_id'))
+                .eq('integration_id', integration.get('id')).eq('branch_id', metadata['allowed_branch_id'])
+                .eq('external_branch_id', outlet).eq('is_active', True).limit(1).execute().data or [])
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    if not rows:
+        raise HTTPException(status_code=409, detail='The assigned outlet mapping changed. Generate a new pending POS code.')
+    return rows[0]
 
 
 def _pos_companion_preview_payload(activation: dict) -> dict:
@@ -45670,6 +45735,9 @@ def _pos_companion_preview_payload(activation: dict) -> dict:
         raise _pos_schema_error(exc)
 
     metadata = activation.get('metadata') if isinstance(activation.get('metadata'), dict) else {}
+    pending_pairing = metadata.get('pending_pairing') is True
+    if pending_pairing:
+        _pos_pending_activation_mapping(activation, integration)
     allowed_branch_id = metadata.get('allowed_branch_id')
     allowed_branch_public_id = str(metadata.get('allowed_branch_public_id') or '').strip()
     if allowed_branch_id is not None or allowed_branch_public_id:
@@ -45735,7 +45803,8 @@ def _pos_companion_preview_payload(activation: dict) -> dict:
         'default_checkout_mode': 'floating',
         'external_terminal_id': _pos_register_id(metadata.get('allowed_external_terminal_id')) or None,
         'device_name': str(metadata.get('device_name') or '').strip() or None,
-        'register_required': _pos_storehub_register_required(integration),
+        'register_required': not pending_pairing and _pos_storehub_register_required(integration),
+        **({'pairing_status': 'pending_verification', 'loyalty_actions_allowed': False} if pending_pairing else {}),
     }
 
 
@@ -45781,14 +45850,16 @@ def _pos_device_heartbeat_due(device_id) -> bool:
         return True
 
 
-def _require_pos_device(x_lt_device_token: str) -> dict:
+def _require_pos_device(x_lt_device_token: str, *, allow_pending: bool = False) -> dict:
     token = str(x_lt_device_token or '').strip()
     if not token:
         raise HTTPException(status_code=401, detail='POS device token is required.')
     token_hash = _pos_secret_hash(token)
 
     device = _pos_device_cache_get(token_hash)
-    if not device:
+    # StoreHub pairing and token rotation are mutable across Render workers.
+    # Never authorize a StoreHub operation from a stale cached device row.
+    if not device or str(device.get('provider') or '').lower() == 'storehub':
         try:
             rows = (
                 supabase.table('pos_devices')
@@ -45805,6 +45876,9 @@ def _require_pos_device(x_lt_device_token: str) -> dict:
         if not device:
             raise HTTPException(status_code=401, detail='POS device token is invalid or revoked.')
         _pos_device_cache_put(token_hash, device)
+
+    if not allow_pending:
+        _pos_require_pairing_verified(device)
 
     # Device cache is authentication only; fresh business access must be checked
     # for every operation so trial expiry and confirmed renewal take effect now.
@@ -46382,9 +46456,15 @@ def create_pos_device_activation_code(
     if not integration:
         raise HTTPException(status_code=409, detail=f'Connect {req.provider.title()} before creating a Companion activation code.')
 
-    _require_storehub_relink_pairing_ready(integration)
+    pending_pairing = getattr(req, 'pending_verification', False) is True
+    if pending_pairing:
+        if req.provider != 'storehub' or _pos_register_id(req.external_terminal_id):
+            raise HTTPException(status_code=400, detail='Pending pairing is for StoreHub devices without a Register ID.')
+        _pos_require_pending_pairing_rpc()
+    else:
+        _require_storehub_relink_pairing_ready(integration)
     metadata = {'purpose': 'pos_companion_device_activation'}
-    register_id = _pos_register_id(req.external_terminal_id, required=_pos_storehub_register_required(integration))
+    register_id = _pos_register_id(req.external_terminal_id, required=not pending_pairing and _pos_storehub_register_required(integration))
     if req.provider == 'storehub':
         branch = safe_get_branch(str(req.branch_public_id or '').strip())
         if not branch or str(branch.get('business_id')) != str(business.get('id')) or branch.get('is_active') is False:
@@ -46409,15 +46489,20 @@ def create_pos_device_activation_code(
             'allowed_external_terminal_id': register_id,
             'device_name': str(req.device_name or '').strip() or None,
         })
+        if pending_pairing:
+            _pos_pending_pairing_outlet(integration, external_branch_id)
+            metadata.update({'pending_pairing': True, 'generated_by': 'owner',
+                             'pending_integration_id': str(integration['id']), 'pending_mapping_id': str(mapping['id'])})
 
     code = str(secrets.randbelow(900000) + 100000)
-    expires_at = datetime.now(timezone.utc) + timedelta(minutes=int(req.expires_in_minutes))
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=min(int(req.expires_in_minutes), 15) if pending_pairing else int(req.expires_in_minutes))
+    max_uses = 1 if pending_pairing else int(req.max_uses)
     payload = {
         'business_id': business.get('id'),
         'provider': req.provider,
         'code_hash': _pos_secret_hash(code),
         'expires_at': expires_at.isoformat(),
-        'max_uses': int(req.max_uses),
+        'max_uses': max_uses,
         'used_count': 0,
         'metadata': metadata,
     }
@@ -46429,14 +46514,15 @@ def create_pos_device_activation_code(
         'ok': True,
         'activation_code': code,
         'expires_at': expires_at.isoformat(),
-        'max_uses': int(req.max_uses),
+        'max_uses': max_uses,
         'activation_id': str((row or {}).get('id') or ''),
         'branch_public_id': metadata.get('allowed_branch_public_id'),
         'external_branch_id': metadata.get('allowed_external_branch_id'),
         'external_branch_name': metadata.get('allowed_external_branch_name'),
         'external_terminal_id': register_id or None,
         'device_name': metadata.get('device_name'),
-        'register_required': _pos_storehub_register_required(integration),
+        'register_required': not pending_pairing and _pos_storehub_register_required(integration),
+        **({'pairing_status': 'pending_verification', 'loyalty_actions_allowed': False} if pending_pairing else {}),
         'message': 'Enter this one-time code in the Loyalty Tree Companion app.',
     }
 
@@ -46560,7 +46646,9 @@ def activate_pos_companion_device(req: POSCompanionActivateRequest):
     _validate_manager_activation_scope(activation, business)
     provider = str(activation.get('provider') or 'storehub').lower()
     integration = _get_pos_integration(business.get('id'), provider)
-    _require_storehub_relink_pairing_ready(integration)
+    pending_pairing = (activation.get('metadata') or {}).get('pending_pairing') is True
+    if not pending_pairing:
+        _require_storehub_relink_pairing_ready(integration)
 
     branch = safe_get_branch(req.branch_public_id)
     if not branch or branch.get('business_id') != business.get('id'):
@@ -46581,6 +46669,10 @@ def activate_pos_companion_device(req: POSCompanionActivateRequest):
         raise HTTPException(status_code=403, detail='This activation code is locked to its assigned branch.')
     if allowed_external_branch_id and str(req.external_branch_id) != allowed_external_branch_id:
         raise HTTPException(status_code=403, detail='This activation code is locked to the POS location mapped for this assigned branch.')
+    if pending_pairing:
+        if provider != 'storehub' or register_id or branch.get('is_active') is not True:
+            raise HTTPException(status_code=409, detail='Pending activation requires the assigned active StoreHub branch and no Register ID.')
+        return _pos_activate_pending_device(req, activation, integration, business, branch, preview)
     if provider == 'storehub' and _pos_storehub_register_required(integration) and not register_id:
         raise HTTPException(status_code=400, detail="A StoreHub Register ID is required before activating this POS machine. Generate a new pairing code with this machine's Register ID in POS setup, then activate again.")
 
@@ -46743,10 +46835,48 @@ def activate_pos_companion_device(req: POSCompanionActivateRequest):
     }
 
 
+def _pos_activate_pending_device(req, activation, integration, business, branch, preview):
+    mapping = _pos_pending_activation_mapping(activation, integration)
+    # This path never repairs/reassigns an outlet, even if an old APK requests it.
+    if (str(branch.get('id')) != str(mapping.get('branch_id'))
+            or str(req.external_branch_id) != str(mapping.get('external_branch_id'))):
+        raise HTTPException(status_code=403, detail='Pending activation is locked to the assigned branch and outlet.')
+    token = secrets.token_urlsafe(36)
+    try:
+        device = supabase.rpc('pos_activate_pending_companion', {
+            'p_activation_id': str(activation['id']),
+            'p_code_hash': _pos_secret_hash(str(req.activation_code or '').strip()),
+            'p_device_token_hash': _pos_secret_hash(token),
+            'p_hardware_model': req.hardware_model, 'p_scanner_method': req.scanner_method,
+            'p_checkout_mode': req.checkout_mode, 'p_overlay_enabled': bool(req.overlay_enabled),
+            'p_app_version': req.app_version,
+        }).execute().data
+    except Exception as exc:
+        if 'P0001' in str(exc) or getattr(exc, 'code', None) == 'P0001':
+            raise HTTPException(status_code=409, detail='Pending activation code expired, was used, or its scope changed. Generate a new code.') from exc
+        raise HTTPException(status_code=503, detail='Pending activation is temporarily unavailable. Contact LoyaltyTree support.') from exc
+    if (not isinstance(device, dict) or not _pos_pairing_pending(device)
+            or _pos_device_register_id(device) or device.get('status') != 'active'
+            or str(device.get('mapping_id')) != str(mapping.get('id'))
+            or str(device.get('business_id')) != str(business.get('id'))
+            or str(device.get('integration_id')) != str(integration.get('id'))
+            or str(device.get('branch_id')) != str(branch.get('id'))):
+        raise HTTPException(status_code=503, detail='Pending activation did not return a valid pending device.')
+    return {
+        'ok': True, 'device_token': token, 'device': _pos_public_device(device, mapping),
+        'business': preview.get('business'), 'branch': {'public_id': branch.get('public_id'), 'name': branch.get('name')},
+        'outlet': {'id': mapping.get('external_branch_id'), 'name': mapping.get('external_branch_name')},
+        'loyalty_contract': _pos_loyalty_contract(business),
+        'redemption_config': {**_pos_redemption_config(integration), 'enabled': False, 'options': []},
+        'pairing_status': 'pending_verification', 'loyalty_actions_allowed': False,
+        'message': 'Companion activated for Check POS only. Register verification is required before loyalty actions.',
+    }
+
+
 @app.get('/api/v1/companion/config')
 @app.get('/api/v1/pos-companion/config')
 def pos_companion_device_config(x_lt_device_token: str = Header(default='', alias='X-LT-Device-Token')):
-    device = _require_pos_device(x_lt_device_token)
+    device = _require_pos_device(x_lt_device_token, allow_pending=True)
     device = _pos_current_register_device(device, require_unambiguous=False)
     business = _pos_business_by_id(device.get('business_id'))
     integration = _get_pos_integration(device.get('business_id'), device.get('provider') or 'storehub')
@@ -46759,7 +46889,7 @@ def pos_companion_device_config(x_lt_device_token: str = Header(default='', alia
     mapping = mapping_rows[0] if mapping_rows else {}
 
     redemption_debug = _pos_redemption_config(integration)
-    if _angkan_storehub_redemption_blocked(business, str(device.get('provider') or 'storehub')):
+    if _pos_pairing_pending(device) or _angkan_storehub_redemption_blocked(business, str(device.get('provider') or 'storehub')):
         redemption_debug = {**redemption_debug, 'enabled': False, 'options': []}
     print(
         "COMPANION_CONFIG_DEBUG",
@@ -46795,6 +46925,111 @@ class POSDeviceRegisterUpdate(BaseModel):
     external_terminal_id: str = Field(min_length=1, max_length=120)
 
 
+class POSPendingRegisterVerify(BaseModel):
+    external_transaction_id: str = Field(min_length=1, max_length=200)
+    receipt_number: str = Field(min_length=1, max_length=200)
+    external_terminal_id: str = Field(min_length=1, max_length=120)
+    physical_receipt_confirmed: bool = False
+
+
+def _pos_owner_pending_register_context(public_id, device_id, authorization):
+    business = _require_pos_pro_business(public_id, authorization)
+    try:
+        rows = (supabase.table('pos_devices').select('*').eq('id', device_id)
+                .eq('business_id', business['id']).eq('status', 'active').limit(1).execute().data or [])
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    if not rows:
+        raise HTTPException(status_code=404, detail='Active Companion device not found.')
+    device = rows[0]
+    metadata = device.get('metadata') or {}
+    if (device.get('provider') != 'storehub' or device.get('revoked_at')
+            or metadata.get('pairing_verification') != 'pending' or _pos_device_register_id(device)
+            or not device.get('device_token_hash')):
+        raise HTTPException(status_code=409, detail='This device is not awaiting initial StoreHub register verification.')
+    integration = _get_pos_integration(business['id'], 'storehub')
+    mapping = _companion_mock_mapping(device)
+    outlet = str((mapping or {}).get('external_branch_id') or '').strip()
+    started = _pos_parse_timestamp(metadata.get('pending_pairing_started_at'))
+    if (not integration or str(integration.get('id')) != str(device.get('integration_id'))
+            or not mapping or mapping.get('is_active') is not True
+            or str(mapping.get('business_id')) != str(business['id'])
+            or str(mapping.get('integration_id')) != str(device.get('integration_id'))
+            or str(mapping.get('branch_id')) != str(device.get('branch_id'))
+            or not started or outlet != metadata.get('pending_pairing_outlet_id')):
+        raise HTTPException(status_code=409, detail='The original pending POS outlet assignment changed. Do not verify this pairing.')
+    _pos_pending_pairing_outlet(integration, outlet)
+    try:
+        branches = (supabase.table('branches').select('id').eq('id', device['branch_id'])
+                    .eq('business_id', business['id']).eq('is_active', True).limit(1).execute().data or [])
+    except Exception as exc:
+        raise _pos_schema_error(exc)
+    if not branches:
+        raise HTTPException(status_code=409, detail='This branch is not active.')
+    return device, integration, mapping, started
+
+
+def _pos_owner_pending_evidence(device, integration, started):
+    result = _pos_pending_register_peek(device, integration, 50)
+    # Only actual receipt numbers and post-activation provider transactions qualify.
+    # Check POS discovery alone does not establish the physical machine's identity.
+    return [row for row in result.get('transactions', [])
+            if row.get('provider_receipt_number') and row.get('transacted_at_utc')
+            and (_pos_parse_timestamp(row['transacted_at_utc']) or datetime.min.replace(tzinfo=timezone.utc)) >= started]
+
+
+@app.get('/api/v1/business/{public_id}/pos/devices/{device_id}/pending-register-evidence')
+def get_pending_pos_register_evidence(public_id: str, device_id: str, authorization: str = Header(default='')):
+    device, integration, mapping, started = _pos_owner_pending_register_context(public_id, device_id, authorization)
+    return {'ok': True, 'device_id': device_id, 'external_branch_id': mapping['external_branch_id'],
+            'transactions': _pos_owner_pending_evidence(device, integration, started),
+            'pairing_status': 'pending_verification', 'loyalty_actions_allowed': False}
+
+
+@app.post('/api/v1/business/{public_id}/pos/devices/{device_id}/verify-register')
+def verify_pending_pos_register(public_id: str, device_id: str, req: POSPendingRegisterVerify, authorization: str = Header(default='')):
+    device, integration, mapping, started = _pos_owner_pending_register_context(public_id, device_id, authorization)
+    if req.physical_receipt_confirmed is not True:
+        raise HTTPException(status_code=400, detail='Confirm the receipt was printed by this physical POS before binding its Register ID.')
+    register = _pos_register_id(req.external_terminal_id, required=True)
+    tx_id = req.external_transaction_id.strip()
+    receipt = req.receipt_number.strip()
+    if not tx_id or not receipt:
+        raise HTTPException(status_code=400, detail='A provider transaction and exact receipt number are required.')
+    _pos_require_register_guard()
+    # Re-fetch from StoreHub on every confirmation, never trust the UI evidence.
+    evidence = _pos_owner_pending_evidence(device, integration, started)
+    matches = [row for row in evidence if row.get('external_transaction_id') == tx_id]
+    if (len(matches) != 1 or matches[0].get('terminal_id') != register
+            or matches[0].get('provider_receipt_number') != receipt):
+        raise HTTPException(status_code=409, detail='Receipt and Register ID could not be verified in current StoreHub transactions. Refresh Check POS.')
+    _pos_assert_register_available(device['business_id'], device['integration_id'], device['branch_id'], register, device_id)
+    try:
+        updated = supabase.rpc('pos_verify_pending_storehub_register', {
+            'p_device_id': str(device_id), 'p_business_id': str(device['business_id']),
+            'p_expected_token_hash': device['device_token_hash'],
+            'p_integration_id': str(integration['id']), 'p_mapping_id': str(mapping['id']),
+            'p_outlet_id': mapping['external_branch_id'],
+            'p_credentials_digest': _pos_secret_hash(integration['credentials_ciphertext']),
+            'p_register_id': register, 'p_transaction_id': tx_id, 'p_receipt_number': receipt,
+            'p_transaction_at': matches[0]['transacted_at_utc'],
+        }).execute().data
+    except Exception as exc:
+        if 'pos_devices_storehub_register_active_uidx' in str(exc).lower() or getattr(exc, 'code', None) == '23505':
+            raise HTTPException(status_code=409, detail='This Register ID is already assigned to an active POS in this branch.') from exc
+        if 'P0001' in str(exc) or getattr(exc, 'code', None) == 'P0001':
+            raise HTTPException(status_code=409, detail='POS pairing or connection changed during verification. Refresh and retry.') from exc
+        raise HTTPException(status_code=503, detail='Register verification is unavailable. Check the pending pairing database migration.') from exc
+    if (not isinstance(updated, dict) or str(updated.get('id')) != str(device_id)
+            or str(updated.get('business_id')) != str(device['business_id'])
+            or (updated.get('metadata') or {}).get('pairing_verification') != 'verified'
+            or _pos_device_register_id(updated) != register):
+        raise HTTPException(status_code=503, detail='Register verification did not return a valid binding. Refresh device status.')
+    _pos_device_cache_invalidate(device_id)
+    return {'ok': True, 'device': _pos_public_device(updated, mapping), 'pairing_status': 'verified',
+            'message': 'Register verified. Existing sale, Go Live and redemption rules still apply.'}
+
+
 @app.post('/api/v1/business/{public_id}/pos/devices/{device_id}/register')
 async def set_pos_device_register(public_id: str, device_id: str, req: POSDeviceRegisterUpdate, authorization: str = Header(default='')):
     """Save the StoreHub registerId on one Companion device. Check POS then filters to that register."""
@@ -46821,6 +47056,8 @@ async def set_pos_device_register(public_id: str, device_id: str, req: POSDevice
         raise HTTPException(status_code=400, detail='Register ID binding is available for StoreHub POS devices.')
     if device.get('status') != 'active':
         raise HTTPException(status_code=409, detail='This POS device is no longer active.')
+    if 'pairing_verification' in (device.get('metadata') or {}):
+        raise HTTPException(status_code=409, detail='Two-stage POS registers cannot be changed through the legacy editor. Use the verified pairing flow.')
     _pos_require_register_guard()
     mapping = _companion_mock_mapping(device)
     if (not mapping or mapping.get('is_active') is False
@@ -49343,6 +49580,64 @@ def companion_session_current(x_lt_device_token: str = Header(default='', alias=
     return {'ok': True, 'session': _companion_session_public(session), 'device_id': str(device.get('id'))}
 
 
+def _pos_pending_register_peek(device: dict, integration: dict, limit: int) -> dict:
+    """Read provider evidence only; never insert/update loyalty transactions."""
+    if not _pos_pairing_pending(device):
+        raise HTTPException(status_code=409, detail='This device is not pending register verification.')
+    if (str(integration.get('id')) != str(device.get('integration_id'))
+            or str(integration.get('business_id')) != str(device.get('business_id'))
+            or str(integration.get('provider') or '').lower() != 'storehub'
+            or not integration.get('credentials_ciphertext')):
+        raise HTTPException(status_code=409, detail='Reconnect the assigned StoreHub account before Check POS.')
+    mapping = _companion_mock_mapping(device)
+    if (not mapping or mapping.get('is_active') is not True
+            or str(mapping.get('business_id')) != str(device.get('business_id'))
+            or str(mapping.get('integration_id')) != str(device.get('integration_id'))
+            or str(mapping.get('branch_id')) != str(device.get('branch_id'))):
+        raise HTTPException(status_code=409, detail='Restore the active outlet mapping before Check POS.')
+    outlet = str(mapping.get('external_branch_id') or '').strip()
+    config = integration.get('config') if isinstance(integration.get('config'), dict) else {}
+    known_outlets = {str(row.get('id') or '').strip() for row in (config.get('storehub_outlets') or []) if isinstance(row, dict)}
+    if not outlet or _storehub_is_placeholder_location_id(outlet) or outlet not in known_outlets:
+        raise HTTPException(status_code=409, detail='Refresh and map a verified StoreHub outlet before Check POS.')
+    now = datetime.now(timezone.utc)
+    _, provider_rows, _ = _storehub_fetch_recent_transaction_rows(
+        integration, start=now - timedelta(days=1), end=now,
+        external_branch_id=outlet, deep_probe=True, persist_paging_hint=False,
+    )
+    evidence = []
+    seen = set()
+    # Filter by provider outlet even if the API ignores the requested outlet.
+    for raw in _storehub_recent_rows(provider_rows, 100, outlet):
+        item = _companion_normalize_provider_transaction('storehub', raw)
+        register_id = _storehub_register_id(raw)
+        happened = _pos_parse_timestamp((item or {}).get('transacted_at'))
+        raw_type = str(raw.get('transactionType') or '').lower()
+        if (not item or item.get('external_branch_id') != outlet
+                or item.get('transaction_type') != 'sale'
+                or any(value in raw_type for value in ('void', 'cancel', 'refund', 'return'))
+                or not happened or happened < now - timedelta(days=1) or happened > now
+                or not register_id or len(register_id) > 120):
+            continue
+        seen.add(register_id)
+        evidence.append({
+            'external_transaction_id': item['external_transaction_id'],
+            'receipt_number': item.get('external_receipt_number') or '',
+            'provider_receipt_number': str(raw.get('invoiceNumber') or raw.get('receiptNumber') or '').strip(),
+            'gross_amount': item['gross_amount'],
+            'transacted_at': _ph_time_text(item.get('transacted_at')),
+            'transacted_at_utc': happened.astimezone(timezone.utc).isoformat(),
+            'terminal_id': register_id,
+        })
+    return {
+        'ok': True, 'provider': 'storehub', 'read_only': True,
+        'pairing_status': 'pending_verification', 'loyalty_actions_allowed': False,
+        'external_terminal_id': None, 'seen_register_ids': sorted(seen),
+        'transactions': evidence[:max(1, min(int(limit or 10), 50))],
+        'message': 'Match a receipt from this physical POS to its Register ID. Detection alone does not verify or bind a device.',
+    }
+
+
 @app.get('/api/v1/companion/pos/peek')
 @app.get('/api/v1/pos-companion/pos/peek')
 def companion_pos_peek(
@@ -49357,12 +49652,14 @@ def companion_pos_peek(
     this Companion's assigned LT branch. No points, stamps, redemption, customer
     link, or transaction processing is performed here.
     """
-    device = _require_pos_device(x_lt_device_token)
+    device = _require_pos_device(x_lt_device_token, allow_pending=True)
     provider = str(device.get('provider') or '').lower()
     integration = _get_pos_integration(device.get('business_id'), provider)
     if not integration:
         raise HTTPException(status_code=409, detail='POS integration not found for this Companion device.')
     safe_limit = max(1, min(int(limit or 10), 50))
+    if _pos_pairing_pending(device):
+        return _pos_pending_register_peek(device, integration, safe_limit)
     # POS Peek is explicitly read-only, so it is the safe place to discover
     # StoreHub's tail-page cursor if this merchant's date filters return the
     # historical 5,000-row cap. The discovered cursor is then reused by normal
@@ -49957,8 +50254,28 @@ def pos_companion_connectivity(
     based on the saved integration state; probe_provider=true performs a
     read-only StoreHub /stores probe for an explicit/manual health refresh.
     """
-    device = _require_pos_device(x_lt_device_token)
+    device = _require_pos_device(x_lt_device_token, allow_pending=True)
     integration = _get_pos_integration(device.get('business_id'), device.get('provider') or 'storehub')
+    if _pos_pairing_pending(device):
+        provider_online = False
+        if (probe_provider and integration and integration.get('credentials_ciphertext')
+                and str(integration.get('id')) == str(device.get('integration_id'))):
+            try:
+                _storehub_get(integration, '/stores')
+                provider_online = True
+            except Exception:
+                pass
+        return {
+            'ok': True, 'lt_online': True, 'provider_online': provider_online,
+            'provider': 'storehub', 'state': 'pending_verification',
+            'pairing_status': 'pending_verification', 'loyalty_actions_allowed': False,
+            'offline_policy': {
+                'redemption_requires_lt_online': True,
+                'cached_balance_redemption_allowed': False,
+                'earning_can_queue': False,
+                'exact_transaction_match_required_before_award': True,
+            },
+        }
     if not integration:
         return {
             'ok': True,

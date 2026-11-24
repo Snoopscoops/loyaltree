@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { requestJsonResponse } from './requestTimeout'
+import PendingPOSPairing from './PendingPOSPairing.jsx'
+import { isPendingPOS } from './pendingPOSPairing.js'
 import { storehubQuickSetupStep } from './storehubQuickSetupStep.js'
 import { DeviceRegisterEditor, RegisterIdField, isActivePosDevice, registerConflict, seenRegisterIds } from './POSRegisterControls'
 
@@ -1068,7 +1070,7 @@ function POSIntegration({
   const quickStep = storehubQuickSetupStep({
     isConnected, hasSavedMapping, provider, simulatorReady,
     transactionsVerified: storeHubTransactionsVerified,
-    activeDeviceCount: activeDevicesForQuickBranch.length,
+    activeDeviceCount: activeDevicesForQuickBranch.filter(device => !isPendingPOS(device)).length,
   })
 
   return (
@@ -1136,10 +1138,23 @@ function POSIntegration({
             registerSavingDevice={registerSavingDevice}
             generateCompanionActivationCode={generateCompanionActivationCode}
             loadCompanionDevices={loadCompanionDevices}
-            activeCompanionDevices={activeDevicesForQuickBranch}
+            activeCompanionDevices={activeDevicesForQuickBranch.filter(device => !isPendingPOS(device))}
             copyText={copyText}
             API_BASE={API_BASE}
           />
+
+          {provider === 'storehub' && apiAvailable && isConnected && storeHubAccountLinked && !simulatorReady && (
+            <PendingPOSPairing key={slug} branches={branches} mappings={branchMappings} locations={storeHubOutlets}
+              devices={activeCompanionDevices} refreshDevices={loadCompanionDevices}
+              request={async (path, body) => {
+                const {response, payload} = await requestJsonResponse(call,
+                  `${API_BASE}/api/v1/business/${slug}/pos/${path}`,
+                  body ? {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)} : {cache:'no-store'},
+                  {timeoutMs:75000,message:'POS verification timed out. Refresh device status before retrying.'})
+                if (!response.ok || !payload?.ok) throw new Error(typeof payload?.detail === 'string' ? payload.detail : 'POS setup request failed.')
+                return payload
+              }} />
+          )}
 
           {copyState && <div style={{...s.successBanner,padding:'8px 11px'}}>{copyState}</div>}
 
@@ -2187,7 +2202,8 @@ function QuickCompanionSetup({
               <div key={device.id || device.public_id || index} style={{marginTop:8,paddingTop:8,borderTop:'1px solid #e2e8f0'}}>
                 <strong>{device.display_name || `POS Device ${index + 1}`}</strong>
                 <div style={s.smallMuted}>{device.branch_name || 'Branch'} · {device.external_branch_name || device.external_branch_id || providerLabel} · {device.status || 'active'}</div>
-                {provider === 'storehub' && <DeviceRegisterEditor device={device} devices={activeCompanionDevices} suggestions={registerSuggestions}
+                {provider === 'storehub' && device.metadata?.pairing_verification === 'verified' && <div style={s.smallMuted}>Verified Register ID: {device.external_terminal_id} · Contact owner support to replace this binding.</div>}
+                {provider === 'storehub' && !device.metadata?.pairing_verification && <DeviceRegisterEditor device={device} devices={activeCompanionDevices} suggestions={registerSuggestions}
                   disabled={saving || !!registerSavingDevice} detecting={detectingRegisters} onDetect={detectStoreHubRegisters} onSave={saveDeviceRegister} />}
               </div>
             )) : <div style={s.smallMuted}>No activated devices yet.</div>}
