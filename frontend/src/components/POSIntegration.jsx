@@ -148,11 +148,26 @@ function POSIntegration({
   )
 
   const integrationStatus = String(integration?.status || 'not_connected').toLowerCase()
-  const hasSavedStoreHubCredentials = Boolean(storeHubConnection?.credentials_saved ?? (provider === 'storehub' && integration?.config?.real_api_tested))
+  const hasSavedStoreHubCredentials = Boolean(storeHubConnection?.credentials_saved)
+  const storeHubAccountLinked = hasSavedStoreHubCredentials && storeHubConnection?.account_linked !== false
+  const savedTransactionStatus = storeHubConnection?.transaction_status
+  const storeHubTransactionStatus = storeHubRealResult?.transaction_status ||
+    (savedTransactionStatus === 'verified' ? 'unchecked' : savedTransactionStatus) || 'unchecked'
+  const storeHubTransactionsVerified = storeHubAccountLinked && storeHubTransactionStatus === 'verified'
+  const storeHubTransactionLabel = {
+    verified: 'Transactions verified',
+    denied: 'Transaction access denied',
+    timeout: 'Transaction check timed out',
+    unavailable: 'Transaction verification unavailable',
+    unchecked: 'Transactions not verified',
+  }[storeHubTransactionStatus] || 'Transactions not verified'
+  const angkanRedemptionBlocked = provider === 'storehub' &&
+    (storeHubConnection?.redemption_blocked === true || slug === 'angkan-c5a1')
   const hasSavedLoyverseCredentials = Boolean(loyverseConnection?.credentials_saved || (provider === 'loyverse' && integration?.config?.real_api_tested))
-  const hasSavedCredentials = provider === 'loyverse' ? hasSavedLoyverseCredentials : hasSavedStoreHubCredentials
-  const simulatorReady = provider === 'storehub' && integration?.mode === 'test' && integration?.config?.simulator === true
-  const isConnected = ['connected', 'testing', 'live'].includes(integrationStatus) && (integrationStatus === 'live' || hasSavedCredentials || simulatorReady)
+  const simulatorReady = provider === 'storehub' && !angkanRedemptionBlocked && !hasSavedStoreHubCredentials &&
+    integration?.mode === 'test' && integration?.config?.simulator === true && !integration?.config?.real_api_tested
+  const isConnected = ['connected', 'testing', 'live'].includes(integrationStatus) &&
+    (provider === 'storehub' ? storeHubAccountLinked || simulatorReady : integrationStatus === 'live' || hasSavedLoyverseCredentials)
   const isLive = integrationStatus === 'live'
   const providerLabel = provider === 'loyverse' ? 'Loyverse' : 'StoreHub'
   const registerRequired = provider === 'storehub' && (!simulatorReady || hasSavedStoreHubCredentials)
@@ -403,8 +418,9 @@ function POSIntegration({
       const status = String(data.integration?.status || '').toLowerCase()
       const credentialsSaved = provider === 'loyverse'
         ? Boolean(data.loyverse_connection?.credentials_saved || data.integration?.config?.real_api_tested)
-        : Boolean(data.storehub_connection?.credentials_saved || data.integration?.config?.real_api_tested)
-      const simulatorConnected = provider === 'storehub' && data.integration?.mode === 'test' && data.integration?.config?.simulator === true
+        : Boolean(data.storehub_connection?.credentials_saved)
+      const simulatorConnected = provider === 'storehub' && !credentialsSaved &&
+        data.integration?.mode === 'test' && data.integration?.config?.simulator === true && !data.integration?.config?.real_api_tested
       if (status === 'live') setSetupStep(7)
       else if (!credentialsSaved && !simulatorConnected) setSetupStep(1)
       else if (status === 'testing') setSetupStep(6)
@@ -423,6 +439,7 @@ function POSIntegration({
     setTestResult(null)
     setRedemptionResult(null)
     setRedemptionStage('idle')
+    setStoreHubRealResult(null)
     setBranchMappings({})
     loadPOS()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -446,25 +463,6 @@ function POSIntegration({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isConnected, slug, provider])
 
-  const startStoreHubSimulator = async () => {
-    if (!slug) return
-    setSaving(true); setError(''); setMessage('')
-    try {
-      const res = await call(`${API_BASE}/api/v1/business/${slug}/pos/integrations`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider: 'storehub', mode: 'test' }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.detail || 'Could not start StoreHub simulator.')
-      setIntegration(data.integration || null)
-      setSetupStep(2)
-      setMessage('StoreHub simulator ready. Map one ANGKAN branch and run the full earning/redemption flow.')
-      await loadPOS()
-    } catch (err) {
-      setError(err.message || 'Could not start StoreHub simulator.')
-    } finally { setSaving(false) }
-  }
-
   const postStoreHub = async (path, body, timeoutMs = 45000) => {
     const { response, payload } = await requestJsonResponse(
       call,
@@ -473,9 +471,11 @@ function POSIntegration({
       { timeoutMs, message: 'The StoreHub check timed out. Check the saved connection before trying again.' },
     )
     if (!response.ok || !payload?.ok) {
-      throw new Error(typeof payload?.detail === 'string'
+      const failure = new Error(typeof payload?.detail === 'string'
         ? payload.detail
         : `LoyaltyTree could not verify the StoreHub response (HTTP ${response.status}).`)
+      failure.status = response.status
+      throw failure
     }
     return payload
   }
@@ -499,12 +499,13 @@ function POSIntegration({
       setStoreHubOutlets(data.stores || [])
       setLoyaltyContract(data.loyalty_contract || null)
       setStoreHubCredentials({ store_name: data.store_name || storeName, api_token: '' })
-      setStoreHubConnection(current => ({ ...current, credentials_saved: true, store_name: data.store_name || storeName }))
+      setStoreHubConnection(current => ({
+        ...current, credentials_saved: data.credentials_saved ?? true, account_linked: data.account_linked ?? true,
+        store_name: data.store_name || storeName,
+      }))
       setShowReconnect(false)
       if (!data.used_saved_credentials) setSetupStep(2)
-      setMessage(data.used_saved_credentials
-        ? data.message || 'StoreHub reads work with the saved connection.'
-        : `StoreHub connected securely. ${data.store_count ?? 0} outlet(s) detected.`)
+      setMessage(data.message || 'StoreHub account linked. Check transaction access before using Companion.')
       await loadPOS()
     } catch (err) {
       setError(err instanceof TypeError
@@ -520,16 +521,18 @@ function POSIntegration({
     setSaving(true)
     setError('')
     setMessage('')
-    setStoreHubRealResult(null)
+    setStoreHubRealResult({ transaction_status: 'unchecked' })
     try {
       const data = await postStoreHub('connection-test', { provider: 'storehub' })
       setStoreHubRealResult(data)
       setIntegration(data.integration || integration)
       setStoreHubOutlets(data.stores || [])
       setLoyaltyContract(data.loyalty_contract || loyaltyContract)
-      setMessage(`Saved StoreHub connection can read transactions. ${data.store_count ?? 0} outlet(s) detected.`)
-      await loadPOS()
+      setMessage(data.message || 'Saved StoreHub connection checked.')
     } catch (err) {
+      setStoreHubRealResult({
+        transaction_status: err.status === 422 ? 'denied' : (err.status === 504 || err.name === 'TimeoutError') ? 'timeout' : 'unavailable',
+      })
       setError(err instanceof TypeError
         ? 'Your browser could not read the StoreHub test response from LoyaltyTree. Check the backend request log before retrying.'
         : err.message || 'StoreHub API connection test failed.')
@@ -686,8 +689,12 @@ function POSIntegration({
     try {
       const data = await postStoreHub('transactions-preview', { days: 1, limit: 10 }, 75000)
       setStoreHubTransactions(data.transactions || [])
+      setStoreHubRealResult({ transaction_status: 'verified' })
       setMessage(`Read ${data.returned ?? 0} recent StoreHub transaction(s). No loyalty balances changed.`)
     } catch (err) {
+      setStoreHubRealResult({
+        transaction_status: err.status === 422 ? 'denied' : (err.status === 504 || err.name === 'TimeoutError') ? 'timeout' : 'unavailable',
+      })
       setError(err instanceof TypeError
         ? 'LoyaltyTree could not receive the StoreHub transaction preview. Try previewing again.'
         : err.message || 'Could not read StoreHub transactions.')
@@ -874,13 +881,13 @@ function POSIntegration({
     if (ok) {
       setRedemptionConfig(current => ({ ...current, enabled: true }))
       setSetupStep(6)
-      setMessage('StoreHub redemption simulator enabled.')
+      setMessage('StoreHub redemption rules saved.')
       await loadPOS()
     }
   }
 
   const reserveRedemption = async () => {
-    if (!slug) return
+    if (!slug || angkanRedemptionBlocked) return
     const gross = Number(redemptionForm.gross_amount)
     const points = Number(redemptionForm.points_to_redeem)
     if (!redemptionForm.customer_public_id.trim()) {
@@ -1044,7 +1051,7 @@ function POSIntegration({
     ? registerDiscovery?.seen_register_ids || [] : []
   const registerSuggestions = seenRegisterIds(activeDevicesForQuickBranch, discoveredRegisters)
   const newRegisterConflict = registerConflict(activeDevicesForQuickBranch, newDeviceRegisterId)
-  const quickStep = !isConnected
+  const quickStep = !isConnected || (provider === 'storehub' && !simulatorReady && !storeHubTransactionsVerified)
     ? 1
     : !hasSavedMapping
       ? 2
@@ -1089,7 +1096,9 @@ function POSIntegration({
             saving={saving}
             isConnected={isConnected}
             simulatorReady={simulatorReady}
-            startStoreHubSimulator={startStoreHubSimulator}
+            storeHubAccountLinked={storeHubAccountLinked}
+            storeHubTransactionLabel={storeHubTransactionLabel}
+            testSavedStoreHubConnection={testSavedStoreHubConnection}
             branches={branches}
             quickBranch={quickBranch}
             quickBranchId={quickBranchId}
@@ -1132,7 +1141,8 @@ function POSIntegration({
                 <div style={s.stepLabel}>1 · POS PROVIDER</div>
                 <h3 style={s.sectionTitle}>Choose your POS</h3>
               </div>
-              {isConnected && <span style={s.connectedPill}>Connected</span>}
+              {isConnected && <span style={s.connectedPill}>{provider === 'storehub'
+                ? (storeHubAccountLinked ? 'Account linked' : 'Test mode') : 'Connected'}</span>}
             </div>
 
             <div style={s.providerGrid}>
@@ -1207,9 +1217,9 @@ function POSIntegration({
                     disabled={saving || !apiAvailable || !storeHubConnection?.encryption_configured}
                     onClick={connectStoreHub}
                   >
-                    {saving ? 'Testing…' : 'Test & connect StoreHub'}
+                    {saving ? 'Checking…' : 'Link StoreHub account'}
                   </button>
-                  <span style={s.smallMuted}>Credentials are saved only after StoreHub authentication succeeds.</span>
+                  <span style={s.smallMuted}>Outlet access and transaction permissions are checked separately.</span>
                 </div>
               </div>
             )}
@@ -1260,9 +1270,11 @@ function POSIntegration({
               <div style={s.sectionHeader}>
                 <div>
                   <div style={s.stepLabel}>STOREHUB ACCOUNT</div>
-                  <h3 style={s.sectionTitle}>{hasSavedStoreHubCredentials ? 'Saved StoreHub connection' : 'StoreHub simulator'}</h3>
+                  <h3 style={s.sectionTitle}>{storeHubAccountLinked ? 'Account linked' : 'StoreHub simulator'}</h3>
                 </div>
-                <span style={s.connectedPill}>{hasSavedStoreHubCredentials ? 'Credentials saved' : 'Test mode'}</span>
+                <span style={storeHubTransactionsVerified ? s.connectedPill : s.warningPill}>
+                  {hasSavedStoreHubCredentials ? storeHubTransactionLabel : 'Test mode'}
+                </span>
               </div>
               <div style={s.ruleBox}>
                 <b>{integration?.external_account_name || storeHubConnection?.store_name || 'StoreHub'}</b>
@@ -1271,39 +1283,12 @@ function POSIntegration({
                 </div>
               </div>
 
-              {showReconnect && (
-                <div style={{marginTop:12,display:'grid',gap:10}}>
-                  <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:10}}>
-                    <input
-                      style={s.input}
-                      placeholder="StoreHub BackOffice account name"
-                      value={storeHubCredentials.store_name}
-                      onChange={e => setStoreHubCredentials(current => ({ ...current, store_name: e.target.value }))}
-                    />
-                    <input
-                      style={s.input}
-                      type="password"
-                      placeholder="New API token"
-                      autoComplete="new-password"
-                      value={storeHubCredentials.api_token}
-                      onChange={e => setStoreHubCredentials(current => ({ ...current, api_token: e.target.value }))}
-                    />
-                  </div>
-                  <button type="button" style={s.primaryButton} disabled={saving} onClick={connectStoreHub}>
-                    {saving ? 'Testing…' : 'Test & replace credentials'}
-                  </button>
-                </div>
-              )}
-
               <div style={s.actionRow}>
                 <button type="button" style={s.secondaryButton} disabled={saving || !hasSavedStoreHubCredentials} onClick={testSavedStoreHubConnection}>
                   Test saved connection
                 </button>
                 <button type="button" style={s.secondaryButton} disabled={saving || !hasSavedStoreHubCredentials} onClick={previewStoreHubTransactions}>
                   Preview recent transactions
-                </button>
-                <button type="button" style={s.secondaryButton} disabled={saving} onClick={() => setShowReconnect(value => !value)}>
-                  {showReconnect ? 'Cancel reconnect' : 'Reconnect / change token'}
                 </button>
                 <button type="button" style={s.secondaryButton} disabled={saving} onClick={disconnectStoreHub}>
                   Disconnect
@@ -1669,7 +1654,9 @@ function POSIntegration({
                 <div style={s.stepLabel}>5 · REDEMPTION</div>
                 <h3 style={s.sectionTitle}>Reserve → discount → complete sale</h3>
                 {provider !== 'storehub' ? (
-                  <p style={s.muted}>POS redemption simulator is currently implemented for StoreHub first.</p>
+                  <p style={s.muted}>StoreHub redemption settings are available for StoreHub accounts.</p>
+                ) : angkanRedemptionBlocked ? (
+                  <p style={s.muted}>Angkan redemption is paused until the backend can verify the open StoreHub cart.</p>
                 ) : (
                   <>
                     <p style={s.muted}>
@@ -1704,11 +1691,11 @@ function POSIntegration({
                       label="Earn on NET amount after redemption"
                       description="Recommended: a ₱485 bill less ₱100 redemption earns points from ₱385."
                     />
-                    <button type="button" style={s.secondaryButton} disabled={saving || !apiAvailable} onClick={saveRedemptionSettings}>
-                      {saving ? 'Saving…' : (redemptionConfig.enabled ? 'Save redemption rules' : 'Enable redemption simulator')}
+                    <button type="button" style={s.secondaryButton} disabled={saving || !apiAvailable || (!simulatorReady && !redemptionConfig.enabled)} onClick={saveRedemptionSettings}>
+                      {saving ? 'Saving…' : 'Save redemption rules'}
                     </button>
 
-                    {redemptionConfig.enabled && (
+                    {simulatorReady && redemptionConfig.enabled && (
                       <div style={{marginTop:16,borderTop:'1px solid #e2e8f0',paddingTop:16}}>
                         <b style={{fontSize:13}}>Run the ANGKAN redemption flow</b>
                         <div style={{...s.testGrid,marginTop:10}}>
@@ -1771,12 +1758,12 @@ function POSIntegration({
                 )}
               </section>
 
-              {provider === 'storehub' ? (
+              {provider === 'storehub' && simulatorReady ? (
               <section style={s.card}>
                 <div style={s.stepLabel}>6 · TEST TRANSACTION</div>
                 <h3 style={s.sectionTitle}>Simulate a StoreHub sale</h3>
                 <p style={s.muted}>
-                  Use a real Loyalty Tree test member. This should run through the same
+                  Use a dedicated test member in this isolated simulator. This should run through the same
                   loyalty engine and Wallet update flow that live StoreHub transactions
                   will use later.
                 </p>
@@ -1867,7 +1854,7 @@ function POSIntegration({
                   </div>
                 )}
               </section>
-              ) : (
+              ) : provider === 'loyverse' ? (
                 <section style={s.card}>
                   <div style={s.stepLabel}>6 · API RECEIPT TEST</div>
                   <h3 style={s.sectionTitle}>Read a real Loyverse receipt safely</h3>
@@ -1901,29 +1888,30 @@ function POSIntegration({
                     </div>
                   )}
                 </section>
-              )}
+              ) : null}
 
               <section style={s.card}>
                 <div style={s.stepLabel}>7 · GO LIVE</div>
                 <div style={s.sectionHeader}>
                   <div>
                     <h3 style={s.sectionTitle}>
-                      {isLive ? `${providerLabel} integration is live` : `Ready for live ${providerLabel}`}
+                      {provider === 'storehub' && !storeHubTransactionsVerified ? 'StoreHub transaction verification required'
+                        : isLive ? `${providerLabel} integration is live` : `Enable live ${providerLabel}`}
                     </h3>
                     <p style={s.muted}>
-                      {isLive
+                      {provider === 'storehub' && !storeHubTransactionsVerified ? storeHubTransactionLabel : isLive
                         ? `Loyalty Tree is ready to receive supported ${providerLabel} transactions for this business.`
                         : `Activate only after the ${providerLabel} test flow passes and customer matching is verified.`}
                     </p>
                   </div>
-                  {isLive && <span style={s.livePill}>● LIVE</span>}
+                  {isLive && (provider !== 'storehub' || storeHubTransactionsVerified) && <span style={s.livePill}>● LIVE</span>}
                 </div>
 
                 {!isLive && (
                   <button
                     type="button"
                     style={s.primaryButton}
-                    disabled={saving || !testResult || !apiAvailable}
+                    disabled={saving || !apiAvailable || (provider === 'storehub' ? !storeHubTransactionsVerified : !testResult)}
                     onClick={goLive}
                   >
                     {saving ? 'Activating…' : 'Go Live'}
@@ -1948,7 +1936,9 @@ function QuickCompanionSetup({
   saving,
   isConnected,
   simulatorReady,
-  startStoreHubSimulator,
+  storeHubAccountLinked,
+  storeHubTransactionLabel,
+  testSavedStoreHubConnection,
   branches,
   quickBranch,
   quickBranchId,
@@ -2018,7 +2008,14 @@ function QuickCompanionSetup({
           <div>
             <div style={s.stepLabel}>STEP 1 · CONNECT POS</div>
             <h4 style={s.quickTitle}>Choose how you want to connect</h4>
-            <p style={s.muted}>For the ANGKAN test, use StoreHub Simulator. No StoreHub API token is needed yet.</p>
+            <p style={s.muted}>{provider === 'storehub' && storeHubAccountLinked
+              ? `StoreHub account linked. ${storeHubTransactionLabel}.`
+              : 'Link your POS account in Advanced setup.'}</p>
+            {provider === 'storehub' && storeHubAccountLinked && (
+              <button type="button" style={s.secondaryButton} disabled={saving} onClick={testSavedStoreHubConnection}>
+                Test saved connection
+              </button>
+            )}
           </div>
 
           <div style={s.quickProviderRow}>
@@ -2042,9 +2039,9 @@ function QuickCompanionSetup({
             </button>
           </div>
 
-          <div style={s.infoBanner}>
-            Use the real StoreHub store name and API token in Advanced setup. Simulator mode is removed.
-          </div>
+          {provider === 'storehub' && (
+            <div style={s.infoBanner}>Verify StoreHub transaction access before testing Companion on a register.</div>
+          )}
         </div>
       )}
 
