@@ -4532,6 +4532,17 @@ def _storehub_connection_result(business: dict, integration: dict, check: dict, 
     }
 
 
+def _require_storehub_relink_pairing_ready(integration: dict) -> None:
+    config = (integration or {}).get('config') or {}
+    if not config.get('storehub_relink_pending'):
+        return
+    if not integration.get('credentials_ciphertext'):
+        raise HTTPException(status_code=409, detail='Reconnect StoreHub before pairing a Companion device.')
+    credentials = _decrypt_pos_credentials(integration)
+    # Fresh provider verification, not a client flag or a cached successful check.
+    _storehub_read_connection_transactions(credentials.get('store_name'), credentials.get('api_token'))
+
+
 def _angkan_storehub_redemption_blocked(business: Optional[dict], provider: str) -> bool:
     return provider == 'storehub' and (business or {}).get('public_id') == 'angkan-c5a1'
 
@@ -30557,12 +30568,28 @@ def connect_storehub_account(
     if existing and existing.get('credentials_ciphertext'):
         check = _storehub_test_previous_credentials(existing, store_name)
         return _storehub_connection_result(business, existing, check, saved=True)
-    if existing and (existing.get('mode') == 'live' or existing.get('status') == 'live'):
-        raise HTTPException(status_code=409, detail='This live StoreHub account needs a saved connection.')
+    recover_live = bool(existing and (existing.get('mode') == 'live' or existing.get('status') == 'live'))
+    if recover_live:
+        # Only recover ANGKAN's existing, credential-less account; never replace
+        # another merchant's live connection or silently switch account identity.
+        if business.get('public_id') != 'angkan-c5a1':
+            raise HTTPException(status_code=409, detail='This live StoreHub account needs a saved connection.')
+        previous_name = _normalize_storehub_store_name(existing.get('external_account_name'))
+        if not previous_name or previous_name.casefold() != store_name.casefold():
+            raise HTTPException(status_code=409, detail='Reconnect the same saved StoreHub account. If its saved account name is missing or incorrect, ask LoyaltyTree support to verify the account identity first.')
+        if existing.get('credentials_ciphertext') is not None:
+            raise HTTPException(status_code=409, detail='The saved StoreHub credential state needs review before reconnecting.')
 
     check = _storehub_discover_outlets_with_credentials(store_name, api_token)
     stores = check['stores']
     verified = check['transactions_verified']
+    if recover_live:
+        stores = [row for row in stores if isinstance(row, dict)
+                  and str(row.get('id') or '').strip()
+                  and not _storehub_is_placeholder_location_id(row.get('id'))]
+        if not stores:
+            raise HTTPException(status_code=409, detail='StoreHub did not return any real outlets. The existing integration was not changed.')
+        check = {**check, 'stores': stores}
     encrypted = _encrypt_pos_credentials({'store_name': store_name, 'api_token': api_token})
     now = datetime.utcnow().isoformat()
     existing_config = (existing or {}).get('config') if isinstance((existing or {}).get('config'), dict) else {}
@@ -30599,6 +30626,31 @@ def connect_storehub_account(
         'simulator': False,
         'real_api_tested': verified,
     }
+    if recover_live:
+        # Retain existing business rules and mappings, but never restore stale
+        # live or write permissions simply because a new read token works.
+        config = {
+            **existing_config,
+            **{key: config[key] for key in (
+                'redemption_enabled', 'simulator', 'real_api_tested',
+                'storehub_transaction_status', 'storehub_outlets', 'storehub_outlet_source',
+            )},
+            'real_api_tested_at': now if verified else None,
+            'storehub_outlet_warning': None,
+            'setup_step': 2,
+            'storehub_relink_pending': True,
+            'live_transaction_polling': False,
+            'trace_transactions': False,
+        }
+        capabilities = {
+            **capabilities,
+            'live_companion_earning': False,
+            'open_cart_write': False,
+            'transaction_confirmation': False,
+            'completed_sale_callback': False,
+            'webhooks_completed_sale': False,
+            'live_discount_adapter_implemented': False,
+        }
     payload = {
         'business_id': business.get('id'),
         'provider': 'storehub',
@@ -30615,8 +30667,18 @@ def connect_storehub_account(
     }
     try:
         if existing:
-            res = (supabase.table('pos_integrations').update(payload).eq('id', existing.get('id'))
-                   .is_('credentials_ciphertext', 'null').neq('status', 'live').neq('mode', 'live').execute())
+            query = (supabase.table('pos_integrations').update(payload).eq('id', existing.get('id'))
+                     .eq('business_id', business.get('id')).eq('provider', 'storehub')
+                     .is_('credentials_ciphertext', 'null'))
+            if recover_live:
+                # Compare the identity and state we actually inspected before
+                # the provider request. Never overwrite a concurrently linked row.
+                for key in ('status', 'mode', 'external_account_name'):
+                    value = existing.get(key)
+                    query = query.is_(key, 'null') if value is None else query.eq(key, value)
+            else:
+                query = query.neq('status', 'live').neq('mode', 'live')
+            res = query.execute()
             if not res.data:
                 raise HTTPException(status_code=409, detail='The StoreHub connection changed. Refresh it before retrying.')
         else:
@@ -31755,6 +31817,7 @@ async def pos_go_live(public_id: str, req: POSGoLiveRequest, authorization: str 
         'redemption_enabled': bool(not _angkan_storehub_redemption_blocked(business, provider)
                                    and config.get('redemption_enabled') and (integration.get('capabilities') or {}).get('discount_write')),
         'live_transaction_polling': True,
+        'storehub_relink_pending': False,
         'live_enabled_at': now,
         # Keep verbose payload tracing off in production unless explicitly toggled
         # for a short diagnostic session.
@@ -46188,6 +46251,7 @@ def create_manager_companion_activation_code(public_id: str, req: Optional[Manag
     if not external_branch_id:
         raise HTTPException(status_code=409, detail='This branch mapping is missing its POS location ID. Save the branch mapping again before generating a code.')
     provider = str(integration.get('provider') or 'storehub').lower()
+    _require_storehub_relink_pairing_ready(integration)
     reactivation_id = str(getattr(req, 'reactivate_device_id', None) or '').strip()
     reactivation_device = None
     if reactivation_id:
@@ -46282,6 +46346,7 @@ def create_pos_device_activation_code(
     if not integration:
         raise HTTPException(status_code=409, detail=f'Connect {req.provider.title()} before creating a Companion activation code.')
 
+    _require_storehub_relink_pairing_ready(integration)
     metadata = {'purpose': 'pos_companion_device_activation'}
     register_id = _pos_register_id(req.external_terminal_id, required=_pos_storehub_register_required(integration))
     if req.provider == 'storehub':
@@ -46459,6 +46524,7 @@ def activate_pos_companion_device(req: POSCompanionActivateRequest):
     _validate_manager_activation_scope(activation, business)
     provider = str(activation.get('provider') or 'storehub').lower()
     integration = _get_pos_integration(business.get('id'), provider)
+    _require_storehub_relink_pairing_ready(integration)
 
     branch = safe_get_branch(req.branch_public_id)
     if not branch or branch.get('business_id') != business.get('id'):
