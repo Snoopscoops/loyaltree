@@ -49,25 +49,28 @@ class DB:
         self.row.update(self.payload)
         return SimpleNamespace(data=[deepcopy(self.row)])
 
-def fixture(*, merchant='angkan-c5a1', name='angkan', saved=None, stores=None, verified=False, race=False, deny=False, live=True):
+def fixture(*, merchant='angkan-c5a1', name='angkan', saved=None, stores=None, verified=False, race=False, deny=False, live=True, status=None, mappings=None, cached=None, stores_read=True, identity_race=False):
     row = {'id':'existing-id', 'business_id':12, 'provider':'storehub',
-           'status':'live' if live else 'connected', 'mode':'live' if live else 'test',
+           'status':status or ('live' if live else 'connected'), 'mode':'live' if live else 'test',
            'external_account_name':name, 'credentials_ciphertext':saved,
            'connected_at':'old', 'config':{'custom_rule':'retain','redemption_enabled':True,'setup_step':7,'real_api_tested_at':'old','live_transaction_polling':True},
            'capabilities':{'discount_write':True,'live_companion_earning':True,'open_cart_write':True}}
+    if cached is not None: row['config']['storehub_outlets'] = deepcopy(cached)
     db = DB(row)
     probes = []
     def probe(account, token):
         probes.append((account, token))
         if deny: raise HTTPException(422,'denied')
         if race: db.row['credentials_ciphertext'] = 'concurrently-saved'
+        if identity_race: db.row['external_account_name'] = 'concurrently-changed'
         return {'stores': [{'id':'store-real','name':'Outlet'}] if stores is None else stores,
-                'transactions_verified':verified, 'stores_read':True,
+                'transactions_verified':verified, 'stores_read':stores_read,
                 'transaction_status':'verified' if verified else 'denied','outlet_source':'stores'}
     env = dict(HTTPException=HTTPException, Optional=Optional, re=re, datetime=datetime,
                POSStoreHubConnectRequest=object, Header=lambda **kw: '', supabase=db,
                _require_pos_pro_business=lambda *a: {'id':12,'public_id':merchant},
                _get_pos_integration=lambda *a: deepcopy(row), _pos_credentials_cipher=lambda: None,
+               _pos_branch_rows=lambda *a: deepcopy(mappings or []),
                _storehub_discover_outlets_with_credentials=probe,
                _encrypt_pos_credentials=lambda payload: 'encrypted-test-value',
                _pos_schema_error=lambda exc: exc,
@@ -132,3 +135,78 @@ def test_pairing_requires_fresh_read_after_relink():
     env['_storehub_read_connection_transactions']=lambda *a: []
     gate(db.row)
     gate({'config':{}})
+
+
+@pytest.mark.parametrize('name', [None, '', 'VERIFIED_ACCOUNT_NAME', 'ACTUAL_ACCOUNT_NAME'])
+def test_disconnected_legacy_missing_identity_recovers_with_real_outlets(name):
+    connect, db, probes, _ = fixture(name=name, status='disconnected')
+    result = connect('actual-angkan-account')
+    assert db.row['external_account_name'] == 'actual-angkan-account'
+    assert db.row['credentials_ciphertext'] == 'encrypted-test-value'
+    assert db.row['id'] == 'existing-id' and len(db.writes) == 1
+    assert probes == [('actual-angkan-account', 'fake-token')]
+    i = result['integration']; c = i['config']
+    assert i['mode'] == 'test' and i['status'] == 'connected'
+    assert c['storehub_relink_pending'] and not c['real_api_tested']
+    assert not c['redemption_enabled'] and not c['live_transaction_polling']
+    assert not i['capabilities']['discount_write'] and not i['capabilities']['live_companion_earning']
+    assert c['custom_rule'] == 'retain'
+
+@pytest.mark.parametrize('account', ['ACTUAL_ACCOUNT_NAME', 'VERIFIED_ACCOUNT_NAME', ' '])
+def test_submitted_placeholder_rejected(account):
+    connect, db, probes, _ = fixture(name=None, status='disconnected')
+    with pytest.raises(HTTPException) as exc: connect(account)
+    assert exc.value.status_code == 400 and not db.writes and not probes
+
+
+def test_missing_identity_other_merchant_rejected():
+    connect, db, probes, _ = fixture(name=None, status='disconnected', merchant='other')
+    with pytest.raises(HTTPException): connect()
+    assert not db.writes and not probes
+
+
+def test_existing_known_identity_still_cannot_change():
+    connect, db, probes, _ = fixture(name='real-old-name', status='disconnected')
+    with pytest.raises(HTTPException): connect('other')
+    assert not db.writes and not probes
+
+
+def test_existing_mappings_match_and_simulator_ignored():
+    mappings = [{'external_branch_id':'store-real', 'is_active':True},
+                {'external_branch_id':'test-branch', 'is_active':True},
+                {'external_branch_id':'retired', 'is_active':False}]
+    connect, db, _, _ = fixture(name=None, status='disconnected', mappings=mappings)
+    assert connect()['integration']['status'] == 'connected'
+    assert len(db.writes) == 1
+    assert mappings[0]['is_active'] and mappings[2]['is_active'] is False
+
+
+def test_missing_active_real_outlet_prevents_identity_binding():
+    connect, db, _, _ = fixture(name=None, status='disconnected', mappings=[{'external_branch_id':'different-real'}])
+    with pytest.raises(HTTPException) as exc: connect()
+    assert exc.value.status_code == 409 and not db.writes
+
+
+def test_cached_real_outlets_prevent_unrelated_account():
+    connect, db, _, _ = fixture(name=None, status='disconnected', cached=[{'id':'different-real'}])
+    with pytest.raises(HTTPException): connect()
+    assert not db.writes
+
+
+def test_cached_real_outlet_match_allows_recovery():
+    connect, db, _, _ = fixture(name=None, status='disconnected', cached=[{'id':'store-real'}])
+    assert connect()['integration']['status'] == 'connected'
+    assert len(db.writes) == 1
+
+
+@pytest.mark.parametrize('kwargs', [{'deny':True}, {'stores':[]}, {'stores_read':False}, {'identity_race':True}, {'race':True}])
+def test_missing_identity_failed_probe_or_race_never_writes(kwargs):
+    connect, db, _, _ = fixture(name='ACTUAL_ACCOUNT_NAME', status='disconnected', **kwargs)
+    with pytest.raises(HTTPException): connect()
+    assert not db.writes
+
+
+def test_missing_identity_verified_transactions_still_not_auto_live():
+    connect, db, _, _ = fixture(name=None, status='disconnected', verified=True)
+    i = connect()['integration']
+    assert i['mode'] == 'test' and not i['config']['live_transaction_polling']
