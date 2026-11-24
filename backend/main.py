@@ -30569,16 +30569,25 @@ def connect_storehub_account(
         check = _storehub_test_previous_credentials(existing, store_name)
         return _storehub_connection_result(business, existing, check, saved=True)
     recover_live = bool(existing and (existing.get('mode') == 'live' or existing.get('status') == 'live'))
+    recover_missing_identity = False
     if recover_live:
-        # Only recover ANGKAN's existing, credential-less account; never replace
-        # another merchant's live connection or silently switch account identity.
+        # An authenticated Pro owner may establish a missing identity only on
+        # ANGKAN's disconnected, credential-less legacy row. Real saved names
+        # must still match; never replace an existing token or other merchant.
         if business.get('public_id') != 'angkan-c5a1':
             raise HTTPException(status_code=409, detail='This live StoreHub account needs a saved connection.')
-        previous_name = _normalize_storehub_store_name(existing.get('external_account_name'))
-        if not previous_name or previous_name.casefold() != store_name.casefold():
-            raise HTTPException(status_code=409, detail='Reconnect the same saved StoreHub account. If its saved account name is missing or incorrect, ask LoyaltyTree support to verify the account identity first.')
         if existing.get('credentials_ciphertext') is not None:
             raise HTTPException(status_code=409, detail='The saved StoreHub credential state needs review before reconnecting.')
+        previous_name = _normalize_storehub_store_name(existing.get('external_account_name'))
+        unknown_names = {'', 'verified_account_name', 'actual_account_name'}
+        if store_name.casefold() in unknown_names:
+            raise HTTPException(status_code=400, detail='Enter the actual StoreHub account name used with your API token.')
+        recover_missing_identity = previous_name.casefold() in unknown_names
+        if recover_missing_identity:
+            if existing.get('status') != 'disconnected' or existing.get('mode') != 'live':
+                raise HTTPException(status_code=409, detail='Missing account identity can only be recovered on the disconnected legacy StoreHub account.')
+        elif previous_name.casefold() != store_name.casefold():
+            raise HTTPException(status_code=409, detail='Reconnect the same saved StoreHub account. The submitted account does not match its saved identity.')
 
     check = _storehub_discover_outlets_with_credentials(store_name, api_token)
     stores = check['stores']
@@ -30590,6 +30599,33 @@ def connect_storehub_account(
         if not stores:
             raise HTTPException(status_code=409, detail='StoreHub did not return any real outlets. The existing integration was not changed.')
         check = {**check, 'stores': stores}
+        if recover_missing_identity:
+            # No manual account-name update is necessary. Bind the owner-provided
+            # identity only after a successful provider read and check all active
+            # real mapping IDs. Do not overwrite or deactivate any mapping.
+            if not (check.get('stores_read') or verified):
+                raise HTTPException(status_code=409, detail='StoreHub account access could not be verified. No connection was saved.')
+            returned_ids = {str(row['id']).strip() for row in stores}
+            existing_mappings = _pos_branch_rows(business.get('id'), existing.get('id'))
+            mapped_ids = {
+                str(row.get('external_branch_id') or '').strip()
+                for row in existing_mappings
+                if row.get('is_active') is not False
+                and str(row.get('external_branch_id') or '').strip()
+                and not _storehub_is_placeholder_location_id(row.get('external_branch_id'))
+            }
+            if mapped_ids - returned_ids:
+                raise HTTPException(status_code=409, detail='The StoreHub account did not return all existing active real outlet IDs. Verify the account or outlet permissions before reconnecting. Existing mappings were not changed.')
+            # If no real active mapping anchors the identity, use any saved
+            # real outlet metadata as a secondary check (never as proof of access).
+            cached_outlets = ((existing.get('config') or {}).get('storehub_outlets') or [])
+            cached_ids = {
+                str(row.get('id') or '').strip() for row in cached_outlets
+                if isinstance(row, dict) and str(row.get('id') or '').strip()
+                and not _storehub_is_placeholder_location_id(row.get('id'))
+            }
+            if not mapped_ids and cached_ids and not cached_ids.intersection(returned_ids):
+                raise HTTPException(status_code=409, detail='The returned StoreHub outlets do not match any previously saved real outlet. Verify the account before reconnecting.')
     encrypted = _encrypt_pos_credentials({'store_name': store_name, 'api_token': api_token})
     now = datetime.utcnow().isoformat()
     existing_config = (existing or {}).get('config') if isinstance((existing or {}).get('config'), dict) else {}
