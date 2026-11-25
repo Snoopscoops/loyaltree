@@ -392,6 +392,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   const rewardsRequest = useRef(0)
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState('')
+  const [detailsAttempted, setDetailsAttempted] = useState(false)
   const [copied, setCopied] = useState(false)
   const [paymentMethod, setPaymentMethod] = useState('cash')
   const submittingRef = useRef(false)
@@ -589,6 +590,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
     setEditingName(false)
     setBuyerName(current => current.trim() ? current : saved)
     setSlots(pickupSlots())
+    setDetailsAttempted(false)
     setPayStep('service')
   }
 
@@ -600,6 +602,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
     if (needsBranch) { setSubmitError('Choose your branch first.'); return }
     if (service !== 'dine-in') { setSubmitError('Pick up and delivery require verified online payment and are not available yet.'); return }
     if (paymentMethod !== 'cash') { setSubmitError('Card and QRPH are in test mode. Please select cash.'); return }
+    if (!cardName && !buyerName.trim()) { setSubmitError('Enter your name before placing an order.'); setPayStep('service'); setDetailsAttempted(true); return }
     if (!apiBase) { setSubmitError('Ordering is not available in preview.'); return }
     if (!pendingIds.current) {
       const stamp = Date.now().toString(36).toUpperCase()
@@ -694,9 +697,25 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   // No connected card: the shop needs a name to call the order.
   const nameRequired = !cardName
   const isOnlinePreview = service === 'pickup' || service === 'delivery'
-  const detailsReady = !(service === 'pickup' && !pickupAt) && !(nameRequired && !buyerName.trim()) && (!isOnlinePreview || (buyerName.trim() && validContactPhone(contactPhone) && (service !== 'delivery' || deliveryAddress.trim().length >= 5)))
+  const missingDetails = [
+    ...((nameRequired || isOnlinePreview) && !buyerName.trim() ? ['name'] : []),
+    ...(service === 'pickup' && !pickupAt ? ['pickup time'] : []),
+    ...(isOnlinePreview && !validContactPhone(contactPhone) ? ['valid mobile number'] : []),
+    ...(service === 'delivery' && deliveryAddress.trim().length < 5 ? ['delivery address'] : []),
+  ]
+  const detailsReady = missingDetails.length === 0
+  const continueToPayment = () => {
+    setDetailsAttempted(true)
+    // An incomplete online draft may be reviewed, never submitted or charged.
+    if (!isOnlinePreview && !detailsReady) {
+      sheetRef.current?.querySelector('input[autocomplete="name"]')?.focus()
+      return
+    }
+    setSubmitError('')
+    setPayStep('payment')
+  }
   const chooseService = value => {
-    setService(value); setPaymentMethod(value === 'dine-in' ? 'cash' : 'qrph')
+    setService(value); setPaymentMethod(value === 'dine-in' ? 'cash' : 'qrph'); setDetailsAttempted(false)
     setSelectedReward(null); setSubmitError(''); pendingIds.current = null
     if(value === 'pickup' && !slots.length) setSlots(pickupSlots())
   }
@@ -786,7 +805,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
       </nav>
     </>}
     {cartOpen && <CartOverlay ref={cartOverlayRef} className="lt-qr-cart" aria-labelledby={preview ? undefined : sheetTitleId} onCancel={event => { event.preventDefault(); closeCart() }} onMouseDown={event => { if (event.target === event.currentTarget) closeCart() }}>
-      <div className="lt-qr-cart-card" ref={sheetRef} role={preview ? 'dialog' : undefined} aria-modal={preview ? true : undefined} aria-labelledby={preview ? sheetTitleId : undefined} onKeyDown={onSheetKeyDown}>
+      <div className={`lt-qr-cart-card${step === 'service' || step === 'payment' ? ' lt-v21-checkout-form' : ''}`} ref={sheetRef} role={preview ? 'dialog' : undefined} aria-modal={preview ? true : undefined} aria-labelledby={preview ? sheetTitleId : undefined} onKeyDown={onSheetKeyDown}>
         <header className="lt-qr-sheet-head">
           <div>
             <div className="lt-v19-sheet-title"><h2 id={sheetTitleId} tabIndex={-1}>{title}</h2>{step === '' && <span className="lt-v19-cart-count">{count} {count === 1 ? 'item' : 'items'}</span>}</div>
@@ -832,6 +851,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
           </div>}
 
           {step === 'payment' && <div className="lt-qr-pay">
+            {isOnlinePreview && !detailsReady && <div className="lt-v20-preview-note" role="status"><strong>Incomplete preview details</strong><small>Required before live ordering: {missingDetails.join(', ')}. Use Back to complete them.</small></div>}
             <dl className="lt-qr-summary">
               {branch && branches.length > 1 && <div><dt>Branch</dt><dd>{branch.name}</dd></div>}
               <div><dt>Order type</dt><dd>{service === 'delivery' ? 'Delivery' : serviceLine(service, tableNo.trim(), pickupLabel)}</dd></div>
@@ -899,14 +919,16 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
           </div>}
         </div>
 
-        <footer className="lt-qr-sheet-foot">
+        <footer className="lt-qr-sheet-foot lt-v21-checkout-actions">
           {step === 'empty' && <button type="button" className="lt-qr-primary lt-qr-wide" onClick={closeCart}>Browse the menu</button>}
           {step === '' && <>
             <div className="lt-v19-cart-subtotal"><span>Subtotal</span><strong>{money(total)}</strong></div>
             <button type="button" className="lt-qr-primary lt-qr-wide lt-v19-checkout-cta" disabled={checkingCard || needsBranch} onClick={startCheckout}>{checkingCard ? 'One moment…' : 'Checkout'}{!checkingCard && <span aria-hidden="true">→</span>}</button>
           </>}
           {step === 'service' && <>
-            <button type="button" className="lt-qr-primary lt-qr-wide" disabled={!detailsReady} onClick={() => { if (!detailsReady) return; setSubmitError(''); setPayStep('payment') }}>Continue to payment</button>
+            {detailsAttempted && !detailsReady && !isOnlinePreview && <p className="lt-v21-details-hint" role="alert">Please enter your {missingDetails.join(', ')}.</p>}
+            {isOnlinePreview && !detailsReady && <p className="lt-v21-details-hint">Required for live orders: {missingDetails.join(', ')}. You can preview payment now.</p>}
+            <button type="button" className="lt-qr-primary lt-qr-wide lt-v21-continue" onClick={continueToPayment}>{isOnlinePreview ? 'Continue to payment preview' : 'Continue to payment'} <span aria-hidden="true">→</span></button>
             <button type="button" className="lt-qr-back-button" onClick={() => setPayStep('')}>Back to cart</button>
           </>}
           {step === 'payment' && <>
