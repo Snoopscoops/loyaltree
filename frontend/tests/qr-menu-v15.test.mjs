@@ -84,3 +84,14 @@ test('pickup and delivery are selectable previews with no cash or order submissi
   assert.ok(contact.includes('Save phone & set address as default'))
   assert.doesNotMatch(contact,/localStorage/)
 })
+
+test('checkout action has an explicit visible label and high-contrast footer text',async()=>{
+  const {readFile}=await import('node:fs/promises')
+  const page=await readFile(new URL('../src/components/QRMenuPage.jsx',import.meta.url),'utf8')
+  const css=await readFile(new URL('../src/components/qr-menu-v15.css',import.meta.url),'utf8')
+  assert.ok(page.includes('className="lt-v19-checkout-label"'))
+  assert.ok(page.includes("checkingCard ? 'One moment…' : 'Continue to details'"))
+  assert.ok(page.includes('disabled={checkingCard || needsBranch} onClick={startCheckout}'))
+  assert.match(css,/\.lt-qr-sheet-foot button\.lt-qr-primary\.lt-qr-wide\s*\{[^}]*color:#fff; -webkit-text-fill-color:#fff/)
+  assert.match(css,/\.lt-v19-checkout-cta > span\s*\{[^}]*visibility:visible; opacity:1/)
+})
