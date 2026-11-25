@@ -208,7 +208,7 @@ BEGIN
       SELECT 1 FROM jsonb_array_elements(NEW.items::jsonb) AS ln(value)
        WHERE NOT EXISTS (
          SELECT 1 FROM public.order_ahead_items
-          WHERE business_id=NEW.business_id AND public_id=ln.value->>'item_id'
+          WHERE business_id=NEW.business_id AND public_id::text=(ln.value->>'item_id')
             AND name=ln.value->>'item_name' AND is_active
        )
     ) THEN
