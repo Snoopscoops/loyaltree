@@ -798,7 +798,7 @@ private fun HomeScreen(
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             DashboardAction("Stock", Icons.Default.Inventory2, Modifier.weight(1f), Forest, openStock)
             DashboardAction("Customers", Icons.Default.Group, Modifier.weight(1f), DeepTeal, openCustomers)
-            DashboardAction("Reports", Icons.Default.BarChart, Modifier.weight(1f), Forest, openOrders)
+            DashboardAction("Analytics", Icons.Default.BarChart, Modifier.weight(1f), Forest, openAnalytics)
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Recent activity", color = Ink, fontWeight = FontWeight.Bold, fontSize = 22.sp, modifier = Modifier.weight(1f))
@@ -841,10 +841,7 @@ private fun HomeScreen(
             Metric("New", if (store.period == "today") store.todayNew else store.cardNew, Modifier.weight(1f))
         }
         Text("${store.memberCount} members  ·  ${store.cameBackRate.toInt()}% came back", color = Forest, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Box(Modifier.weight(1f)) { Secondary("Analytics", openAnalytics) }
-            Box(Modifier.weight(1f)) { Primary("Campaign", onClick = openCampaign) }
-        }
+        Primary("Campaign", onClick = openCampaign)
         Column(Modifier.fillMaxWidth().clip(Shape).background(Color.White).border(1.dp, Line, Shape)) {
             Row(Modifier.fillMaxWidth().clickable { enlarged = true }.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                 Qr(store.joinLink, 64)
@@ -1925,24 +1922,25 @@ private fun MoreScreen(store: CounterStore, open: (Page) -> Unit, openMenu: () -
 @Composable
 private fun AnalyticsScreen(store: CounterStore) {
     val view = LocalView.current
-    LaunchedEffect(store.session?.slug, store.period) { store.loadInsights() }
+    val context = LocalContext.current
+    var productMenu by remember { mutableStateOf(false) }
+    var selectedProduct by remember { mutableStateOf("") }
+    LaunchedEffect(store.session?.slug, store.menuAnalyticsPeriod) { store.loadInsights() }
     val month = java.util.Calendar.getInstance().get(java.util.Calendar.MONTH) + 1
     val birthdays = store.members.filter { it.birthdayMonth == month && it.birthdayDay > 0 }.sortedBy { it.birthdayDay }
     val months = listOf("", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
-    val previous = when (store.period) {
+    val previous = when (store.menuAnalyticsPeriod) {
         "today" -> "vs yesterday"
-        "7d" -> "vs last week"
-        "90d" -> "vs the 3 months before"
+        "week" -> "vs last week"
+        "3months" -> "vs the 3 months before"
+        "6months" -> "vs the 6 months before"
         else -> "vs last month"
     }
     Scroll {
         Text(store.analyticsProgram.ifBlank { "This business" }, color = Forest, fontSize = 28.sp, fontWeight = FontWeight.Bold)
-        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Track).padding(4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            listOf("Today" to "today", "This week" to "7d", "This month" to "30d", "3 months" to "90d").forEach { (label, id) ->
-                val on = store.period == id
-                Box(Modifier.weight(1f).clip(RoundedCornerShape(9.dp)).background(if (on) Forest else Color.Transparent).clickable { tick(view); store.selectRange(id) }.padding(vertical = 9.dp), contentAlignment = Alignment.Center) {
-                    Text(label, color = if (on) Color.White else Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
-                }
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("Daily" to "today", "Weekly" to "week", "Monthly" to "month", "3 months" to "3months", "6 months" to "6months").forEach { (label, id) ->
+                BranchChip(label, store.menuAnalyticsPeriod == id) { tick(view); store.menuAnalyticsPeriod = id }
             }
         }
         if (store.branches.size > 1) {
@@ -1952,6 +1950,12 @@ private fun AnalyticsScreen(store: CounterStore) {
             }
         }
         if (store.insightRange.isNotBlank()) Text("Menu orders · ${store.insightRange} · Manila time", color = Muted, fontSize = 13.sp)
+        if (store.session?.canReport == true) {
+            Primary(if (store.reportBusy) "Preparing report…" else "Download & share CSV", enabled = !store.reportBusy && !store.insightsLoading && store.insightRange.isNotBlank()) {
+                store.downloadReport(analytics = true) { report -> shareReport(context, report) }
+            }
+            if (store.reportNote.isNotBlank()) Text(store.reportNote, color = if (store.reportNote.startsWith("Saved")) Forest else Bad, fontSize = 12.sp)
+        }
 
         if (store.insightKpis.isNotEmpty()) {
             store.insightKpis.chunked(2).forEach { pair ->
@@ -1971,6 +1975,28 @@ private fun AnalyticsScreen(store: CounterStore) {
                 store.insightItems.forEachIndexed { index, item -> RankedRow(index + 1, item, peak) }
             }
         }
+        if (store.insightProducts.isNotEmpty()) {
+            val product = store.insightProducts.find { it.name == selectedProduct } ?: store.insightProducts.first()
+            Text("Product intelligence", color = Forest, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            Card {
+                Box {
+                    Secondary(product.name + "  ⌄") { productMenu = true }
+                    androidx.compose.material3.DropdownMenu(expanded = productMenu, onDismissRequest = { productMenu = false }) {
+                        store.insightProducts.forEach { item ->
+                            androidx.compose.material3.DropdownMenuItem(text = { Text(item.name) }, onClick = { selectedProduct = item.name; productMenu = false })
+                        }
+                    }
+                }
+                Text("${product.quantity} sold · ${product.orders} paid orders", color = Forest, fontWeight = FontWeight.SemiBold)
+                Text("Demographics of linked members; counts are orders containing this item.", color = Muted, fontSize = 12.sp)
+                product.groups.groupBy { it.dimension }.forEach { (dimension, groups) ->
+                    Text(dimension, color = Forest, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    groups.forEach { group -> Info(group.label, plural(group.orders, "order")) }
+                }
+                if (product.groups.isEmpty()) Text("Not enough linked orders to show demographics.", color = Muted, fontSize = 13.sp)
+                if (product.hiddenGroups > 0) Text("Small groups are hidden for privacy.", color = Muted, fontSize = 12.sp)
+            }
+        }
         if (store.insightCards.isNotEmpty()) {
             Text("Who orders what", color = Forest, fontSize = 18.sp, fontWeight = FontWeight.Bold)
             store.insightCards.forEach { InsightCardView(it) }
@@ -1979,6 +2005,7 @@ private fun AnalyticsScreen(store: CounterStore) {
         if (store.insightsNote.isNotBlank()) Text(store.insightsNote, color = Muted, fontSize = 12.sp)
 
         Text("Loyalty card", color = Forest, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
+        Text("Business-wide · separate loyalty period selected on Home", color = Muted, fontSize = 12.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Metric("Stamps", if (store.period == "today") store.todayStamps else store.cardStamps, Modifier.weight(1f))
             Metric("Rewards", if (store.period == "today") store.todayRewards else store.cardRewards, Modifier.weight(1f))
