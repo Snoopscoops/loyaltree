@@ -3176,49 +3176,248 @@ private fun EditorToggle(label: String, checked: Boolean, change: (Boolean) -> U
     }
 }
 
+private data class SampleWalletField(val label: String, val value: String)
+
+@Composable
+private fun WalletSampleFields(fields: List<SampleWalletField>, color: Color, apple: Boolean, small: Boolean = false) {
+    if (fields.isEmpty()) return
+    fields.chunked(2).forEach { pair ->
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            pair.forEachIndexed { index, field ->
+                Column(Modifier.weight(if (apple && index == 0 && pair.size == 2) 1.4f else 1f),
+                    horizontalAlignment = if (index == 1) Alignment.End else Alignment.Start,
+                    verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(field.label, color = color.copy(alpha = .85f), fontSize = 10.sp, fontWeight = FontWeight.Medium)
+                    Text(field.value, color = color, fontSize = if (small) 12.sp else if (apple) 15.sp else 18.sp,
+                        lineHeight = 21.sp, fontWeight = FontWeight.Medium, textAlign = if (index == 1) TextAlign.End else TextAlign.Start)
+                }
+            }
+        }
+    }
+}
+
+/** Preview public branding artwork only. Never send session tokens or load arbitrary web pages. */
+@Composable
+private fun WalletArtwork(url: String, modifier: Modifier = Modifier, crop: Boolean = false, fallback: @Composable () -> Unit) {
+    val bitmap by androidx.compose.runtime.produceState<Bitmap?>(null, url) {
+        value = null
+        val uri = runCatching { java.net.URI(url) }.getOrNull()
+        val host = uri?.host?.lowercase(Locale.US)
+        if (uri?.scheme != "https" || uri.userInfo != null || uri.port != -1 ||
+            host !in setOf("res.cloudinary.com", "theloyaltytree.com", "www.theloyaltytree.com")) return@produceState
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                val connection = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+                try {
+                    connection.instanceFollowRedirects = false
+                    connection.connectTimeout = 5000
+                    connection.readTimeout = 5000
+                    if (connection.responseCode != 200 || connection.contentType?.startsWith("image/") != true) return@runCatching null
+                    val bytes = connection.inputStream.use { input ->
+                        val out = java.io.ByteArrayOutputStream()
+                        val buffer = ByteArray(8192)
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            if (out.size() + count > 4 * 1024 * 1024) return@runCatching null
+                            out.write(buffer, 0, count)
+                        }
+                        out.toByteArray()
+                    }
+                    val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@runCatching null
+                    var sample = 1
+                    while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 1200) sample *= 2
+                    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, android.graphics.BitmapFactory.Options().apply { inSampleSize = sample })
+                } finally { connection.disconnect() }
+            }.getOrNull()
+        }
+    }
+    Box(modifier, contentAlignment = Alignment.Center) {
+        val art = bitmap
+        if (art != null) Image(art.asImageBitmap(), "Program artwork", modifier = Modifier.fillMaxSize(),
+            contentScale = if (crop) androidx.compose.ui.layout.ContentScale.Crop else androidx.compose.ui.layout.ContentScale.Fit)
+        else fallback()
+    }
+}
+
 @Composable
 private fun WalletEditorSample(store: CounterStore, platform: String, color: Color) {
+    val apple = platform == "apple"
+    var detailsOpen by remember(platform) { mutableStateOf(false) }
+    val config = store.walletSampleMetadata()
+    fun field(label: String, value: String) = SampleWalletField(label, value)
+    fun asset(key: String) = config.optString(key).takeUnless { it == "null" }.orEmpty()
+    val business = store.session?.businessName.orEmpty().ifBlank { "Your Business" }
+    val title = store.cardName.ifBlank { "$business Rewards" }
+    val initials = business.split(" ").filter { it.isNotBlank() }.take(2).map { it.first().uppercaseChar() }.joinToString("")
+    val hybrid = store.cardType == "hybrid"
+    val pointsEnabled = store.cardType == "points" || (hybrid && store.hybridPoints)
+    val stampsEnabled = store.cardType == "stamp" || (hybrid && store.hybridStamps)
+    val goal = (store.stampRewards.maxOfOrNull { it.stamps } ?: store.stampGoal).coerceAtLeast(1)
+    val stamps = minOf(5, goal)
+    val milestone = store.stampRewards.sortedBy { it.stamps }.firstOrNull { it.stamps >= stamps }
+    val stampLeft = ((milestone?.stamps ?: goal) - stamps).coerceAtLeast(0)
+    val stampReward = (milestone?.name ?: store.rewardName).ifBlank { "Reward" } + if (stampLeft > 0) " · $stampLeft stamps to go" else " · Ready to redeem"
+    val prizes = store.pointsPrizes.mapNotNull { prize -> prize.cost.toIntOrNull()?.takeIf { it > 0 }?.let { it to prize.name } }.sortedBy { it.first }
+    val samplePoints = (prizes.firstOrNull()?.first?.let { kotlin.math.round(it * .58).toInt().coerceAtLeast(1) } ?: 240)
+        .let { points -> store.pointsCap.toIntOrNull()?.takeIf { it > 0 }?.let { minOf(it, points) } ?: points }
+    val prize = prizes.firstOrNull { it.first >= samplePoints } ?: prizes.lastOrNull()
+    val pointsReward = prize?.let { (cost, name) -> "$name · " + if (cost <= samplePoints) "Ready to redeem" else "${cost - samplePoints} points to go" } ?: "Ask in-store for rewards"
+    val validity = "${store.membershipDays} days after activation"
+    val tiers = config.optJSONArray("vip_tiers") ?: org.json.JSONArray()
+    val tier = (0 until tiers.length()).mapNotNull { tiers.optJSONObject(it) }.filter { it.optBoolean("active", true) }.minByOrNull { it.optInt("threshold") }
+    val tierName = tier?.optString("name")?.ifBlank { "Member" } ?: "Member"
+    val tierStamps = if (hybrid) store.hybridTierType == "stamps" else config.optString("vip_progression_type") == "stamps"
+    val tierField = field(if (tierStamps) "TIER STAMPS" else "TIER POINTS", (tier?.optInt("threshold") ?: 0).toString())
+    val employee = store.cardType == "employee" || (store.cardType == "membership" && store.membershipEmployee)
+    var metric = if (pointsEnabled) field("POINTS", samplePoints.toString()) else field("STAMPS", "$stamps / $goal")
+    var secondary: SampleWalletField? = null
+    var appleFields = listOf(field("NEXT REWARD", if (pointsEnabled) pointsReward else stampReward), metric)
+    var auxiliary = emptyList<SampleWalletField>()
+    val details = mutableListOf<SampleWalletField>()
+    when (store.cardType) {
+        "membership" -> {
+            metric = if (employee) field("EMPLOYEE ID", "EMP-001") else field("STATUS", "ACTIVE")
+            appleFields = listOf(field("STATUS", "ACTIVE"), field("VALID UNTIL", validity))
+        }
+        "hybrid" -> {
+            secondary = field("STATUS", "ACTIVE")
+            appleFields = listOf(metric, field("STATUS", "ACTIVE"))
+            auxiliary = buildList {
+                if (pointsEnabled && stampsEnabled) add(field("REWARD STAMPS", "$stamps / $goal"))
+                add(field("VALID UNTIL", validity))
+                if (store.hybridTier) add(field("CURRENT TIER", tierName))
+            }
+        }
+        "multipass" -> {
+            val total = (store.multiSessions.toIntOrNull() ?: 12).coerceIn(2, 200)
+            metric = field("SESSIONS", "${total - (total + 2) / 3} / $total")
+            appleFields = listOf(field("EXPIRES", "${store.multiDays} days after purchase"), metric)
+        }
+        "vip" -> {
+            metric = tierField
+            secondary = field("VIP TIER", tierName)
+            appleFields = listOf(field("VIP TIER", tierName), tierField)
+        }
+        "employee" -> {
+            metric = field("EMPLOYEE ID", "EMP-001")
+            secondary = field("STATUS", "ACTIVE")
+            appleFields = listOf(field("EMPLOYEE", "Sample Member"), metric)
+        }
+    }
+    if (pointsEnabled) {
+        details.add(field("NEXT POINTS REWARD", pointsReward))
+        details.add(field("HOW TO EARN", "${store.pointsPer} points per ₱${store.pointsPesos} spent"))
+    }
+    if (stampsEnabled) details.add(field("NEXT STAMP REWARD", stampReward))
+    if (store.cardType in setOf("membership", "hybrid")) {
+        details.add(field("MEMBERSHIP", store.membershipName.ifBlank { "Subscription" }))
+        details.add(field("VALID UNTIL", validity))
+        store.structuredBenefits.filter { it.optBoolean("active", true) }.forEach { details.add(field("BENEFIT", it.optString("name"))) }
+    }
+    if (hybrid && store.hybridTier) details.add(field("CURRENT TIER", tierName))
+    if (store.cardDescription.isNotBlank()) details.add(field("ABOUT THIS CARD", store.cardDescription))
+    val actions = config.optJSONArray("wallet_actions") ?: org.json.JSONArray()
+    val visibleActions = (0 until actions.length()).mapNotNull { actions.optJSONObject(it) }
+        .filter { it.optBoolean("enabled", true) && it.optString("label").isNotBlank() && it.optString("url").startsWith("https://") }.take(5)
+    val primary = visibleActions.firstOrNull { it.optBoolean("primary") } ?: visibleActions.firstOrNull()
     val foreground = if (color.luminance() > .45f) DeepTeal else Color.White
-    Column(Modifier.fillMaxWidth().clip(if (platform == "apple") RoundedCornerShape(18.dp) else RoundedCornerShape(28.dp))
-        .background(color).padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Mark(34)
-            Column(Modifier.weight(1f)) {
-                Text(store.cardName.ifBlank { "Loyalty card" }, color = foreground, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                Text(if (platform == "apple") "APPLE WALLET · SAMPLE" else "GOOGLE WALLET · SAMPLE", color = foreground.copy(alpha = .8f), fontSize = 10.sp)
+    val secondaryColor = hexColor(asset("wallet_secondary_color")) ?: color
+    val blue = Color(0xFF246AC1)
+    val bannerProgress = config.optString("wallet_banner_mode") == "progress"
+    val showBanner = bannerProgress || config.optBoolean("wallet_show_background", true)
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(25.dp)).background(if (apple) Color(0xFFF0F1F3) else Color(0xFFF7F8FA))
+        .border(1.dp, Line, RoundedCornerShape(25.dp)).padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text(if (apple) "Wallet" else "Google Wallet", color = Color(0xFF202124), fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            Text("Live sample", color = Forest, fontSize = 10.sp, modifier = Modifier.clip(Pill).background(Track).padding(6.dp))
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text(if (apple) "Done" else "‹", color = if (apple) blue else Color(0xFF3C4043), fontSize = if (apple) 14.sp else 28.sp,
+                modifier = Modifier.clickable { detailsOpen = false }.padding(6.dp))
+            Box(Modifier.size(36.dp).clip(CircleShape).background(Color(0xFFE1E4E7)).clickable { detailsOpen = !detailsOpen }, contentAlignment = Alignment.Center) {
+                Text(if (detailsOpen) "×" else "•••", color = Ink)
             }
         }
-        if (store.cardDescription.isNotBlank()) Text(store.cardDescription, color = foreground, fontSize = 12.sp)
-        if (store.cardType in setOf("membership", "hybrid")) {
-            Text(store.membershipName.ifBlank { "Subscription" }, color = foreground, fontSize = 17.sp, fontWeight = FontWeight.Bold)
-            Text("Sample active member · ${store.membershipDays} days · ₱${store.membershipPrice}", color = foreground, fontSize = 12.sp)
-            store.structuredBenefits.filter { it.optBoolean("active", true) }.take(2).forEach { Text("• " + it.optString("name"), color = foreground, fontSize = 12.sp) }
-        }
-        if (store.cardType == "stamp" || (store.cardType == "hybrid" && store.hybridStamps)) {
-            Text("2 / ${store.stampGoal} stamps · ${store.rewardName}", color = foreground, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                repeat(store.stampGoal.coerceIn(1, 10)) { index ->
-                    Box(Modifier.size(18.dp).clip(CircleShape).background(if (index < 2) RewardYellow else foreground.copy(alpha = .24f)))
+        if (detailsOpen) {
+            Card {
+                Text(if (apple) "Pass Details" else "Pass details", color = Ink, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                Text(title, color = Muted, fontSize = 13.sp)
+                visibleActions.forEach { action ->
+                    Text(action.optString("label") + " ↗", color = blue, fontWeight = FontWeight.SemiBold)
+                    Text(action.optString("url"), color = Muted, fontSize = 11.sp)
+                }
+                Text("View Rewards / Account ›", color = blue, fontWeight = FontWeight.SemiBold)
+                (appleFields + auxiliary + details).distinct().forEach { field ->
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
+                    Text(field.label, color = Muted, fontSize = 10.sp)
+                    Text(field.value, color = Ink, fontSize = 14.sp)
+                }
+                Secondary("Back to card") { detailsOpen = false }
+            }
+        } else {
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(if (apple) 13.dp else 22.dp)).background(color)) {
+                Row(Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    WalletArtwork(asset("program_logo_url"), Modifier.size(if (apple) 46.dp else 40.dp).clip(if (apple) Pill else CircleShape)) {
+                        Text(initials.ifBlank { "LT" }, color = foreground, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Column(Modifier.weight(1f), horizontalAlignment = if (apple) Alignment.End else Alignment.Start) {
+                        Text(if (apple) "CARD" else business, color = foreground.copy(alpha = .85f), fontSize = 10.sp)
+                        Text(title, color = foreground, fontSize = if (apple) 14.sp else 17.sp, fontWeight = FontWeight.SemiBold, textAlign = if (apple) TextAlign.End else TextAlign.Start)
+                    }
+                }
+                if (showBanner) {
+                    Box(Modifier.fillMaxWidth().height(if (apple) 98.dp else 112.dp).background(Brush.horizontalGradient(listOf(color, secondaryColor)))) {
+                        WalletArtwork(asset("hero_image_url"), Modifier.fillMaxSize(), crop = true) {
+                            Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(business, color = foreground, fontSize = 11.sp)
+                                Text(title, color = foreground, fontSize = 21.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                Text(metric.label + " · " + metric.value, color = foreground, fontSize = 12.sp)
+                            }
+                        }
+                        if (bannerProgress && stampsEnabled) {
+                            Row(Modifier.align(Alignment.Center).clip(Pill).background(color.copy(alpha = .95f)).padding(10.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                repeat(goal.coerceIn(1, 10)) { index ->
+                                    Box(Modifier.size(17.dp).clip(CircleShape).background(if (index < stamps) RewardYellow else foreground.copy(alpha = .23f)))
+                                }
+                            }
+                        }
+                    }
+                }
+                Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (apple) {
+                        WalletSampleFields(appleFields, foreground, true)
+                        WalletSampleFields(auxiliary, foreground, true, small = true)
+                    } else {
+                        WalletSampleFields(listOf(field("MEMBER", "Sample Member"), metric), foreground, false)
+                        WalletSampleFields(listOfNotNull(secondary) + auxiliary.filter { it.label != secondary?.label }, foreground, false, small = true)
+                    }
+                    Column(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 6.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        // Deliberately NOT a real card token, URL or redeemable credential.
+                        Box(Modifier.clip(RoundedCornerShape(5.dp)).background(Color.White).padding(4.dp)) {
+                            Qr("LOYALTYTREE-PREVIEW-NOT-A-MEMBER", 116)
+                        }
+                        Text("Sample Member", color = foreground, fontSize = 11.sp)
+                        Text("SAMPLE · NOT VALID FOR REDEMPTION", color = foreground, fontSize = 9.sp)
+                    }
+                    if (!apple && primary != null) Box(Modifier.fillMaxWidth().clip(CircleShape).background(Color.White.copy(alpha = .92f))
+                        .clickable { detailsOpen = true }.padding(12.dp), contentAlignment = Alignment.Center) {
+                        Text(primary.optString("label") + " ↗", color = DeepTeal, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                    }
                 }
             }
+            if (!apple) Card {
+                WalletSampleFields(details.take(2), Ink, false, small = true)
+                Secondary("Show details & links") { detailsOpen = true }
+            } else Secondary("Pass Details ›") { detailsOpen = true }
         }
-        if (store.cardType == "points" || (store.cardType == "hybrid" && store.hybridPoints)) {
-            Text("120 sample points", color = foreground, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-            Text("${store.pointsPer} points per ₱${store.pointsPesos}", color = foreground, fontSize = 12.sp)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+            Mark(16)
+            Text("  Powered by LoyaltyTree", color = Muted, fontSize = 10.sp)
         }
-        if (store.cardType == "hybrid" && store.hybridTier) Text("Tier progression · ${store.hybridTierType}", color = foreground, fontSize = 12.sp)
-        if (store.cardType == "multipass") Text("${store.multiSessions} sessions · ${store.multiDays} days", color = foreground, fontWeight = FontWeight.Bold)
-        if (store.cardType == "vip") Text("Sample Member tier", color = foreground, fontWeight = FontWeight.Bold)
-        if (store.cardType == "employee") Text("Sample employee ID", color = foreground, fontWeight = FontWeight.Bold)
-        Box(Modifier.fillMaxWidth().clip(Pill).background(Color.White).padding(14.dp), contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                // Decorative, intentionally non-scannable barcode sample.
-                Row(Modifier.height(36.dp), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-                    repeat(25) { index -> Box(Modifier.width(if (index % 3 == 0) 3.dp else 1.dp).height(36.dp).background(DeepTeal)) }
-                }
-                Text("SAMPLE • NOT VALID FOR REDEMPTION", color = Muted, fontSize = 9.sp)
-            }
-        }
+        Text("Preview only. Actual Wallet apps may adjust spacing, text size and system controls.", color = Muted, fontSize = 10.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
     }
 }
 
