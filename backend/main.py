@@ -3053,7 +3053,7 @@ class PinVerify(BaseModel):
 
 class AnnouncementCreate(BaseModel):
     title: str
-    message: str
+    message: str = Field(min_length=1, max_length=600)
     type: Optional[str] = 'info'
     is_active: Optional[bool] = True
     target_scope: Literal['business', 'branch'] = 'business'
@@ -3080,7 +3080,7 @@ class PlatformAnnouncementUpdate(BaseModel):
 
 class AnnouncementUpdate(BaseModel):
     title: Optional[str] = None
-    message: Optional[str] = None
+    message: Optional[str] = Field(default=None, min_length=1, max_length=600)
     type: Optional[str] = None
     is_active: Optional[bool] = None
     target_scope: Optional[Literal['business', 'branch']] = None
@@ -13049,7 +13049,7 @@ def send_wallet_class_message(class_id: str, header: str, body: str, message_id:
     this app's content is actually shown, so if detail_url is given, it's
     appended to body as a hyperlink (Wallet supports basic <a> tags in
     message bodies) pointing at a full HTML detail page - useful since body
-    is capped at 500 plain-text characters and can't hold images/formatting.
+    uses a 600-character app payload budget. Wallet controls display length.
 
     Google-side limits to know about (not enforced by this app):
     - Max 3 notification-triggering messages per pass per rolling 24h; extra
@@ -13067,11 +13067,14 @@ def send_wallet_class_message(class_id: str, header: str, body: str, message_id:
         body_text = (body or '').strip()
         if detail_url:
             link_html = f' <a href="{detail_url}">View full details</a>'
-            if len(body_text) + len(link_html) > 500:
-                body_text = body_text[:500 - len(link_html)].rstrip() + '…'
-            body_text = (body_text + link_html)[:500]
+            if len(link_html) < 600:
+                if len(body_text) + len(link_html) > 600:
+                    body_text = body_text[:600 - len(link_html) - 1].rstrip() + '…'
+                body_text += link_html
+            else:
+                body_text = body_text[:600]
         else:
-            body_text = body_text[:500]
+            body_text = body_text[:600]
         payload = {
             'message': {
                 'header': (header or '')[:150],
@@ -13103,7 +13106,7 @@ def send_wallet_object_message(
     send_wallet_class_message above which fans out to everyone on the
     business's card at once. Used for personalized messages - birthday
     greetings, win-back nudges - where blasting every customer would be
-    wrong. Same TEXT_AND_NOTIFY / 500-char / 3-per-24h rules apply as the
+    wrong. Same TEXT_AND_NOTIFY / 600-char app budget / 3-per-24h rules apply as the
     class-level version; see that function's docstring for details."""
     access_token = get_google_access_token()
     if not access_token or not object_id:
@@ -13114,13 +13117,16 @@ def send_wallet_object_message(
         body_text = (body or '').strip()
         if detail_url:
             link_html = f' <a href="{detail_url}">View full details</a>'
-            if len(body_text) + len(link_html) > 500:
-                body_text = body_text[:500 - len(link_html)].rstrip() + '…'
-            body_text = (body_text + link_html)[:500]
+            if len(link_html) < 600:
+                if len(body_text) + len(link_html) > 600:
+                    body_text = body_text[:600 - len(link_html) - 1].rstrip() + '…'
+                body_text += link_html
+            else:
+                body_text = body_text[:600]
         payload = {
             'message': {
                 'header': (header or '')[:150],
-                'body': body_text[:500],
+                'body': body_text[:600],
                 'id': message_id,
                 'messageType': 'TEXT_AND_NOTIFY',
             }
@@ -43346,10 +43352,10 @@ async def save_retention_settings(public_id:str, req:RetentionMessageSettings, a
     validity_days = req.birthday_reward_validity_days if req.birthday_reward_validity_days is not None else current['birthday_reward_validity_days']
     staff_verification = current['birthday_reward_staff_verification'] if req.birthday_reward_staff_verification is None else bool(req.birthday_reward_staff_verification)
 
-    if not birthday or len(birthday)>500:
-        raise HTTPException(status_code=400,detail='Birthday message must be 1-500 characters')
-    if not winback or len(winback)>500:
-        raise HTTPException(status_code=400,detail='Win-back message must be 1-500 characters')
+    if not birthday or len(birthday)>600:
+        raise HTTPException(status_code=400,detail='Birthday message must be 1-600 characters')
+    if not winback or len(winback)>600:
+        raise HTTPException(status_code=400,detail='Win-back message must be 1-600 characters')
     if churn_days < 7 or churn_days > 365:
         raise HTTPException(status_code=400,detail='Churn inactivity threshold must be between 7 and 365 days')
     if birthday_send_timing not in {'birthday','1_day_before','3_days_before','7_days_before','month_start'}:
