@@ -8,7 +8,7 @@ from backend.menu_order_insights import (
     daily_summary, insert_order, manila_day_bounds, member_from_card_token, missing_column,
     order_insights, payment_breakdown, payment_fields, register_menu_order_insight_routes, resolve_branch, top_items,
     cash_awaiting_payment, kpi_changes, kpis, normalize_period, period_days, period_report, ranked_items, sales_trend, split_period,
-    report_filename, sales_report,
+    report_filename, sales_report, product_buyer_insights,
 )
 
 
@@ -276,6 +276,7 @@ class PeriodTests(unittest.TestCase):
         self.assertEqual(period_days('week', today), (date(2026, 11, 16), date(2026, 11, 22), date(2026, 11, 9), date(2026, 11, 15)))
         self.assertEqual(period_days('month', today), (date(2026, 11, 1), date(2026, 11, 22), date(2026, 10, 1), date(2026, 10, 22)))
         self.assertEqual(period_days('3months', today), (date(2026, 9, 1), date(2026, 11, 22), date(2026, 6, 1), date(2026, 8, 22)))
+        self.assertEqual(period_days('6months', today), (date(2026, 6, 1), date(2026, 11, 22), date(2025, 12, 1), date(2026, 5, 22)))
         # March 31 compares with Feb 1-28, never past the period start.
         self.assertEqual(period_days('month', date(2027, 3, 31))[2:], (date(2027, 2, 1), date(2027, 3, 1)))
 
@@ -419,3 +420,19 @@ class ReportTests(unittest.TestCase):
         week = client.get('/api/v1/business/b/menu-orders/report?format=json&period=week', headers=auth).json()
         self.assertEqual(week['orders'], 1)
         self.assertLessEqual(week['start'], week['end'])
+
+
+class ProductBuyerTests(unittest.TestCase):
+    def test_paid_item_counts_and_small_group_privacy(self):
+        customers = [{'public_id': f'm{i}', 'gender': 'female'} for i in range(3)]
+        customers.append({'public_id': 'single', 'gender': 'male'})
+        rows = [dict(order(i, '2026-11-21T03:00:00+00:00', member=f'm{i % 3}', items=(('Latte', 2), ('Latte', 1))), payment_status='paid') for i in range(5)]
+        rows += [dict(order(10+i, '2026-11-21T03:00:00+00:00', member='single'), payment_status='paid') for i in range(5)]
+        rows.append(dict(order(20, '2026-11-21T03:00:00+00:00', member='single'), payment_status='unpaid'))
+        rows.append(dict(order(21, '2026-11-21T03:00:00+00:00', status='cancelled', member='single'), payment_status='paid'))
+        product = product_buyer_insights(rows, customers, date(2026, 11, 21))[0]
+        self.assertEqual(product['quantity'], 20)
+        self.assertEqual(product['orders'], 10)
+        self.assertEqual(len(product['groups']), 1)
+        self.assertEqual(product['groups'][0]['orders'], 5)
+        self.assertEqual(product['hidden_groups'], 1)
