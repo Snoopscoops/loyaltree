@@ -232,6 +232,43 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     var pointsPesos by mutableStateOf("100")
     var pointsCap by mutableStateOf("")
     var pointsPrizes by mutableStateOf<List<PointsPrize>>(emptyList())
+    var membershipName by mutableStateOf("")
+    var enrollmentMode by mutableStateOf("manual")
+    var membershipReminders by mutableStateOf(true)
+    var reminderDays by mutableStateOf(setOf(7, 3, 1, 0))
+    var reminderMessage by mutableStateOf("")
+    var structuredBenefits by mutableStateOf<List<JSONObject>>(emptyList())
+    var hybridPoints by mutableStateOf(true)
+    var hybridStamps by mutableStateOf(false)
+    var hybridTier by mutableStateOf(false)
+    var hybridTierType by mutableStateOf("stamps")
+    var hybridUnlock by mutableStateOf(false)
+    var hybridUnlockThreshold by mutableStateOf("7")
+    var hybridPointsExpire by mutableStateOf(false)
+    var hybridPointsDays by mutableStateOf(365)
+    var hybridStampsExpire by mutableStateOf(false)
+    var hybridStampsDays by mutableStateOf(365)
+    var hybridTierExpire by mutableStateOf(false)
+    var hybridTierDays by mutableStateOf(365)
+    var membershipEmployee by mutableStateOf(false)
+    var multiSessions by mutableStateOf("12")
+    var multiDays by mutableStateOf("90")
+    var cardDescription by mutableStateOf("")
+    var pointsNotes by mutableStateOf("")
+    var rewardExpiry by mutableStateOf("30")
+    var stampReset by mutableStateOf(true)
+    var stampStyle by mutableStateOf("number")
+    var stampIcon by mutableStateOf("star")
+    var welcomeType by mutableStateOf("redeemable")
+    var welcomeValue by mutableStateOf("")
+    var welcomeMinimum by mutableStateOf("0")
+    var welcomeStack by mutableStateOf(true)
+    var cardReady by mutableStateOf(false)
+        private set
+    var agreementReady by mutableStateOf(false)
+        private set
+    private var cardScope = ""
+    private var agreementOriginal = JSONObject()
     var membershipDays by mutableStateOf(30)
     var membershipPrice by mutableStateOf("0")
     var membershipPerks by mutableStateOf("")
@@ -382,6 +419,11 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         watchJob?.cancel()
         watchJob = null
         session = null
+        cardReady = false
+        agreementReady = false
+        cardScope = ""
+        cardConfig = JSONObject()
+        agreementOriginal = JSONObject()
         clearMenuStock()
         members = emptyList()
         menuRows = emptyList()
@@ -575,11 +617,18 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         io { API.get("/api/v1/business/${current.slug}/analytics?range=$period", current.token) }?.let { applyAnalytics(it.second, it.first) }
         io { API.get("/api/v1/business/${current.slug}/retention-settings", current.token) }?.let { applyGreetings(it.second, it.first) }
         io { API.get("/api/v1/business/${current.slug}/automation-stats", current.token) }?.let { applySent(it.second) }
-        io { API.get("/api/v1/business/${current.slug}/loyalty-config", current.token) }?.let { applyCard(it.second, it.first) }
+        io { API.get("/api/v1/business/${current.slug}/loyalty-config", current.token) }?.let {
+            if (session == current && it.first < 400 && it.second is JSONObject) {
+                cardScope = current.slug
+                applyCard(it.second, it.first)
+            }
+        }
         io { API.get("/api/v1/business/${current.slug}/order-ahead/menu", current.token) }?.let { applyMenu(it.second, it.first) }
         io { API.get("/api/v1/business/${current.slug}/guest-page", current.token) }?.let { applyGuest(it.second, it.first) }
         io { API.get("/api/v1/business/${current.slug}/branches", current.token) }?.let { applyBranches(it.second, it.first) }
-        io { API.get("/api/v1/business/${current.slug}/customer-agreement", current.token) }?.let { applyAgreement(it.second, it.first) }
+        io { API.get("/api/v1/business/${current.slug}/customer-agreement", current.token) }?.let {
+            if (session == current && it.first < 400 && it.second is JSONObject) applyAgreement(it.second, it.first)
+        }
     }
 
     fun loadOrders() {
@@ -1617,69 +1666,151 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
 
     fun saveCard() {
         val current = session ?: return
-        if (cardConfig.length() == 0) { setupStatus = "The card did not load, so it was not changed."; return }
-        viewModelScope.launch {
-            loading = true
-            setupStatus = ""
-            val body = JSONObject(cardConfig.toString())
-            body.put("card_type", cardType)
-            body.put("card_name", cardName)
-            body.put("primary_color", cardColor)
-            body.put("stamp_once_per_day", stampOnce)
-            body.put("welcome_reward_enabled", welcomeOn)
-            body.put("welcome_reward_name", welcomeName)
-            body.put("welcome_reward_trigger", welcomeTrigger)
-            body.put("welcome_reward_validity_days", welcomeDays)
+        if (loading || current.isStaff) return
+        if (!cardReady || cardScope != current.slug || cardConfig.length() == 0) {
+            setupStatus = "The card did not load, so it was not changed."
+            return
+        }
+        // This editor changes an existing program only. Card type conversions and
+        // multi-program management stay in the full web editor.
+        if (cardType != cardConfig.optString("card_type", "stamp")) {
+            setupStatus = "Use the full web editor to change card type."
+            return
+        }
+        val hasMembership = cardType in setOf("membership", "hybrid")
+        val hasPoints = cardType == "points" || (cardType == "hybrid" && hybridPoints)
+        val hasStamps = cardType == "stamp" || (cardType == "hybrid" && hybridStamps)
+        fun positive(text: String) = text.toDoubleOrNull()?.takeIf { it.isFinite() && it > 0 }
+        fun nonnegative(text: String) = text.toDoubleOrNull()?.takeIf { it.isFinite() && it >= 0 }
+        fun days(text: String) = text.toIntOrNull()?.takeIf { it in 1..3650 }
+        val invalid = when {
+            cardName.isBlank() -> "Enter a card name."
+            !Regex("#[0-9a-fA-F]{6}").matches(cardColor) -> "Choose a valid card color."
+            cardDescription.length > 140 -> "Description must be 140 characters or less."
+            cardType == "hybrid" && !hybridPoints && !hybridStamps -> "Enable points, stamps, or both."
+            hasPoints && (nonnegative(pointsPer) == null || positive(pointsPesos) == null) -> "Enter a valid points earning rate."
+            hasPoints && pointsCap.isNotBlank() && pointsCap.toIntOrNull()?.let { it > 0 } != true -> "Points cap must be positive, or blank."
+            hasPoints && pointsPrizes.any { it.name.isBlank() || it.cost.toIntOrNull()?.let { n -> n > 0 } != true } -> "Every points reward needs a name and positive cost."
+            hasStamps && (stampGoal <= 0 || rewardName.isBlank() || days(rewardExpiry) == null) -> "Set a valid stamp goal, final reward and reward expiry."
+            hasMembership && (membershipDays !in 1..3650 || nonnegative(membershipPrice) == null) -> "Enter a valid subscription duration and price."
+            hasMembership && membershipReminders && reminderDays.isEmpty() -> "Choose at least one reminder day or turn reminders off."
+            cardType == "hybrid" && hybridTier && hybridUnlock && hybridUnlockThreshold.toIntOrNull()?.let { it > 0 } != true -> "Enter a positive benefit unlock threshold."
+            cardType == "multipass" && (multiSessions.toIntOrNull()?.let { it in 2..200 } != true || days(multiDays) == null) -> "Set 2–200 sessions and a valid expiry."
+            welcomeOn && welcomeType in setOf("redeemable", "fixed_discount", "percentage_discount") && welcomeName.isBlank() -> "Name the welcome reward."
+            welcomeOn && welcomeType in setOf("points", "stamps", "fixed_discount", "percentage_discount") && positive(welcomeValue) == null -> "Enter a positive welcome reward value."
+            welcomeOn && welcomeType == "percentage_discount" && (positive(welcomeValue) ?: 0.0) > 100 -> "Discount cannot exceed 100%."
+            welcomeOn && welcomeType == "points" && !hasPoints && cardType != "vip" -> "Welcome points require a points card."
+            welcomeOn && welcomeType == "stamps" && !hasStamps && cardType != "vip" -> "Welcome stamps require a stamp card."
+            welcomeOn && nonnegative(welcomeMinimum) == null -> "Enter a valid minimum purchase."
+            agreementReady && agreementMode != "off" && (agreementTitle.isBlank() || agreementBody.isBlank() || agreementAck.isBlank()) -> "Complete the customer agreement."
+            else -> null
+        }
+        if (invalid != null) { setupStatus = invalid; return }
+        val body = JSONObject(cardConfig.toString())
+        body.put("card_name", cardName.trim())
+        body.put("primary_color", cardColor)
+        body.put("description", cardDescription)
+        body.put("welcome_reward_enabled", welcomeOn)
+        body.put("welcome_reward_name", welcomeName)
+        body.put("welcome_reward_trigger", welcomeTrigger)
+        body.put("welcome_reward_type", welcomeType)
+        body.put("welcome_reward_value", positive(welcomeValue) ?: JSONObject.NULL)
+        body.put("welcome_reward_min_purchase", nonnegative(welcomeMinimum) ?: 0.0)
+        body.put("welcome_reward_stacking_enabled", welcomeStack)
+        body.put("welcome_reward_validity_days", welcomeDays)
+        if (cardType != "hybrid") {
             body.put("card_expiration_enabled", cardExpires)
             body.put("card_validity_days", cardExpireDays)
-            body.put("points_per_amount", pointsPer.toDoubleOrNull() ?: 10.0)
-            body.put("points_amount_pesos", pointsPesos.toDoubleOrNull() ?: 100.0)
-            if (pointsCap.isBlank()) body.put("points_cap_limit", JSONObject.NULL) else body.put("points_cap_limit", pointsCap.toIntOrNull() ?: 0)
+        }
+        if (hasPoints) {
+            body.put("points_per_amount", nonnegative(pointsPer))
+            body.put("points_amount_pesos", positive(pointsPesos))
+            body.put("points_cap_limit", pointsCap.toIntOrNull() ?: JSONObject.NULL)
+            body.put("points_notes", pointsNotes)
+            // Preserve additional reward metadata from the server by ID.
+            val original = cardConfig.optJSONArray("points_prizes") ?: JSONArray()
             body.put("points_prizes", JSONArray().apply {
-                pointsPrizes.filter { it.name.isNotBlank() }.forEach { put(JSONObject().put("id", it.id).put("name", it.name).put("points_cost", it.cost.toIntOrNull() ?: 0)) }
+                pointsPrizes.forEach { prize ->
+                    val previous = (0 until original.length()).mapNotNull { original.optJSONObject(it) }.find { it.optString("id") == prize.id }
+                    val row = JSONObject(previous?.toString() ?: "{}")
+                    put(row.put("id", prize.id).put("name", prize.name.trim()).put("points_cost", prize.cost.toInt()))
+                }
             })
+        }
+        if (hasStamps) {
+            val rewards = stampRewards.sortedBy { it.stamps }
+            body.put("stamp_goal", rewards.lastOrNull()?.stamps ?: stampGoal)
+            body.put("reward_name", rewards.lastOrNull()?.name ?: rewardName)
+            body.put("stamp_rewards", JSONArray().apply {
+                rewards.forEach { put(JSONObject().put("id", it.id).put("stamps", it.stamps).put("reward_name", it.name)) }
+            })
+            body.put("stamp_once_per_day", stampOnce)
+            body.put("stamp_reset_after_final", stampReset)
+            body.put("reward_expiry_days", days(rewardExpiry))
+            body.put("stamp_display_style", stampStyle)
+            body.put("stamp_icon", stampIcon)
+        }
+        if (hasMembership) {
+            body.put("membership_name", membershipName)
+            body.put("subscription_enrollment_mode", enrollmentMode)
             body.put("membership_duration_days", membershipDays)
-            body.put("membership_price", membershipPrice.toDoubleOrNull() ?: 0.0)
-            body.put("membership_services", JSONArray().apply { membershipPerks.lines().map { it.trim() }.filter { it.isNotEmpty() }.forEach { put(it) } })
+            body.put("membership_price", nonnegative(membershipPrice))
             body.put("membership_terms", membershipTerms)
             body.put("membership_visit_logging_enabled", membershipVisits)
             body.put("membership_quick_checkin", membershipQuick)
-            if (cardType == "stamp") {
-                val rewards = stampRewards.sortedBy { it.stamps }
-                if (rewards.isNotEmpty()) {
-                    body.put("stamp_goal", rewards.last().stamps)
-                    body.put("reward_name", rewards.last().name)
-                } else {
-                    body.put("stamp_goal", stampGoal)
-                    body.put("reward_name", rewardName)
-                }
-                body.put("stamp_rewards", JSONArray().apply {
-                    rewards.forEach { put(JSONObject().put("id", it.id).put("stamps", it.stamps).put("reward_name", it.name)) }
-                })
-            } else {
-                body.put("stamp_goal", stampGoal)
-                body.put("reward_name", rewardName)
-            }
+            body.put("membership_expiry_reminders_enabled", membershipReminders)
+            body.put("membership_expiry_reminder_days", JSONArray(reminderDays.sortedDescending()))
+            body.put("membership_expiry_reminder_message", reminderMessage)
+            body.put("membership_benefits", JSONArray().apply { structuredBenefits.forEach { put(it) } })
+            body.put("membership_services", JSONArray().apply { structuredBenefits.forEach { put(it.optString("name")) } })
+        }
+        if (cardType == "hybrid") {
+            body.put("hybrid_points_enabled", hybridPoints)
+            body.put("hybrid_stamps_enabled", hybridStamps)
+            body.put("hybrid_loyalty_type", if (hybridPoints) "points" else "stamp")
+            // Preserve tier setup itself; manage progression, levels and coupons in web editor.
+            body.put("hybrid_points_expiration_enabled", hybridPoints && hybridPointsExpire)
+            body.put("hybrid_points_validity_days", hybridPointsDays)
+            body.put("hybrid_stamps_expiration_enabled", hybridStamps && hybridStampsExpire)
+            body.put("hybrid_stamps_validity_days", hybridStampsDays)
+            body.put("hybrid_tier_expiration_enabled", hybridTier && hybridTierExpire)
+            body.put("hybrid_tier_validity_days", hybridTierDays)
+            body.put("membership_benefits_unlock_enabled", hybridTier && hybridUnlock)
+            body.put("membership_benefits_unlock_threshold", hybridUnlockThreshold.toIntOrNull() ?: 7)
+        }
+        if (cardType == "multipass") {
+            body.put("multipass_session_count", multiSessions.toInt())
+            body.put("multipass_validity_days", multiDays.toInt())
+        }
+        val agreement = JSONObject().put("mode", agreementMode)
+            .put("draft_title", agreementTitle.trim()).put("draft_body", agreementBody.trim())
+            .put("draft_acknowledgment_text", agreementAck.trim())
+        val agreementChanged = agreementReady && agreement.toString() != agreementOriginal.toString()
+        viewModelScope.launch {
+            loading = true
+            setupStatus = ""
             val result = io { API.post("/api/v1/business/${current.slug}/loyalty-config", current.token, body) }
-            loading = false
+            if (session != current) return@launch
             if (result == null || result.first >= 400) {
+                loading = false
                 setupStatus = if (result == null) "Could not reach the server." else API.message(result.second, "Could not save the card.")
                 return@launch
             }
             val saved = result.second as? JSONObject
             applyCard(if (saved?.optString("card_type").isNullOrBlank()) body else saved!!, result.first)
-            saveAgreement(current)
+            if (agreementChanged) {
+                val updated = io { API.put("/api/v1/business/${current.slug}/customer-agreement", current.token, agreement) }
+                if (session != current) return@launch
+                if (updated == null || updated.first >= 400) {
+                    loading = false
+                    setupStatus = "Card saved, but the agreement was not saved. Retry the agreement or use the web editor."
+                    return@launch
+                }
+                applyAgreement(updated.second, updated.first)
+            }
+            loading = false
             setupStatus = "Card saved."
         }
-    }
-
-    private suspend fun saveAgreement(current: OwnerSession) {
-        val body = JSONObject()
-            .put("mode", agreementMode)
-            .put("draft_title", agreementTitle.trim())
-            .put("draft_body", agreementBody.trim())
-            .put("draft_acknowledgment_text", agreementAck.trim())
-        io { API.put("/api/v1/business/${current.slug}/customer-agreement", current.token, body) }?.let { applyAgreement(it.second, it.first) }
     }
 
     fun groupsOn(categoryId: String) = optionGroups.filter { it.appliesToAll || categoryId in it.categoryIds }.map { it.id }
@@ -2007,6 +2138,45 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         val json = body as? JSONObject ?: return
         if (code >= 400) return
         cardConfig = json
+        cardReady = json.optString("card_type").isNotBlank()
+        cardDescription = json.optString("description").takeUnless { it == "null" }.orEmpty()
+        membershipName = json.optString("membership_name").takeUnless { it == "null" }.orEmpty()
+        enrollmentMode = json.optString("subscription_enrollment_mode", "manual")
+        membershipReminders = json.optBoolean("membership_expiry_reminders_enabled", true)
+        val reminderArray = json.optJSONArray("membership_expiry_reminder_days")
+        reminderDays = if (reminderArray == null) setOf(7, 3, 1, 0) else (0 until reminderArray.length()).map { reminderArray.optInt(it) }.filter { it in setOf(7, 3, 1, 0) }.toSet()
+        reminderMessage = json.optString("membership_expiry_reminder_message").takeUnless { it == "null" }.orEmpty()
+        val benefits = json.optJSONArray("membership_benefits") ?: JSONArray()
+        val simple = json.optJSONArray("membership_services") ?: JSONArray()
+        structuredBenefits = if (benefits.length() > 0) (0 until benefits.length()).mapNotNull { benefits.optJSONObject(it) }
+        else (0 until simple.length()).mapNotNull { i -> simple.optString(i).takeIf { it.isNotBlank() }?.let { name ->
+            JSONObject().put("id", "simple-${i+1}").put("name", name).put("benefit_type", "custom")
+                .put("value", JSONObject.NULL).put("usage_limit", JSONObject.NULL).put("reset_period", "never").put("active", true)
+        } }
+        hybridPoints = json.optBoolean("hybrid_points_enabled", json.optString("hybrid_loyalty_type") != "stamp")
+        hybridStamps = json.optBoolean("hybrid_stamps_enabled", json.optString("hybrid_loyalty_type") == "stamp")
+        hybridTier = json.optBoolean("hybrid_tier_enabled", false)
+        hybridTierType = json.optString("hybrid_tier_progression_type", "stamps")
+        hybridUnlock = json.optBoolean("membership_benefits_unlock_enabled", false)
+        hybridUnlockThreshold = json.optInt("membership_benefits_unlock_threshold", 7).toString()
+        hybridPointsExpire = json.optBoolean("hybrid_points_expiration_enabled", false)
+        hybridPointsDays = json.optInt("hybrid_points_validity_days", 365)
+        hybridStampsExpire = json.optBoolean("hybrid_stamps_expiration_enabled", false)
+        hybridStampsDays = json.optInt("hybrid_stamps_validity_days", 365)
+        hybridTierExpire = json.optBoolean("hybrid_tier_expiration_enabled", false)
+        hybridTierDays = json.optInt("hybrid_tier_validity_days", 365)
+        membershipEmployee = json.optBoolean("membership_employee_mode", false)
+        multiSessions = json.optInt("multipass_session_count", 12).toString()
+        multiDays = json.optInt("multipass_validity_days", 90).toString()
+        pointsNotes = json.optString("points_notes").takeUnless { it == "null" }.orEmpty()
+        rewardExpiry = json.optInt("reward_expiry_days", 30).toString()
+        stampReset = json.optBoolean("stamp_reset_after_final", true)
+        stampStyle = json.optString("stamp_display_style", "number")
+        stampIcon = json.optString("stamp_icon", "star")
+        welcomeType = json.optString("welcome_reward_type", "redeemable")
+        welcomeValue = API.plain(json.opt("welcome_reward_value")) ?: ""
+        welcomeMinimum = API.plain(json.opt("welcome_reward_min_purchase")) ?: "0"
+        welcomeStack = json.optBoolean("welcome_reward_stacking_enabled", true)
         cardName = json.optString("card_name").ifBlank { "Loyalty card" }
         stampGoal = json.optInt("stamp_goal", 8)
         rewardName = json.optString("reward_name").ifBlank { "Free reward" }
@@ -2056,6 +2226,9 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         agreementTitle = json.optString("draft_title").ifBlank { "Customer Terms & Conditions" }
         agreementBody = json.optString("draft_body")
         agreementAck = json.optString("draft_acknowledgment_text").ifBlank { "I have read and agree to these terms." }
+        agreementReady = true
+        agreementOriginal = JSONObject().put("mode", agreementMode).put("draft_title", agreementTitle.trim())
+            .put("draft_body", agreementBody.trim()).put("draft_acknowledgment_text", agreementAck.trim())
     }
 
     private fun applyMenu(body: Any, code: Int) {
