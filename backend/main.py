@@ -19094,7 +19094,13 @@ async def public_place_menu_order(public_id: str, request: Request, background_t
     # owner-v6 menu_order_push: ring the owner / branch phones after the response (never blocks the order).
     background_tasks.add_task(_menu_order_push, dict(business), {**row, **saved})
     background_tasks.add_task(_menu_order_wallet.order_placed, dict(business), {**row, **saved})
-    return {'success': True, 'order': _menu_counter_order_public(saved)}
+    try:
+        from backend.menu_customer_addons import issue_addon_receipt
+    except ImportError:
+        from menu_customer_addons import issue_addon_receipt
+    receipt = _menu_counter_order_public(saved)
+    receipt['addon_token'] = issue_addon_receipt(business, saved)
+    return {'success': True, 'order': receipt}
 
 
 def _menu_counter_order_public(row: dict, *, staff: bool = False) -> dict:
@@ -52441,6 +52447,12 @@ _menu_order_push = register_menu_order_push_routes(app, db=supabase, operator=_m
 register_menu_order_adjustment_routes(app, db=supabase, operator=_menu_order_operator,
     normalize_items=_menu_normalize_counter_items, price_items=_menu_price_counter_items,
     order_public=lambda row: _menu_counter_order_public(row, staff=True), push_order=_menu_order_push)
+try:
+    from .menu_customer_addons import register_customer_addon_routes
+except ImportError:
+    from menu_customer_addons import register_customer_addon_routes
+register_customer_addon_routes(app, db=supabase, get_business=safe_get_business,
+    normalize_items=_menu_normalize_counter_items, price_items=_menu_price_counter_items, push_order=_menu_order_push)
 try:
     from .menu_order_wallet import make_menu_order_wallet, apple_field as _menu_order_apple_field
 except ImportError:

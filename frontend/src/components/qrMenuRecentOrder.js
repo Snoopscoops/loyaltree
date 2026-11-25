@@ -1,6 +1,7 @@
 /** Recent menu receipts, scoped to one business and one browser.
  *  Local device storage is not an account. Never persist member card tokens,
- *  buyer name/email, payment secrets or payment references here.
+ *  buyer name/email, payment secrets or payment references here. The optional
+ * add-on token is a limited receipt capability, never a loyalty/account token.
  */
 export const RECENT_ORDER_TTL_MS = 3 * 24 * 60 * 60 * 1000
 const ORDER_ID = /^[0-9a-f]{32}$/i
@@ -33,6 +34,7 @@ function snapshot(order) {
       !PAYMENT_STATUSES.has(order.payment_status || '')) return null
   return {
     server_order_id: order.server_order_id, order_number: order.order_number,
+    ...(typeof order.addon_token === 'string' && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(order.addon_token) && order.addon_token.length <= 2048 ? { addon_token: order.addon_token } : {}),
     status: order.status, payment_status: order.payment_status || '',
     payment_method: order.payment_method,
     service: order.service === 'dine-in' ? 'dine-in' : 'pickup',
