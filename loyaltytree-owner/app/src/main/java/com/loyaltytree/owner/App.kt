@@ -1232,11 +1232,17 @@ private fun MenuScreen(store: CounterStore) {
     var stockVariant by remember { mutableStateOf("*") }
     var stockOpening by remember { mutableStateOf("") }
     var stockRepeat by remember { mutableStateOf(true) }
-    val selectedStockItem = store.menuStockItems.find { it.id == stockItem }
+    var stockBranchMenu by remember { mutableStateOf(false) }
+    var stockVariantMenu by remember { mutableStateOf(false) }
     val stockRow = store.menuStockRows.find { it.branchId == stockBranch && it.itemId == stockItem && it.variantKey == stockVariant }
-    LaunchedEffect(store.menuStockBranches,store.menuStockItems) {
-        if (store.menuStockBranches.none { it.id == stockBranch }) stockBranch = store.menuStockBranches.firstOrNull()?.id.orEmpty()
-        if (store.menuStockItems.none { it.id == stockItem }) stockItem = store.menuStockItems.firstOrNull()?.id.orEmpty()
+    LaunchedEffect(store.menuStockBranches, store.menuStockItems) {
+        if (store.menuStockBranches.none { it.id == stockBranch }) {
+            stockBranch = store.menuStockBranches.firstOrNull()?.id.orEmpty()
+            stockItem = ""
+            stockVariant = "*"
+            stockOpening = ""
+        }
+        if (store.menuStockItems.none { it.id == stockItem }) stockItem = ""
     }
     val view = LocalView.current
     fun go(next: Int) {
@@ -1288,33 +1294,90 @@ private fun MenuScreen(store: CounterStore) {
             }
         }
         Card {
-            Text("Daily servings", color = Forest, fontWeight = FontWeight.Bold, fontSize = 17.sp)
-            Text("Prevent sold-out orders per branch and size. Set the opening count once, or repeat it every day.",color=Muted,fontSize=13.sp)
-            Secondary(if (stockVisible) "Hide daily stock" else "Manage daily stock") {
+            Text("Daily stock", color = Forest, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+            Secondary(if (stockVisible) "Hide stock" else "Manage stock") {
                 stockVisible = !stockVisible
                 if (stockVisible) store.loadMenuStock()
             }
             if (stockVisible) {
-                Text("${store.menuStockDay} · Philippine time", color=Muted,fontSize=12.sp)
-                if (store.menuStockBusy) Text("Loading…", color=Muted)
-                if (store.menuStockNote.isNotBlank()) Text(store.menuStockNote, color=Bad,fontSize=13.sp)
-                Text("Branch",fontWeight=FontWeight.SemiBold,color=Ink)
-                store.menuStockBranches.forEach { branch -> Choice(branch.name,stockBranch==branch.id) {stockBranch=branch.id;stockOpening=""} }
-                Text("Item",fontWeight=FontWeight.SemiBold,color=Ink)
-                store.menuStockItems.forEach { item -> Choice(item.name,stockItem==item.id) {stockItem=item.id;stockVariant="*";stockOpening=""} }
-                Text("Stock pool",fontWeight=FontWeight.SemiBold,color=Ink)
-                Choice("Shared item · all variants",stockVariant=="*") {stockVariant="*";stockOpening=""}
-                selectedStockItem?.variants?.forEach { option -> Choice(option.name,stockVariant==option.id) {stockVariant=option.id;stockOpening=""} }
-                if (stockRow != null) Text("${stockRow.remaining} remaining · ${stockRow.reserved} reserved · ${stockRow.consumed} consumed · ${stockRow.opening} opening",color=Forest,fontSize=13.sp)
-                Field("Initial servings",stockOpening,{stockOpening=it},hint=stockRow?.opening?.toString() ?: "e.g. 30",number=true)
-                Row(verticalAlignment=Alignment.CenterVertically) {
-                    Text("Repeat every day",modifier=Modifier.weight(1f),color=Ink,fontWeight=FontWeight.SemiBold)
-                    Switch(stockRepeat,{stockRepeat=it},colors=switchColors())
+                Text("${store.menuStockDay} · Philippine time", color = Muted, fontSize = 12.sp)
+                if (store.menuStockBusy) Text("Updating stock…", color = Muted)
+                if (store.menuStockNote.isNotBlank()) Text(store.menuStockNote, color = Bad, fontSize = 13.sp)
+                Text("Branch", color = Ink, fontWeight = FontWeight.SemiBold)
+                Box {
+                    Secondary((store.menuStockBranches.find { it.id == stockBranch }?.name ?: "Choose branch") + "  ▾") {
+                        if (!store.menuStockBusy) stockBranchMenu = true
+                    }
+                    androidx.compose.material3.DropdownMenu(expanded = stockBranchMenu, onDismissRequest = { stockBranchMenu = false }) {
+                        store.menuStockBranches.forEach { branch ->
+                            androidx.compose.material3.DropdownMenuItem(text = { Text(branch.name) }, onClick = {
+                                stockBranch = branch.id
+                                stockItem = ""
+                                stockVariant = "*"
+                                stockOpening = ""
+                                stockBranchMenu = false
+                            })
+                        }
+                    }
                 }
-                Primary(if (store.menuStockBusy) "Saving…" else "Save servings",enabled=!store.menuStockBusy) {
-                    store.setMenuStock(stockBranch,stockItem,stockVariant,stockOpening,stockRepeat)
+                Text("Menu items", color = Ink, fontWeight = FontWeight.SemiBold)
+                if (store.menuStockItems.isEmpty() && !store.menuStockBusy) Text("No menu items available.", color = Muted)
+                store.menuStockItems.forEach { menuItem ->
+                    val rows = store.menuStockRows.filter { it.branchId == stockBranch && it.itemId == menuItem.id }
+                    val shared = rows.find { it.variantKey == "*" }
+                    val variantCount = rows.count { it.variantKey != "*" }
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
+                    Row(
+                        Modifier.fillMaxWidth().clickable(enabled = !store.menuStockBusy && stockBranch.isNotBlank()) {
+                            stockItem = if (stockItem == menuItem.id) "" else menuItem.id
+                            stockVariant = "*"
+                            stockOpening = ""
+                            stockRepeat = true
+                        }.padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(menuItem.name, color = Ink, fontWeight = FontWeight.SemiBold)
+                            Text(buildString {
+                                append(if (shared == null) "No shared limit" else if (shared.remaining == 0) "Sold out" else "${shared.remaining} remaining")
+                                if (variantCount > 0) append(" · $variantCount variant limits")
+                            }, color = if (shared?.remaining == 0) Bad else Muted, fontSize = 13.sp)
+                        }
+                        Text(if (stockItem == menuItem.id) "Close" else "Edit ›", color = Forest, fontWeight = FontWeight.SemiBold)
+                    }
+                    if (stockItem == menuItem.id) {
+                        Column(Modifier.fillMaxWidth().clip(Shape).background(Ivory).padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (menuItem.variants.isNotEmpty()) {
+                                Box {
+                                    Secondary((if (stockVariant == "*") "All variants · shared" else menuItem.variants.find { it.id == stockVariant }?.name ?: "Choose variant") + "  ▾") {
+                                        if (!store.menuStockBusy) stockVariantMenu = true
+                                    }
+                                    androidx.compose.material3.DropdownMenu(expanded = stockVariantMenu, onDismissRequest = { stockVariantMenu = false }) {
+                                        androidx.compose.material3.DropdownMenuItem(text = { Text("All variants · shared") }, onClick = {
+                                            stockVariant = "*"; stockOpening = ""; stockVariantMenu = false
+                                        })
+                                        menuItem.variants.forEach { option ->
+                                            val variantStock = rows.find { it.variantKey == option.id }
+                                            androidx.compose.material3.DropdownMenuItem(text = { Text(option.name + (variantStock?.let { " · ${it.remaining} left" } ?: " · No limit")) }, onClick = {
+                                                stockVariant = option.id; stockOpening = ""; stockVariantMenu = false
+                                            })
+                                        }
+                                    }
+                                }
+                            }
+                            if (stockRow != null) Text("${stockRow.remaining} left · ${stockRow.reserved} reserved · ${stockRow.consumed} consumed", color = Forest, fontSize = 13.sp)
+                            Field("Opening servings", stockOpening, { stockOpening = it }, hint = stockRow?.opening?.toString() ?: "e.g. 30", number = true)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("Repeat every day", modifier = Modifier.weight(1f), color = Ink)
+                                Switch(stockRepeat, { stockRepeat = it }, colors = switchColors(), enabled = !store.menuStockBusy)
+                            }
+                            Primary(if (store.menuStockBusy) "Saving…" else "Save stock", enabled = !store.menuStockBusy && (stockOpening.toIntOrNull()?.let { it in 0..100000 } == true)) {
+                                store.setMenuStock(stockBranch, stockItem, stockVariant, stockOpening, stockRepeat)
+                            }
+                        }
+                    }
                 }
-                Text("Shared stock and option stock are independent limits. The backend reserves quantities when orders are placed.",color=Muted,fontSize=12.sp)
+                Text("Shared and variant limits remain independent.", color = Muted, fontSize = 12.sp)
             }
         }
         Card {
