@@ -92,6 +92,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
@@ -2878,53 +2879,50 @@ private fun CardScreen(store: CounterStore) {
     var milestoneNote by remember { mutableStateOf("") }
     var prizeCost by remember { mutableStateOf("") }
     var prizeName by remember { mutableStateOf("") }
+    var walletPlatform by remember { mutableStateOf("apple") }
+    var section by remember { mutableStateOf("design") }
+    val context = LocalContext.current
+    val hasStamps = store.cardType == "stamp" || (store.cardType == "hybrid" && store.hybridStamps)
+    val hasPoints = store.cardType == "points" || (store.cardType == "hybrid" && store.hybridPoints)
+    val hasMembership = store.cardType in setOf("membership", "hybrid")
     val palette = listOf("#81d6d6", "#073f36", "#102d28", "#0f766e", "#1d4e89", "#9f2d2d", "#d7b578")
     val preview = hexColor(store.cardColor) ?: Forest
     Scroll {
-        Column(Modifier.fillMaxWidth().clip(Shape).background(preview).padding(16.dp)) {
-            Text(store.cardName.ifBlank { "Loyalty card" }, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 22.sp)
-            Text(when (store.cardType) {
-                "points" -> "${store.pointsPer} points per ₱${store.pointsPesos}"
-                "membership" -> "${store.membershipDays} days · ₱${store.membershipPrice}"
-                else -> "${store.stampGoal} stamps · ${store.rewardName}"
-            }, color = Color.White.copy(alpha = 0.88f), fontSize = 14.sp)
+        Text("Card editor", color = DeepTeal, fontWeight = FontWeight.Black, fontSize = 28.sp)
+        Text("Configure the existing loyalty program and preview how it looks in Wallet.", color = Muted, fontSize = 13.sp)
+        if (!store.cardReady) {
+            Card {
+                Text("Card configuration is not loaded.", color = Muted)
+                Primary("Reload settings", enabled = !store.loading) { store.refresh() }
+            }
+            return@Scroll
         }
-        Text("Card name, rewards, color, welcome reward, and the signup agreement. Save is at the top right.", color = Muted, fontSize = 14.sp)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("stamp" to "Stamps", "points" to "Points", "membership" to "Subscription").forEach { (id, label) ->
-                val on = store.cardType == id
-                Box(Modifier.weight(1f).height(40.dp).clip(Pill).background(if (on) Forest else Color.White).border(1.dp, if (on) Forest else Line, Pill).clickable { store.cardType = id }, contentAlignment = Alignment.Center) {
-                    Text(label, color = if (on) Color.White else Forest, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, maxLines = 1)
-                }
+        Text(when (store.cardType) {
+            "stamp" -> "Stamp card"
+            "points" -> "Points card"
+            "membership" -> if (store.membershipEmployee) "Employee membership" else "Subscription"
+            "hybrid" -> "Hybrid card"
+            "multipass" -> "Multi-pass"
+            "vip" -> "VIP / Tier card"
+            "employee" -> "Employee card"
+            else -> store.cardType
+        }, color = Forest, fontWeight = FontWeight.SemiBold)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box(Modifier.weight(1f)) { Choice("Apple Wallet", walletPlatform == "apple") { walletPlatform = "apple" } }
+            Box(Modifier.weight(1f)) { Choice("Google Wallet", walletPlatform == "google") { walletPlatform = "google" } }
+        }
+        WalletEditorSample(store, walletPlatform, preview)
+        Text("Illustrative sample only. No actual pass is issued and no customer balance is changed.", color = Muted, fontSize = 11.sp)
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("Design" to "design", "Rewards" to "rewards", "Rules & agreement" to "rules").forEach { (label, id) ->
+                BranchChip(label, section == id) { section = id }
             }
         }
+        if (section == "design") {
         Field("Card name", store.cardName, { store.cardName = it })
-        Text("Customer agreement", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-        Text("Off is a normal signup. Checkbox is terms only. Signature asks them to sign.", color = Muted, fontSize = 13.sp)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("off" to "Off", "checkbox" to "Checkbox", "signature" to "Signature").forEach { (id, label) ->
-                Box(Modifier.weight(1f)) { Choice(label, store.agreementMode == id) { store.agreementMode = id } }
-            }
-        }
-        if (store.agreementMode != "off") {
-            Field("Title", store.agreementTitle, { store.agreementTitle = it })
-            Field("Terms", store.agreementBody, { store.agreementBody = it }, lines = 4)
-            Field("Checkbox line", store.agreementAck, { store.agreementAck = it })
-        }
-        Card {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Welcome reward", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = Ink)
-                Switch(store.welcomeOn, { store.welcomeOn = it }, colors = switchColors())
-            }
-            if (store.welcomeOn) {
-                Field("Reward name", store.welcomeName, { store.welcomeName = it }, hint = "Free drink")
-                Choice("When they join", store.welcomeTrigger == "join") { store.welcomeTrigger = "join" }
-                Choice("After the first purchase", store.welcomeTrigger == "first_purchase") { store.welcomeTrigger = "first_purchase" }
-                StepRow("Valid ${store.welcomeDays} days", { if (store.welcomeDays > 1) store.welcomeDays-- }, { if (store.welcomeDays < 365) store.welcomeDays++ })
-            }
-        }
+        Field("Description", store.cardDescription, { store.cardDescription = it.take(140) }, lines = 2)
         Text("Color", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             palette.forEach { hex ->
                 val color = hexColor(hex) ?: Forest
                 Box(Modifier.size(32.dp).clip(CircleShape).background(color).border(2.dp, if (store.cardColor.equals(hex, true)) Ink else Color.Transparent, CircleShape).clickable {
@@ -2939,15 +2937,59 @@ private fun CardScreen(store: CounterStore) {
                 Primary("Use") {
                     val next = normalizeHex(hexText)
                     if (next == null) store.setupStatus = "Use a color like #073f36."
-                    else {
-                        store.cardColor = next
-                        hexText = next
-                        store.setupStatus = ""
-                    }
+                    else { store.cardColor = next; hexText = next; store.setupStatus = "" }
                 }
             }
         }
         Card {
+            Text("Full card designer", color = DeepTeal, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+            Text("For card type changes, additional programs, logo and banner uploads, wallet actions, tier levels and coupons, open the complete web editor.", color = Muted, fontSize = 13.sp)
+            Secondary("Open full web editor") {
+                runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://theloyaltytree.com/dashboard"))) }
+                    .onFailure { store.setupStatus = "Open theloyaltytree.com/dashboard in your browser." }
+            }
+            Text("Sign in on the website, select the program and open its card editor. Unsaved app edits do not transfer.", color = Muted, fontSize = 11.sp)
+        }
+        }
+        if (section == "rules") {
+        if (store.agreementReady) {
+        Text("Customer agreement", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        Text("Off is a normal signup. Checkbox is terms only. Signature asks them to sign.", color = Muted, fontSize = 13.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("off" to "Off", "checkbox" to "Checkbox", "signature" to "Signature").forEach { (id, label) ->
+                Box(Modifier.weight(1f)) { Choice(label, store.agreementMode == id) { store.agreementMode = id } }
+            }
+        }
+        if (store.agreementMode != "off") {
+            Field("Title", store.agreementTitle, { store.agreementTitle = it })
+            Field("Terms", store.agreementBody, { store.agreementBody = it }, lines = 4)
+            Field("Checkbox line", store.agreementAck, { store.agreementAck = it })
+        }
+        } else Text("Agreement not loaded. Reload settings to edit it.", color = Muted, fontSize = 13.sp)
+        Card {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Welcome reward", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = Ink)
+                Switch(store.welcomeOn, { store.welcomeOn = it }, colors = switchColors())
+            }
+            if (store.welcomeOn) {
+                val availableTypes = buildList {
+                    add("redeemable" to "Free item / service")
+                    if (hasPoints) add("points" to "Welcome points")
+                    if (hasStamps) add("stamps" to "Welcome stamps")
+                    add("fixed_discount" to "Fixed discount")
+                    add("percentage_discount" to "Percentage discount")
+                }
+                availableTypes.forEach { (id, label) -> Choice(label, store.welcomeType == id) { store.welcomeType = id; store.welcomeValue = "" } }
+                if (store.welcomeType in setOf("redeemable", "fixed_discount", "percentage_discount")) Field("Reward name", store.welcomeName, { store.welcomeName = it }, hint = "Free drink")
+                if (store.welcomeType != "redeemable") Field("Reward value", store.welcomeValue, { store.welcomeValue = it })
+                Field("Minimum purchase (₱)", store.welcomeMinimum, { store.welcomeMinimum = it })
+                EditorToggle("Allow reward stacking", store.welcomeStack) { store.welcomeStack = it }
+                Choice("When they join", store.welcomeTrigger == "join") { store.welcomeTrigger = "join" }
+                Choice("After the first purchase", store.welcomeTrigger == "first_purchase") { store.welcomeTrigger = "first_purchase" }
+                StepRow("Valid ${store.welcomeDays} days", { if (store.welcomeDays > 1) store.welcomeDays-- }, { if (store.welcomeDays < 365) store.welcomeDays++ })
+            }
+        }
+        if (store.cardType != "hybrid") Card {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Expire the card", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = Ink)
                 Switch(store.cardExpires, { store.cardExpires = it }, colors = switchColors())
@@ -2955,11 +2997,57 @@ private fun CardScreen(store: CounterStore) {
             Text("Each customer's cycle starts when they join.", color = Muted, fontSize = 13.sp)
             if (store.cardExpires) StepRow("${store.cardExpireDays} days", { if (store.cardExpireDays > 1) store.cardExpireDays-- }, { if (store.cardExpireDays < 3650) store.cardExpireDays++ })
         }
-        if (store.cardType == "stamp") {
+        if (store.cardType == "hybrid") {
+            Card {
+                Text("Independent reward expiry", color = DeepTeal, fontWeight = FontWeight.Bold)
+                if (store.hybridPoints) {
+                    EditorToggle("Expire points", store.hybridPointsExpire) { store.hybridPointsExpire = it }
+                    if (store.hybridPointsExpire) StepRow("${store.hybridPointsDays} days", { if (store.hybridPointsDays > 1) store.hybridPointsDays-- }, { if (store.hybridPointsDays < 3650) store.hybridPointsDays++ })
+                }
+                if (store.hybridStamps) {
+                    EditorToggle("Expire stamps", store.hybridStampsExpire) { store.hybridStampsExpire = it }
+                    if (store.hybridStampsExpire) StepRow("${store.hybridStampsDays} days", { if (store.hybridStampsDays > 1) store.hybridStampsDays-- }, { if (store.hybridStampsDays < 3650) store.hybridStampsDays++ })
+                }
+                if (store.hybridTier) {
+                    EditorToggle("Expire tier progress", store.hybridTierExpire) { store.hybridTierExpire = it }
+                    if (store.hybridTierExpire) StepRow("${store.hybridTierDays} days", { if (store.hybridTierDays > 1) store.hybridTierDays-- }, { if (store.hybridTierDays < 3650) store.hybridTierDays++ })
+                }
+            }
+        }
+        }
+        if (section == "rewards") {
+        if (store.cardType == "hybrid") {
+            Card {
+                Text("Hybrid setup", color = DeepTeal, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                Text("Subscription + Points and/or Stamp Rewards. Tier configuration is kept separate.", color = Muted, fontSize = 12.sp)
+                EditorToggle("Points rewards", store.hybridPoints) { store.hybridPoints = it }
+                EditorToggle("Stamp rewards", store.hybridStamps) { store.hybridStamps = it }
+                Text(if (store.hybridTier) "Tier enabled · ${store.hybridTierType}" else "Tier not enabled", color = Forest, fontWeight = FontWeight.SemiBold)
+                if (store.hybridTier) {
+                    EditorToggle("Unlock subscription benefits at a tier threshold", store.hybridUnlock) { store.hybridUnlock = it }
+                    if (store.hybridUnlock) Field("Tier threshold", store.hybridUnlockThreshold, { store.hybridUnlockThreshold = it.filter(Char::isDigit) }, number = true)
+                }
+                Secondary("Manage tier levels & coupons on web") {
+                    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://theloyaltytree.com/dashboard"))) }
+                }
+            }
+        }
+        if (hasStamps) {
             Card {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("One stamp a day", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = Ink)
                     Switch(store.stampOnce, { store.stampOnce = it }, colors = switchColors())
+                }
+                EditorToggle("Reset after final reward", store.stampReset) { store.stampReset = it }
+                Field("Reward validity (days)", store.rewardExpiry, { store.rewardExpiry = it.filter(Char::isDigit) }, number = true)
+                Choice("Number display", store.stampStyle == "number") { store.stampStyle = "number" }
+                Choice("Icon display", store.stampStyle == "icon") { store.stampStyle = "icon" }
+                if (store.stampStyle == "icon") {
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("circle", "star", "heart", "coffee", "gift", "leaf").forEach { icon ->
+                            BranchChip(icon.replaceFirstChar { it.uppercase() }, store.stampIcon == icon) { store.stampIcon = icon }
+                        }
+                    }
                 }
             }
             Text("Rewards and milestones", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
@@ -3002,13 +3090,14 @@ private fun CardScreen(store: CounterStore) {
                 }
             }
         }
-        if (store.cardType == "points") {
+        if (hasPoints) {
             Text("How they earn", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
                 Box(Modifier.weight(1f)) { Field("Points", store.pointsPer, { store.pointsPer = it }, number = true) }
                 Box(Modifier.weight(1f)) { Field("For every ₱", store.pointsPesos, { store.pointsPesos = it }, number = true) }
             }
             Field("Maximum points", store.pointsCap, { store.pointsCap = it.filter { ch -> ch.isDigit() } }, hint = "Blank means no limit", number = true)
+            Field("Points rules", store.pointsNotes, { store.pointsNotes = it }, lines = 2)
             Text("Points rewards", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
             store.pointsPrizes.forEach { prize ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -3026,18 +3115,22 @@ private fun CardScreen(store: CounterStore) {
                 val cost = prizeCost.toIntOrNull()
                 val reward = prizeName.trim()
                 if (reward.isNotEmpty() && cost != null && cost > 0) {
-                    store.pointsPrizes = store.pointsPrizes + PointsPrize("new-$cost", reward, cost.toString())
+                    store.pointsPrizes = store.pointsPrizes + PointsPrize(UUID.randomUUID().toString(), reward, cost.toString())
                     prizeCost = ""
                     prizeName = ""
                     store.setupStatus = ""
                 } else store.setupStatus = "Enter the points and the reward name."
             }
         }
-        if (store.cardType == "membership") {
+        if (hasMembership) {
             Text("Subscription", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Field("Subscription name", store.membershipName, { store.membershipName = it }, hint = "Monthly membership")
+            Choice("Manual enrollment", store.enrollmentMode == "manual") { store.enrollmentMode = "manual" }
+            Choice("Automatic enrollment", store.enrollmentMode == "automatic") { store.enrollmentMode = "automatic" }
+            Text("Enrollment uses existing server rules. This does not set up recurring billing.", color = Muted, fontSize = 12.sp)
             StepRow("${store.membershipDays} days", { if (store.membershipDays > 1) store.membershipDays-- }, { if (store.membershipDays < 3650) store.membershipDays++ })
-            Field("Price in pesos", store.membershipPrice, { store.membershipPrice = it }, number = true)
-            Field("Perks, one per line", store.membershipPerks, { store.membershipPerks = it }, lines = 4, hint = "Unlimited access")
+            Field("Price in pesos", store.membershipPrice, { store.membershipPrice = it })
+            SubscriptionBenefitEditor(store)
             Field("Terms", store.membershipTerms, { store.membershipTerms = it }, lines = 3)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Log a visit in the cashier", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = Ink)
@@ -3047,8 +3140,164 @@ private fun CardScreen(store: CounterStore) {
                 Text("Quick check-in", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = Ink)
                 Switch(store.membershipQuick, { store.membershipQuick = it }, colors = switchColors())
             }
+            Card {
+                EditorToggle("Expiry reminders", store.membershipReminders) { store.membershipReminders = it }
+                if (store.membershipReminders) {
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf(7,3,1,0).forEach { day -> BranchChip(if (day == 0) "Expiry day" else "$day days before", day in store.reminderDays) {
+                            store.reminderDays = if (day in store.reminderDays) store.reminderDays - day else store.reminderDays + day
+                        } }
+                    }
+                    Field("Reminder message", store.reminderMessage, { store.reminderMessage = it }, lines = 2)
+                }
+            }
         }
+        if (store.cardType == "multipass") Card {
+            Text("Multi-pass", color = DeepTeal, fontWeight = FontWeight.Bold)
+            Field("Sessions", store.multiSessions, { store.multiSessions = it.filter(Char::isDigit) }, number = true)
+            Field("Validity days", store.multiDays, { store.multiDays = it.filter(Char::isDigit) }, number = true)
+        }
+        if (store.cardType in setOf("vip", "employee") || store.membershipEmployee) Card {
+            Text("Advanced program settings", color = DeepTeal, fontWeight = FontWeight.Bold)
+            Text("Manage tier progression, employee attendance and additional benefit rules using the complete web editor.", color = Muted, fontSize = 13.sp)
+            Secondary("Open full editor") { runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://theloyaltytree.com/dashboard"))) } }
+        }
+        }
+        Primary(if (store.loading) "Saving…" else "Save card settings", enabled = !store.loading && store.cardReady) { store.saveCard() }
         if (store.setupStatus.isNotBlank()) Text(store.setupStatus, color = if (store.setupStatus.startsWith("Card saved")) Forest else Bad, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+private fun EditorToggle(label: String, checked: Boolean, change: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, modifier = Modifier.weight(1f))
+        Switch(checked, change, colors = switchColors())
+    }
+}
+
+@Composable
+private fun WalletEditorSample(store: CounterStore, platform: String, color: Color) {
+    val foreground = if (color.luminance() > .45f) DeepTeal else Color.White
+    Column(Modifier.fillMaxWidth().clip(if (platform == "apple") RoundedCornerShape(18.dp) else RoundedCornerShape(28.dp))
+        .background(color).padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Mark(34)
+            Column(Modifier.weight(1f)) {
+                Text(store.cardName.ifBlank { "Loyalty card" }, color = foreground, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                Text(if (platform == "apple") "APPLE WALLET · SAMPLE" else "GOOGLE WALLET · SAMPLE", color = foreground.copy(alpha = .8f), fontSize = 10.sp)
+            }
+        }
+        if (store.cardDescription.isNotBlank()) Text(store.cardDescription, color = foreground, fontSize = 12.sp)
+        if (store.cardType in setOf("membership", "hybrid")) {
+            Text(store.membershipName.ifBlank { "Subscription" }, color = foreground, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+            Text("Sample active member · ${store.membershipDays} days · ₱${store.membershipPrice}", color = foreground, fontSize = 12.sp)
+            store.structuredBenefits.filter { it.optBoolean("active", true) }.take(2).forEach { Text("• " + it.optString("name"), color = foreground, fontSize = 12.sp) }
+        }
+        if (store.cardType == "stamp" || (store.cardType == "hybrid" && store.hybridStamps)) {
+            Text("2 / ${store.stampGoal} stamps · ${store.rewardName}", color = foreground, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                repeat(store.stampGoal.coerceIn(1, 10)) { index ->
+                    Box(Modifier.size(18.dp).clip(CircleShape).background(if (index < 2) RewardYellow else foreground.copy(alpha = .24f)))
+                }
+            }
+        }
+        if (store.cardType == "points" || (store.cardType == "hybrid" && store.hybridPoints)) {
+            Text("120 sample points", color = foreground, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            Text("${store.pointsPer} points per ₱${store.pointsPesos}", color = foreground, fontSize = 12.sp)
+        }
+        if (store.cardType == "hybrid" && store.hybridTier) Text("Tier progression · ${store.hybridTierType}", color = foreground, fontSize = 12.sp)
+        if (store.cardType == "multipass") Text("${store.multiSessions} sessions · ${store.multiDays} days", color = foreground, fontWeight = FontWeight.Bold)
+        if (store.cardType == "vip") Text("Sample Member tier", color = foreground, fontWeight = FontWeight.Bold)
+        if (store.cardType == "employee") Text("Sample employee ID", color = foreground, fontWeight = FontWeight.Bold)
+        Box(Modifier.fillMaxWidth().clip(Pill).background(Color.White).padding(14.dp), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                // Decorative, intentionally non-scannable barcode sample.
+                Row(Modifier.height(36.dp), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                    repeat(25) { index -> Box(Modifier.width(if (index % 3 == 0) 3.dp else 1.dp).height(36.dp).background(DeepTeal)) }
+                }
+                Text("SAMPLE • NOT VALID FOR REDEMPTION", color = Muted, fontSize = 9.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SubscriptionBenefitEditor(store: CounterStore) {
+    var editId by remember { mutableStateOf<String?>(null) }
+    var name by remember { mutableStateOf("") }
+    var kind by remember { mutableStateOf("free_item") }
+    var value by remember { mutableStateOf("") }
+    var description by remember { mutableStateOf("") }
+    var limit by remember { mutableStateOf("1") }
+    var reset by remember { mutableStateOf("daily") }
+    var unlimited by remember { mutableStateOf(false) }
+    var active by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf("") }
+    var editing by remember { mutableStateOf(false) }
+    fun clear() { editId = null; name = ""; kind = "free_item"; value = ""; description = ""; limit = "1"; reset = "daily"; unlimited = false; active = true; error = "" }
+    Card {
+        Text("Subscription benefits", color = DeepTeal, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+        Text("Set usage limits and reset periods per benefit. Existing benefit IDs are retained when edited.", color = Muted, fontSize = 12.sp)
+        store.structuredBenefits.forEach { benefit ->
+            Row(Modifier.fillMaxWidth().clip(Pill).background(Track).clickable {
+                editId = benefit.optString("id")
+                name = benefit.optString("name")
+                kind = benefit.optString("benefit_type", "custom")
+                value = if (benefit.isNull("value")) "" else benefit.optString("value")
+                description = if (benefit.isNull("description")) "" else benefit.optString("description")
+                unlimited = benefit.isNull("usage_limit")
+                limit = if (unlimited) "1" else benefit.optString("usage_limit")
+                reset = benefit.optString("reset_period", "never")
+                active = benefit.optBoolean("active", true)
+                error = ""; editing = true
+            }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(benefit.optString("name"), color = Ink, fontWeight = FontWeight.SemiBold)
+                    Text((if (benefit.isNull("usage_limit")) "Unlimited" else "${benefit.optString("usage_limit")} uses · ${benefit.optString("reset_period")}") + if (!benefit.optBoolean("active", true)) " · Inactive" else "", color = Muted, fontSize = 12.sp)
+                }
+                Text("Edit ›", color = Forest, fontSize = 12.sp)
+            }
+        }
+        if (!editing) Secondary("Add benefit") { clear(); editing = true }
+        if (editing) {
+            Field("Benefit name", name, { name = it })
+            listOf("free_item" to "Free item / service", "percentage_discount" to "Percentage discount", "fixed_discount" to "Fixed discount", "custom" to "Custom benefit").forEach { (id, label) ->
+                Choice(label, kind == id) { kind = id; value = "" }
+            }
+            if (kind in setOf("percentage_discount", "fixed_discount")) Field("Discount value", value, { value = it })
+            Field("Description", description, { description = it }, lines = 2)
+            EditorToggle("Unlimited uses", unlimited) { unlimited = it }
+            if (!unlimited) {
+                Field("Uses per period", limit, { limit = it.filter(Char::isDigit) }, number = true)
+                listOf("daily" to "Daily", "weekly" to "Weekly", "monthly" to "Monthly", "membership_cycle" to "Subscription cycle", "never" to "Never resets").forEach { (id, label) -> Choice(label, reset == id) { reset = id } }
+            }
+            EditorToggle("Active", active) { active = it }
+            if (error.isNotBlank()) Text(error, color = Bad, fontSize = 12.sp)
+            Primary(if (editId == null) "Add to benefits" else "Update benefit") {
+                val amount = value.toDoubleOrNull()
+                val uses = limit.toIntOrNull()
+                error = when {
+                    name.isBlank() -> "Enter a name."
+                    kind in setOf("percentage_discount", "fixed_discount") && (amount == null || !amount.isFinite() || amount < 0 || (kind == "percentage_discount" && amount > 100)) -> "Enter a valid discount."
+                    !unlimited && (uses == null || uses <= 0) -> "Enter a positive usage limit."
+                    else -> ""
+                }
+                if (error.isBlank()) {
+                    val id = editId ?: UUID.randomUUID().toString()
+                    val old = store.structuredBenefits.find { it.optString("id") == id }
+                    val row = org.json.JSONObject(old?.toString() ?: "{}")
+                        .put("id", id).put("name", name.trim()).put("benefit_type", kind)
+                        .put("value", if (kind in setOf("percentage_discount", "fixed_discount")) amount else org.json.JSONObject.NULL)
+                        .put("description", description.trim().takeIf { it.isNotBlank() } ?: org.json.JSONObject.NULL)
+                        .put("usage_limit", if (unlimited) org.json.JSONObject.NULL else uses)
+                        .put("reset_period", if (unlimited) "never" else reset).put("active", active)
+                    store.structuredBenefits = if (old == null) store.structuredBenefits + row else store.structuredBenefits.map { if (it.optString("id") == id) row else it }
+                    clear(); editing = false
+                }
+            }
+            Secondary("Cancel editing") { clear(); editing = false }
+        }
     }
 }
 
