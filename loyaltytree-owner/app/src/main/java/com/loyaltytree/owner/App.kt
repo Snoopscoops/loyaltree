@@ -55,6 +55,14 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Restaurant
 import androidx.compose.material.icons.filled.Store
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.Inventory2
+import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.ShoppingBag
+import androidx.compose.material.icons.filled.Group
+import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
@@ -106,14 +114,16 @@ import java.util.Locale
 import java.util.TimeZone
 import java.util.UUID
 
-private val Forest = Color(0xFF123C32)
-private val Ink = Color(0xFF163B31)
-private val Ivory = Color(0xFFF4F7F1)
-private val Lime = Color(0xFFD6F675)
-private val Gold = Color(0xFF2F6A52)
-private val Muted = Color(0xFF5E7268)
-private val Line = Color(0xFFE3EADF)
-private val Track = Color(0xFFE6EEE4)
+private val Forest = Color(0xFF0F766E)
+private val Ink = Color(0xFF0F172A)
+private val Ivory = Color(0xFFF6FAF9)
+private val Lime = Color(0xFFDDF7EA)
+private val Gold = Color(0xFF0F766E)
+private val Muted = Color(0xFF475569)
+private val Line = Color(0xFFE0EAE7)
+private val Track = Color(0xFFDDF7EA)
+private val DeepTeal = Color(0xFF073F36)
+private val RewardYellow = Color(0xFFFDB601)
 private val Bad = Color(0xFF9F2D2D)
 private val Shape = RoundedCornerShape(16.dp)
 private val Pill = RoundedCornerShape(12.dp)
@@ -121,6 +131,7 @@ private val Pill = RoundedCornerShape(12.dp)
 private sealed class Page {
     data object None : Page()
     data object Analytics : Page()
+    data object Stock : Page()
     data object Campaign : Page()
     data object Billboard : Page()
     data object Greetings : Page()
@@ -136,7 +147,7 @@ private sealed class Page {
 }
 
 private val OwnerDock = listOf(
-    "Home" to Icons.Default.Store,
+    "Home" to Icons.Default.Home,
     "Orders" to Icons.Default.Receipt,
     "Menu" to Icons.Default.Restaurant,
     "Customers" to Icons.Default.Person,
@@ -603,13 +614,24 @@ private fun Shell(store: CounterStore) {
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when (val current = page) {
                     Page.None -> when (tab) {
-                        0 -> HomeScreen(store, { page = Page.Analytics }, { page = Page.Campaign }) { page = Page.Stamp }
+                        0 -> HomeScreen(store,
+                            openAnalytics = { page = Page.Analytics },
+                            openCampaign = { page = Page.Campaign },
+                            openStamp = { page = Page.Stamp },
+                            openOrders = { tab = 1; page = Page.None },
+                            openMenu = { tab = 2; page = Page.None },
+                            openStock = { page = Page.Stock },
+                            openCustomers = { tab = 3; page = Page.None },
+                            openAlerts = { page = Page.Alerts },
+                            openAccount = { page = Page.Account }
+                        )
                         1 -> OrdersScreen(store)
                         2 -> MenuScreen(store)
                         3 -> CustomersScreen(store) { page = Page.Customer(it) }
                         else -> MoreScreen(store, { page = it }) { tab = 2; page = Page.None }
                     }
                     Page.Analytics -> AnalyticsScreen(store)
+                    Page.Stock -> Scroll { DailyStockCard(store, alwaysOpen = true) }
                     Page.Campaign -> CampaignScreen(store)
                     Page.Billboard -> BillboardScreen(store)
                     Page.Greetings -> GreetingsScreen(store)
@@ -630,6 +652,7 @@ private fun Shell(store: CounterStore) {
 
 private fun pageTitle(page: Page, store: CounterStore): String = when (page) {
     Page.Analytics -> "Analytics"
+    Page.Stock -> "Daily stock"
     Page.Campaign -> "Campaign"
     Page.Billboard -> "Billboard"
     Page.Greetings -> "Notifications"
@@ -701,7 +724,18 @@ private fun LoginScreen(store: CounterStore) {
 }
 
 @Composable
-private fun HomeScreen(store: CounterStore, openAnalytics: () -> Unit, openCampaign: () -> Unit, openStamp: () -> Unit) {
+private fun HomeScreen(
+    store: CounterStore, openAnalytics: () -> Unit, openCampaign: () -> Unit, openStamp: () -> Unit,
+    openOrders: () -> Unit, openMenu: () -> Unit, openStock: () -> Unit, openCustomers: () -> Unit,
+    openAlerts: () -> Unit, openAccount: () -> Unit
+) {
+    var branchMenu by remember { mutableStateOf(false) }
+    val shownOrders = store.orders.filter { store.ordersBranch.isBlank() || it.branchId == store.ordersBranch }
+    val bills = groupCounterBills(shownOrders)
+    val branchName = store.branches.firstOrNull { it.id == store.ordersBranch }?.name
+        ?: if (store.branches.size == 1) store.branches[0].name else "All branches"
+    val metricReady = !store.loading && store.analytics.isNotEmpty()
+    val recent = shownOrders.sortedByDescending { it.createdAt }.take(3)
     val context = LocalContext.current
     val view = LocalView.current
     var enlarged by remember { mutableStateOf(false) }
@@ -719,8 +753,74 @@ private fun HomeScreen(store: CounterStore, openAnalytics: () -> Unit, openCampa
         confirm(view)
     }
     Scroll {
-        Text(store.session?.businessName ?: "Home", color = Forest, fontSize = 30.sp, fontWeight = FontWeight.Bold, lineHeight = 34.sp)
-        Text(if (store.branches.size == 1) store.branches[0].name else "All branches", color = Muted, fontSize = 15.sp)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Mark(44)
+            Text("LoyaltyTree", color = DeepTeal, fontSize = 23.sp, fontWeight = FontWeight.Black, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Box(Modifier.size(40.dp).clip(Pill).clickable { openAlerts() }, contentAlignment = Alignment.Center) {
+                Icon(Icons.Default.Notifications, "Order alerts", tint = DeepTeal)
+            }
+            Box(Modifier.size(40.dp).clip(Pill).background(Track).clickable { openAccount() }, contentAlignment = Alignment.Center) {
+                Icon(Icons.Default.Person, "Account", tint = DeepTeal)
+            }
+        }
+        Box {
+            Row(Modifier.clip(RoundedCornerShape(99.dp)).background(Track).clickable(enabled = store.branches.size > 1) { branchMenu = true }.padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Default.Store, null, tint = DeepTeal, modifier = Modifier.size(18.dp))
+                Text(branchName, color = DeepTeal, fontWeight = FontWeight.SemiBold)
+                if (store.branches.size > 1) Text("⌄", color = DeepTeal)
+            }
+            androidx.compose.material3.DropdownMenu(expanded = branchMenu, onDismissRequest = { branchMenu = false }) {
+                androidx.compose.material3.DropdownMenuItem(text = { Text("All branches") }, onClick = { branchMenu = false; store.chooseOrdersBranch("") })
+                store.branches.forEach { branch ->
+                    androidx.compose.material3.DropdownMenuItem(text = { Text(branch.name) }, onClick = { branchMenu = false; store.chooseOrdersBranch(branch.id) })
+                }
+            }
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Business overview", color = Ink, fontSize = 30.sp, lineHeight = 34.sp, fontWeight = FontWeight.Black)
+            Text(store.session?.businessName ?: "Your business", color = DeepTeal, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+            Text("Digitalize. Secure. Connect.", color = Muted, fontSize = 14.sp)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            DashboardMetric("Today's sales", store.daySummary?.sales ?: "—", Icons.Default.Payments, Modifier.weight(1f))
+            DashboardMetric("Active bills", if (store.loading || store.ordersNote.isNotBlank()) "—" else bills.count { it.active }.toString(), Icons.Default.ShoppingBag, Modifier.weight(1f))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            DashboardMetric("Customers", if (metricReady) store.memberCount else "—", Icons.Default.Group, Modifier.weight(1f))
+            DashboardMetric("Rewards today", if (metricReady) store.todayRewards else "—", Icons.Default.Star, Modifier.weight(1f), reward = true)
+        }
+        Text("Customers and rewards cover the whole business.", color = Muted, fontSize = 12.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            DashboardAction(if (store.cardType == "points") "Scan to earn" else "Scan to stamp", Icons.Default.QrCodeScanner, Modifier.weight(1f), DeepTeal) { store.clearScan(); openStamp() }
+            DashboardAction("Orders", Icons.Default.Receipt, Modifier.weight(1f), Forest, openOrders)
+            DashboardAction("Menu", Icons.Default.Restaurant, Modifier.weight(1f), Forest, openMenu)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            DashboardAction("Stock", Icons.Default.Inventory2, Modifier.weight(1f), Forest, openStock)
+            DashboardAction("Customers", Icons.Default.Group, Modifier.weight(1f), DeepTeal, openCustomers)
+            DashboardAction("Reports", Icons.Default.BarChart, Modifier.weight(1f), Forest, openOrders)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Recent activity", color = Ink, fontWeight = FontWeight.Bold, fontSize = 22.sp, modifier = Modifier.weight(1f))
+            TextButton(onClick = openOrders) { Text("View all ›", color = Forest, fontWeight = FontWeight.SemiBold) }
+        }
+        Card {
+            if (recent.isEmpty()) Text(if (store.loading) "Loading orders…" else if (store.ordersNote.isNotBlank()) "Orders temporarily unavailable." else "No recent orders.", color = Muted, fontSize = 14.sp)
+            recent.forEachIndexed { index, order ->
+                if (index > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
+                Row(Modifier.fillMaxWidth().clickable { openOrders() }.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Box(Modifier.size(40.dp).clip(Pill).background(Track), contentAlignment = Alignment.Center) {
+                        Icon(Icons.Default.ShoppingBag, null, tint = Forest)
+                    }
+                    Column(Modifier.weight(1f)) {
+                        Text(order.number.ifBlank { "Order" }, color = Ink, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(order.total + if (order.branch.isBlank()) "" else " · " + order.branch, color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    Text(order.status.replace('_', ' ').replaceFirstChar { it.uppercase() }, color = if (order.status == "cancelled") Bad else Forest, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+        Text("Loyalty insights", color = Ink, fontWeight = FontWeight.Bold, fontSize = 22.sp)
         Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Track).padding(4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             listOf("Today" to "today", "7 days" to "7d", "30 days" to "30d", "90 days" to "90d").forEach { (label, id) ->
                 val on = store.period == id
@@ -739,15 +839,6 @@ private fun HomeScreen(store: CounterStore, openAnalytics: () -> Unit, openCampa
             Metric("Stamps", if (store.period == "today") store.todayStamps else store.cardStamps, Modifier.weight(1f))
             Metric("Rewards", if (store.period == "today") store.todayRewards else store.cardRewards, Modifier.weight(1f))
             Metric("New", if (store.period == "today") store.todayNew else store.cardNew, Modifier.weight(1f))
-        }
-        Primary(when (store.cardType) {
-            "stamp" -> "Add a stamp"
-            "points" -> "Add points"
-            else -> "Add a stamp / points"
-        }) {
-            // Opens the in-app scanner right away. The owner is already signed in, so no cashier login.
-            store.clearScan()
-            openStamp()
         }
         Text("${store.memberCount} members  ·  ${store.cameBackRate.toInt()}% came back", color = Forest, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -789,6 +880,26 @@ private fun HomeScreen(store: CounterStore, openAnalytics: () -> Unit, openCampa
                 Secondary(if (copied) "Copied" else "Copy link") { copyLink() }
             }
         }
+    }
+}
+
+@Composable
+private fun DashboardMetric(label: String, value: String, icon: ImageVector, modifier: Modifier, reward: Boolean = false) {
+    Row(modifier.clip(Shape).background(Color(0xFFEAF6F3)).padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+        Icon(icon, null, tint = if (reward) Color(0xFF956700) else Forest, modifier = Modifier.size(26.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(label, color = Ink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Text(value, color = Ink, fontSize = 21.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+@Composable
+private fun DashboardAction(label: String, icon: ImageVector, modifier: Modifier, fill: Color, action: () -> Unit) {
+    Column(modifier.heightIn(min = 96.dp).clip(Shape).background(fill).clickable { action() }.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        Icon(icon, null, tint = Color.White, modifier = Modifier.size(28.dp))
+        Spacer(Modifier.height(7.dp))
+        Text(label, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center, lineHeight = 16.sp)
     }
 }
 
@@ -2573,7 +2684,7 @@ private fun Scroll(content: @Composable () -> Unit) {
 
 @Composable
 private fun Mark(size: Int) {
-    Image(painterResource(R.drawable.lt_mark), "Loyalty Tree", modifier = Modifier.size(size.dp).clip(CircleShape))
+    Image(painterResource(R.drawable.lt_mark), "LoyaltyTree", modifier = Modifier.size(size.dp).clip(CircleShape))
 }
 
 @Composable
