@@ -21,6 +21,9 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -86,13 +89,19 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.imageResource
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -115,17 +124,17 @@ import java.util.TimeZone
 import java.util.UUID
 
 private val Forest = Color(0xFF0F766E)
-private val Ink = Color(0xFF0F172A)
+private val Ink = Color(0xFF073F36)
 private val Ivory = Color(0xFFF6FAF9)
 private val Lime = Color(0xFFDDF7EA)
 private val Gold = Color(0xFF0F766E)
-private val Muted = Color(0xFF475569)
+private val Muted = Color(0xFF47675E)
 private val Line = Color(0xFFE0EAE7)
 private val Track = Color(0xFFDDF7EA)
 private val DeepTeal = Color(0xFF073F36)
 private val RewardYellow = Color(0xFFFDB601)
 private val Bad = Color(0xFF9F2D2D)
-private val Shape = RoundedCornerShape(16.dp)
+private val Shape = RoundedCornerShape(20.dp)
 private val Pill = RoundedCornerShape(12.dp)
 
 private sealed class Page {
@@ -163,30 +172,151 @@ private sealed class MenuSheet {
 
 @Composable
 fun LoyaltyTreeApp(store: CounterStore = viewModel()) {
-    var showOpening by remember { mutableStateOf(!store.seenOpening) }
-    LaunchedEffect(showOpening) {
-        if (showOpening) {
-            delay(1500)
-            store.markOpened()
-            showOpening = false
-        }
-    }
-    if (showOpening) {
-        Box(Modifier.fillMaxSize().background(Forest), contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Mark(88)
-                Spacer(Modifier.height(16.dp))
-                Text("Loyalty Tree", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Bold)
-                Text("Business", color = Lime, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-            }
-        }
-        return
-    }
     val current = store.session
+    var login by remember { mutableStateOf(false) }
+    var opening by remember { mutableStateOf(current == null) }
+    LaunchedEffect(current?.slug) {
+        if (current != null) {
+            login = false
+            opening = false
+        }
+    }
     when {
-        current == null -> LoginScreen(store)
+        current == null && login -> {
+            BackHandler { login = false }
+            LoginScreen(store)
+        }
+        current == null -> WelcomeScreen(opening, onFinished = {
+            store.markOpened()
+            opening = false
+        }, onLogin = { opening = false; login = true })
         current.isStaff -> StaffShell(store)
         else -> Shell(store)
+    }
+}
+
+@Composable
+private fun BrandBackdrop(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    Box(modifier.background(Brush.verticalGradient(listOf(Color(0xFFE2F3EA), Ivory, Color(0xFFEAF6F0))))) {
+        Canvas(Modifier.fillMaxSize()) {
+            val radius = size.width * .44f
+            drawCircle(Color(0xFF7BCAA7).copy(alpha = .12f), radius, Offset(size.width * 1.02f, size.height * .12f))
+            drawCircle(Color(0xFF7BCAA7).copy(alpha = .09f), radius * .68f, Offset(size.width * 1.02f, size.height * .12f))
+            drawCircle(RewardYellow.copy(alpha = .055f), radius * .76f, Offset(0f, size.height * .99f))
+            for (row in 0..2) for (col in 0..3) {
+                drawCircle(Forest.copy(alpha = .065f), 2.dp.toPx(),
+                    Offset(size.width - (20 + col * 12).dp.toPx(), (110 + row * 12).dp.toPx()))
+            }
+        }
+        content()
+    }
+}
+
+@Composable
+private fun WelcomeScreen(animate: Boolean, onFinished: () -> Unit, onLogin: () -> Unit) {
+    val context = LocalContext.current
+    val progress = remember { Animatable(if (animate) 0f else 1f) }
+    LaunchedEffect(animate) {
+        if (animate) {
+            progress.snapTo(0f)
+            progress.animateTo(1f, tween(3100, easing = LinearEasing))
+            onFinished()
+        } else progress.snapTo(1f)
+    }
+    val p = progress.value
+    val reveal = if (!animate) 1f else ((p - .74f) / .26f).coerceIn(0f, 1f)
+    val bitmap = ImageBitmap.imageResource(R.drawable.lt_mark)
+    BrandBackdrop(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp)) {
+            Row(Modifier.fillMaxWidth().alpha(if (animate) 0f else 1f), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Mark(44)
+                Text("LoyaltyTree", fontSize = 24.sp, fontWeight = FontWeight.Black, color = DeepTeal)
+            }
+            Column(Modifier.alpha(reveal), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Spacer(Modifier.height(18.dp))
+                Text("DIGITALIZE. SECURE. CONNECT.", color = Forest, fontSize = 12.sp,
+                    letterSpacing = 1.5.sp, fontWeight = FontWeight.Bold)
+                Text("Your business,\nconnected.", color = DeepTeal, fontSize = 38.sp,
+                    lineHeight = 42.sp, fontWeight = FontWeight.Black)
+                Text("Build loyalty. Simplify operations. Grow with your customers.", color = Muted, fontSize = 16.sp, lineHeight = 23.sp)
+            }
+            Column(Modifier.alpha(reveal), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                WelcomeFeature(Icons.Default.Payments, "Digital loyalty rewards", "Apple Wallet & Google Wallet")
+                WelcomeFeature(Icons.Default.Notifications, "Digital billboard", "Promotions and customer engagement")
+                WelcomeFeature(Icons.Default.Restaurant, "Table ordering", "QR menus and live order tracking")
+                WelcomeFeature(Icons.Default.BarChart, "Business digitalization", "Inventory, customers and analytics")
+            }
+            Column(Modifier.alpha(reveal), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Primary("Get started", enabled = !animate) {
+                    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://theloyaltytree.com/signup"))) }
+                }
+                TextButton(onClick = onLogin, enabled = !animate, modifier = Modifier.fillMaxWidth()) {
+                    Text("Already have an account? Log in", color = DeepTeal, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+        if (animate) {
+            val leaves = remember { listOf(
+                Triple(.287109f,.267578f,.070312f), Triple(.427734f,.267578f,.070312f),
+                Triple(.572266f,.267578f,.070312f), Triple(.712891f,.267578f,.070312f),
+                Triple(.287109f,.410156f,.070312f), Triple(.427734f,.410156f,.070312f),
+                Triple(.572266f,.410156f,.070312f), Triple(.712891f,.410156f,.070312f),
+                Triple(.367188f,.542969f,.072266f), Triple(.5f,.519531f,.056641f),
+                Triple(.628906f,.542969f,.072266f)
+            ) }
+            val origins = remember { listOf(-1f to -.7f, -.2f to -1f, .4f to -.9f, 1f to -.7f,
+                -1f to -.25f, -1f to .5f, 1f to -.1f, 1f to .4f, -.85f to 1f, .07f to 1f, .85f to 1f) }
+            Box(Modifier.fillMaxSize().clickable { onFinished() }, contentAlignment = Alignment.Center) {
+                Canvas(Modifier.fillMaxSize()) {
+                    val move = ((p - .76f) / .24f).coerceIn(0f, 1f)
+                    val eased = 1f - (1f - move) * (1f - move) * (1f - move)
+                    val large = minOf(176.dp.toPx(), size.width * .55f)
+                    val small = 44.dp.toPx()
+                    val edge = large + (small - large) * eased
+                    val startX = (size.width - large) / 2f
+                    val startY = size.height * .36f - large / 2f
+                    val x = startX + (24.dp.toPx() - startX) * eased
+                    val y = startY + (24.dp.toPx() - startY) * eased
+                    val complete = ((p - .55f) / .11f).coerceIn(0f, 1f)
+                    if (complete < 1f) {
+                        leaves.forEachIndexed { index, leaf ->
+                            val t = ((p - index * .021f) / .35f).coerceIn(0f, 1f)
+                            val settle = (1f - t) * (1f - t) * (1f - t)
+                            val (sx, sy) = origins[index]
+                            drawCircle(if (index < 4) RewardYellow else Color(0xFF0F7F7C),
+                                edge * leaf.third, Offset(x + edge * leaf.first + sx * size.width * settle,
+                                    y + edge * leaf.second + sy * size.height * settle), alpha = 1f - complete)
+                        }
+                    }
+                    if (complete > 0f) drawImage(bitmap,
+                        dstOffset = IntOffset(x.toInt(), y.toInt()),
+                        dstSize = IntSize(edge.toInt().coerceAtLeast(1), edge.toInt().coerceAtLeast(1)),
+                        alpha = complete)
+                }
+                Column(Modifier.alpha(((p - .59f) / .08f).coerceIn(0f, 1f) * (1f - reveal)),
+                    horizontalAlignment = Alignment.CenterHorizontally) {
+                    Spacer(Modifier.height(138.dp))
+                    Text("LoyaltyTree", color = DeepTeal, fontSize = 30.sp, fontWeight = FontWeight.Black)
+                    Text("Digitalize. Secure. Connect.", color = Forest, fontSize = 12.sp)
+                }
+                Text("Tap to skip", modifier = Modifier.align(Alignment.BottomCenter).padding(18.dp),
+                    color = Muted, fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun WelcomeFeature(icon: ImageVector, title: String, detail: String) {
+    Row(Modifier.fillMaxWidth().clip(Shape).background(Color(0xFFE1F2E9)).padding(14.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Icon(icon, null, tint = Forest, modifier = Modifier.size(26.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, color = DeepTeal, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            Text(detail, color = Muted, fontSize = 12.sp)
+        }
     }
 }
 
@@ -285,7 +415,7 @@ private fun StaffShell(store: CounterStore) {
             tab = it
         }
     }) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).background(Ivory)) {
+        Column(Modifier.fillMaxSize().padding(padding).background(Brush.verticalGradient(listOf(Color(0xFFE2F3EA), Ivory, Color(0xFFEAF6F0))))) {
             StaffHeader(store)
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when (tab) {
@@ -595,7 +725,7 @@ private fun Shell(store: CounterStore) {
             page = Page.None
         }
     }) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).background(Ivory)) {
+        Column(Modifier.fillMaxSize().padding(padding).background(Brush.verticalGradient(listOf(Color(0xFFE2F3EA), Ivory, Color(0xFFEAF6F0))))) {
             if (page !is Page.None) {
                 NavBar(
                     title = pageTitle(page, store),
@@ -777,9 +907,9 @@ private fun HomeScreen(
             }
         }
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("Business overview", color = Ink, fontSize = 30.sp, lineHeight = 34.sp, fontWeight = FontWeight.Black)
-            Text(store.session?.businessName ?: "Your business", color = DeepTeal, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
-            Text("Digitalize. Secure. Connect.", color = Muted, fontSize = 14.sp)
+            Text("Business overview", color = Muted, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Text(store.session?.businessName ?: "Your business", color = DeepTeal, fontWeight = FontWeight.Black, fontSize = 30.sp, lineHeight = 34.sp)
+            Text("Build loyalty. Simplify operations.", color = Muted, fontSize = 14.sp)
         }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             DashboardMetric("Today's sales", store.daySummary?.sales ?: "—", Icons.Default.Payments, Modifier.weight(1f))
@@ -790,6 +920,15 @@ private fun HomeScreen(
             DashboardMetric("Rewards today", if (metricReady) store.todayRewards else "—", Icons.Default.Star, Modifier.weight(1f), reward = true)
         }
         Text("Customers and rewards cover the whole business.", color = Muted, fontSize = 12.sp)
+        Row(Modifier.fillMaxWidth().clip(Shape).background(Brush.horizontalGradient(listOf(DeepTeal, Forest))).clickable { openAnalytics() }.padding(18.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            Icon(Icons.Default.BarChart, null, tint = Color.White, modifier = Modifier.size(34.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Analytics", color = Color.White, fontSize = 23.sp, fontWeight = FontWeight.Black)
+                Text("Sales, products & customer insights", color = Lime, fontSize = 12.sp)
+            }
+            Text("›", color = Color.White, fontSize = 26.sp)
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             DashboardAction(if (store.cardType == "points") "Scan to earn" else "Scan to stamp", Icons.Default.QrCodeScanner, Modifier.weight(1f), DeepTeal) { store.clearScan(); openStamp() }
             DashboardAction("Orders", Icons.Default.Receipt, Modifier.weight(1f), Forest, openOrders)
@@ -798,7 +937,7 @@ private fun HomeScreen(
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             DashboardAction("Stock", Icons.Default.Inventory2, Modifier.weight(1f), Forest, openStock)
             DashboardAction("Customers", Icons.Default.Group, Modifier.weight(1f), DeepTeal, openCustomers)
-            DashboardAction("Analytics", Icons.Default.BarChart, Modifier.weight(1f), Forest, openAnalytics)
+            DashboardAction("Campaigns", Icons.Default.Notifications, Modifier.weight(1f), Forest, openCampaign)
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Recent activity", color = Ink, fontWeight = FontWeight.Bold, fontSize = 22.sp, modifier = Modifier.weight(1f))
@@ -841,7 +980,6 @@ private fun HomeScreen(
             Metric("New", if (store.period == "today") store.todayNew else store.cardNew, Modifier.weight(1f))
         }
         Text("${store.memberCount} members  ·  ${store.cameBackRate.toInt()}% came back", color = Forest, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
-        Primary("Campaign", onClick = openCampaign)
         Column(Modifier.fillMaxWidth().clip(Shape).background(Color.White).border(1.dp, Line, Shape)) {
             Row(Modifier.fillMaxWidth().clickable { enlarged = true }.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                 Qr(store.joinLink, 64)
@@ -895,10 +1033,10 @@ private fun DashboardMetric(label: String, value: String, icon: ImageVector, mod
 
 @Composable
 private fun DashboardAction(label: String, icon: ImageVector, modifier: Modifier, fill: Color, action: () -> Unit) {
-    Column(modifier.heightIn(min = 96.dp).clip(Shape).background(fill).clickable { action() }.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-        Icon(icon, null, tint = Color.White, modifier = Modifier.size(28.dp))
+    Column(modifier.heightIn(min = 96.dp).clip(Shape).background(Color(0xFFE1F2E9)).border(1.dp, Line, Shape).clickable { action() }.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        Icon(icon, null, tint = fill, modifier = Modifier.size(28.dp))
         Spacer(Modifier.height(7.dp))
-        Text(label, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center, lineHeight = 16.sp)
+        Text(label, color = DeepTeal, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center, lineHeight = 16.sp)
     }
 }
 
@@ -915,6 +1053,8 @@ private fun OrdersScreen(store: CounterStore) {
     val bills = groupCounterBills(shown)
     val current = bills.filter { it.active }
     val earlier = bills.filterNot { it.active }
+    var filter by remember { mutableStateOf("active") }
+    var reportOpen by remember { mutableStateOf(false) }
     Scroll {
         Text("Orders", color = Forest, fontSize = 32.sp, fontWeight = FontWeight.Bold)
         Text(
@@ -923,13 +1063,6 @@ private fun OrdersScreen(store: CounterStore) {
             color = Muted, fontSize = 15.sp
         )
         RingingBar()
-        // owner-v14: UI-only placeholder. No NextPay integration, redirect,
-        // refund API request, payment mutation or refund action is wired.
-        Card {
-            Text("Refunds", color = Forest, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-            Primary("Refunds · Coming soon", enabled = false) { }
-            Text("Refund processing is not available yet. Awaiting NextPay refund protocols. No refunds can be started from this app.", color = Muted, fontSize = 12.sp)
-        }
         if (store.alertsNote.isNotBlank()) Text(store.alertsNote, color = Amber, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
         if (who?.isOwner == true && store.branches.size > 1) {
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -937,18 +1070,29 @@ private fun OrdersScreen(store: CounterStore) {
                 store.branches.forEach { place -> BranchChip(place.name, store.ordersBranch == place.id) { store.chooseOrdersBranch(place.id) } }
             }
         }
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("Active" to "active", "Awaiting payment" to "unpaid", "Preparing" to "preparing",
+                "Ready" to "ready", "History" to "history").forEach { (label, id) ->
+                BranchChip(label, filter == id) { filter = id }
+            }
+        }
         if (canReport) {
-            store.daySummary?.let { DaySummaryCard(it, showBranches = who?.isOwner == true && store.ordersBranch.isBlank() && store.branches.size > 1) }
-            SalesReportCard(store)
+            TextButton(onClick = { reportOpen = !reportOpen }) { Text(if (reportOpen) "Hide sales report" else "Quick sales report", color = Forest) }
+            if (reportOpen) {
+                store.daySummary?.let { DaySummaryCard(it, showBranches = false) }
+                SalesReportCard(store)
+            }
         }
         if (store.ordersNote.isNotBlank()) Text(store.ordersNote, color = Bad, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-        if (current.isEmpty()) Text("No current orders.", color = Muted)
-        if (store.orders.count { it.source == "menu" } >= 100) Text("Showing recent orders. Older bill entries may be missing; refresh or check the full sales report.", color = Muted, fontSize = 12.sp)
-        current.forEach { bill -> androidx.compose.runtime.key(bill.key) { CounterBillCard(store, bill) } }
-        if (earlier.isNotEmpty()) {
-            Text("EARLIER", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-            earlier.take(12).forEach { bill -> androidx.compose.runtime.key(bill.key) { CounterBillCard(store, bill) } }
+        val visible = when (filter) {
+            "history" -> earlier
+            "unpaid" -> current.filter { bill -> bill.orders.any { it.status != "cancelled" && it.payment == "unpaid" } }
+            "preparing", "ready" -> current.filter { bill -> bill.orders.any { it.status == filter } }
+            else -> current
         }
+        if (visible.isEmpty()) Text("No orders in this view.", color = Muted)
+        if (store.orders.count { it.source == "menu" } >= 100) Text("Showing recent orders. Older bill entries may be missing.", color = Muted, fontSize = 12.sp)
+        visible.forEach { bill -> androidx.compose.runtime.key(bill.key) { CounterBillCard(store, bill) } }
         Secondary("Refresh") { store.loadOrders() }
     }
 }
@@ -1080,7 +1224,7 @@ private fun CounterBillCard(store: CounterStore, bill: CounterBill) {
         return
     }
     var adding by remember(bill.key) { mutableStateOf(false) }
-    var expanded by remember(bill.key) { mutableStateOf(setOfNotNull(parent?.id)) }
+    var expanded by remember(bill.key) { mutableStateOf(setOfNotNull(if (bill.active) bill.orders.firstOrNull { it.status != "cancelled" && it.payment == "unpaid" }?.id ?: parent?.id else null)) }
     val busy = store.orderBusy.isNotBlank()
     val limited = store.orders.count { it.source == "menu" } >= 100 || parent == null
     Card {
@@ -1094,13 +1238,13 @@ private fun CounterBillCard(store: CounterStore, bill: CounterBill) {
             Column(horizontalAlignment = Alignment.End) { Text("Balance", color = Muted, fontSize = 12.sp); Text(bill.balance?.let(::billMoney) ?: "—", color = Ink, fontWeight = FontWeight.Bold) }
         }
         if (limited) Text("Some order details may not be loaded. Do not use this subtotal as a payment amount.", color = Muted, fontSize = 12.sp)
-        if (parent?.canAddSubOrder == true) Primary("＋ Add order", enabled = !busy) { adding = true }
+        if (parent?.canAddSubOrder == true) TextButton(onClick = { adding = true }, enabled = !busy) { Text("＋ Add order", color = Forest, fontWeight = FontWeight.SemiBold) }
         bill.orders.forEach { order ->
             androidx.compose.runtime.key(order.id) {
                 val open = order.id in expanded
                 val label = if (order.parentOrderId.isBlank()) "Main order" else "Additional order"
                 Column(Modifier.fillMaxWidth().border(1.dp, Line, Pill).clip(Pill).padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(Modifier.fillMaxWidth().clickable { expanded = if (open) expanded - order.id else expanded + order.id }, horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.fillMaxWidth().clickable { expanded = if (open) emptySet() else setOf(order.id) }, horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text("$label · ${order.number}", color = Forest, fontSize = 14.sp, fontWeight = FontWeight.Bold)
                             Text("${order.status.replaceFirstChar { it.uppercase() }} · ${if (order.status == "cancelled") "Cancelled" else if (order.payment == "paid") "Paid" else "Unpaid"}", color = Muted, fontSize = 12.sp)
@@ -1122,6 +1266,8 @@ private fun OrderCard(store: CounterStore, order: LiveOrder, insideBill: Boolean
     var adding by remember(order.id) { mutableStateOf(false) }
     var cancelling by remember(order.id) { mutableStateOf(false) }
     var voiding by remember(order.id) { mutableStateOf<OrderLine?>(null) }
+    var details by remember(order.id) { mutableStateOf(false) }
+    var legacyCancel by remember(order.id) { mutableStateOf(false) }
     val next = when (order.status) {
         "new" -> "preparing" to "Start preparing"
         "preparing" -> "ready" to "Mark ready"
@@ -1130,8 +1276,11 @@ private fun OrderCard(store: CounterStore, order: LiveOrder, insideBill: Boolean
     }
     val content: @Composable () -> Unit = {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text(order.number, color = Forest, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-            Text(order.status.replaceFirstChar { it.uppercase() }, color = if (order.status == "cancelled") Bad else Forest, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+            Text(order.number, color = DeepTeal, fontWeight = FontWeight.Bold, fontSize = 17.sp, modifier = Modifier.weight(1f))
+            val statusColor = if (order.status == "cancelled") Bad else Forest
+            Box(Modifier.clip(CircleShape).background(statusColor.copy(alpha = .09f)).padding(horizontal = 9.dp, vertical = 5.dp)) {
+                Text(order.status.replaceFirstChar { it.uppercase() }, color = statusColor, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+            }
         }
         if (order.parentOrderId.isNotBlank()) {
             val parent = store.orders.firstOrNull { it.id == order.parentOrderId }
@@ -1162,6 +1311,13 @@ private fun OrderCard(store: CounterStore, order: LiveOrder, insideBill: Boolean
         }
         Text(listOf(order.customer, branchLabel(order.branch)).filter { it.isNotBlank() }.joinToString(" · "), color = Ink, fontSize = 14.sp)
         if (order.pickup.isNotBlank()) Text("Pickup ${tidy(order.pickup)}", color = Muted, fontSize = 13.sp)
+        Text(order.items.joinToString(" · ") { it.name }.ifBlank { "Order details" }, color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Row(Modifier.fillMaxWidth().clip(Pill).background(Track).padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("Order total", color = Muted, fontSize = 12.sp)
+            Text(order.total, color = DeepTeal, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+        }
+        TextButton(onClick = { details = !details }) { Text(if (details) "Hide details" else "View details & actions", color = Forest) }
+        if (details) {
         order.items.forEach { line ->
             Text(line.name, color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
             if (line.detail.isNotBlank()) Text(line.detail, color = Muted, fontSize = 13.sp)
@@ -1170,7 +1326,7 @@ private fun OrderCard(store: CounterStore, order: LiveOrder, insideBill: Boolean
             }
         }
         if (order.note.isNotBlank()) Text(order.note, color = Muted, fontSize = 13.sp)
-        Text(order.total, color = Forest, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+        }
         if (awaitingCash) {
             // Cash first: the kitchen can start only after the cashier confirms the payment.
             Primary(if (busy) "Saving" else "Mark as paid", enabled = !busy) { store.markPaid(order.id, order.rawTotal) }
@@ -1183,16 +1339,20 @@ private fun OrderCard(store: CounterStore, order: LiveOrder, insideBill: Boolean
             Primary(if (busy) "Saving" else next.second, enabled = !busy && !blocked) { store.setOrderStatus(order.id, next.first) }
             if (blocked) Text("Finish or cancel all add-ons first.", color = Muted, fontSize = 12.sp)
         }
-        if (!insideBill && order.canAddSubOrder) {
+        if (details && !insideBill && order.canAddSubOrder) {
             Secondary("Add items as a separate order") { if (!busy) adding = true }
         }
-        if (order.canCancel == true) {
+        if (details && order.canCancel == true) {
             Secondary("Cancel order") { if (!busy) cancelling = true }
-        } else if (order.canCancel == null && next != null && (order.status == "new" || order.status == "preparing")) {
-            Secondary(if (busy) "Saving" else "Cancel order") { if (!busy) store.setOrderStatus(order.id, "cancelled") }
+        } else if (details && order.canCancel == null && next != null && (order.status == "new" || order.status == "preparing")) {
+            Secondary("Cancel order") { if (!busy) legacyCancel = true }
         }
     }
     if (insideBill) Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { content() } else Card { content() }
+    if (legacyCancel) AlertDialog(onDismissRequest = { legacyCancel = false },
+        title = { Text("Cancel order?") }, text = { Text("Cancel ${order.number}?") },
+        confirmButton = { TextButton(onClick = { legacyCancel = false; if (!busy) store.setOrderStatus(order.id, "cancelled") }) { Text("Confirm cancellation", color = Bad) } },
+        dismissButton = { TextButton(onClick = { legacyCancel = false }) { Text("Keep order") } })
     if (adding) CounterAddOrderDialog(store, order) { adding = false }
     if (cancelling) CounterAdjustmentDialog(store, order, null) { cancelling = false }
     voiding?.let { line -> CounterAdjustmentDialog(store, order, line) { voiding = null } }
@@ -2053,7 +2213,7 @@ private val Amber = Color(0xFF8A5A00)
 
 @Composable
 private fun KpiCard(kpi: Kpi, previous: String, modifier: Modifier) {
-    Column(modifier.clip(Shape).background(Color.White).border(1.dp, Line, Shape).padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Column(modifier.clip(Shape).background(Color(0xFFEAF6F0)).border(1.dp, Line, Shape).padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(kpi.label, color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
         Text(kpi.value, color = Forest, fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
         val change = kpi.change
@@ -2742,7 +2902,7 @@ private fun Dock(tab: Int, items: List<Pair<String, ImageVector>> = OwnerDock, o
                 Modifier.weight(1f).clip(RoundedCornerShape(20.dp)).background(if (on) Track else Color.Transparent).clickable { onSelect(index) }.padding(vertical = 6.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Icon(item.second, item.first, tint = Forest, modifier = Modifier.size(20.dp))
+                Icon(item.second, item.first, tint = if (on) Forest else Muted, modifier = Modifier.size(20.dp))
                 Text(item.first, color = if (on) Forest else Muted, fontSize = 10.sp, fontWeight = if (on) FontWeight.Bold else FontWeight.Medium, maxLines = 1)
             }
         }
