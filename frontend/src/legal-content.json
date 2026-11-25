@@ -1,13 +1,14 @@
 {
-  "version": "2026-10-18-v1",
+  "version": "2026-11-25-v1",
   "status": "prepared_for_deployment",
-  "prepared_at": "2026-10-18",
-  "effective_date": "2026-10-18",
+  "prepared_at": "2026-11-25",
+  "effective_date": "2026-11-25",
   "operator": {
     "name": "LoyaltyTree Information Technology Solutions",
-    "location": "Isabela, Philippines",
+    "location": "Marilao, Bulacan, Philippines",
     "email": "theloyaltytree@gmail.com",
-    "phone": "+63 939 799 2144"
+    "phone": "+63 939 799 2144",
+    "entity_type": "Sole proprietorship"
   },
   "documents": {
     "privacy": {
@@ -117,7 +118,7 @@
         {
           "title": "Privacy contact",
           "paragraphs": [
-            "LoyaltyTree Information Technology Solutions · Isabela, Philippines. Privacy requests and complaints: theloyaltytree@gmail.com. Phone: +63 939 799 2144. Identify the business or programme involved and the assistance you need; avoid including unnecessary sensitive information. This is the confirmed privacy contact channel, not a statement that a named Data Protection Officer has been appointed."
+            "LoyaltyTree Information Technology Solutions · Marilao, Bulacan, Philippines. Privacy requests and complaints: theloyaltytree@gmail.com. Phone: +63 939 799 2144. Identify the business or programme involved and the assistance you need; avoid including unnecessary sensitive information. This is the confirmed privacy contact channel, not a statement that a named Data Protection Officer has been appointed."
           ]
         },
         {
@@ -128,7 +129,7 @@
           ]
         }
       ],
-      "version": "2026-10-11-v2"
+      "version": "2026-11-25-v1"
     },
     "terms": {
       "title": "Terms of Service",
@@ -303,7 +304,7 @@
         {
           "title": "Parties, order and authorised acceptance",
           "paragraphs": [
-            "This Business Subscription Agreement is between LoyaltyTree Information Technology Solutions, Isabela, Philippines (LoyaltyTree), and the business identified in the accepted Order Summary (Business). The Order Summary, this Agreement and Annex A form the subscription contract.",
+            "This Business Subscription Agreement is between LoyaltyTree Information Technology Solutions, Marilao, Bulacan, Philippines (LoyaltyTree), and the business identified in the accepted Order Summary (Business). The Order Summary, this Agreement and Annex A form the subscription contract.",
             "The authorised signer confirms their authority to bind the Business. The accepted version, completed order details, signer name/title, electronic signature, confirmations, timestamp and document hash are retained as the acceptance record. Signing records the agreement; payment is a separate step. Viewing the public agreement does not create an account or charge a fee."
           ]
         },
@@ -580,15 +581,15 @@
           "As quoted"
         ]
       ],
-      "version": "2026-10-18-v1"
+      "version": "2026-11-25-v1"
     }
   },
   "versions": {
-    "business_agreement": "2026-10-18-v1",
+    "business_agreement": "2026-11-25-v1",
     "terms": "2026-10-18-v1",
-    "privacy": "2026-10-11-v2",
+    "privacy": "2026-11-25-v1",
     "dpa": "2026-10-11-v2",
-    "presentation": "2026-10-11-v2",
+    "presentation": "2026-11-25-v1",
     "membership_notice": "2026-10-11-v3"
   }
 }

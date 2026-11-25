@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import logo192 from './logo-192.png'
 import { trackEvent } from '../analytics'
 import { sendBusinessInquiry } from './businessInquiry'
+import policy from '../legal-content.json'
 import { COUNTRY_OPTIONS, formatMoney } from './currency'
 import customerStep1Scan from '../assets/customer-step-1-scan.png'
 import customerStep2Form from '../assets/customer-step-2-form.png'
@@ -89,6 +90,7 @@ const PAGE_CONTENT = {
       'That is where the focus on customer retention and sustainable growth began. LoyaltyTree was built to help service industry businesses turn everyday transactions into lasting customer relationships through loyalty, rewards, communication, customer insights, and meaningful engagement.',
       'Whether it is a café, restaurant, salon, automotive service, retail service, wellness business, local shop, or another customer-focused service business, the goal is the same: give businesses practical tools to recognize their customers, understand their activity, reward their loyalty, and stay connected beyond a single transaction.',
       'What started as a local idea in Isabela is growing into a platform with a broader purpose: helping service businesses of different sizes establish better customer connections, encourage repeat visits, and build long-term customer value.',
+      `LoyaltyTree is operated by ${policy.operator.name}, a Philippine ${policy.operator.entity_type} with its registered business location in ${policy.operator.location}. Isabela is part of our founding story, not our current registered business address. Our cloud-based software is delivered online to participating businesses; their shops and branches are their own establishments, not LoyaltyTree offices.`,
     ],
     founder: {
       role: 'Developer & Founder',
@@ -1168,9 +1170,10 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
           <div style={s.contactCard}>
             <div style={s.contactIconBox}>🏢</div>
             <div>
-              <div style={s.contactLabel}>BUSINESS</div>
-              <div style={s.contactValue}>LoyaltyTree Information Technology Solutions</div>
-              <div style={s.contactMeta}>Isabela, Philippines</div>
+              <div style={s.contactLabel}>REGISTERED BUSINESS</div>
+              <div style={s.contactValue}>{policy.operator.name}</div>
+              <div style={s.contactMeta}>{policy.operator.entity_type} · {policy.operator.location}</div>
+              <div style={s.contactMeta}>Cloud-based software services delivered online</div>
             </div>
           </div>
 
@@ -1282,8 +1285,9 @@ function PublicInfoPage({ type='overview', API_BASE='' }) {
 
     <footer style={s.footer}>
       <div style={s.footerIdentity}>
-        <strong>LoyaltyTree Information Technology Solutions</strong>
-        <span>Isabela, Philippines · 0939 799 2144 · theloyaltytree@gmail.com</span>
+        <strong>{policy.operator.name}</strong>
+        <span>{policy.operator.entity_type} · Registered business location: {policy.operator.location}</span>
+        <span>0939 799 2144 · theloyaltytree@gmail.com</span>
         <span>© {new Date().getFullYear()} LoyaltyTree. All rights reserved.</span>
       </div>
       <div style={s.footerActions}>
