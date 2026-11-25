@@ -903,7 +903,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
           {step === 'empty' && <button type="button" className="lt-qr-primary lt-qr-wide" onClick={closeCart}>Browse the menu</button>}
           {step === '' && <>
             <div className="lt-v19-cart-subtotal"><span>Subtotal</span><strong>{money(total)}</strong></div>
-            <button type="button" className="lt-qr-primary lt-qr-wide lt-v19-checkout-cta" disabled={checkingCard || needsBranch} onClick={startCheckout}>{checkingCard ? 'One moment…' : 'Checkout'}{!checkingCard && <span aria-hidden="true">→</span>}</button>
+            <button type="button" className="lt-qr-primary lt-qr-wide lt-v19-checkout-cta" disabled={checkingCard || needsBranch} onClick={startCheckout}><span className="lt-v19-checkout-label">{checkingCard ? 'One moment…' : 'Continue to details'}</span>{!checkingCard && <span aria-hidden="true">→</span>}</button>
           </>}
           {step === 'service' && <>
             <button type="button" className="lt-qr-primary lt-qr-wide" disabled={!detailsReady} onClick={() => { if (!detailsReady) return; setSubmitError(''); setPayStep('payment') }}>Continue to payment</button>
