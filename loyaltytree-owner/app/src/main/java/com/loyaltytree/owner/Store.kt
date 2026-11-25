@@ -380,6 +380,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         members = emptyList()
         menuRows = emptyList()
         orders = emptyList()
+        ordersBranch = ""
         daySummary = null
         staffNeedsBranch = false
         status = ""
@@ -581,6 +582,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     }
 
     fun chooseOrdersBranch(id: String) {
+        if (ordersBranch != id) daySummary = null
         ordersBranch = id
         val current = session ?: return
         viewModelScope.launch { fetchSummary(current) }
@@ -591,8 +593,10 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
             daySummary = null
             return
         }
-        val branch = java.net.URLEncoder.encode(ordersBranch, "UTF-8")
+        val requestedBranch = ordersBranch
+        val branch = java.net.URLEncoder.encode(requestedBranch, "UTF-8")
         val result = io { API.get("/api/v1/business/${current.slug}/menu-orders/summary?branch=$branch", current.token) }
+        if (session != current || ordersBranch != requestedBranch) return
         if (result == null || result.first >= 400) {
             daySummary = null
             return
