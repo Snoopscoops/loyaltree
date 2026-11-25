@@ -47,3 +47,23 @@ test('public checkout defaults to cash and shows disabled Card and QRPH test opt
   assert.match(page,/disabled=\{submitting \|\| value !== 'cash'\}/)
   assert.doesNotMatch(page,/lt-v15-qrph-brands|GCash|Maya|Payment processing|Enter card details|Seeds|Sprouts|Silver Perks/i)
 })
+
+test('public checkout uses the native top layer and follows the visible viewport, while owner preview stays inline',async()=>{
+  const {readFile}=await import('node:fs/promises')
+  const page=await readFile(new URL('../src/components/QRMenuPage.jsx',import.meta.url),'utf8')
+  const css=await readFile(new URL('../src/components/qr-menu.css',import.meta.url),'utf8')
+  assert.ok(page.includes("const CartOverlay = preview ? 'div' : 'dialog'"))
+  assert.ok(page.includes('overlay?.showModal()'))
+  assert.ok(page.includes('if (overlay?.open) overlay.close()'))
+  for (const event of ['resize','scroll']) {
+    assert.ok(page.includes("viewport?.addEventListener('"+event+"', syncViewport)"))
+    assert.ok(page.includes("viewport?.removeEventListener('"+event+"', syncViewport)"))
+  }
+  for (const [variable,property] of [['top','offsetTop'],['left','offsetLeft'],['width','width'],['height','height']]) {
+    assert.ok(page.includes("'--lt-cart-viewport-"+variable+"', \`${viewport."+property+"}px\`".replaceAll('\\','')))
+  }
+  assert.match(css,/dialog\.lt-qr-cart\s*\{[^}]*align-items:flex-end/)
+  assert.match(css,/height:var\(--lt-cart-viewport-height,100dvh\)/)
+  assert.match(css,/\.lt-qr-cart-card\s*\{\s*margin:0; max-height:calc\(100% - 16px\)/)
+  assert.match(css,/\.lt-qr-sheet-foot\s*\{flex-shrink:0; padding-bottom:calc\(14px \+ env\(safe-area-inset-bottom,0px\)\)/)
+})

@@ -391,6 +391,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   // save reuses them so the shop never gets two different orders for one tap.
   const pendingIds = useRef(null)
   const sheetRef = useRef(null)
+  const cartOverlayRef = useRef(null)
   const dockRef = useRef(null)
   const sheetTitleId = useId()
   const menuHeading = useRef(null)
@@ -494,9 +495,35 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   useEffect(() => {
     if (!cartOpen) return undefined
     let previous = ''
-    if (!preview) { previous = document.body.style.overflow; document.body.style.overflow = 'hidden' }
+    const overlay = cartOverlayRef.current
+    const viewport = window.visualViewport
+    // Public checkout belongs to the browser top layer, not a scrolling menu
+    // ancestor. Follow the visible viewport when Android chrome or keyboard moves.
+    const syncViewport = () => {
+      if (!overlay || !viewport || viewport.width <= 0 || viewport.height <= 0) return
+      overlay.style.setProperty('--lt-cart-viewport-top', `${viewport.offsetTop}px`)
+      overlay.style.setProperty('--lt-cart-viewport-left', `${viewport.offsetLeft}px`)
+      overlay.style.setProperty('--lt-cart-viewport-width', `${viewport.width}px`)
+      overlay.style.setProperty('--lt-cart-viewport-height', `${viewport.height}px`)
+    }
+    if (!preview) {
+      previous = document.body.style.overflow
+      document.body.style.overflow = 'hidden'
+      syncViewport()
+      overlay?.showModal()
+      syncViewport()
+      viewport?.addEventListener('resize', syncViewport)
+      viewport?.addEventListener('scroll', syncViewport)
+      window.addEventListener('resize', syncViewport)
+    }
     return () => {
-      if (!preview) document.body.style.overflow = previous
+      if (!preview) {
+        viewport?.removeEventListener('resize', syncViewport)
+        viewport?.removeEventListener('scroll', syncViewport)
+        window.removeEventListener('resize', syncViewport)
+        if (overlay?.open) overlay.close()
+        document.body.style.overflow = previous
+      }
       setTimeout(() => dockRef.current?.focus?.({ preventScroll: true }), 0)
     }
   }, [cartOpen, preview])
@@ -670,6 +697,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
     setBuyerName(name)
   }
 
+  const CartOverlay = preview ? 'div' : 'dialog'
   return <div className={`lt-qr-public lt-qr-cafe lt-qr-v15${preview ? ' lt-qr-is-preview' : ''}${count ? ' lt-qr-has-cart' : ''}`}>
     <main className="lt-qr-page">
       {preview && <div className="lt-qr-preview-note">Owner preview · {data.is_published ? 'Published' : 'Not published'}</div>}
@@ -745,8 +773,8 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
         <button type="button" onClick={()=>{if(order){setPayStep('done');setCartOpen(true)}else openCart()}}><span aria-hidden="true">▣</span>Cart{count>0?` (${count})`:''}</button>
       </nav>
     </>}
-    {cartOpen && <div className="lt-qr-cart" onMouseDown={event => { if (event.target === event.currentTarget) closeCart() }}>
-      <div className="lt-qr-cart-card" ref={sheetRef} role="dialog" aria-modal="true" aria-labelledby={sheetTitleId} onKeyDown={onSheetKeyDown}>
+    {cartOpen && <CartOverlay ref={cartOverlayRef} className="lt-qr-cart" aria-labelledby={preview ? undefined : sheetTitleId} onCancel={event => { event.preventDefault(); closeCart() }} onMouseDown={event => { if (event.target === event.currentTarget) closeCart() }}>
+      <div className="lt-qr-cart-card" ref={sheetRef} role={preview ? 'dialog' : undefined} aria-modal={preview ? true : undefined} aria-labelledby={preview ? sheetTitleId : undefined} onKeyDown={onSheetKeyDown}>
         <header className="lt-qr-sheet-head">
           <div>
             <h2 id={sheetTitleId} tabIndex={-1}>{title}</h2>
@@ -870,7 +898,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
           {step === 'done' && <>{order?.status === 'completed' && <button type="button" className="lt-qr-primary lt-qr-wide" onClick={orderAgain}>Order again · review cart</button>}<button type="button" className={order?.status === 'completed' ? 'lt-qr-back-button' : 'lt-qr-primary lt-qr-wide'} onClick={closeCart}>Back to menu</button></>}
         </footer>
       </div>
-    </div>}
+    </CartOverlay>}
   </div>
 }
 function MenuLoading() {
