@@ -38,6 +38,8 @@ def option_ids_for(item, snapshot):
 def register_menu_inventory_routes(app, *, db, operator, menu_snapshot):
     def current(public_id, auth):
         business, scope = operator(public_id, auth)
+        if scope.get('role') != 'owner' and not scope.get('branch'):
+            raise HTTPException(403, 'Ask the owner to assign your branch before managing stock.')
         if str(business.get('status') or '').upper() != 'ACTIVE':
             raise HTTPException(403, 'An active business is required.')
         return business, scope

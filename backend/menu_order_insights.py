@@ -336,9 +336,9 @@ def order_insights(rows, customers, today, branch='', days=30):
 
 # ---------------------------------------------------------------- periods ---
 
-PERIODS = {'today': 'Today', 'week': 'This week', 'month': 'This month', '3months': 'Last 3 months'}
+PERIODS = {'today': 'Today', 'week': 'This week', 'month': 'This month', '3months': 'Last 3 months', '6months': 'Last 6 months'}
 PERIOD_ALIASES = {'1d': 'today', '7d': 'week', '30d': 'month', '90d': '3months', 'this_week': 'week',
-                  'this_month': 'month', '3m': '3months', 'quarter': '3months'}
+                  'this_month': 'month', '3m': '3months', 'quarter': '3months', '6m': '6months', '180d': '6months'}
 
 
 def normalize_period(value):
@@ -366,8 +366,8 @@ def period_days(period, today):
     if period == 'week':
         start = today - timedelta(days=today.weekday())
         return start, end, start - timedelta(days=7), end - timedelta(days=7)
-    start = today.replace(day=1) if period == 'month' else _shift_months(today.replace(day=1), -2)
-    months = 1 if period == 'month' else 3
+    months = {'month': 1, '3months': 3, '6months': 6}[period]
+    start = _shift_months(today.replace(day=1), 1 - months)
     previous_start = _shift_months(start, -months)
     previous_end = min(_shift_months(today, -months) + timedelta(days=1), start)
     return start, end, previous_start, previous_end
@@ -439,7 +439,7 @@ def sales_trend(rows, period, start_day, today):
             hits = [amount for when, amount in placed if when.hour == hour]
             buckets.append({'label': _hour_label(hour), 'key': f'{hour:02d}', 'orders': len(hits), 'sales': round(sum(hits), 2)})
         return 'hour', buckets
-    if period == '3months':
+    if period in ('3months', '6months'):
         week = start_day - timedelta(days=start_day.weekday())
         while week <= today:
             stop = week + timedelta(days=7)
@@ -476,6 +476,45 @@ def ranked_items(rows, limit=10):
     return [{'name': name, 'quantity': qty, 'sales': round(sales[name], 2)} for name, qty in ordered]
 
 
+def product_buyer_insights(rows, customers, today, limit=20):
+    """Paid menu orders only. Counts describe orders containing an item, not people.
+    Small demographic cohorts are never returned as exact counts or percentages.
+    """
+    paid = [r for r in rows if r.get('status') != 'cancelled' and r.get('payment_status') == 'paid']
+    members = {str(c['public_id']): c for c in customers if c.get('public_id')}
+    by_item = defaultdict(list)
+    for row in paid:
+        for name in {name for name, _ in _items(row)}:
+            by_item[name].append(row)
+    products = []
+    for item in ranked_items(paid, limit):
+        hits = by_item[item['name']]
+        groups = []
+        hidden = 0
+        for field, title, labels in (
+            ('age', 'Age range', AGE_LABELS), ('gender', 'Gender', GENDER_LABELS),
+            ('occupation', 'Occupation', OCCUPATION_LABELS),
+        ):
+            buckets = defaultdict(list)
+            for row in hits:
+                member = members.get(str(row.get('member_customer_public_id') or ''))
+                if not member:
+                    continue
+                key = age_bracket(member, today) if field == 'age' else str(member.get(field) or '').strip().lower()
+                if key in labels:
+                    buckets[key].append(row)
+            for key, cohort in buckets.items():
+                people = {str(r['member_customer_public_id']) for r in cohort}
+                if len(cohort) < MIN_GROUP_ORDERS or len(people) < MIN_GROUP_MEMBERS:
+                    hidden += 1
+                    continue
+                groups.append({'dimension': title, 'label': labels[key], 'orders': len(cohort)})
+        groups.sort(key=lambda g: (g['dimension'], -g['orders'], g['label']))
+        products.append({'name': item['name'], 'quantity': item['quantity'], 'orders': len(hits),
+                         'groups': groups, 'hidden_groups': hidden})
+    return products
+
+
 def period_report(rows, previous_rows, customers, period, today, branch=''):
     """Everything the Analytics screen needs for one period and (optional) branch."""
     period = normalize_period(period) or 'month'
@@ -491,6 +530,7 @@ def period_report(rows, previous_rows, customers, period, today, branch=''):
         'previous_start': previous_start.isoformat(), 'previous_end': (previous_end - timedelta(days=1)).isoformat(),
         'kpis': current, 'previous': before, 'change': kpi_changes(current, before),
         'trend_unit': unit, 'trend': trend, 'top_items': ranked_items(scoped, 10),
+        'product_buyers': product_buyer_insights(scoped, customers, today),
     })
     return report
 
@@ -663,7 +703,15 @@ def sales_report(rows, customers, start_day, end_day, branch='', business_name='
             most = ', '.join(f"{item['name']} x{item['quantity']}" for item in group['top_items']) or '-'
             w.writerow([section['title'], group['label'], group['orders'], group['share_percent'], most])
     w.writerow([])
+    w.writerow(['PRODUCT BUYER GROUPS (PAID ORDERS)', 'Dimension', 'Group', 'Orders containing item'])
+    for product in product_buyer_insights(scoped, customers, end_day):
+        for group in product['groups']:
+            w.writerow([product['name'], group['dimension'], group['label'], group['orders']])
+        if product['hidden_groups']:
+            w.writerow([product['name'], 'Small groups suppressed'])
+    w.writerow([])
     w.writerow(['Notes'])
+    w.writerow(['Product buyer groups use confirmed paid orders; counts are orders, not unique buyers.'])
     w.writerow(['Age range, gender and occupation come only from loyalty cards connected on the menu.'])
     w.writerow(['Small groups are hidden so one customer cannot be identified. Weekly or monthly reports show more groups.'])
     w.writerow(['Phone numbers and emails are not included.'])
@@ -763,6 +811,8 @@ def register_menu_order_insight_routes(app, *, db, get_business, require_owner, 
             customers = read_customers(db, business['id'], [row.get('member_customer_public_id') for row in filter_branch(rows, branch)])
         except Exception as exc:
             raise HTTPException(status_code=503, detail=f'Menu orders are not ready yet: {friendly_error(exc)}')
+        if len(rows) >= MAX_ROWS:
+            raise HTTPException(413, 'Report row limit reached. Select a shorter period for complete results.')
         report = sales_report(rows, customers, start_day, end_day, branch,
                               str(business.get('name') or ''), _branch_name(db, business['id'], branch, rows))
         if str(format or '').lower() == 'json':
@@ -833,6 +883,8 @@ def register_menu_order_insight_routes(app, *, db, get_business, require_owner, 
                 customers = read_customers(db, business['id'], [row.get('member_customer_public_id') for row in current])
             except Exception as exc:
                 raise HTTPException(status_code=503, detail=f'Menu orders are not ready yet: {friendly_error(exc)}')
+            if len(rows) >= MAX_ROWS:
+                raise HTTPException(413, 'Analytics row limit reached. Select a shorter period for complete results.')
             return period_report(current, previous, customers, chosen, today, branch.strip())
         days = max(1, min(365, int(days or 30)))
         today = datetime.now(MANILA).date()

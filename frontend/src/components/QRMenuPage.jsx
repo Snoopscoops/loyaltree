@@ -5,7 +5,7 @@ import loyaltyTreeLogo from './logo-192.png'
 import { requestJsonResponse } from './requestTimeout'
 import { ORDER_TRACKING_STEPS, menuOrderPhase, fetchMenuOrderPhase } from './qrMenuOrderTracking'
 import { saveRecentOrder, readRecentOrder, forgetRecentOrder, buildReorderDraft } from './qrMenuRecentOrder'
-import { addonRequest, canAddToOrder } from './qrMenuAddons'
+import { addonRequest, canAddToOrder, tableBill } from './qrMenuAddons'
 import './qr-menu.css'
 import { checkoutRewardIsEligible, checkoutRewardSelectionPayload } from './qrMenuRedemption'
 import './qr-menu-rewards.css' // owner-v11
@@ -370,6 +370,8 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   const [cartOpen, setCartOpen] = useState(false)
   const [order, setOrder] = useState(null)
   const [family, setFamily] = useState(null)
+  const familyRevision = useRef(0)
+  const [selectionEpoch, setSelectionEpoch] = useState(0)
   const [addonMode, setAddonMode] = useState(false)
   const [addonError, setAddonError] = useState('')
   const addonPending = useRef(null)
@@ -516,8 +518,9 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
       if (stopped || busy || document.visibilityState === 'hidden') return
       busy = true
       try {
+        const revision = familyRevision.current
         const result = await addonRequest({ fetchImpl: fetch, apiBase, businessId: business.public_id, order, signal: controller.signal })
-        if (!stopped) { setFamily(result); setAddonError('') }
+        if (!stopped && revision === familyRevision.current) { setFamily(result); setAddonError('') }
       } catch { if (!stopped) { setFamily(current => current ? { ...current, can_add: false } : null); setAddonError('Cannot verify add-ons right now. Last known status shown.') } }
       finally { busy = false }
     }
@@ -529,7 +532,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   const canAdd = !preview && canAddToOrder(order, family, branchId)
   const beginAddon = () => {
     if (!canAdd || submittingRef.current) return
-    setAddonMode(true); setCart([]); setOrderNote(''); setPayStep(''); setCartOpen(false)
+    setAddonMode(true); setCart([]); setSelectionEpoch(value => value + 1); setOrderNote(''); setPayStep(''); setCartOpen(false)
     setSubmitError(''); setSelectedReward(null); addonPending.current = null; setAddonLocked(false)
   }
   const cancelAddon = () => {
@@ -545,8 +548,9 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
     submittingRef.current = true; setSubmitting(true); setAddonLocked(true); setSubmitError('')
     try {
       const result = await addonRequest({ fetchImpl: fetch, apiBase, businessId: business.public_id, order, payload: addonPending.current })
-      setFamily(current => current ? { ...current, children: [...current.children.filter(c => c.public_id !== result.order.public_id), result.order] } : current)
-      addonPending.current = null; setAddonLocked(false); setAddonMode(false); setCart([]); setPayStep('done')
+      familyRevision.current += 1
+      setFamily(current => current?.parent?.public_id === order.server_order_id ? { ...current, children: [...current.children.filter(c => c.public_id !== result.order.public_id), result.order] } : current)
+      addonPending.current = null; setAddonLocked(false); setAddonMode(false); setCart([]); setSelectionEpoch(value => value + 1); setPayStep('done')
     } catch (error) {
       if ([400, 409, 422].includes(error.status)) { addonPending.current = null; setAddonLocked(false) }
       setSubmitError(error.message || 'Could not confirm the add-on. Retry the same request.')
@@ -698,6 +702,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
     pendingIds.current = null
     setCopied(false)
     setCart([])
+    setSelectionEpoch(value => value + 1)
     setPayStep('done')
   }
 
@@ -742,6 +747,8 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
 
   const step = payStep === 'done' ? 'done' : !cart.length ? 'empty' : payStep
   const receipt = order ? receiptCopy(order.payment_method, money(order.subtotal), business.name) : null
+  const activeFamily = family?.parent?.public_id === order?.server_order_id ? family : null
+  const bill = tableBill(order, activeFamily)
   const phase = order ? menuOrderPhase(order) : null
   const title = step === 'done' ? (phase?.title || 'Your order') : step === 'service' ? 'Order details' : step === 'payment' ? 'Review & pay' : 'Your cart'
   const stepIndex = CHECKOUT_STEPS.findIndex(([value]) => value === payStep)
@@ -801,14 +808,14 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
         {(data.actions||[]).length>0 && <div className="lt-qr-cafe-actions lt-v15-extras">{data.actions.map(action=><a key={action.id} href={action.url} target="_blank" rel="noreferrer" className={action.id==='book'?'is-book':''}><strong>{action.label}</strong>{action.note?<span>{action.note}</span>:null}</a>)}</div>}
         <section className="lt-qr-stream lt-v15-menu" aria-label="Menu items">
           <div className="lt-v15-section-head"><h2 ref={menuHeading} tabIndex={-1}>{search.trim()?'Search results':selectedCategory?.name||'All items'}</h2><small>{items.length} {items.length===1?'item':'items'}</small></div>
-          {items.map(value=><FastConfigureCard key={value.public_id} product={value} category={categoryName[value.public_id]} branchId={branchId} cart={cart} money={money} onOpen={setItem} onAdd={addItem} onQuantity={changeLine} />)}
+          {items.map(value=><FastConfigureCard key={`${value.public_id}:${selectionEpoch}`} product={value} category={categoryName[value.public_id]} branchId={branchId} cart={cart} money={money} onOpen={setItem} onAdd={addItem} onQuantity={changeLine} />)}
           {!items.length && <div className="lt-qr-empty" role="status"><h3>{search?'No matches yet.':'Nothing in this category.'}</h3><p>{search?'Try another word.':'Check another category.'}</p></div>}
         </section>
       </>}
       <footer className="lt-qr-footer"><img src={loyaltyTreeLogo} alt="" /><span>Menu by <strong>Loyalty Tree</strong></span></footer>
     </main>
     {addonMode && <p className="lt-qr-reorder-notice" role="status">Adding to order {order?.order_number} · Table {order?.table_no || '—'}. Pay separately at the counter. <button type="button" disabled={addonLocked || submitting} onClick={cancelAddon}>Cancel add-on</button></p>}
-    {item && <ItemDetails key={item.public_id} item={item} branchId={branchId} available={menuItemAvailable(item, branchId)} money={money} onClose={() => setItem(null)} onAdd={addItem} />}
+    {item && <ItemDetails key={`${item.public_id}:${selectionEpoch}`} item={item} branchId={branchId} available={menuItemAvailable(item, branchId)} money={money} onClose={() => setItem(null)} onAdd={addItem} />}
     {!order && savedReceipt && !cartOpen && !needsBranch && count === 0 && <div className="lt-qr-resume-dock" role="region" aria-label="Recent order tracking">
       <p><strong>Recent order saved on this device</strong><small>Tap to securely check its latest status. Available for 3 days.</small></p>
       <div className="lt-qr-resume-actions">
@@ -946,13 +953,13 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
               <div><dt>Order type</dt><dd>{serviceLine(order.service, order.table_no, order.pickup_label)}</dd></div>
               {order.buyer_name && <div><dt>Name</dt><dd>{order.buyer_name}</dd></div>}
               {order.customer_note && <div><dt>Note</dt><dd className="lt-qr-note-display">{order.customer_note}</dd></div>}
-              <div><dt>Payment</dt><dd><span className={`lt-qr-paid-pill${order.payment_method === 'cash' && order.payment_status !== 'paid' ? ' is-unpaid' : ''}`}>{order.payment_method === 'cash' && order.payment_status === 'paid' ? 'Cash · Paid' : paymentReceiptLabel(order.payment_method)}</span></dd></div>
+              <div><dt>{activeFamily ? "Main order payment" : "Payment"}</dt><dd><span className={`lt-qr-paid-pill${order.payment_method === 'cash' && order.payment_status !== 'paid' ? ' is-unpaid' : ''}`}>{order.payment_method === 'cash' && order.payment_status === 'paid' ? 'Cash · Paid' : paymentReceiptLabel(order.payment_method)}</span></dd></div>
               {order.reward && <div><dt>Reward</dt><dd>🎁 {order.reward.name} ({phase?.cancelled ? 'not redeemed' : order.status === 'completed' ? 'redeemed' : 'reserved until paid and completed'})</dd></div>}
               {order.status === 'completed' && <div><dt>Loyalty</dt><dd>Check your connected Wallet card for the latest stamps or points.</dd></div>}
             </dl>
-            <ul className="lt-qr-cart-lines is-compact" aria-label="Items ordered">{(order.lines || []).map(line => <CartLine key={line.key} line={line} money={money} />)}</ul>
-            <dl className="lt-qr-totals"><div className="is-total"><dt>{order.payment_method === 'cash' && order.payment_status === 'paid' ? 'Order total' : receipt.totalLabel}</dt><dd>{money(order.subtotal)}</dd></div></dl>
-            {family && <section className="lt-qr-pay" aria-label="Dine-in order group"><h3>Your table orders</h3><dl className="lt-qr-summary">{[family.parent, ...family.children].map((entry, index) => <div key={entry.public_id}><dt>{entry.order_number} · {index ? 'Add-on' : 'Main order'}</dt><dd>{money(entry.total)} · {entry.status === 'cancelled' ? 'Cancelled' : entry.payment_status === 'paid' ? 'Paid' : 'Pay at counter'} · {entry.status}</dd></div>)}</dl></section>}
+            <ul className="lt-qr-cart-lines is-compact" aria-label={activeFamily ? "Original main order items" : "Items ordered"}>{(order.lines || []).map(line => <CartLine key={line.key} line={line} money={money} />)}</ul>
+            {order.addon_token ? bill ? <dl className="lt-qr-totals" aria-label="Combined table bill"><div><dt>Combined bill</dt><dd>{money(bill.total)}</dd></div><div><dt>Paid</dt><dd>{money(bill.paid)}</dd></div><div className="is-total"><dt>To pay at the counter</dt><dd>{money(bill.balance)}</dd></div></dl> : <p role="status">Checking your combined bill…</p> : <dl className="lt-qr-totals"><div className="is-total"><dt>{order.payment_method === 'cash' && order.payment_status === 'paid' ? 'Order total' : receipt.totalLabel}</dt><dd>{money(order.subtotal)}</dd></div></dl>}
+            {activeFamily && <section className="lt-qr-pay" aria-label="Dine-in order group"><h3>Your table orders</h3><dl className="lt-qr-summary">{[activeFamily.parent, ...activeFamily.children].map((entry, index) => <div key={entry.public_id}><dt>{entry.order_number} · {index ? 'Add-on' : 'Main order'}</dt><dd>{money(entry.total)} · {entry.status === 'cancelled' ? 'Cancelled' : entry.payment_status === 'paid' ? 'Paid' : 'Pay at counter'} · {entry.status}</dd></div>)}</dl></section>}
             {addonError && <p role="status">{addonError}</p>}
             {order.status === 'completed' && <p className="lt-qr-complete-note">Thanks for ordering! Your receipt is saved on this device for up to 3 days. You can order again using the current menu.</p>}
             {order.status === 'completed' && <button type="button" className="lt-qr-privacy-clear" onClick={forgetLastOrder}>Forget this order on this device</button>}

@@ -21,3 +21,22 @@ export async function addonRequest({ fetchImpl, apiBase, businessId, order, payl
   }
   return data
 }
+
+/** Display-only totals from a receipt-scoped server snapshot; never infer payment. */
+export function tableBill(order, family) {
+  if (!order?.server_order_id || family?.parent?.public_id !== order.server_order_id || !Array.isArray(family.children)) return null
+  const seen = new Set()
+  let total = 0, paid = 0, balance = 0
+  for (const entry of [family.parent, ...family.children]) {
+    if (!entry?.public_id || seen.has(entry.public_id)) continue
+    seen.add(entry.public_id)
+    if (entry.status === 'cancelled') continue
+    if (entry.total == null || entry.total === '') return null
+    const amount = Math.round(Number(entry.total) * 100)
+    if (!Number.isSafeInteger(amount) || amount < 0) return null
+    total += amount
+    if (entry.payment_status === 'paid') paid += amount
+    else balance += amount
+  }
+  return { total: total / 100, paid: paid / 100, balance: balance / 100 }
+}
