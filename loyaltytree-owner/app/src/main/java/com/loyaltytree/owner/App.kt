@@ -76,6 +76,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -97,6 +98,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.imageResource
 import androidx.compose.ui.unit.IntOffset
@@ -2604,9 +2606,94 @@ private fun CampaignScreen(store: CounterStore) {
     }
 }
 
+internal data class BillboardPoint(val latitude: Double, val longitude: Double) {
+    fun label() = String.format(Locale.US, "%.6f, %.6f", latitude, longitude)
+
+    // OSM's supported embed page accepts a bounding box and exact marker.
+    fun embedUrl(): String {
+        val dLat = .003
+        val dLng = dLat / kotlin.math.cos(Math.toRadians(latitude)).coerceAtLeast(.1)
+        val bbox = listOf((longitude - dLng).coerceAtLeast(-180.0),
+            (latitude - dLat).coerceAtLeast(-85.051128), (longitude + dLng).coerceAtMost(180.0),
+            (latitude + dLat).coerceAtMost(85.051128)).joinToString(",")
+        return Uri.parse("https://www.openstreetmap.org/export/embed.html").buildUpon()
+            .appendQueryParameter("bbox", bbox).appendQueryParameter("layer", "mapnik")
+            .appendQueryParameter("marker", "$latitude,$longitude").build().toString()
+    }
+
+    fun mapsUrl(): String = Uri.parse("https://www.openstreetmap.org/").buildUpon()
+        .appendQueryParameter("mlat", latitude.toString()).appendQueryParameter("mlon", longitude.toString())
+        .fragment("map=18/$latitude/$longitude").build().toString()
+}
+
+internal fun billboardPoint(latText: String, lngText: String): BillboardPoint? {
+    val lat = latText.trim().toDoubleOrNull() ?: return null
+    val lng = lngText.trim().toDoubleOrNull() ?: return null
+    if (!lat.isFinite() || !lng.isFinite() || lat !in -85.0..85.0 || lng !in -180.0..180.0) return null
+    return BillboardPoint(lat, lng)
+}
+
+@Composable
+private fun BillboardMapPreview(point: BillboardPoint, retry: Int, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    var failed by remember(point, retry) { mutableStateOf(false) }
+    var loading by remember(point, retry) { mutableStateOf(true) }
+    androidx.compose.runtime.key(point, retry) {
+        val web = remember(context) {
+            android.webkit.WebView(context).apply {
+                settings.javaScriptEnabled = true
+                settings.allowFileAccess = false
+                settings.allowContentAccess = false
+                settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
+                settings.javaScriptCanOpenWindowsAutomatically = false
+                settings.setSupportMultipleWindows(false)
+                settings.userAgentString = settings.userAgentString + " LoyaltyTreeOwner/1.0 (theloyaltytree.com)"
+                android.webkit.CookieManager.getInstance().setAcceptThirdPartyCookies(this, false)
+                webViewClient = object : android.webkit.WebViewClient() {
+                    override fun shouldOverrideUrlLoading(view: android.webkit.WebView, request: android.webkit.WebResourceRequest): Boolean {
+                        if (!request.isForMainFrame) return false
+                        val u = request.url
+                        if (u.scheme == "https" && u.host == "www.openstreetmap.org" && u.path == "/export/embed.html") return false
+                        if (request.hasGesture() && u.scheme == "https" && u.host in setOf("www.openstreetmap.org", "openstreetmap.org")) {
+                            runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, u)) }
+                        }
+                        return true
+                    }
+                    override fun onReceivedError(view: android.webkit.WebView, request: android.webkit.WebResourceRequest, error: android.webkit.WebResourceError) {
+                        if (request.isForMainFrame) { failed = true; loading = false }
+                    }
+                    override fun onReceivedHttpError(view: android.webkit.WebView, request: android.webkit.WebResourceRequest, errorResponse: android.webkit.WebResourceResponse) {
+                        if (request.isForMainFrame) { failed = true; loading = false }
+                    }
+                    override fun onPageFinished(view: android.webkit.WebView, url: String?) { loading = false }
+                }
+                setOnTouchListener { v, event ->
+                    when (event.actionMasked) {
+                        android.view.MotionEvent.ACTION_DOWN, android.view.MotionEvent.ACTION_MOVE -> v.parent?.requestDisallowInterceptTouchEvent(true)
+                        android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> v.parent?.requestDisallowInterceptTouchEvent(false)
+                    }
+                    false
+                }
+                loadUrl(point.embedUrl())
+            }
+        }
+        DisposableEffect(web) { onDispose { web.stopLoading(); web.destroy() } }
+        Box(modifier.fillMaxWidth().height(260.dp).clip(Shape).background(Track)) {
+            AndroidView(factory = { web }, modifier = Modifier.fillMaxSize())
+            if (loading || failed) Box(Modifier.fillMaxSize().background(Color(0xFFEAF6F0)), contentAlignment = Alignment.Center) {
+                Text(if (failed) "Map unavailable. Refresh preview or open the map in your browser." else "Loading map…",
+                    color = Muted, fontSize = 13.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(16.dp))
+            }
+        }
+    }
+}
+
 @Composable
 private fun BillboardScreen(store: CounterStore) {
     val context = LocalContext.current
+    val currentPin = billboardPoint(store.pinLat, store.pinLng)
+    var previewPin by remember { mutableStateOf<BillboardPoint?>(null) }
+    var mapRetry by remember { mutableIntStateOf(0) }
     val location = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (!granted) { store.status = "Location was not allowed. Type the pin instead."; return@rememberLauncherForActivityResult }
         val manager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
@@ -2637,11 +2724,31 @@ private fun BillboardScreen(store: CounterStore) {
                 Text("${store.billboardMessage.length} / 80", color = Muted, fontSize = 12.sp, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.End)
             }
             Card {
-                Text("Location", color = Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text("Business location", color = DeepTeal, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Text("Check the pin on the map before saving. Nearby alerts use a 150 m radius.", color = Muted, fontSize = 13.sp)
                 Field("Place name", store.pinLabel, { store.pinLabel = it })
                 Field("Latitude", store.pinLat, { store.pinLat = it })
                 Field("Longitude", store.pinLng, { store.pinLng = it })
                 Secondary("Use this phone's location") { location.launch(Manifest.permission.ACCESS_FINE_LOCATION) }
+                if (currentPin == null && (store.pinLat.isNotBlank() || store.pinLng.isNotBlank())) {
+                    Text("Enter valid latitude and longitude.", color = Bad, fontSize = 12.sp)
+                }
+                Primary(if (previewPin == null) "Preview pin on map" else "Refresh map preview", enabled = currentPin != null) {
+                    previewPin = currentPin
+                    mapRetry += 1
+                }
+                val shown = previewPin
+                if (shown != null && shown == currentPin) {
+                    BillboardMapPreview(shown, mapRetry)
+                    Text("Pin: ${shown.label()} · 150 m alert radius (not drawn)", color = DeepTeal, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    TextButton(onClick = {
+                        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(shown.mapsUrl()))) }
+                            .onFailure { store.status = "No map browser available." }
+                    }) { Text("Open full map · © OpenStreetMap contributors", color = Forest, fontSize = 12.sp) }
+                } else if (shown != null) {
+                    Text("Coordinates changed. Refresh the map to verify the new pin.", color = Amber, fontSize = 12.sp)
+                }
+                Text("Map preview shares only the pin coordinates with OpenStreetMap. Saving uses LoyaltyTree's existing location settings.", color = Muted, fontSize = 11.sp)
             }
             Column(Modifier.fillMaxWidth().clip(Shape).background(Forest).padding(14.dp)) {
                 Text(store.session?.businessName ?: "LoyaltyTree", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
