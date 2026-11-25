@@ -1304,13 +1304,18 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
 
     fun saveBillboard() {
         val current = session ?: return
+        val lat = pinLat.trim().toDoubleOrNull()
+        val lng = pinLng.trim().toDoubleOrNull()
+        val validPin = lat != null && lng != null && lat.isFinite() && lng.isFinite() && lat in -85.0..85.0 && lng in -180.0..180.0
+        if (!validPin && (billboardOn || pinLat.isNotBlank() || pinLng.isNotBlank())) {
+            status = "Enter a valid latitude and longitude before saving."
+            return
+        }
         viewModelScope.launch {
             loading = true
             status = ""
             val next = JSONArray(pins.toString())
-            val lat = pinLat.toDoubleOrNull()
-            val lng = pinLng.toDoubleOrNull()
-            if (lat != null && lng != null) {
+            if (validPin && lat != null && lng != null) {
                 val pin = if (next.length() > 0) next.getJSONObject(0) else JSONObject()
                 pin.put("label", pinLabel.ifBlank { current.businessName })
                 pin.put("latitude", lat)
