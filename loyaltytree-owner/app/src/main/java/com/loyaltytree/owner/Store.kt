@@ -342,6 +342,9 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
 
     private var pins = JSONArray()
     private var cardConfig = JSONObject()
+    // Read-only copies of the published design metadata for local sample passes.
+    fun walletSampleMetadata(): JSONObject = JSONObject(cardConfig.toString())
+
     private var otherLinks = JSONArray()
 
     val joinLink: String get() = "https://theloyaltytree.com/join/${session?.slug.orEmpty()}"
