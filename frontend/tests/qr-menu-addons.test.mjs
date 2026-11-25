@@ -1,0 +1,31 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { canAddToOrder, addonRequest } from '../src/components/qrMenuAddons.js'
+import { saveRecentOrder, readRecentOrder } from '../src/components/qrMenuRecentOrder.js'
+const id = 'a'.repeat(32)
+const order = {server_order_id:id, addon_token:'receipt.signature', order_number:'001', status:'ready', payment_method:'cash', payment_status:'paid', service:'dine-in'}
+const family = {can_add:true, branch_public_id:'b1', parent:{public_id:id,status:'ready'},children:[]}
+test('only verified open same-branch parent can add',()=>{
+  assert.equal(canAddToOrder(order,family,'b1'),true)
+  assert.equal(canAddToOrder(order,family,'b2'),false)
+  assert.equal(canAddToOrder({...order,status:'completed'},family,'b1'),false)
+  assert.equal(canAddToOrder({...order,addon_token:''},family,'b1'),false)
+  assert.equal(canAddToOrder(order,{...family,can_add:false},'b1'),false)
+})
+test('post uses scoped receipt header and keeps request ID for retries',async()=>{
+  const payload={request_id:'same-id',items:[{item_id:'latte',quantity:1}]}
+  let calls=[]
+  const fetchImpl=async(url,opts)=>{calls.push([url,opts]);return {ok:true,json:async()=>({order:{public_id:'b'.repeat(32),payment_status:'unpaid',order_number:'001A'}})}}
+  for(let i=0;i<2;i++)await addonRequest({fetchImpl,apiBase:'https://example.test',businessId:'shop',order,payload})
+  assert.equal(calls[0][0],`https://example.test/api/v1/public/menu/shop/orders/${id}/sub-orders`)
+  assert.equal(calls[0][1].headers.Authorization,'Bearer receipt.signature')
+  assert.equal(calls[0][1].body,calls[1][1].body)
+})
+test('receipt persists only scoped addon token, not card token',()=>{
+  const data=new Map(), storage={setItem:(k,v)=>data.set(k,v),getItem:k=>data.get(k),removeItem:k=>data.delete(k)}
+  assert.equal(saveRecentOrder(storage,'shop',{...order,card_token:'private',buyer_name:'private'}),true)
+  const saved=readRecentOrder(storage,'shop')
+  assert.equal(saved.addon_token,order.addon_token)
+  assert.equal(saved.card_token,undefined)
+  assert.equal(saved.buyer_name,undefined)
+})
