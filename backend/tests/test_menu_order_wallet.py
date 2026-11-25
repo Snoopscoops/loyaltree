@@ -293,6 +293,31 @@ class AwardTest(unittest.TestCase):
         self.assertEqual(again['award'], {'skipped': 'already_awarded'})
         self.assertEqual(h.balances['points'], 125)
 
+    def test_tracked_settlement_requires_durable_claim(self):
+        db = DB(broken={TABLE})
+        h = Harness({'card_type': 'points'}, db=db)
+        settlement = order('completed', batch_a_stock_tracked=True, total=450)
+        self.assertEqual(h.run(h.hooks.status_changed(BUSINESS, settlement))['skipped'], 'error')
+        self.assertEqual(h.keys, [])
+        db.broken.clear()
+        self.assertEqual(h.run(h.hooks.status_changed(BUSINESS, settlement))['award']['points_earned'], 45)
+
+    def test_tracked_settlement_retries_server_error_and_awards_group_total_once(self):
+        h = Harness({'card_type': 'hybrid'}, points_error=HTTPException(503, 'Temporary database error'))
+        settlement = order('completed', batch_a_stock_tracked=True, total=450)
+        first = h.run(h.hooks.status_changed(BUSINESS, settlement))
+        self.assertEqual(first['award']['skipped'], 'error')
+        h.points_error = None
+
+        async def retry_concurrently():
+            return await asyncio.gather(h.hooks.status_changed(BUSINESS, settlement),
+                                        h.hooks.status_changed(BUSINESS, settlement))
+
+        attempted = h.run(retry_concurrently())
+        self.assertEqual({r['award'].get('skipped') for r in attempted}, {None, 'already_awarded'})
+        self.assertEqual(h.balances, {'points': 145, 'stamps': 7})
+        self.assertEqual(h.keys, ['menu-order:o1:points', 'menu-order:o1:points', 'menu-order:o1:stamp'])
+
 
 class MainWiringTest(unittest.TestCase):
     def test_main_py_hooks(self):
@@ -306,7 +331,8 @@ class MainWiringTest(unittest.TestCase):
         body = source[start:source.index('\n@app.', start)]
         self.assertIn('background_tasks: BackgroundTasks', body)
         # The wallet work is queued only after the order row is saved.
-        self.assertLess(body.index("if not saved:"), body.index('_menu_order_wallet.status_changed'))
+        self.assertLess(body.index("saved = result['order']"), body.index('_menu_order_wallet.status_changed'))
+        self.assertLess(body.index("if not saved:"), body.rindex('_menu_order_wallet.status_changed'))
 
 
 if __name__ == '__main__':

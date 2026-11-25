@@ -360,6 +360,7 @@ class MainWiringTest(unittest.TestCase):
             '_menu_order_resolve_branch': lambda db, bid, branch: ('bgc', 'BGC'),
             '_menu_order_member': lambda *a: None, '_menu_card_read_token': None,
             '_menu_order_payment': payment_fields,
+            '_menu_price_counter_items': lambda business, branch, items: (items, 120.0),
             '_menu_order_insert': self.insert_order,
             'friendly_db_error': str,
             '_menu_counter_order_public': lambda row: {'public_id': row.get('public_id')},

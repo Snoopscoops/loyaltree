@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -55,6 +56,7 @@ import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Restaurant
 import androidx.compose.material.icons.filled.Store
 import androidx.compose.material3.BottomSheetDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
@@ -102,6 +104,7 @@ import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
+import java.util.UUID
 
 private val Forest = Color(0xFF123C32)
 private val Ink = Color(0xFF163B31)
@@ -956,6 +959,9 @@ private fun branchLabel(name: String): String =
 @Composable
 private fun OrderCard(store: CounterStore, order: LiveOrder) {
     val busy = store.orderBusy == order.id
+    var adding by remember(order.id) { mutableStateOf(false) }
+    var cancelling by remember(order.id) { mutableStateOf(false) }
+    var voiding by remember(order.id) { mutableStateOf<OrderLine?>(null) }
     val next = when (order.status) {
         "new" -> "preparing" to "Start preparing"
         "preparing" -> "ready" to "Mark ready"
@@ -966,6 +972,11 @@ private fun OrderCard(store: CounterStore, order: LiveOrder) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text(order.number, color = Forest, fontWeight = FontWeight.Bold, fontSize = 18.sp)
             Text(order.status.replaceFirstChar { it.uppercase() }, color = if (order.status == "cancelled") Bad else Forest, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+        }
+        if (order.parentOrderId.isNotBlank()) {
+            val parent = store.orders.firstOrNull { it.id == order.parentOrderId }
+            Text(parent?.let { "Additional order for ${it.number}" } ?: "Additional order",
+                color = Muted, fontSize = 13.sp)
         }
         // When the order was placed (Philippine time). "5 min ago" refreshes every 30 seconds.
         val now by androidx.compose.runtime.produceState(System.currentTimeMillis()) {
@@ -994,25 +1005,160 @@ private fun OrderCard(store: CounterStore, order: LiveOrder) {
         order.items.forEach { line ->
             Text(line.name, color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
             if (line.detail.isNotBlank()) Text(line.detail, color = Muted, fontSize = 13.sp)
+            if (order.canVoidItems && line.id.isNotBlank()) {
+                TextButton(onClick = { voiding = line }, enabled = !busy) { Text("Void item") }
+            }
         }
         if (order.note.isNotBlank()) Text(order.note, color = Muted, fontSize = 13.sp)
         Text(order.total, color = Forest, fontWeight = FontWeight.Bold, fontSize = 16.sp)
         if (awaitingCash) {
             // Cash first: the kitchen can start only after the cashier confirms the payment.
-            Primary(if (busy) "Saving" else "Mark as paid", enabled = !busy) { store.markPaid(order.id) }
+            Primary(if (busy) "Saving" else "Mark as paid", enabled = !busy) { store.markPaid(order.id, order.rawTotal) }
             Text("Start preparing unlocks after the payment is marked paid.", color = Muted, fontSize = 12.sp)
         } else if (order.source == "menu" && order.payment == "unpaid" && order.status != "cancelled") {
-            Secondary(if (busy) "Saving" else "Mark as paid") { if (!busy) store.markPaid(order.id) }
+            Secondary(if (busy) "Saving" else "Mark as paid") { if (!busy) store.markPaid(order.id, order.rawTotal) }
         }
         if (next != null && !awaitingCash) {
             Primary(if (busy) "Saving" else next.second, enabled = !busy) { store.setOrderStatus(order.id, next.first) }
         }
-        if (next != null) {
-            if (order.status == "new" || order.status == "preparing") {
-                Secondary(if (busy) "Saving" else "Cancel order") { if (!busy) store.setOrderStatus(order.id, "cancelled") }
-            }
+        if (order.canAddSubOrder) {
+            Secondary("Add items as a separate order") { if (!busy) adding = true }
+        }
+        if (order.canCancel == true) {
+            Secondary("Cancel order") { if (!busy) cancelling = true }
+        } else if (order.canCancel == null && next != null && (order.status == "new" || order.status == "preparing")) {
+            Secondary(if (busy) "Saving" else "Cancel order") { if (!busy) store.setOrderStatus(order.id, "cancelled") }
         }
     }
+    if (adding) CounterAddOrderDialog(store, order) { adding = false }
+    if (cancelling) CounterAdjustmentDialog(store, order, null) { cancelling = false }
+    voiding?.let { line -> CounterAdjustmentDialog(store, order, line) { voiding = null } }
+}
+
+@Composable
+private fun CounterAdjustmentDialog(store: CounterStore, order: LiveOrder, line: OrderLine?, close: () -> Unit) {
+    val busy = store.orderBusy.isNotBlank()
+    var reason by remember { mutableStateOf("") }
+    var quantity by remember { mutableStateOf("1") }
+    var error by remember { mutableStateOf("") }
+    val count = quantity.toIntOrNull()
+    val valid = reason.isNotBlank() && (line == null || count != null && count in 1..line.quantity)
+    val requestId = remember(quantity, reason) { UUID.randomUUID().toString() }
+    val action = if (line == null) "Cancel order" else "Void item"
+    AlertDialog(
+        onDismissRequest = { if (!busy) close() },
+        title = { Text(action) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(line?.name ?: order.number, color = Ink)
+                if (line != null && line.quantity > 1) {
+                    Field("Quantity to void", quantity, { if (!busy) quantity = it.filter(Char::isDigit).take(2) }, number = true)
+                }
+                Field("Reason", reason, { if (!busy) reason = it.take(250) }, lines = 2)
+                if (error.isNotBlank()) Text(error, color = Bad)
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = !busy && valid, onClick = {
+                val done: (String) -> Unit = { message ->
+                    if (message.isEmpty()) close() else error = message
+                }
+                if (line == null) store.cancelCounterOrder(order, reason, done)
+                else if (count != null) store.voidCounterItem(order, requestId, line, count, reason, done)
+            }) { Text(if (busy) "Saving" else action) }
+        },
+        dismissButton = { TextButton(enabled = !busy, onClick = close) { Text("Back") } }
+    )
+}
+
+@Composable
+private fun CounterAddOrderDialog(store: CounterStore, order: LiveOrder, close: () -> Unit) {
+    val busy = store.orderBusy.isNotBlank()
+    var loading by remember { mutableStateOf(true) }
+    var catalog by remember { mutableStateOf<List<CounterMenuItem>>(emptyList()) }
+    var item by remember { mutableStateOf<CounterMenuItem?>(null) }
+    var choices by remember { mutableStateOf<Map<Int, List<OptionChoice>>>(emptyMap()) }
+    var quantity by remember { mutableStateOf("1") }
+    var lines by remember { mutableStateOf<List<CounterAddLine>>(emptyList()) }
+    var error by remember { mutableStateOf("") }
+    val requestId = remember(lines) { UUID.randomUUID().toString() }
+    LaunchedEffect(order.id) {
+        store.loadCounterMenu(order) { items, message ->
+            catalog = items
+            error = message
+            loading = false
+        }
+    }
+    AlertDialog(
+        onDismissRequest = { if (!busy) close() },
+        title = { Text("Additional order") },
+        text = {
+            Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("This order has its own cash payment.", color = Muted)
+                lines.forEachIndexed { index, line ->
+                    Text("${line.quantity} × ${line.item.name}", color = Ink, fontWeight = FontWeight.SemiBold)
+                    if (line.options.isNotEmpty()) Text(line.options.joinToString { it.name }, color = Muted)
+                    TextButton(enabled = !busy, onClick = { lines = lines.filterIndexed { pos, _ -> pos != index } }) {
+                        Text("Remove")
+                    }
+                }
+                val selected = item
+                if (selected != null) {
+                    Text(selected.name, color = Ink, fontWeight = FontWeight.Bold)
+                    selected.groups.forEachIndexed { index, group ->
+                        if (group.options.isNotEmpty()) {
+                            Text(group.name + if (group.minimum > 0) " · choose ${group.minimum} or more" else "", color = Muted)
+                            val picked = choices[index].orEmpty()
+                            group.options.forEach { option ->
+                                Choice(option.name, option in picked) {
+                                    if (!busy) {
+                                        val updated = when {
+                                            option in picked -> picked - option
+                                            group.maximum == 1 -> listOf(option)
+                                            picked.size < group.maximum -> picked + option
+                                            else -> picked
+                                        }
+                                        choices = choices + (index to updated)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Field("Quantity", quantity, { if (!busy) quantity = it.filter(Char::isDigit).take(2) }, number = true)
+                    val count = quantity.toIntOrNull()
+                    val ready = count != null && count in 1..20 &&
+                        selected.groups.indices.all { choices[it].orEmpty().size >= selected.groups[it].minimum }
+                    TextButton(enabled = !busy && ready, onClick = {
+                        if (count != null) lines = lines + CounterAddLine(selected, count, choices.values.flatten())
+                        item = null
+                    }) { Text("Add to order") }
+                    TextButton(enabled = !busy, onClick = { item = null }) { Text("Back to items") }
+                } else if (lines.size < 40) {
+                    if (loading) Text("Loading menu…", color = Muted)
+                    else if (catalog.isEmpty() && error.isBlank()) Text("No items are available at this branch.", color = Muted)
+                    catalog.forEach { menuItem ->
+                        Choice("${menuItem.name} · ${menuItem.price}", false) {
+                            if (!busy) {
+                                choices = emptyMap()
+                                quantity = "1"
+                                item = menuItem
+                            }
+                        }
+                    }
+                }
+                if (error.isNotBlank()) Text(error, color = Bad)
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = !busy && lines.isNotEmpty() && item == null, onClick = {
+                store.addCounterSubOrder(order, requestId, lines) { message ->
+                    if (message.isEmpty()) close() else error = message
+                }
+            }) { Text(if (busy) "Saving" else "Create order") }
+        },
+        dismissButton = { TextButton(enabled = !busy, onClick = close) { Text("Back") } }
+    )
 }
 
 @Composable

@@ -1,15 +1,17 @@
 """Owner-v15 verified customer history endpoint tests (no live DB/network)."""
-import importlib.util
-import os
-import pathlib
 from types import SimpleNamespace
+
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-MODULE_PATH = pathlib.Path(__file__).resolve().parents[1] / 'menu_card_link.py'
-spec = importlib.util.spec_from_file_location('v15_menu_card_link', MODULE_PATH)
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
+from backend import menu_card_link as mod
+
+
+@pytest.fixture(autouse=True)
+def signing_key(monkeypatch):
+    monkeypatch.setenv('LT_BENEFITS_AUTH_SECRET', 'test-only-key-material-at-least-32-chars')
+
 
 class Query:
     def __init__(self,rows,collector): self.rows=rows; self.filters=[]; self.collector=collector;self.limit_n=30;self.sort_field='created_at'
@@ -33,7 +35,6 @@ class DB:
     def table(self,name): return Query(self.tables[name],self.calls)
 
 def setup(card_customer_business=10):
-    os.environ['LT_BENEFITS_AUTH_SECRET']='test-only-key-material-at-least-32-chars'
     db=DB();app=FastAPI()
     b={'public_id':'jus','id':10,'name':'JUS Beverage','status':'ACTIVE'}
     c={'public_id':'member1','id':9,'business_id':card_customer_business,'stamp_count':2,'points_balance':0}

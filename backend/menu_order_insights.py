@@ -12,15 +12,18 @@ from collections import Counter, defaultdict
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import re
+from decimal import Decimal, InvalidOperation
 
 from fastapi import Header, HTTPException, Response
 
 try:
     from .customer_demographics import AGE_LABELS, GENDER_LABELS, OCCUPATION_LABELS, age_bracket
-    from .menu_order_access import check_order_branch, scoped_branch
+    from .menu_order_access import scoped_branch
+    from .menu_order_adjustment_routes import read_counter_order, transition_counter_order
 except ImportError:  # running from backend/
     from customer_demographics import AGE_LABELS, GENDER_LABELS, OCCUPATION_LABELS, age_bracket
-    from menu_order_access import check_order_branch, scoped_branch
+    from menu_order_access import scoped_branch
+    from menu_order_adjustment_routes import read_counter_order, transition_counter_order
 
 MANILA = ZoneInfo('Asia/Manila')
 OPTIONAL_ORDER_COLUMNS = ('branch_public_id', 'branch_name', 'member_customer_public_id', 'payment_method')
@@ -768,26 +771,22 @@ def register_menu_order_insight_routes(app, *, db, get_business, require_owner, 
                         headers={'Content-Disposition': f'attachment; filename="{report["filename"]}"', 'Cache-Control': 'no-store'})
 
     @app.patch('/api/v1/business/{public_id}/menu-orders/{order_public_id}/payment')
-    def menu_order_mark_paid(public_id: str, order_public_id: str, authorization: str = Header(default='')):
+    def menu_order_mark_paid(public_id: str, order_public_id: str, expected_amount: str = '', authorization: str = Header(default='')):
         """Owner, manager or cashier confirms a cash order was paid at the counter (own branch only for staff)."""
         business, _, scope = scoped_for(public_id, authorization, '', ('owner', 'manager', 'cashier'))
+        row = read_counter_order(db, business, scope, order_public_id)
+        if row.get('payment_method') != 'cash':
+            if row.get('payment_status') in PAID_STATUSES:
+                return {'success': True, 'payment_status': row['payment_status']}
+            raise HTTPException(409, 'Only cash can be confirmed at the counter.')
         try:
-            rows = (db.table('menu_counter_orders').select('*').eq('business_id', business['id'])
-                    .eq('public_id', order_public_id).limit(1).execute().data or [])
-        except Exception as exc:
-            raise HTTPException(status_code=503, detail=f'Could not load the order: {friendly_error(exc)}')
-        if not rows:
-            raise HTTPException(status_code=404, detail='Order not found')
-        if scope is not None:
-            check_order_branch(scope, rows[0])
-        if str(rows[0].get('payment_status') or '') in PAID_STATUSES:
-            return {'success': True, 'payment_status': rows[0].get('payment_status')}
-        try:
-            (db.table('menu_counter_orders').update({'payment_status': 'paid'})
-             .eq('business_id', business['id']).eq('public_id', order_public_id).execute())
-        except Exception as exc:
-            raise HTTPException(status_code=503, detail=f'Could not update the payment: {friendly_error(exc)}')
-        return {'success': True, 'payment_status': 'paid'}
+            amount = Decimal(expected_amount)
+            if not amount.is_finite() or amount < 0 or amount > Decimal('1000000000') or amount != amount.quantize(Decimal('0.01')):
+                raise ValueError()
+        except (InvalidOperation, ValueError):
+            raise HTTPException(400, 'Confirm the exact displayed order amount.')
+        result = transition_counter_order(db, business, scope, row, 'paid', expected_amount=str(amount))
+        return {'success': True, 'payment_status': result['order']['payment_status']}
 
     @app.get('/api/v1/business/{public_id}/menu-orders/customer-pulse')
     def menu_orders_customer_pulse(public_id: str, days: int = 30, branch: str = '',

@@ -83,6 +83,17 @@ class DB:
     def table(self, name):
         return Query(self, name)
 
+    def rpc(self, name, params):
+        assert name == 'menu_transition_counter_order'
+        assert params['p_target'] == 'paid'
+        row = next(row for row in self.rows['menu_counter_orders']
+                   if row['business_id'] == params['p_business_id']
+                   and row['public_id'] == params['p_order_public_id']
+                   and row.get('branch_public_id', '') == params['p_branch'])
+        assert params['p_expected_amount'] == str(row['total'])
+        row['payment_status'] = 'paid'
+        return type('RPC', (), {'execute': lambda _: Result({'order': row})})()
+
 
 def order(n, at, total=100, status='new', service='dine-in', branch='', branch_name='', member='', items=(('Latte', 1),)):
     return {'public_id': f'o{n}', 'business_id': 1, 'order_number': f'LT-{n}', 'status': status, 'service': service,
@@ -242,9 +253,18 @@ class PaymentTests(unittest.TestCase):
         client = TestClient(app)
         self.assertEqual(client.patch('/api/v1/business/b/menu-orders/o1/payment').status_code, 401)
         self.assertEqual(client.patch('/api/v1/business/b/menu-orders/nope/payment', headers={'Authorization': 'Bearer ok'}).status_code, 404)
-        body = client.patch('/api/v1/business/b/menu-orders/o1/payment', headers={'Authorization': 'Bearer ok'}).json()
+        body = client.patch('/api/v1/business/b/menu-orders/o1/payment?expected_amount=100', headers={'Authorization': 'Bearer ok'}).json()
         self.assertEqual(body['payment_status'], 'paid')
         self.assertEqual(db.rows['menu_counter_orders'][0]['payment_status'], 'paid')
+
+    def test_owner_marks_legacy_null_branch_cash_order_paid(self):
+        db = DB({'menu_counter_orders': [dict(order(1, ''), payment_method='cash', payment_status='unpaid',
+                                                branch_public_id=None)]})
+        app = FastAPI()
+        register_menu_order_insight_routes(app, db=db, get_business=lambda _: {'id': 1}, require_owner=lambda *_: None)
+        response = TestClient(app).patch('/api/v1/business/b/menu-orders/o1/payment?expected_amount=100')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['payment_status'], 'paid')
 
 
 class PeriodTests(unittest.TestCase):

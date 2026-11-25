@@ -18931,11 +18931,13 @@ try:
     from .menu_card_link import read_token as _menu_card_read_token
     from .menu_checkout_redemption import selected_reward as _menu_reward_select, reward_order_item as _menu_reward_line, is_reward_order as _menu_has_reward, reserve_reward_order as _menu_reward_reserve, finalize_reward_order as _menu_reward_finish
     from .menu_order_access import make_menu_order_operator, check_order_branch as _menu_order_check_branch
+    from .menu_order_adjustment_routes import register_menu_order_adjustment_routes, transition_counter_order
 except ImportError:
     from menu_order_insights import insert_order as _menu_order_insert, resolve_branch as _menu_order_resolve_branch, member_from_card_token as _menu_order_member, payment_fields as _menu_order_payment, cash_awaiting_payment as _menu_order_cash_unpaid
     from menu_card_link import read_token as _menu_card_read_token
     from menu_checkout_redemption import selected_reward as _menu_reward_select, reward_order_item as _menu_reward_line, is_reward_order as _menu_has_reward, reserve_reward_order as _menu_reward_reserve, finalize_reward_order as _menu_reward_finish
     from menu_order_access import make_menu_order_operator, check_order_branch as _menu_order_check_branch
+    from menu_order_adjustment_routes import register_menu_order_adjustment_routes, transition_counter_order
 
 # Owner: every branch. Manager / cashier (staff PIN session, 12 h): their own branch only.
 _menu_order_operator = make_menu_order_operator(db=supabase, get_business=safe_get_business, get_claims=get_staff_session_claims)
@@ -18953,6 +18955,49 @@ try:
 except ImportError:
     from menu_customer_order_tracking import register_menu_customer_order_tracking_routes
 register_menu_customer_order_tracking_routes(app, db=supabase, get_business=safe_get_business)
+
+
+def _menu_normalize_counter_items(items):
+    """Canonicalize the customer's selection without trusting prices or names."""
+    if not isinstance(items, list) or not 1 <= len(items) <= 40:
+        raise HTTPException(status_code=400, detail='Cart must contain 1 to 40 lines.')
+    requested = []
+    for raw in items:
+        if not isinstance(raw, dict):
+            raise HTTPException(status_code=400, detail='Invalid cart item.')
+        item_id = raw.get('item_id')
+        qty = raw.get('quantity')
+        options = raw.get('options', [])
+        if (not isinstance(item_id, str) or not 1 <= len(item_id) <= 96
+                or type(qty) is not int or not 1 <= qty <= 20
+                or not isinstance(options, list) or len(options) > 100
+                or any(not isinstance(o, dict) or not isinstance(o.get('public_id'), str)
+                       or not 1 <= len(o['public_id']) <= 96 for o in options)):
+            raise HTTPException(status_code=400, detail='Invalid item, quantity or options.')
+        option_ids = sorted(o['public_id'] for o in options)
+        if len(option_ids) != len(set(option_ids)):
+            raise HTTPException(status_code=400, detail='Duplicate options were selected.')
+        requested.append({'item_id': item_id, 'quantity': qty,
+                          'options': [{'public_id': option_id} for option_id in option_ids]})
+    return requested
+
+
+def _menu_price_counter_items(business, branch_public_id, items):
+    """Validate counter cart using the existing Order Ahead catalog pricing engine."""
+    requested = [
+        OrderAheadCartItemInput(item_public_id=item['item_id'], quantity=item['quantity'],
+            modifier_option_public_ids=[o['public_id'] for o in item['options']])
+        for item in _menu_normalize_counter_items(items)
+    ]
+    priced, subtotal = _oa_price_cart(business, {'public_id': branch_public_id}, requested)
+    clean = []
+    for req, line in zip(requested, priced):
+        clean.append({'line_id': uuid.uuid4().hex, 'item_id': req.item_public_id,
+            'item_name': line['item_name'], 'quantity': line['quantity'],
+            'unit_price': line['unit_price'], 'line_total': line['line_total'],
+            'options': [{'public_id': o['option_public_id'], 'name': o['option_name'],
+                         'price_delta': o['price_delta']} for o in line['modifiers']]})
+    return clean, float(subtotal)
 
 
 @app.post('/api/v1/public/menu/{public_id}/orders')
@@ -18993,31 +19038,16 @@ async def public_place_menu_order(public_id: str, request: Request, background_t
         raise HTTPException(status_code=400, detail='Your cart is empty')
     now_iso = datetime.now(timezone.utc).isoformat()
     order_number = str(payload.get('order_number') or '').strip()[:40] or f"LT-{uuid.uuid4().hex[:8].upper()}"
-    total = 0.0
-    clean_items = []
-    for raw in items[:40]:
-        if not isinstance(raw, dict):
-            continue
-        name = str(raw.get('name') or raw.get('item_name') or 'Item').strip()[:120]
-        try:
-            qty = max(1, int(raw.get('quantity') or 1))
-        except (TypeError, ValueError):
-            qty = 1
-        try:
-            line_total = float(raw.get('line_total') or 0)
-        except (TypeError, ValueError):
-            line_total = 0.0
-        if selected_checkout_reward and (not math.isfinite(line_total) or line_total < 0 or qty > 20):
-            raise HTTPException(status_code=400, detail='Invalid item price or quantity in reward checkout.')
-        total += line_total
-        clean_items.append({'item_id': str(raw.get('item_id') or '')[:96], 'item_name': name, 'quantity': qty, 'line_total': line_total, 'options': raw.get('options') or []})
-    if not clean_items:
-        raise HTTPException(status_code=400, detail='Your cart is empty')
+    clean_items, total = _menu_price_counter_items(business, branch_public_id, items)
     if selected_checkout_reward:
         if not math.isfinite(total) or total <= 0:
             raise HTTPException(status_code=400, detail='A qualifying purchase is required to redeem checkout rewards.')
         if len(clean_items) >= 40:
             raise HTTPException(status_code=400, detail='Remove one item to apply your loyalty reward.')
+        # The existing reward RPC compares the entire line snapshot on replay.
+        # Reward orders cannot be adjusted, so omit their fresh line IDs.
+        for item in clean_items:
+            item.pop('line_id', None)
         clean_items.append(_menu_reward_line(selected_checkout_reward))
     note = str(payload.get('customer_note') or '').strip()[:500]
     row = {
@@ -19067,13 +19097,13 @@ async def public_place_menu_order(public_id: str, request: Request, background_t
     return {'success': True, 'order': _menu_counter_order_public(saved)}
 
 
-def _menu_counter_order_public(row: dict) -> dict:
+def _menu_counter_order_public(row: dict, *, staff: bool = False) -> dict:
     service = 'Dine in' if row.get('service') == 'dine-in' else 'Pickup'
     table_no = str(row.get('table_no') or '').strip()
     where = f'{service} · Table {table_no}' if table_no else service
     if row.get('service') != 'dine-in' and row.get('pickup_label'):
         where = f"Pickup · {row.get('pickup_label')}"
-    return {
+    payload = {
         'public_id': row.get('public_id'),
         'order_number': row.get('order_number'),
         'status': row.get('status') or 'new',
@@ -19100,6 +19130,7 @@ def _menu_counter_order_public(row: dict) -> dict:
                 'item_name': item.get('item_name') or 'Item',
                 'quantity': item.get('quantity') or 1,
                 'line_total': item.get('line_total') or 0,
+                **({'line_id': item.get('line_id') or '', 'item_id': item.get('item_id') or ''} if staff else {}),
                 'modifiers': [
                     {'option_name': opt if isinstance(opt, str) else str(opt.get('name') or '')}
                     for opt in (item.get('options') or [])
@@ -19110,6 +19141,21 @@ def _menu_counter_order_public(row: dict) -> dict:
             if isinstance(item, dict)
         ],
     }
+    if staff:
+        status = payload['status']
+        parent = row.get('parent_order_public_id') or ''
+        cash = payload['payment_method'] == 'cash'
+        new_unpaid = cash and status == 'new' and payload['payment_status'] == 'unpaid'
+        adjustable = bool(cash and row.get('service') == 'dine-in' and row.get('batch_a_stock_tracked')
+                          and row.get('branch_public_id') and not row.get('checkout_reward_kind'))
+        payload.update(
+            parent_order_public_id=parent,
+            can_create_suborder=adjustable and not parent and status in ('new', 'preparing', 'ready'),
+            can_void_items=adjustable and new_unpaid,
+        )
+        if cash:
+            payload['can_cancel'] = new_unpaid
+    return payload
 
 
 @app.get('/api/v1/business/{public_id}/menu-orders')
@@ -19127,7 +19173,13 @@ async def owner_list_menu_orders(public_id: str, authorization: str = Header(def
         )
     except Exception as e:
         raise HTTPException(status_code=503, detail=f'Menu orders are not ready yet: {friendly_db_error(e)}')
-    return {'orders': [_menu_counter_order_public(row) for row in rows], 'total': len(rows),
+    parent_ids = {row.get('parent_order_public_id') for row in rows
+                  if row.get('parent_order_public_id') and row.get('status') != 'cancelled'}
+    orders = [_menu_counter_order_public(row, staff=True) for row in rows]
+    for order in orders:
+        if order['public_id'] in parent_ids:
+            order['can_cancel'] = False
+    return {'orders': orders, 'total': len(rows),
             'scope': {'role': order_scope.get('role'), 'branch': order_scope.get('branch') or '',
                       'branch_name': order_scope.get('branch_name') or ''}}
 
@@ -19136,9 +19188,15 @@ async def owner_list_menu_orders(public_id: str, authorization: str = Header(def
 async def owner_update_menu_order_status(public_id: str, order_public_id: str, request: Request, background_tasks: BackgroundTasks, authorization: str = Header(default='')):
     business, order_scope = await asyncio.to_thread(_menu_order_operator, public_id, authorization)
     payload = await request.json()
-    target = str((payload or {}).get('status') or '')
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail='Invalid order status request.')
+    target = payload.get('status')
     if target not in ('preparing', 'ready', 'completed', 'cancelled'):
         raise HTTPException(status_code=400, detail='Invalid order status')
+    reason = payload.get('reason')
+    if reason is not None and (not isinstance(reason, str) or len(reason.strip()) > 250):
+        raise HTTPException(status_code=400, detail='Enter a cancellation reason of up to 250 characters.')
+    reason = (reason or '').strip() or None
     try:
         current_order = _supabase_first_row(
             supabase.table('menu_counter_orders').select('*')
@@ -19146,17 +19204,32 @@ async def owner_update_menu_order_status(public_id: str, order_public_id: str, r
             .eq('business_id', business.get('id'))
             .limit(1).execute()
         )
-    except Exception:
-        current_order = None
-    if order_scope.get('branch'):
-        # Staff can only touch orders of their own branch.
-        if not current_order:
-            raise HTTPException(status_code=404, detail='Order not found')
-        _menu_order_check_branch(order_scope, current_order)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail='Could not load the order. Try again.') from exc
+    if not current_order:
+        raise HTTPException(status_code=404, detail='Order not found')
+    _menu_order_check_branch(order_scope, current_order)
     if target != 'cancelled':
         # Cash orders are prepared only after the cashier confirms payment.
         if _menu_order_cash_unpaid(current_order):
             raise HTTPException(status_code=409, detail='Waiting for payment. Tap "Mark as paid" after the customer pays at the counter.')
+    if current_order.get('payment_method') == 'cash' and (
+            target == 'cancelled' or (current_order.get('batch_a_stock_tracked') and not _menu_has_reward(current_order))):
+        # Older cashier releases submit only the desired status.
+        cancel_reason = (reason or 'Cancelled at the counter') if target == 'cancelled' else None
+        result = await asyncio.to_thread(
+            transition_counter_order, supabase, business, order_scope, current_order, target, cancel_reason)
+        saved = result['order']
+        loyalty_order = result.get('loyalty_order')
+        if loyalty_order:
+            # The database returns the root with the settled group total. The
+            # existing award's durable uniqueness and earning keys handle retries.
+            background_tasks.add_task(_menu_order_wallet.status_changed, dict(business), loyalty_order, '')
+        elif (result.get('changed') and not saved.get('parent_order_public_id')
+              and (target != 'completed' or not saved.get('batch_a_stock_tracked'))):
+            background_tasks.add_task(_menu_order_wallet.status_changed, dict(business), saved,
+                                      result.get('previous_status') or '')
+        return {'success': True, 'order': _menu_counter_order_public(saved, staff=True)}
     try:
         if _menu_has_reward(current_order) and target in ('completed', 'cancelled'):
             # Staff auth and branch restrictions were checked above. SQL atomically
@@ -19198,7 +19271,7 @@ async def owner_update_menu_order_status(public_id: str, order_public_id: str, r
                     f"menu-reward-{saved.get('public_id')}")
         except Exception:
             pass  # Wallet sync is best-effort; the committed redemption stands.
-    return {'success': True, 'order': _menu_counter_order_public(saved)}
+    return {'success': True, 'order': _menu_counter_order_public(saved, staff=True)}
 
 
 @app.get('/api/v1/business/{public_id}/order-ahead/orders')
@@ -52365,6 +52438,9 @@ except ImportError:
 # New-order push (FCM). Off until FIREBASE_SERVICE_ACCOUNT_JSON is set on Render.
 _menu_order_push = register_menu_order_push_routes(app, db=supabase, operator=_menu_order_operator,
     get_business=safe_get_business)
+register_menu_order_adjustment_routes(app, db=supabase, operator=_menu_order_operator,
+    normalize_items=_menu_normalize_counter_items, price_items=_menu_price_counter_items,
+    order_public=lambda row: _menu_counter_order_public(row, staff=True), push_order=_menu_order_push)
 try:
     from .menu_order_wallet import make_menu_order_wallet, apple_field as _menu_order_apple_field
 except ImportError:

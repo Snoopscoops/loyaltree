@@ -58,7 +58,10 @@ data class BillPay(val id: String, val title: String, val detail: String)
 data class ActivityLine(val id: String, val title: String, val detail: String, val whenText: String)
 data class CustomerMenuOrder(val number: String, val status: String, val paymentStatus: String, val total: String, val spent: String, val whenText: String, val branch: String, val items: String)
 data class CustomerOrderHistory(val orderCount: Int, val paidCount: Int, val totalSpent: String, val complete: Boolean, val orders: List<CustomerMenuOrder>)
-data class OrderLine(val name: String, val detail: String)
+data class OrderLine(val name: String, val detail: String, val id: String = "", val quantity: Int = 1)
+data class CounterMenuGroup(val name: String, val minimum: Int, val maximum: Int, val options: List<OptionChoice>)
+data class CounterMenuItem(val id: String, val name: String, val price: String, val groups: List<CounterMenuGroup>)
+data class CounterAddLine(val item: CounterMenuItem, val quantity: Int, val options: List<OptionChoice>)
 data class LiveOrder(
     val id: String,
     val number: String,
@@ -74,7 +77,12 @@ data class LiveOrder(
     val branchId: String = "",
     val service: String = "",
     val createdAt: String = "",
-    val paymentMethod: String = ""
+    val paymentMethod: String = "",
+    val parentOrderId: String = "",
+    val canAddSubOrder: Boolean = false,
+    val canVoidItems: Boolean = false,
+    val canCancel: Boolean? = null,
+    val rawTotal: String = ""
 )
 data class NamedCount(val id: String, val name: String, val detail: String)
 data class DaySummary(
@@ -681,12 +689,16 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         return uri
     }
 
-    fun markPaid(id: String) {
+    fun markPaid(id: String, rawTotal: String) {
+        val amount = rawTotal.toBigDecimalOrNull()?.toPlainString() ?: run {
+            ordersNote = "Refresh the order before confirming payment."
+            return
+        }
         val current = session ?: return
         viewModelScope.launch {
             orderBusy = id
             ordersNote = ""
-            val result = io { API.patch("/api/v1/business/${current.slug}/menu-orders/$id/payment", current.token, JSONObject().put("payment_status", "paid")) }
+            val result = io { API.patch("/api/v1/business/${current.slug}/menu-orders/$id/payment?expected_amount=$amount", current.token, JSONObject().put("payment_status", "paid")) }
             orderBusy = ""
             if (result == null) {
                 ordersNote = "Could not reach the server."
@@ -1066,6 +1078,91 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun loadCounterMenu(order: LiveOrder, done: (List<CounterMenuItem>, String) -> Unit) {
+        val current = session ?: return done(emptyList(), "Sign in again to load the menu.")
+        viewModelScope.launch {
+            val branch = android.net.Uri.encode(order.branchId)
+            val slug = android.net.Uri.encode(current.slug)
+            val result = io { API.get("/api/v1/public/menu/$slug?branch=$branch", "") }
+            val items = (result?.second as? JSONObject)?.optJSONArray("items")
+            if (result == null || result.first >= 400 || items == null) {
+                done(emptyList(), result?.let { API.message(it.second, "Could not load the menu.") }
+                    ?: "Could not reach the menu.")
+                return@launch
+            }
+            done(buildList {
+                for (i in 0 until items.length()) {
+                    val item = items.optJSONObject(i) ?: continue
+                    val id = item.optString("public_id")
+                    if (id.isBlank() || !item.optBoolean("is_available", true)) continue
+                    val unavailable = item.optJSONArray("unavailable_branch_public_ids") ?: JSONArray()
+                    if ((0 until unavailable.length()).any { unavailable.optString(it) == order.branchId }) continue
+                    val stock = item.optJSONObject("branch_stock")?.optJSONArray(order.branchId) ?: JSONArray()
+                    val soldOut = (0 until stock.length()).mapNotNull { stock.optJSONObject(it) }
+                        .filter { it.optInt("remaining") <= 0 }.map { it.optString("variant_key") }.toSet()
+                    if ("*" in soldOut) continue
+                    val groups = item.optJSONArray("modifier_groups") ?: JSONArray()
+                    val choices = (0 until groups.length()).mapNotNull { index ->
+                        val group = groups.optJSONObject(index) ?: return@mapNotNull null
+                        val options = group.optJSONArray("options") ?: JSONArray()
+                        val available = (0 until options.length()).mapNotNull option@{ optionIndex ->
+                            val option = options.optJSONObject(optionIndex) ?: return@option null
+                            val optionId = option.optString("public_id")
+                            if (optionId.isBlank() || optionId in soldOut) return@option null
+                            OptionChoice(optionId, option.optString("name"), pesos(option.opt("price_delta")))
+                        }
+                        val minimum = maxOf(group.optInt("min_selections"), if (group.optBoolean("is_required")) 1 else 0)
+                        val maximum = if (group.optString("selection_type") == "single") 1
+                            else group.optInt("max_selections").takeIf { it > 0 } ?: available.size
+                        CounterMenuGroup(group.optString("name"), minimum, maximum, available)
+                    }
+                    if (choices.any { it.options.size < it.minimum }) continue
+                    add(CounterMenuItem(id, item.optString("name"), pesos(item.opt("base_price")), choices))
+                }
+            }, "")
+        }
+    }
+
+    fun addCounterSubOrder(order: LiveOrder, requestId: String, lines: List<CounterAddLine>, done: (String) -> Unit) {
+        val items = JSONArray()
+        lines.forEach { line ->
+            val options = JSONArray()
+            line.options.forEach { options.put(JSONObject().put("public_id", it.id)) }
+            items.put(JSONObject().put("item_id", line.item.id)
+                .put("quantity", line.quantity).put("options", options))
+        }
+        adjustCounterOrder(order.id, "sub-orders", JSONObject().put("request_id", requestId).put("items", items),
+            create = true, done = done)
+    }
+
+    fun voidCounterItem(order: LiveOrder, requestId: String, line: OrderLine, quantity: Int, reason: String, done: (String) -> Unit) {
+        val body = JSONObject().put("request_id", requestId).put("line_id", line.id)
+            .put("quantity", quantity).put("reason", reason)
+        adjustCounterOrder(order.id, "void-item", body, done = done)
+    }
+
+    fun cancelCounterOrder(order: LiveOrder, reason: String, done: (String) -> Unit) =
+        adjustCounterOrder(order.id, "status", JSONObject().put("status", "cancelled").put("reason", reason), done = done)
+
+    private fun adjustCounterOrder(id: String, action: String, body: JSONObject, create: Boolean = false, done: (String) -> Unit) {
+        val current = session ?: return done("Sign in again to update the order.")
+        if (orderBusy.isNotBlank()) return done("Another order update is in progress.")
+        orderBusy = id
+        viewModelScope.launch {
+            val path = "/api/v1/business/${current.slug}/menu-orders/$id/$action"
+            val result = io { if (create) API.post(path, current.token, body) else API.patch(path, current.token, body) }
+            orderBusy = ""
+            when {
+                result == null -> done("Could not reach the server. Try again.")
+                result.first >= 400 -> done(API.message(result.second, "Could not update the order."))
+                else -> {
+                    done("")
+                    fetchOrders(current)
+                }
+            }
+        }
+    }
+
     private suspend fun fetchOrders(current: OwnerSession, quiet: Boolean = false) {
         val menu = io { API.get("/api/v1/business/${current.slug}/menu-orders", current.token) }
         val ahead = io { API.get("/api/v1/business/${current.slug}/order-ahead/orders?limit=100", current.token) }
@@ -1113,7 +1210,8 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
                         val item = items.optJSONObject(j) ?: continue
                         val qty = API.plain(item.opt("quantity")) ?: "1"
                         val name = item.optString("item_name").ifBlank { "Item" }
-                        add(OrderLine("$qty × $name", modifierText(item.opt("modifiers"))))
+                        add(OrderLine("$qty × $name", modifierText(item.opt("modifiers")),
+                            item.optString("line_id"), item.optInt("quantity", 1)))
                     }
                 }
                 add(
@@ -1132,7 +1230,12 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
                         branchId = branch?.optString("public_id").orEmpty(),
                         service = row.optString("service"),
                         createdAt = row.optString("created_at"),
-                        paymentMethod = row.optString("payment_method")
+                        paymentMethod = row.optString("payment_method"),
+                        parentOrderId = API.plain(row.opt("parent_order_public_id")).orEmpty(),
+                        canAddSubOrder = row.optBoolean("can_create_suborder"),
+                        canVoidItems = row.optBoolean("can_void_items"),
+                        canCancel = row.takeIf { it.has("can_cancel") }?.optBoolean("can_cancel"),
+                        rawTotal = row.optString("total")
                     )
                 )
             }

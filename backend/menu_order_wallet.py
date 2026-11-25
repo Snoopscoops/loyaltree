@@ -152,6 +152,9 @@ def make_menu_order_wallet(*, db, get_customer, get_program, uses_points, uses_s
             text = str(e).lower()
             if 'duplicate' in text or '23505' in text or 'unique' in text:
                 return False
+            if order.get('batch_a_stock_tracked') and kind == 'award':
+                # A process-local claim cannot protect a settlement across workers.
+                raise
             # Table not created yet: fall back to this worker's memory.
             with seen_lock:
                 if key in seen:
@@ -230,6 +233,8 @@ def make_menu_order_wallet(*, db, get_customer, get_program, uses_points, uses_s
                 summary['points_earned'] = int((result or {}).get('points_earned') or 0)
                 summary['points_balance'] = (result or {}).get('points_balance')
             except HTTPException as e:
+                if order.get('batch_a_stock_tracked') and e.status_code >= 500:
+                    raise
                 summary['points_skipped'] = str(e.detail)
         # The final stamp reward already reset the card atomically when the
         # order was completed. Do not immediately earn a stamp on that same
@@ -244,6 +249,8 @@ def make_menu_order_wallet(*, db, get_customer, get_program, uses_points, uses_s
                 summary['stamps_earned'] = 0 if (result or {}).get('duplicate_prevented') else 1
                 summary['stamp_count'] = (result or {}).get('stamp_count')
             except HTTPException as e:
+                if order.get('batch_a_stock_tracked') and e.status_code >= 500:
+                    raise
                 # 409: once-per-day or max stamps reached, exactly like the cashier screen.
                 summary['stamp_skipped'] = str(e.detail)
         # The normal wallet refresh queued by add_points_sale / add_stamp.
