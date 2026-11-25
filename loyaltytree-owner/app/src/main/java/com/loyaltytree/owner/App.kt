@@ -415,7 +415,8 @@ private fun StaffShell(store: CounterStore) {
             tab = it
         }
     }) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).background(Brush.verticalGradient(listOf(Color(0xFFE2F3EA), Ivory, Color(0xFFEAF6F0))))) {
+        BrandBackdrop(Modifier.fillMaxSize().padding(padding)) {
+        Column(Modifier.fillMaxSize()) {
             StaffHeader(store)
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when (tab) {
@@ -425,6 +426,7 @@ private fun StaffShell(store: CounterStore) {
                     else -> StaffMeScreen(store)
                 }
             }
+        }
         }
     }
 }
@@ -725,7 +727,8 @@ private fun Shell(store: CounterStore) {
             page = Page.None
         }
     }) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).background(Brush.verticalGradient(listOf(Color(0xFFE2F3EA), Ivory, Color(0xFFEAF6F0))))) {
+        BrandBackdrop(Modifier.fillMaxSize().padding(padding)) {
+        Column(Modifier.fillMaxSize()) {
             if (page !is Page.None) {
                 NavBar(
                     title = pageTitle(page, store),
@@ -776,6 +779,7 @@ private fun Shell(store: CounterStore) {
                     is Page.Customer -> CustomerScreen(store, current.id)
                 }
             }
+        }
         }
     }
 }
