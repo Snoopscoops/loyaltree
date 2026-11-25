@@ -817,7 +817,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
       </div>
       {resumeError && <small role="alert">{resumeError}</small>}
     </div>}
-    {order && !addonMode && !cartOpen && !needsBranch && <div className="lt-qr-dock lt-qr-tracking-dock">
+    {order && !addonMode && count === 0 && !cartOpen && !needsBranch && <div className="lt-qr-dock lt-qr-tracking-dock">
       <button type="button" className="lt-qr-dock-card" onClick={() => { setPayStep('done'); setCartOpen(true) }}
         aria-label={`Track order ${order.order_number}, ${phase?.title || 'Order status'}`}>
         <span className="lt-qr-dock-count" aria-hidden="true">✓</span>
@@ -825,7 +825,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
         <strong aria-hidden="true">›</strong>
       </button>
     </div>}
-    {count > 0 && (!order || addonMode) && !cartOpen && !needsBranch && <div className="lt-qr-dock">
+    {count > 0 && !cartOpen && !needsBranch && <div className="lt-qr-dock">
       <button type="button" ref={dockRef} className="lt-qr-dock-card" onClick={openCart} aria-label={`View cart, ${count} ${count === 1 ? 'item' : 'items'}, ${money(total)}`}>
         <span className="lt-qr-dock-count" aria-hidden="true">{count}</span>
         <span className="lt-qr-dock-label" aria-hidden="true">View cart<small>{count} {count === 1 ? 'item' : 'items'}</small></span>
@@ -838,7 +838,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
         <button type="button" onClick={()=>{ setNavNotice('');window.scrollTo({top:0,behavior:'smooth'}) }}><span aria-hidden="true">⌂</span>Menu</button>
         <button type="button" onClick={()=>{setNavNotice('');if(addonMode){openCart()}else if(order){setPayStep('done');setCartOpen(true)}else {let token='';try{token=localStorage.getItem(`lt-menu-card:${business.public_id}`)||''}catch{};if(token && apiBase){window.dispatchEvent(new CustomEvent('lt-menu-open-orders',{detail:{business:business.public_id}}))}else if(savedReceipt){void resumeLastOrder()}else setNavNotice('Connect your loyalty card to view linked previous orders.')}}}><span aria-hidden="true">▤</span>Orders</button>
         <button type="button" onClick={()=>{setNavNotice('');window.dispatchEvent(new CustomEvent('lt-menu-open-history', { detail: {business:business.public_id} }))}}><span aria-hidden="true">✧</span>Rewards</button>
-        <button type="button" onClick={()=>{if(order && !addonMode){setPayStep('done');setCartOpen(true)}else openCart()}}><span className="lt-v19-nav-cart" aria-hidden="true">▣{count > 0 && <b>{count}</b>}</span>Cart<span className="lt-qr-sr">{count > 0 ? `, ${count} items` : ''}</span></button>
+        <button type="button" onClick={()=>{if(order && !addonMode && count === 0){setPayStep('done');setCartOpen(true)}else openCart()}}><span className="lt-v19-nav-cart" aria-hidden="true">▣{count > 0 && <b>{count}</b>}</span>Cart<span className="lt-qr-sr">{count > 0 ? `, ${count} items` : ''}</span></button>
       </nav>
     </>}
     {cartOpen && <CartOverlay ref={cartOverlayRef} className="lt-qr-cart" aria-labelledby={preview ? undefined : sheetTitleId} onCancel={event => { event.preventDefault(); closeCart() }} onMouseDown={event => { if (event.target === event.currentTarget) closeCart() }}>
@@ -854,6 +854,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
         </header>
 
         <div className="lt-qr-sheet-body">
+          {submitError && (step === 'payment' || addonMode) && <div className="lt-qr-pay-error" role="alert"><p><strong>Order not sent.</strong> {submitError}</p></div>}
           {step === 'empty' && <div className="lt-qr-cart-empty">
             <span className="lt-qr-cart-empty-icon" aria-hidden="true">☕</span>
             <h3>Your cart is empty</h3>
@@ -962,18 +963,14 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
           {step === 'empty' && <button type="button" className="lt-qr-primary lt-qr-wide" onClick={closeCart}>Browse the menu</button>}
           {step === '' && <>
             <div className="lt-v19-cart-subtotal"><span>Subtotal</span><strong>{money(total)}</strong></div>
-            {addonMode ? <><p role="alert">{submitError}</p><button type="button" className="lt-qr-primary lt-qr-wide" disabled={submitting || (!canAdd && !addonLocked)} onClick={submitAddon}>{submitting ? 'Sending add-on…' : addonLocked ? 'Retry same add-on' : `Place add-on · pay ${money(total)} at counter`}</button><button type="button" className="lt-qr-back-button" disabled={addonLocked || submitting} onClick={cancelAddon}>Cancel add-on</button></> : <button type="button" className="lt-qr-primary lt-qr-wide lt-v19-checkout-cta" disabled={checkingCard || needsBranch} onClick={startCheckout}>{checkingCard ? 'One moment…' : 'Checkout'}{!checkingCard && <span aria-hidden="true">→</span>}</button>}
+            {addonMode ? <><button type="button" className="lt-qr-primary lt-qr-wide" disabled={submitting || (!canAdd && !addonLocked)} onClick={submitAddon}>{submitting ? 'Sending add-on…' : addonLocked ? 'Retry same add-on' : `Place add-on · pay ${money(total)} at counter`}</button><button type="button" className="lt-qr-back-button" disabled={addonLocked || submitting} onClick={cancelAddon}>Cancel add-on</button></> : <button type="button" className="lt-qr-primary lt-qr-wide lt-v19-checkout-cta" disabled={checkingCard || needsBranch} onClick={startCheckout}>{checkingCard ? 'One moment…' : 'Checkout'}{!checkingCard && <span aria-hidden="true">→</span>}</button>}
           </>}
           {step === 'service' && <>
             <button type="button" className="lt-qr-primary lt-qr-wide" disabled={!detailsReady} onClick={() => { if (!detailsReady) return; setSubmitError(''); setPayStep('payment') }}>Continue to payment</button>
             <button type="button" className="lt-qr-back-button" onClick={() => setPayStep('')}>Back to cart</button>
           </>}
           {step === 'payment' && <>
-            {submitError && <div className="lt-qr-pay-error" role="alert">
-              <p><strong>Order not sent.</strong> {submitError}</p>
-              <button type="button" onClick={submitOrder} disabled={submitting}>Try again</button>
-            </div>}
-            {isOnlinePreview ? <button type="button" className="lt-qr-primary lt-qr-wide" disabled>Online payment coming soon</button> : !submitError && <button type="button" className="lt-qr-primary lt-qr-wide" disabled={submitting || paymentMethod !== 'cash'} aria-busy={submitting} onClick={submitOrder}>{submitting ? <><span className="lt-qr-spinner" aria-hidden="true" />Sending order…</> : payButtonLabel(paymentMethod, money(total))}</button>}
+            {isOnlinePreview ? <button type="button" className="lt-qr-primary lt-qr-wide" disabled>Online payment coming soon</button> : <button type="button" className="lt-qr-primary lt-qr-wide" disabled={submitting || paymentMethod !== 'cash'} aria-busy={submitting} onClick={submitOrder}>{submitting ? <><span className="lt-qr-spinner" aria-hidden="true" />Sending order…</> : submitError ? 'Try again' : payButtonLabel(paymentMethod, money(total))}</button>}
             <button type="button" className="lt-qr-back-button" disabled={submitting} onClick={() => { setSubmitError(''); setPayStep('service') }}>Back</button>
           </>}
           {step === 'done' && <>{canAdd && <button type="button" className="lt-qr-primary lt-qr-wide" onClick={beginAddon}>＋ Add Order</button>}{order?.status === 'completed' && <button type="button" className="lt-qr-primary lt-qr-wide" onClick={orderAgain}>Order again · review cart</button>}<button type="button" className={order?.status === 'completed' ? 'lt-qr-back-button' : 'lt-qr-primary lt-qr-wide'} onClick={closeCart}>Back to menu</button></>}

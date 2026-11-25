@@ -84,3 +84,18 @@ test('pickup and delivery are selectable previews with no cash or order submissi
   assert.ok(contact.includes('Save phone & set address as default'))
   assert.doesNotMatch(contact,/localStorage/)
 })
+
+test('checkout action remains separate from scrollable errors and cart takes precedence over receipt dock', async () => {
+  const {readFile}=await import('node:fs/promises')
+  const page=await readFile(new URL('../src/components/QRMenuPage.jsx',import.meta.url),'utf8')
+  const css=await readFile(new URL('../src/components/qr-menu.css',import.meta.url),'utf8')
+  const body=page.slice(page.indexOf('<div className="lt-qr-sheet-body">'),page.indexOf('<footer className="lt-qr-sheet-foot">'))
+  const footer=page.slice(page.indexOf('<footer className="lt-qr-sheet-foot">'))
+  assert.match(body,/submitError.*lt-qr-pay-error/)
+  assert.doesNotMatch(footer,/className="lt-qr-pay-error"/)
+  assert.match(footer,/onClick=\{submitOrder\}.*submitError \? 'Try again'/)
+  assert.match(footer,/onClick=\{startCheckout\}/)
+  assert.ok(page.includes('count > 0 && !cartOpen && !needsBranch'))
+  assert.ok(page.includes('order && !addonMode && count === 0'))
+  assert.match(css,/grid-template-rows:auto minmax\(0,1fr\) auto/)
+})

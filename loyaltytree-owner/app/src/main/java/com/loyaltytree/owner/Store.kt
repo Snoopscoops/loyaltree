@@ -82,7 +82,8 @@ data class LiveOrder(
     val canAddSubOrder: Boolean = false,
     val canVoidItems: Boolean = false,
     val canCancel: Boolean? = null,
-    val rawTotal: String = ""
+    val rawTotal: String = "",
+    val tableNo: String = ""
 )
 data class NamedCount(val id: String, val name: String, val detail: String)
 data class DaySummary(
@@ -1235,7 +1236,8 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
                         canAddSubOrder = row.optBoolean("can_create_suborder"),
                         canVoidItems = row.optBoolean("can_void_items"),
                         canCancel = row.takeIf { it.has("can_cancel") }?.optBoolean("can_cancel"),
-                        rawTotal = row.optString("total")
+                        rawTotal = row.optString("total"),
+                        tableNo = API.plain(row.opt("table_no")).orEmpty()
                     )
                 )
             }

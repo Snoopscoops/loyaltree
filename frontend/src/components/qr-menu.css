@@ -568,3 +568,13 @@
 .lt-qr-cafe:not(.lt-qr-is-preview) .lt-qr-sheet-foot {flex-shrink:0; padding-bottom:calc(14px + env(safe-area-inset-bottom,0px));}
 .lt-qr-cafe .lt-qr-pay .lt-qr-note-field textarea {width:100%;resize:vertical;min-height:84px;border:1px solid var(--qr-line);border-radius:12px;padding:12px;font:inherit;font-size:16px;background:#fff;color:var(--qr-ink);}
 .lt-qr-note-display {white-space:pre-wrap;overflow-wrap:anywhere;max-width:64%;text-align:right;}
+
+/* Keep payment actions in the visible checkout viewport even when error text is long. */
+.lt-qr-cafe:not(.lt-qr-is-preview) dialog.lt-qr-cart .lt-qr-cart-card {
+  max-height:100%; height:min(92%, 880px); display:grid; grid-template-rows:auto minmax(0,1fr) auto;
+}
+.lt-qr-cafe:not(.lt-qr-is-preview) dialog.lt-qr-cart .lt-qr-sheet-body {min-height:0; overflow-y:auto;}
+.lt-qr-cafe:not(.lt-qr-is-preview) dialog.lt-qr-cart .lt-qr-sheet-foot {
+  min-height:0; max-height:50vh; max-height:50dvh; overflow-y:auto; box-sizing:border-box;
+}
+.lt-qr-pay-error p {overflow-wrap:anywhere;}

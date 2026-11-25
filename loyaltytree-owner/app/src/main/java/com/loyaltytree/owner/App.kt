@@ -798,8 +798,9 @@ private fun OrdersScreen(store: CounterStore) {
     }
     val canReport = who?.canReport == true
     val shown = if (store.ordersBranch.isBlank()) store.orders else store.orders.filter { it.branchId == store.ordersBranch }
-    val current = shown.filter { it.status == "new" || it.status == "preparing" || it.status == "ready" }
-    val earlier = shown.filter { it.status != "new" && it.status != "preparing" && it.status != "ready" }
+    val bills = groupCounterBills(shown)
+    val current = bills.filter { it.active }
+    val earlier = bills.filterNot { it.active }
     Scroll {
         Text("Orders", color = Forest, fontSize = 32.sp, fontWeight = FontWeight.Bold)
         Text(
@@ -828,10 +829,11 @@ private fun OrdersScreen(store: CounterStore) {
         }
         if (store.ordersNote.isNotBlank()) Text(store.ordersNote, color = Bad, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
         if (current.isEmpty()) Text("No current orders.", color = Muted)
-        current.forEach { OrderCard(store, it) }
+        if (store.orders.count { it.source == "menu" } >= 100) Text("Showing recent orders. Older bill entries may be missing; refresh or check the full sales report.", color = Muted, fontSize = 12.sp)
+        current.forEach { bill -> androidx.compose.runtime.key(bill.key) { CounterBillCard(store, bill) } }
         if (earlier.isNotEmpty()) {
             Text("EARLIER", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-            earlier.take(12).forEach { OrderCard(store, it) }
+            earlier.take(12).forEach { bill -> androidx.compose.runtime.key(bill.key) { CounterBillCard(store, bill) } }
         }
         Secondary("Refresh") { store.loadOrders() }
     }
@@ -957,8 +959,52 @@ private fun branchLabel(name: String): String =
     if (name.isBlank() || name.endsWith("branch", ignoreCase = true)) name else "$name branch"
 
 @Composable
-private fun OrderCard(store: CounterStore, order: LiveOrder) {
-    val busy = store.orderBusy == order.id
+private fun CounterBillCard(store: CounterStore, bill: CounterBill) {
+    val parent = bill.parent
+    if (!bill.grouped) {
+        OrderCard(store, bill.orders.single())
+        return
+    }
+    var adding by remember(bill.key) { mutableStateOf(false) }
+    var expanded by remember(bill.key) { mutableStateOf(setOfNotNull(parent?.id)) }
+    val busy = store.orderBusy.isNotBlank()
+    val limited = store.orders.count { it.source == "menu" } >= 100 || parent == null
+    Card {
+        Text(parent?.number ?: "Additional orders", color = Forest, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+        Text(listOfNotNull(parent?.customer, parent?.tableNo?.takeIf { it.isNotBlank() }?.let { "Table $it" },
+            branchLabel(bill.orders.first().branch)).filter { it.isNotBlank() }.joinToString(" · "), color = Muted, fontSize = 13.sp)
+        Text(if (limited) "Loaded bill total" else "Combined bill", color = Muted, fontSize = 13.sp)
+        Text(bill.total?.let(::billMoney) ?: "Unavailable", color = Forest, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Column { Text("Paid", color = Muted, fontSize = 12.sp); Text(bill.paid?.let(::billMoney) ?: "—", color = Forest, fontWeight = FontWeight.Bold) }
+            Column(horizontalAlignment = Alignment.End) { Text("Balance", color = Muted, fontSize = 12.sp); Text(bill.balance?.let(::billMoney) ?: "—", color = Ink, fontWeight = FontWeight.Bold) }
+        }
+        if (limited) Text("Some order details may not be loaded. Do not use this subtotal as a payment amount.", color = Muted, fontSize = 12.sp)
+        if (parent?.canAddSubOrder == true) Primary("＋ Add order", enabled = !busy) { adding = true }
+        bill.orders.forEach { order ->
+            androidx.compose.runtime.key(order.id) {
+                val open = order.id in expanded
+                val label = if (order.parentOrderId.isBlank()) "Main order" else "Additional order"
+                Column(Modifier.fillMaxWidth().border(1.dp, Line, Pill).clip(Pill).padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.fillMaxWidth().clickable { expanded = if (open) expanded - order.id else expanded + order.id }, horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("$label · ${order.number}", color = Forest, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                            Text("${order.status.replaceFirstChar { it.uppercase() }} · ${if (order.status == "cancelled") "Cancelled" else if (order.payment == "paid") "Paid" else "Unpaid"}", color = Muted, fontSize = 12.sp)
+                        }
+                        Text("${order.total}  ${if (open) "▴" else "▾"}", color = Forest, fontWeight = FontWeight.Bold)
+                    }
+                    if (open) OrderCard(store, order, insideBill = true,
+                        blockCompletion = order.id == parent?.id && bill.orders.any { it.id != order.id && it.status != "cancelled" && (it.status != "completed" || it.payment != "paid") })
+                }
+            }
+        }
+        if (parent?.canAddSubOrder == true && adding) CounterAddOrderDialog(store, parent) { adding = false }
+    }
+}
+
+@Composable
+private fun OrderCard(store: CounterStore, order: LiveOrder, insideBill: Boolean = false, blockCompletion: Boolean = false) {
+    val busy = store.orderBusy.isNotBlank()
     var adding by remember(order.id) { mutableStateOf(false) }
     var cancelling by remember(order.id) { mutableStateOf(false) }
     var voiding by remember(order.id) { mutableStateOf<OrderLine?>(null) }
@@ -968,7 +1014,7 @@ private fun OrderCard(store: CounterStore, order: LiveOrder) {
         "ready" -> "completed" to "Complete"
         else -> null
     }
-    Card {
+    val content: @Composable () -> Unit = {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text(order.number, color = Forest, fontWeight = FontWeight.Bold, fontSize = 18.sp)
             Text(order.status.replaceFirstChar { it.uppercase() }, color = if (order.status == "cancelled") Bad else Forest, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
@@ -1019,9 +1065,11 @@ private fun OrderCard(store: CounterStore, order: LiveOrder) {
             Secondary(if (busy) "Saving" else "Mark as paid") { if (!busy) store.markPaid(order.id, order.rawTotal) }
         }
         if (next != null && !awaitingCash) {
-            Primary(if (busy) "Saving" else next.second, enabled = !busy) { store.setOrderStatus(order.id, next.first) }
+            val blocked = next.first == "completed" && blockCompletion
+            Primary(if (busy) "Saving" else next.second, enabled = !busy && !blocked) { store.setOrderStatus(order.id, next.first) }
+            if (blocked) Text("Finish or cancel all add-ons first.", color = Muted, fontSize = 12.sp)
         }
-        if (order.canAddSubOrder) {
+        if (!insideBill && order.canAddSubOrder) {
             Secondary("Add items as a separate order") { if (!busy) adding = true }
         }
         if (order.canCancel == true) {
@@ -1030,6 +1078,7 @@ private fun OrderCard(store: CounterStore, order: LiveOrder) {
             Secondary(if (busy) "Saving" else "Cancel order") { if (!busy) store.setOrderStatus(order.id, "cancelled") }
         }
     }
+    if (insideBill) Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { content() } else Card { content() }
     if (adding) CounterAddOrderDialog(store, order) { adding = false }
     if (cancelling) CounterAdjustmentDialog(store, order, null) { cancelling = false }
     voiding?.let { line -> CounterAdjustmentDialog(store, order, line) { voiding = null } }
