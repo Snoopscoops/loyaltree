@@ -10,6 +10,7 @@ import { checkoutRewardIsEligible, checkoutRewardSelectionPayload } from './qrMe
 import './qr-menu-rewards.css' // owner-v11
 import { loyaltyProgress, historyEvents, quickReorderItems, canQuickAdd } from './qrMenuV15'
 import './qr-menu-v15.css'
+import MenuCheckoutContact, { validContactPhone } from './MenuCheckoutContact'
 
 function MenuItemPhoto({ item, available }) {
   const [failedSource, setFailedSource] = useState(null)
@@ -375,6 +376,8 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   const [payStep, setPayStep] = useState('')
   const [service, setService] = useState('dine-in')
   const [buyerName, setBuyerName] = useState('')
+  const [contactPhone, setContactPhone] = useState('')
+  const [deliveryAddress, setDeliveryAddress] = useState('')
   const [cardName, setCardName] = useState('')
   const [editingName, setEditingName] = useState(false)
   const [tableNo, setTableNo] = useState('')
@@ -690,7 +693,13 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   const nameFromCard = cardName && buyerName.trim() === cardName && !editingName
   // No connected card: the shop needs a name to call the order.
   const nameRequired = !cardName
-  const detailsReady = service === 'dine-in' && !(service === 'pickup' && !pickupAt) && !(nameRequired && !buyerName.trim())
+  const isOnlinePreview = service === 'pickup' || service === 'delivery'
+  const detailsReady = !(service === 'pickup' && !pickupAt) && !(nameRequired && !buyerName.trim()) && (!isOnlinePreview || (buyerName.trim() && validContactPhone(contactPhone) && (service !== 'delivery' || deliveryAddress.trim().length >= 5)))
+  const chooseService = value => {
+    setService(value); setPaymentMethod(value === 'dine-in' ? 'cash' : 'qrph')
+    setSelectedReward(null); setSubmitError(''); pendingIds.current = null
+    if(value === 'pickup' && !slots.length) setSlots(pickupSlots())
+  }
   const connectedCard = value => {
     const name = value?.name && value.name !== 'Loyalty card' ? value.name : ''
     if (!name) return
@@ -701,6 +710,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
     setCardName(name)
     setEditingName(false)
     setBuyerName(name)
+    setContactPhone(''); setDeliveryAddress('')
   }
 
   const CartOverlay = preview ? 'div' : 'dialog'
@@ -799,51 +809,55 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
           {step === 'service' && <div className="lt-qr-pay">
             <h3 className="lt-v19-order-type-title">How will you get your order?</h3>
             <div className="lt-v19-order-types" role="group" aria-label="Order type">
-              <button type="button" aria-pressed={service === 'dine-in'} onClick={() => { setService('dine-in'); pendingIds.current = null }}><OrderTypeIcon type="dine-in"/><strong>Dine in</strong><span className="lt-v19-choice-indicator" aria-hidden="true">{service === 'dine-in' && <CheckIcon size={13}/>}</span></button>
-              <button type="button" disabled aria-disabled="true" title="Pick up requires online payment"><OrderTypeIcon type="pickup"/><strong>Pick up</strong><small>Coming soon</small></button>
-              <button type="button" disabled aria-disabled="true" title="Delivery coming soon"><OrderTypeIcon type="delivery"/><strong>Delivery</strong><small>Coming soon</small></button>
+              <button type="button" aria-pressed={service === 'dine-in'} onClick={() => chooseService('dine-in')}><OrderTypeIcon type="dine-in"/><strong>Dine in</strong><span className="lt-v19-choice-indicator" aria-hidden="true">{service === 'dine-in' && <CheckIcon size={13}/>}</span></button>
+              <button type="button" aria-pressed={service === 'pickup'} onClick={()=>chooseService('pickup')}><OrderTypeIcon type="pickup"/><strong>Pick up</strong><small>Online only</small><span className="lt-v19-choice-indicator" aria-hidden="true">{service === 'pickup' && <CheckIcon size={13}/>}</span></button>
+              <button type="button" aria-pressed={service === 'delivery'} onClick={()=>chooseService('delivery')}><OrderTypeIcon type="delivery"/><strong>Delivery</strong><small>Online only</small><span className="lt-v19-choice-indicator" aria-hidden="true">{service === 'delivery' && <CheckIcon size={13}/>}</span></button>
             </div>
-            <small className="lt-qr-field-help is-neutral">Pick up and delivery will be available when online payments are ready.</small>
+            {isOnlinePreview && <div className="lt-v20-preview-note" role="status"><strong>Online ordering preview</strong><small>Card or QRPH only. You can prepare your details, but live payment and order submission are not enabled yet.</small></div>}
             {service === 'dine-in'
               ? <label className="lt-qr-field"><span>Table number <em>optional</em></span><input inputMode="numeric" autoComplete="off" placeholder="e.g. 5" value={tableNo} onChange={event => setTableNo(event.target.value.slice(0, 12))} /></label>
-              : <label className="lt-qr-field"><span>Pick up time</span><select value={pickupAt} onChange={event => setPickupAt(event.target.value)}><option value="">Choose a time</option>{slots.map(slot => <option key={slot.value} value={slot.value}>{slot.label}</option>)}</select>{!pickupAt && <small className="lt-qr-field-help">Choose a pick up time to continue.</small>}</label>}
+              : service === 'pickup' ? <label className="lt-qr-field"><span>Pick up time</span><select value={pickupAt} onChange={event => setPickupAt(event.target.value)}><option value="">Choose a time</option>{slots.map(slot => <option key={slot.value} value={slot.value}>{slot.label}</option>)}</select>{!pickupAt && <small className="lt-qr-field-help">Choose a pick up time to continue.</small>}</label> : null}
             <label className="lt-qr-field lt-qr-note-field"><span>Note <em>optional · special requests</em></span><textarea maxLength={500} rows={3} value={orderNote} onChange={event => { setOrderNote(event.target.value); pendingIds.current = null }} placeholder="e.g. Less ice, no onions, separate sauce (subject to merchant confirmation)" aria-label="Note for the merchant" /><small className="lt-qr-field-help is-neutral">Requests are subject to the merchant's confirmation. No automatic price changes.</small></label>
-            {nameFromCard
+            {nameFromCard && !isOnlinePreview
               ? <div className="lt-qr-name-row"><span>Name: <strong>{cardName}</strong></span><button type="button" className="lt-qr-text-button" onClick={() => setEditingName(true)}>Change</button></div>
-              : <label className="lt-qr-field"><span>{nameRequired ? <>Your name <b className="lt-qr-required" aria-hidden="true">*</b></> : <>Your name <em>optional</em></>}</span><input autoComplete="name" required={nameRequired} aria-required={nameRequired} aria-describedby={nameRequired ? `${sheetTitleId}-name-help` : undefined} placeholder="Name for your order" value={buyerName} onChange={event => setBuyerName(event.target.value.slice(0, 120))} />{nameRequired && <small id={`${sheetTitleId}-name-help`} className="lt-qr-field-help is-neutral">So the shop can call your order.</small>}</label>}
+              : <label className="lt-qr-field"><span>{nameRequired || isOnlinePreview ? <>Your name <b className="lt-qr-required" aria-hidden="true">*</b></> : <>Your name <em>optional</em></>}</span><input autoComplete="name" required={nameRequired || isOnlinePreview} aria-required={nameRequired || isOnlinePreview} aria-describedby={nameRequired ? `${sheetTitleId}-name-help` : undefined} placeholder="Name for your order" value={buyerName} onChange={event => setBuyerName(event.target.value.slice(0, 120))} />{nameRequired && <small id={`${sheetTitleId}-name-help`} className="lt-qr-field-help is-neutral">So the shop can call your order.</small>}</label>}
             {!cardName && (apiBase || business.join_url) && <div className="lt-qr-card-promo">
               <p><strong>Have a LoyaltyTree card?</strong> Connect it to earn rewards on this order.</p>
               {apiBase
                 ? <MenuCardLink apiBase={apiBase} business={business} label="Connect card" className="lt-qr-card-promo-button" onConnected={connectedCard} />
                 : <a className="lt-qr-card-promo-button" href={business.join_url}>Connect card</a>}
             </div>}
+            {isOnlinePreview && <MenuCheckoutContact key={business.public_id+':'+cardToken()} apiBase={apiBase} businessId={business.public_id} cardToken={cardToken()} service={service} phone={contactPhone} setPhone={setContactPhone} address={deliveryAddress} setAddress={setDeliveryAddress} onName={name=>setBuyerName(current=>current.trim()?current:name)} />}
             <ul className="lt-qr-cart-lines is-compact" aria-label="Items in your order">{cart.map(line => <CartLine key={line.key} line={line} money={money} />)}</ul>
           </div>}
 
           {step === 'payment' && <div className="lt-qr-pay">
             <dl className="lt-qr-summary">
               {branch && branches.length > 1 && <div><dt>Branch</dt><dd>{branch.name}</dd></div>}
-              <div><dt>Order type</dt><dd>{serviceLine(service, tableNo.trim(), pickupLabel)}</dd></div>
+              <div><dt>Order type</dt><dd>{service === 'delivery' ? 'Delivery' : serviceLine(service, tableNo.trim(), pickupLabel)}</dd></div>
               <div><dt>Name</dt><dd>{buyerName.trim() || '—'}</dd></div>
+              {isOnlinePreview && <div><dt>Phone</dt><dd>{contactPhone}</dd></div>}
+              {service === 'delivery' && <div><dt>Address</dt><dd className="lt-qr-note-display">{deliveryAddress}</dd></div>}
               <div><dt>Items</dt><dd>{count} {count === 1 ? 'item' : 'items'}</dd></div>
               {orderNote.trim() && <div><dt>Note</dt><dd className="lt-qr-note-display">{orderNote.trim()}</dd></div>}
             </dl>
             <ul className="lt-qr-cart-lines is-compact" aria-label="Items in your order">{cart.map(line => <CartLine key={line.key} line={line} money={money} />)}</ul>
             <dl className="lt-qr-totals">
               <div><dt>Subtotal</dt><dd>{money(total)}</dd></div>
-              <div className="is-total"><dt>Total</dt><dd>{money(total)}</dd></div>
+              {service === 'delivery' && <div><dt>Delivery fee</dt><dd>Not calculated yet</dd></div>}
+              <div className="is-total"><dt>{service === 'delivery' ? 'Items total' : 'Total'}</dt><dd>{money(total)}</dd></div>
             </dl>
-            <CheckoutRewards snapshot={checkoutRewards} loading={rewardsLoading} error={rewardsError}
+            {!isOnlinePreview && <CheckoutRewards snapshot={checkoutRewards} loading={rewardsLoading} error={rewardsError}
               paymentMethod={paymentMethod} selectedReward={selectedReward} disabled={submitting}
-              onSelect={choice => { setSelectedReward(choice); pendingIds.current = null; setSubmitError('') }} />
+              onSelect={choice => { setSelectedReward(choice); pendingIds.current = null; setSubmitError('') }} />}
             <fieldset className="lt-qr-pay-methods">
               <legend>How will you pay?</legend>
-              {Object.entries({ cash: PAYMENT_METHODS.cash, card: { label: 'Card · TEST', detail: 'Not available for live payment yet' }, qrph: { label: 'QRPH · TEST', detail: 'Not available for live payment yet' } }).map(([value, method]) => <label key={value} className={paymentMethod === value ? 'is-on' : ''}>
-                <input type="radio" name="lt-qr-payment" value={value} checked={paymentMethod === value} disabled={submitting || value !== 'cash'} onChange={() => { setPaymentMethod(value); if (value !== 'cash') setSelectedReward(null); pendingIds.current = null; setSubmitError('') }} />
+              {Object.entries({ ...(!isOnlinePreview ? {cash: PAYMENT_METHODS.cash} : {}), card: { label: 'Card · TEST', detail: 'Not available for live payment yet' }, qrph: { label: 'QRPH · TEST', detail: 'Not available for live payment yet' } }).map(([value, method]) => <label key={value} className={paymentMethod === value ? 'is-on' : ''}>
+                <input type="radio" name="lt-qr-payment" value={value} checked={paymentMethod === value} disabled={submitting || (!isOnlinePreview && value !== 'cash')} onChange={() => { setPaymentMethod(value); if (value !== 'cash') setSelectedReward(null); pendingIds.current = null; setSubmitError('') }} />
                 <span><strong>{method.label}</strong><small>{method.detail}</small></span>
               </label>)}
             </fieldset>
-            {paymentMethod === 'cash'
+            {isOnlinePreview ? <div className="lt-v20-preview-note" role="status"><strong>Card and QRPH only</strong><small>No cash payment for pickup or delivery. This is a preview; payment and order submission are disabled.</small></div> : paymentMethod === 'cash'
               ? <div className="lt-qr-cash-notice" role="alert"><span className="lt-qr-cash-icon" aria-hidden="true">!</span><p><strong>Pay at the counter first.</strong> Your order will be prepared only after the cashier confirms your payment.</p></div>
               : paymentMethod && <p className="lt-qr-test-note">Card and QRPH are in test mode and unavailable for live checkout.</p>}
           </div>}
@@ -900,7 +914,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
               <p><strong>Order not sent.</strong> {submitError}</p>
               <button type="button" onClick={submitOrder} disabled={submitting}>Try again</button>
             </div>}
-            {!submitError && <button type="button" className="lt-qr-primary lt-qr-wide" disabled={submitting || paymentMethod !== 'cash'} aria-busy={submitting} onClick={submitOrder}>{submitting ? <><span className="lt-qr-spinner" aria-hidden="true" />Sending order…</> : payButtonLabel(paymentMethod, money(total))}</button>}
+            {isOnlinePreview ? <button type="button" className="lt-qr-primary lt-qr-wide" disabled>Online payment coming soon</button> : !submitError && <button type="button" className="lt-qr-primary lt-qr-wide" disabled={submitting || paymentMethod !== 'cash'} aria-busy={submitting} onClick={submitOrder}>{submitting ? <><span className="lt-qr-spinner" aria-hidden="true" />Sending order…</> : payButtonLabel(paymentMethod, money(total))}</button>}
             <button type="button" className="lt-qr-back-button" disabled={submitting} onClick={() => { setSubmitError(''); setPayStep('service') }}>Back</button>
           </>}
           {step === 'done' && <>{order?.status === 'completed' && <button type="button" className="lt-qr-primary lt-qr-wide" onClick={orderAgain}>Order again · review cart</button>}<button type="button" className={order?.status === 'completed' ? 'lt-qr-back-button' : 'lt-qr-primary lt-qr-wide'} onClick={closeCart}>Back to menu</button></>}
