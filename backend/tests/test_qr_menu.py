@@ -194,6 +194,19 @@ class QRMenuTests(unittest.TestCase):
         self.assertEqual(safe_image('https://example.invalid/image.jpg'),'https://example.invalid/image.jpg')
 
 
+    def test_join_page_flag_stays_off_until_the_menu_is_published(self):
+        feature = lambda business, name: business.get('plan') in ('growth', 'pro')
+        hold = lambda business: False
+        self.assertFalse(published_for_join(self.db, self.business, feature, hold))
+        self.publish()
+        self.assertTrue(published_for_join(self.db, self.business, feature, hold))
+        self.business['plan'] = 'starter'
+        self.assertFalse(published_for_join(self.db, self.business, feature, hold))
+        self.db.fail = True
+        self.business['plan'] = 'growth'
+        self.assertFalse(published_for_join(self.db, self.business, feature, hold))
+
+
 class SharedCatalogAccessTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -235,15 +248,3 @@ class SharedCatalogAccessTests(unittest.TestCase):
         self.assertFalse(plans['starter']['qr_menu'])
         self.assertTrue(plans['growth']['qr_menu'])
         self.assertTrue(plans['pro']['qr_menu'])
-
-    def test_join_page_flag_stays_off_until_the_menu_is_published(self):
-        feature = lambda business, name: business.get('plan') in ('growth', 'pro')
-        hold = lambda business: False
-        self.assertFalse(published_for_join(self.db, self.business, feature, hold))
-        self.publish()
-        self.assertTrue(published_for_join(self.db, self.business, feature, hold))
-        self.business['plan'] = 'starter'
-        self.assertFalse(published_for_join(self.db, self.business, feature, hold))
-        self.db.fail = True
-        self.business['plan'] = 'growth'
-        self.assertFalse(published_for_join(self.db, self.business, feature, hold))

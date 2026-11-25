@@ -546,16 +546,24 @@
 .lt-qr-complete-note { font-size:13px; line-height:1.5; color:#1c593e; background:#eff7f0; padding:14px; border-radius:13px; margin-top:12px; }
 .lt-qr-privacy-clear { font-size:12px; color:#6b5044; text-decoration:underline; background:transparent; border:0; padding:7px 0; cursor:pointer; }
 
-/* v18: Android Chrome visual viewport and fixed bottom checkout sheet. */
-.lt-qr-cafe:not(.lt-qr-is-preview) .lt-qr-cart {
-  position:fixed; inset:0; top:0; bottom:0; height:100dvh;
-  width:100%; margin:0; padding:0; display:flex; align-items:flex-end; justify-content:center;
-  overflow:hidden; overscroll-behavior:contain; z-index:1100;
+/* Public checkout: native top layer aligned to the actual visible viewport. */
+.lt-qr-cafe:not(.lt-qr-is-preview) dialog.lt-qr-cart {
+  position:fixed; inset:auto;
+  top:var(--lt-cart-viewport-top,0px); left:var(--lt-cart-viewport-left,0px);
+  width:var(--lt-cart-viewport-width,100%); height:100vh;
+  height:var(--lt-cart-viewport-height,100dvh);
+  max-width:none; max-height:none; box-sizing:border-box;
+  margin:0; padding:0; border:0; color:inherit;
+  display:flex; align-items:flex-end; justify-content:center;
+  overflow:hidden; overscroll-behavior:contain;
 }
+.lt-qr-cafe:not(.lt-qr-is-preview) dialog.lt-qr-cart:not([open]) {display:none;}
+.lt-qr-cafe:not(.lt-qr-is-preview) dialog.lt-qr-cart::backdrop {background:transparent;}
 .lt-qr-cafe:not(.lt-qr-is-preview) .lt-qr-cart-card {
-  margin:0; max-height:calc(100dvh - 16px); width:min(480px,100%);
+  margin:0; max-height:calc(100% - 16px); width:min(480px,100%);
   flex:0 1 auto; min-height:0; display:flex; flex-direction:column; border-radius:24px 24px 0 0;
 }
+.lt-qr-cafe:not(.lt-qr-is-preview) .lt-qr-sheet-head {flex-shrink:0;}
 .lt-qr-cafe:not(.lt-qr-is-preview) .lt-qr-sheet-body {min-height:0; flex:1 1 auto; overflow-y:auto;}
 .lt-qr-cafe:not(.lt-qr-is-preview) .lt-qr-sheet-foot {flex-shrink:0; padding-bottom:calc(14px + env(safe-area-inset-bottom,0px));}
 .lt-qr-cafe .lt-qr-pay .lt-qr-note-field textarea {width:100%;resize:vertical;min-height:84px;border:1px solid var(--qr-line);border-radius:12px;padding:12px;font:inherit;font-size:16px;background:#fff;color:var(--qr-ink);}

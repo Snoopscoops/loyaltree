@@ -380,13 +380,13 @@ class MainWiringTest(unittest.TestCase):
         class Req:
             async def json(self):
                 return {'items': [{'name': 'Latte', 'quantity': 1, 'line_total': 120}],
-                        'order_number': '123', 'payment_method': 'cash', 'payment_status': 'paid'}
+                        'order_number': '123', 'service': 'dine-in', 'payment_method': 'cash', 'payment_status': 'paid'}
 
         tasks = BackgroundTasks()
         result = asyncio.run(handler('biz', Req(), tasks))
         self.assertTrue(result['success'])
         saved_order = self.insert_order.call_args.args[1]
-        self.assertEqual((saved_order['payment_method'], saved_order['payment_status']), ('cash', 'unpaid'))
+        self.assertEqual((saved_order['service'], saved_order['payment_method'], saved_order['payment_status']), ('dine-in', 'cash', 'unpaid'))
         self.assertEqual(self.pushed, [])  # not sent before the response
         self.assertEqual(len(tasks.tasks), 2)  # owner phones (v6) + customer's card (v8)
         asyncio.run(tasks())
@@ -403,7 +403,7 @@ class MainWiringTest(unittest.TestCase):
             with self.subTest(payment=payment):
                 request = SimpleNamespace(json=AsyncMock(return_value={
                     'items': [{'name': 'Latte', 'quantity': 1, 'line_total': 120}],
-                    **payment,
+                    'service': 'dine-in', **payment,
                 }))
                 tasks = BackgroundTasks()
                 with self.assertRaises(HTTPException) as caught:
@@ -412,6 +412,27 @@ class MainWiringTest(unittest.TestCase):
                 self.assertIn('Please select cash', caught.exception.detail)
                 self.insert_order.assert_not_called()
                 self.assertEqual(tasks.tasks, [])
+
+
+    def test_public_checkout_rejects_non_dine_in_before_saving(self):
+        import asyncio
+        from fastapi import BackgroundTasks
+
+        handler = self.load()
+        for service in ({'service': 'pickup'}, {'service': 'delivery'}, {'service': 'unknown'}, {'service': None}, {}):
+            for payment in ('cash', 'card', 'qrph'):
+                with self.subTest(service=service, payment=payment):
+                    request = SimpleNamespace(json=AsyncMock(return_value={
+                        'items': [{'name': 'Latte', 'quantity': 1, 'line_total': 120}],
+                        'payment_method': payment, **service,
+                    }))
+                    tasks = BackgroundTasks()
+                    with self.assertRaises(HTTPException) as caught:
+                        asyncio.run(handler('biz', request, tasks))
+                    self.assertEqual(caught.exception.status_code, 400)
+                    self.assertIn('Only dine-in is available', caught.exception.detail)
+                    self.insert_order.assert_not_called()
+                    self.assertEqual(tasks.tasks, [])
 
 
 if __name__ == '__main__':

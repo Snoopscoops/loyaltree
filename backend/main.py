@@ -18962,14 +18962,18 @@ async def public_place_menu_order(public_id: str, request: Request, background_t
     business = safe_get_business(public_id)
     if not business:
         raise HTTPException(status_code=404, detail='Menu not found')
-    # Optional: the branch the customer picked, and their connected loyalty card.
-    branch_public_id, branch_name = _menu_order_resolve_branch(supabase, business.get('id'), payload.get('branch_public_id'))
-    member_customer_public_id = _menu_order_member(payload.get('card_token'), business.get('public_id'), _menu_card_read_token)
-    # Public orders are cash only until electronic merchant payments are activated.
-    # Never allow simulated payments into live order and loyalty records.
+    # Phase 1: only explicit dine-in cash orders are accepted. Enforce before
+    # branch/card resolution, reward reservation, order insertion or notifications.
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail='Invalid order payload.')
+    if payload.get('service') != 'dine-in':
+        raise HTTPException(status_code=400, detail='Only dine-in is available. Pick up and delivery require verified online payment.')
     if payload.get('payment_method') != 'cash':
         raise HTTPException(status_code=400, detail='Card and QRPH are in test mode. Please select cash.')
     payment_method, payment_status = _menu_order_payment('cash')
+    # Optional: the branch the customer picked, and their connected loyalty card.
+    branch_public_id, branch_name = _menu_order_resolve_branch(supabase, business.get('id'), payload.get('branch_public_id'))
+    member_customer_public_id = _menu_order_member(payload.get('card_token'), business.get('public_id'), _menu_card_read_token)
     # Only an existing, verified card can select a real reward. No client-supplied
     # price, points cost, or prize name is ever trusted.
     selected_checkout_reward = None
@@ -19022,7 +19026,7 @@ async def public_place_menu_order(public_id: str, request: Request, background_t
         'order_number': order_number,
         'payment_reference': str(payload.get('payment_reference') or '')[:40],
         'buyer_name': str(payload.get('buyer_name') or 'Customer')[:120],
-        'service': 'dine-in' if str(payload.get('service') or '') == 'dine-in' else 'pickup',
+        'service': 'dine-in',
         'table_no': str(payload.get('table_no') or '')[:40],
         'customer_note': note,
         'pickup_label': str(payload.get('pickup_label') or '')[:80],

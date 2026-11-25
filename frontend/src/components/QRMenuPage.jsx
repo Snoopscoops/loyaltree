@@ -345,6 +345,11 @@ function CheckIcon({ size = 16 }) {
   return <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5 10 17.5 19 7" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
 }
 
+function OrderTypeIcon({ type }) {
+  const paths = type === 'dine-in' ? <><path d="M3 10h18M5 10v11m14-11v11M7 4h10v6H7zM3 15h4m10 0h4" /></> : type === 'pickup' ? <><rect x="4" y="8" width="16" height="13" rx="2"/><path d="M8 8V6a4 4 0 0 1 8 0v2" /></> : <><path d="M3 5h12v12H3zM15 9h4l3 4v4h-7" /><circle cx="7" cy="18" r="2"/><circle cx="18" cy="18" r="2"/></>
+  return <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths}</svg>
+}
+
 const CHECKOUT_STEPS = [['', 'Cart'], ['service', 'Details'], ['payment', 'Pay']]
 
 function serviceLine(service, tableNo, pickupLabel) {
@@ -391,6 +396,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   // save reuses them so the shop never gets two different orders for one tap.
   const pendingIds = useRef(null)
   const sheetRef = useRef(null)
+  const cartOverlayRef = useRef(null)
   const dockRef = useRef(null)
   const sheetTitleId = useId()
   const menuHeading = useRef(null)
@@ -494,9 +500,35 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   useEffect(() => {
     if (!cartOpen) return undefined
     let previous = ''
-    if (!preview) { previous = document.body.style.overflow; document.body.style.overflow = 'hidden' }
+    const overlay = cartOverlayRef.current
+    const viewport = window.visualViewport
+    // Public checkout belongs to the browser top layer, not a scrolling menu
+    // ancestor. Follow the visible viewport when Android chrome or keyboard moves.
+    const syncViewport = () => {
+      if (!overlay || !viewport || viewport.width <= 0 || viewport.height <= 0) return
+      overlay.style.setProperty('--lt-cart-viewport-top', `${viewport.offsetTop}px`)
+      overlay.style.setProperty('--lt-cart-viewport-left', `${viewport.offsetLeft}px`)
+      overlay.style.setProperty('--lt-cart-viewport-width', `${viewport.width}px`)
+      overlay.style.setProperty('--lt-cart-viewport-height', `${viewport.height}px`)
+    }
+    if (!preview) {
+      previous = document.body.style.overflow
+      document.body.style.overflow = 'hidden'
+      syncViewport()
+      overlay?.showModal()
+      syncViewport()
+      viewport?.addEventListener('resize', syncViewport)
+      viewport?.addEventListener('scroll', syncViewport)
+      window.addEventListener('resize', syncViewport)
+    }
     return () => {
-      if (!preview) document.body.style.overflow = previous
+      if (!preview) {
+        viewport?.removeEventListener('resize', syncViewport)
+        viewport?.removeEventListener('scroll', syncViewport)
+        window.removeEventListener('resize', syncViewport)
+        if (overlay?.open) overlay.close()
+        document.body.style.overflow = previous
+      }
       setTimeout(() => dockRef.current?.focus?.({ preventScroll: true }), 0)
     }
   }, [cartOpen, preview])
@@ -563,6 +595,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
     if (submittingRef.current) return
     if (!cart.length) { setSubmitError('Your cart is empty.'); return }
     if (needsBranch) { setSubmitError('Choose your branch first.'); return }
+    if (service !== 'dine-in') { setSubmitError('Pick up and delivery require verified online payment and are not available yet.'); return }
     if (paymentMethod !== 'cash') { setSubmitError('Card and QRPH are in test mode. Please select cash.'); return }
     if (!apiBase) { setSubmitError('Ordering is not available in preview.'); return }
     if (!pendingIds.current) {
@@ -652,12 +685,12 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   const step = payStep === 'done' ? 'done' : !cart.length ? 'empty' : payStep
   const receipt = order ? receiptCopy(order.payment_method, money(order.subtotal), business.name) : null
   const phase = order ? menuOrderPhase(order) : null
-  const title = step === 'done' ? (phase?.title || 'Your order') : step === 'service' ? 'How will you get it?' : step === 'payment' ? 'Review & pay' : 'Your order'
+  const title = step === 'done' ? (phase?.title || 'Your order') : step === 'service' ? 'Order details' : step === 'payment' ? 'Review & pay' : 'Your cart'
   const stepIndex = CHECKOUT_STEPS.findIndex(([value]) => value === payStep)
   const nameFromCard = cardName && buyerName.trim() === cardName && !editingName
   // No connected card: the shop needs a name to call the order.
   const nameRequired = !cardName
-  const detailsReady = !(service === 'pickup' && !pickupAt) && !(nameRequired && !buyerName.trim())
+  const detailsReady = service === 'dine-in' && !(service === 'pickup' && !pickupAt) && !(nameRequired && !buyerName.trim())
   const connectedCard = value => {
     const name = value?.name && value.name !== 'Loyalty card' ? value.name : ''
     if (!name) return
@@ -670,6 +703,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
     setBuyerName(name)
   }
 
+  const CartOverlay = preview ? 'div' : 'dialog'
   return <div className={`lt-qr-public lt-qr-cafe lt-qr-v15${preview ? ' lt-qr-is-preview' : ''}${count ? ' lt-qr-has-cart' : ''}`}>
     <main className="lt-qr-page">
       {preview && <div className="lt-qr-preview-note">Owner preview · {data.is_published ? 'Published' : 'Not published'}</div>}
@@ -683,10 +717,6 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
               : branch?.name && <span className="lt-v15-branch-name">{branch.name}</span>}
             {apiBase ? <MenuCardLink apiBase={apiBase} business={business} /> : business.join_url && <a className="lt-qr-card-link" href={business.join_url}>Connect loyalty card</a>}
           </div>
-        </div>
-        <div className="lt-v15-service-row" role="group" aria-label="Order service">
-          <button type="button" className="lt-v17-instore" aria-pressed={service==='pickup' || service==='dine-in'} onClick={()=>setService('dine-in')}>⌂ Dine in / Pick up</button>
-          <button type="button" className="lt-v17-delivery" disabled aria-disabled="true" title="Delivery coming soon"><span aria-hidden="true">▤</span><span>Delivery<small>Coming soon</small></span></button>
         </div>
         <label className="lt-qr-cafe-search lt-v15-search"><span aria-hidden="true">⌕</span><input type="search" aria-label="Search menu" placeholder="Search the menu" value={search} onChange={event=>setSearch(event.target.value)} /></label>
         <div className="lt-v15-filter-row">
@@ -705,7 +735,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
         {quickItems.length>0 && !search && category==='all' && !under200 && <section className="lt-v15-usual" aria-label="Order your daily usual"><div className="lt-v15-section-head"><h2>Order Your Daily Usual</h2><small>From a recent order on this device</small></div><div className="lt-v15-usual-list">{quickItems.map(option=><button type="button" key={option.item.public_id} onClick={()=>addUsual(option)}><span className="lt-v15-usual-photo"><MenuItemPhoto item={option.item} available /></span><span><strong>{option.item.name}</strong><small>{money(menuItemPrice(option.item,{}))} base price · Review options</small></span><b aria-hidden="true">＋</b></button>)}</div></section>}
         {(data.actions||[]).length>0 && <div className="lt-qr-cafe-actions lt-v15-extras">{data.actions.map(action=><a key={action.id} href={action.url} target="_blank" rel="noreferrer" className={action.id==='book'?'is-book':''}><strong>{action.label}</strong>{action.note?<span>{action.note}</span>:null}</a>)}</div>}
         <section className="lt-qr-stream lt-v15-menu" aria-label="Menu items">
-          <div className="lt-v15-section-head"><h2 ref={menuHeading} tabIndex={-1}>{search.trim()?'Search results':selectedCategory?.name||'Fast-Configure Menu'}</h2><small>{items.length} {items.length===1?'item':'items'}</small></div>
+          <div className="lt-v15-section-head"><h2 ref={menuHeading} tabIndex={-1}>{search.trim()?'Search results':selectedCategory?.name||'All items'}</h2><small>{items.length} {items.length===1?'item':'items'}</small></div>
           {items.map(value=><FastConfigureCard key={value.public_id} product={value} category={categoryName[value.public_id]} branchId={branchId} cart={cart} money={money} onOpen={setItem} onAdd={addItem} onQuantity={changeLine} />)}
           {!items.length && <div className="lt-qr-empty" role="status"><h3>{search?'No matches yet.':'Nothing in this category.'}</h3><p>{search?'Try another word.':'Check another category.'}</p></div>}
         </section>
@@ -742,14 +772,14 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
         <button type="button" onClick={()=>{ setNavNotice('');window.scrollTo({top:0,behavior:'smooth'}) }}><span aria-hidden="true">⌂</span>Menu</button>
         <button type="button" onClick={()=>{setNavNotice('');if(order){setPayStep('done');setCartOpen(true)}else {let token='';try{token=localStorage.getItem(`lt-menu-card:${business.public_id}`)||''}catch{};if(token && apiBase){window.dispatchEvent(new CustomEvent('lt-menu-open-orders',{detail:{business:business.public_id}}))}else if(savedReceipt){void resumeLastOrder()}else setNavNotice('Connect your loyalty card to view linked previous orders.')}}}><span aria-hidden="true">▤</span>Orders</button>
         <button type="button" onClick={()=>{setNavNotice('');window.dispatchEvent(new CustomEvent('lt-menu-open-history', { detail: {business:business.public_id} }))}}><span aria-hidden="true">✧</span>Rewards</button>
-        <button type="button" onClick={()=>{if(order){setPayStep('done');setCartOpen(true)}else openCart()}}><span aria-hidden="true">▣</span>Cart{count>0?` (${count})`:''}</button>
+        <button type="button" onClick={()=>{if(order){setPayStep('done');setCartOpen(true)}else openCart()}}><span className="lt-v19-nav-cart" aria-hidden="true">▣{count > 0 && <b>{count}</b>}</span>Cart<span className="lt-qr-sr">{count > 0 ? `, ${count} items` : ''}</span></button>
       </nav>
     </>}
-    {cartOpen && <div className="lt-qr-cart" onMouseDown={event => { if (event.target === event.currentTarget) closeCart() }}>
-      <div className="lt-qr-cart-card" ref={sheetRef} role="dialog" aria-modal="true" aria-labelledby={sheetTitleId} onKeyDown={onSheetKeyDown}>
+    {cartOpen && <CartOverlay ref={cartOverlayRef} className="lt-qr-cart" aria-labelledby={preview ? undefined : sheetTitleId} onCancel={event => { event.preventDefault(); closeCart() }} onMouseDown={event => { if (event.target === event.currentTarget) closeCart() }}>
+      <div className="lt-qr-cart-card" ref={sheetRef} role={preview ? 'dialog' : undefined} aria-modal={preview ? true : undefined} aria-labelledby={preview ? sheetTitleId : undefined} onKeyDown={onSheetKeyDown}>
         <header className="lt-qr-sheet-head">
           <div>
-            <h2 id={sheetTitleId} tabIndex={-1}>{title}</h2>
+            <div className="lt-v19-sheet-title"><h2 id={sheetTitleId} tabIndex={-1}>{title}</h2>{step === '' && <span className="lt-v19-cart-count">{count} {count === 1 ? 'item' : 'items'}</span>}</div>
             {(step === '' || step === 'service' || step === 'payment') && <ol className="lt-qr-steps" aria-label="Checkout steps">
               {CHECKOUT_STEPS.map(([value, label], index) => <li key={label} className={index < stepIndex ? 'is-done' : index === stepIndex ? 'is-current' : ''} aria-current={index === stepIndex ? 'step' : undefined}>{label}</li>)}
             </ol>}
@@ -767,10 +797,13 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
           {step === '' && <ul className="lt-qr-cart-lines">{cart.map(line => <CartLine key={line.key} line={line} money={money} onQuantity={quantity => changeLine(line.key, quantity)} />)}</ul>}
 
           {step === 'service' && <div className="lt-qr-pay">
-            <div className="lt-qr-pay-choices" role="group" aria-label="How will you get it?">
-              <button type="button" aria-pressed={service === 'dine-in'} onClick={() => setService('dine-in')}>{service === 'dine-in' && <CheckIcon />}Dine in</button>
-              <button type="button" aria-pressed={service === 'pickup'} onClick={() => { setService('pickup'); if (!slots.length) setSlots(pickupSlots()) }}>{service === 'pickup' && <CheckIcon />}Pick up later</button>
+            <h3 className="lt-v19-order-type-title">How will you get your order?</h3>
+            <div className="lt-v19-order-types" role="group" aria-label="Order type">
+              <button type="button" aria-pressed={service === 'dine-in'} onClick={() => { setService('dine-in'); pendingIds.current = null }}><OrderTypeIcon type="dine-in"/><strong>Dine in</strong><span className="lt-v19-choice-indicator" aria-hidden="true">{service === 'dine-in' && <CheckIcon size={13}/>}</span></button>
+              <button type="button" disabled aria-disabled="true" title="Pick up requires online payment"><OrderTypeIcon type="pickup"/><strong>Pick up</strong><small>Coming soon</small></button>
+              <button type="button" disabled aria-disabled="true" title="Delivery coming soon"><OrderTypeIcon type="delivery"/><strong>Delivery</strong><small>Coming soon</small></button>
             </div>
+            <small className="lt-qr-field-help is-neutral">Pick up and delivery will be available when online payments are ready.</small>
             {service === 'dine-in'
               ? <label className="lt-qr-field"><span>Table number <em>optional</em></span><input inputMode="numeric" autoComplete="off" placeholder="e.g. 5" value={tableNo} onChange={event => setTableNo(event.target.value.slice(0, 12))} /></label>
               : <label className="lt-qr-field"><span>Pick up time</span><select value={pickupAt} onChange={event => setPickupAt(event.target.value)}><option value="">Choose a time</option>{slots.map(slot => <option key={slot.value} value={slot.value}>{slot.label}</option>)}</select>{!pickupAt && <small className="lt-qr-field-help">Choose a pick up time to continue.</small>}</label>}
@@ -854,7 +887,10 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
 
         <footer className="lt-qr-sheet-foot">
           {step === 'empty' && <button type="button" className="lt-qr-primary lt-qr-wide" onClick={closeCart}>Browse the menu</button>}
-          {step === '' && <button type="button" className="lt-qr-primary lt-qr-wide" disabled={checkingCard || needsBranch} onClick={startCheckout}>{checkingCard ? 'One moment…' : `Checkout · ${money(total)}`}</button>}
+          {step === '' && <>
+            <div className="lt-v19-cart-subtotal"><span>Subtotal</span><strong>{money(total)}</strong></div>
+            <button type="button" className="lt-qr-primary lt-qr-wide lt-v19-checkout-cta" disabled={checkingCard || needsBranch} onClick={startCheckout}>{checkingCard ? 'One moment…' : 'Checkout'}{!checkingCard && <span aria-hidden="true">→</span>}</button>
+          </>}
           {step === 'service' && <>
             <button type="button" className="lt-qr-primary lt-qr-wide" disabled={!detailsReady} onClick={() => { if (!detailsReady) return; setSubmitError(''); setPayStep('payment') }}>Continue to payment</button>
             <button type="button" className="lt-qr-back-button" onClick={() => setPayStep('')}>Back to cart</button>
@@ -870,7 +906,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
           {step === 'done' && <>{order?.status === 'completed' && <button type="button" className="lt-qr-primary lt-qr-wide" onClick={orderAgain}>Order again · review cart</button>}<button type="button" className={order?.status === 'completed' ? 'lt-qr-back-button' : 'lt-qr-primary lt-qr-wide'} onClick={closeCart}>Back to menu</button></>}
         </footer>
       </div>
-    </div>}
+    </CartOverlay>}
   </div>
 }
 function MenuLoading() {
