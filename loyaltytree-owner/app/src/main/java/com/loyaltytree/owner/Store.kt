@@ -257,6 +257,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     var socialsOn by mutableStateOf(false)
     var instagramURL by mutableStateOf("")
     var facebookURL by mutableStateOf("")
+    var tiktokURL by mutableStateOf("")
     var reviewURL by mutableStateOf("")
     var bookOn by mutableStateOf(false)
     var bookURL by mutableStateOf("")
@@ -1448,13 +1449,33 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private fun validTikTokURL(value: String): Boolean {
+        val text = value.trim()
+        if (text.length > 300 || text.any { it.isWhitespace() || it.isISOControl() || it == '\\' }) return false
+        val url = runCatching { java.net.URI(text) }.getOrNull() ?: return false
+        val host = url.host?.lowercase().orEmpty()
+        return url.scheme.equals("https", ignoreCase = true) && url.userInfo == null && url.port == -1 &&
+            (host == "tiktok.com" || host.endsWith(".tiktok.com")) &&
+            !url.rawPath.isNullOrBlank() && url.rawPath != "/"
+    }
+
     fun saveGuest() {
         val current = session ?: return
         viewModelScope.launch {
             guestStatus = ""
+            val tiktok = tiktokURL.trim()
+            if (tiktok.isNotEmpty() && !validTikTokURL(tiktok)) {
+                guestStatus = "Enter a valid HTTPS TikTok link (tiktok.com)."
+                return@launch
+            }
             val links = JSONArray(otherLinks.toString())
             if (instagramURL.isNotBlank()) links.put(JSONObject().put("label", "Instagram").put("url", instagramURL.trim()))
             if (facebookURL.isNotBlank()) links.put(JSONObject().put("label", "Facebook").put("url", facebookURL.trim()))
+            if (tiktok.isNotEmpty()) links.put(JSONObject().put("label", "TikTok").put("url", tiktok))
+            if (links.length() > 4) {
+                guestStatus = "Maximum four social links. Contact support to remove an unlisted link."
+                return@launch
+            }
             val body = JSONObject()
                 .put("wifi_published", wifiOn)
                 .put("wifi_name", wifiName.trim())
@@ -2102,6 +2123,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         val links = json.optJSONArray("links") ?: JSONArray()
         instagramURL = ""
         facebookURL = ""
+        tiktokURL = ""
         otherLinks = JSONArray()
         for (i in 0 until links.length()) {
             val link = links.optJSONObject(i) ?: continue
@@ -2109,6 +2131,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
             val url = link.optString("url")
             val blob = (label + " " + url).lowercase()
             when {
+                label.trim().equals("TikTok", ignoreCase = true) || validTikTokURL(url) -> tiktokURL = url
                 "instagram" in blob -> instagramURL = url
                 "facebook" in blob || "fb.com" in blob -> facebookURL = url
                 url.isNotBlank() -> otherLinks.put(JSONObject().put("label", label.ifBlank { "Link" }).put("url", url))
