@@ -1307,7 +1307,10 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private var menuStockScope: OwnerSession? = null
+
     private fun clearMenuStock() {
+        menuStockScope = null
         menuStockBranches = emptyList()
         menuStockItems = emptyList()
         menuStockRows = emptyList()
@@ -1320,16 +1323,19 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     fun loadMenuStock() {
         val current = session ?: return
         viewModelScope.launch {
-            clearMenuStock()
+            if (menuStockScope != current) clearMenuStock()
+            if (menuStockBusy) return@launch
+            menuStockScope = current
             menuStockBusy = true
             val result = io { API.get("/api/v1/business/${current.slug}/menu-inventory", current.token) }
             if (session != current) return@launch
             menuStockBusy = false
             if (result == null || result.first >= 400) {
+                clearMenuStock()
                 menuStockNote = if (result == null) "Could not reach daily inventory." else API.message(result.second, "Daily inventory unavailable.")
                 return@launch
             }
-            val body = result.second as? JSONObject ?: return@launch
+            val body = result.second as? JSONObject ?: run { clearMenuStock(); menuStockNote = "Invalid inventory response."; return@launch }
             menuStockDay = body.optString("service_day")
             val bs = body.optJSONArray("branches") ?: JSONArray()
             menuStockBranches = buildList { for (i in 0 until bs.length()) {
@@ -1359,6 +1365,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
 
     fun setMenuStock(branchId: String, itemId: String, variantKey: String, opening: String, repeatDaily: Boolean) {
         val current = session ?: return
+        if (menuStockScope != current || menuStockBusy) return
         val number = opening.toIntOrNull()
         if (number == null || number !in 0..100000) {
             menuStockNote = "Enter a whole number from 0 to 100000."
@@ -1376,6 +1383,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
             if (session != current) return@launch
             menuStockBusy = false
             if (result == null || result.first >= 400) {
+                if (result?.first == 401 || result?.first == 403) clearMenuStock()
                 menuStockNote = if (result == null) "Could not reach daily inventory." else API.message(result.second,"Could not save servings.")
                 return@launch
             }
