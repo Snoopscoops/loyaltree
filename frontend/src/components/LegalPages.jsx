@@ -2,13 +2,16 @@ import React, { useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import policy from '../legal-content.json'
 
-const LEGAL_ENTITY = { ...policy.operator, phoneHref:'+639397992144' }
+// Public administrative correction only; canonical acceptance documents remain versioned separately.
+const REGISTERED_LOCATION = 'Marilao, Bulacan, Philippines'
+const LEGAL_ENTITY = { ...policy.operator, location: REGISTERED_LOCATION, phoneHref:'+639397992144' }
+const publicLegalText = text => text.replaceAll('Isabela, Philippines', REGISTERED_LOCATION)
 
 function LegalSection({ section, number, id }) {
   return <section id={id} style={s.section}>
     <h2 style={s.h2}>{number}. {section.title}</h2>
-    {section.paragraphs.map((text,index)=><p key={index} style={{...s.p,marginBottom:12}}>{text}</p>)}
-    {section.bullets?.length > 0 && <ul style={{...s.p,paddingLeft:22}}>{section.bullets.map(text=><li key={text} style={{marginBottom:12}}>{text}</li>)}</ul>}
+    {section.paragraphs.map((text,index)=><p key={index} style={{...s.p,marginBottom:12}}>{publicLegalText(text)}</p>)}
+    {section.bullets?.length > 0 && <ul style={{...s.p,paddingLeft:22}}>{section.bullets.map(text=><li key={text} style={{marginBottom:12}}>{publicLegalText(text)}</li>)}</ul>}
   </section>
 }
 
@@ -26,8 +29,8 @@ export default function LegalPage({ type='privacy' }) {
     <header style={s.header}><button onClick={()=>navigate('/')} style={s.brand}>LoyaltyTree</button><button onClick={()=>navigate('/')} style={s.back}>← Back to Home</button></header>
     <main style={s.main}>
       <div style={s.eyebrow}>LEGAL</div><h1 style={s.h1}>{doc.title}</h1>
-      <div style={s.updated}>Last updated: 11 October 2026 · Version {doc.version}</div><p style={s.intro}>{doc.intro}</p>
-      <div style={s.notice}>These rules operate with the applicable accepted documents and law. A published revision does not silently replace an earlier signed agreement. Customer statutory rights are preserved.</div>
+      <div style={s.updated}>Document version {doc.version} · Registered location corrected: 25 November 2026</div><p style={s.intro}>{doc.intro}</p>
+      <div style={s.notice}>These rules operate with the applicable accepted documents and law. A published revision does not silently replace an earlier signed agreement. Customer statutory rights are preserved. The registered location shown here is an administrative correction and does not change previously accepted contractual terms.</div>
       <div style={s.identityCard}>
         <div style={s.identityLabel}>PLATFORM OPERATOR</div><div style={s.identityName}>{LEGAL_ENTITY.name}</div><div style={s.identityMeta}>{LEGAL_ENTITY.location}</div>
         <div style={s.identityContacts}><a href={`tel:${LEGAL_ENTITY.phoneHref}`} style={s.identityLink}>{LEGAL_ENTITY.phone}</a><a href={`mailto:${LEGAL_ENTITY.email}`} style={s.identityLink}>{LEGAL_ENTITY.email}</a></div>
