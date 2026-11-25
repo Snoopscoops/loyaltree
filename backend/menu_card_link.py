@@ -73,6 +73,14 @@ def register_menu_card_routes(app, *, db, get_business, has_feature, on_hold, se
                 return row
         return None
 
+    # Private contact access uses a distinct, freshly verified grant.
+    try:
+        from .menu_contact_profile import register_menu_contact_routes
+    except ImportError:
+        from menu_contact_profile import register_menu_contact_routes
+    register_menu_contact_routes(app, db=db, business_for=business_for, send_email=send_email,
+                                 read_token=read_token, sign=sign, secret=_secret)
+
     @app.post("/api/v1/public/menu/{public_id}/card/request")
     def request_card(public_id: str, body: CardEmail):
         business = business_for(public_id)
