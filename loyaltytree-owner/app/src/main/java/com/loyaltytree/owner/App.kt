@@ -885,12 +885,14 @@ private fun HomeScreen(
 
 @Composable
 private fun DashboardMetric(label: String, value: String, icon: ImageVector, modifier: Modifier, reward: Boolean = false) {
-    Row(modifier.clip(Shape).background(Color(0xFFEAF6F3)).padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-        Icon(icon, null, tint = if (reward) Color(0xFF956700) else Forest, modifier = Modifier.size(26.dp))
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(label, color = Ink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-            Text(value, color = Ink, fontSize = 21.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    Column(modifier.clip(Shape).background(Color(0xFFEAF6F3)).padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+            Box(Modifier.size(30.dp).clip(Pill).background(if (reward) RewardYellow.copy(alpha = 0.22f) else Track), contentAlignment = Alignment.Center) {
+                Icon(icon, null, tint = if (reward) Color(0xFF815900) else Forest, modifier = Modifier.size(21.dp))
+            }
+            Text(label, color = Ink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f), maxLines = 2)
         }
+        Text(value, color = Ink, fontSize = 21.sp, fontWeight = FontWeight.Bold, maxLines = 2)
     }
 }
 
