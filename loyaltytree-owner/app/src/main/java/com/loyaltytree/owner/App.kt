@@ -1079,20 +1079,20 @@ private fun OrdersScreen(store: CounterStore) {
         if (canReport) {
             TextButton(onClick = { reportOpen = !reportOpen }) { Text(if (reportOpen) "Hide sales report" else "Quick sales report", color = Forest) }
             if (reportOpen) {
-                store.daySummary?.let { DaySummaryCard(it, showBranches = false) }
+                store.daySummary?.let { DaySummaryCard(it, showBranches = who?.isOwner == true && store.ordersBranch.isBlank() && store.branches.size > 1) }
                 SalesReportCard(store)
             }
         }
         if (store.ordersNote.isNotBlank()) Text(store.ordersNote, color = Bad, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
         val visible = when (filter) {
             "history" -> earlier
-            "unpaid" -> current.filter { bill -> bill.orders.any { it.status != "cancelled" && it.payment == "unpaid" } }
+            "unpaid" -> bills.filter { bill -> bill.orders.any { it.status != "cancelled" && it.payment in setOf("unpaid", "pending") } }
             "preparing", "ready" -> current.filter { bill -> bill.orders.any { it.status == filter } }
             else -> current
         }
         if (visible.isEmpty()) Text("No orders in this view.", color = Muted)
         if (store.orders.count { it.source == "menu" } >= 100) Text("Showing recent orders. Older bill entries may be missing.", color = Muted, fontSize = 12.sp)
-        visible.forEach { bill -> androidx.compose.runtime.key(bill.key) { CounterBillCard(store, bill) } }
+        visible.forEach { bill -> androidx.compose.runtime.key(bill.key) { CounterBillCard(store, bill, filter) } }
         Secondary("Refresh") { store.loadOrders() }
     }
 }
@@ -1208,8 +1208,10 @@ private fun paymentBadge(method: String, status: String): String? {
     }
     return when (status) {
         "unpaid" -> "$label · Unpaid"
+        "pending" -> "$label · Payment pending"
         "paid_test" -> "Paid · $label (test)"
-        else -> "Paid · $label"
+        "paid" -> "Paid · $label"
+        else -> "$label · Payment not confirmed"
     }
 }
 
@@ -1217,14 +1219,21 @@ private fun branchLabel(name: String): String =
     if (name.isBlank() || name.endsWith("branch", ignoreCase = true)) name else "$name branch"
 
 @Composable
-private fun CounterBillCard(store: CounterStore, bill: CounterBill) {
+private fun CounterBillCard(store: CounterStore, bill: CounterBill, filter: String) {
     val parent = bill.parent
     if (!bill.grouped) {
         OrderCard(store, bill.orders.single())
         return
     }
     var adding by remember(bill.key) { mutableStateOf(false) }
-    var expanded by remember(bill.key) { mutableStateOf(setOfNotNull(if (bill.active) bill.orders.firstOrNull { it.status != "cancelled" && it.payment == "unpaid" }?.id ?: parent?.id else null)) }
+    var expanded by remember(bill.key, filter) {
+        mutableStateOf(setOfNotNull(if (filter == "history") null else
+            bill.orders.firstOrNull { it.status != "cancelled" && when (filter) {
+                "unpaid" -> it.payment in setOf("unpaid", "pending")
+                "preparing", "ready" -> it.status == filter
+                else -> it.payment == "unpaid"
+            } }?.id ?: bill.orders.firstOrNull { it.status in setOf("new", "preparing", "ready") }?.id))
+    }
     val busy = store.orderBusy.isNotBlank()
     val limited = store.orders.count { it.source == "menu" } >= 100 || parent == null
     Card {
@@ -1247,7 +1256,7 @@ private fun CounterBillCard(store: CounterStore, bill: CounterBill) {
                     Row(Modifier.fillMaxWidth().clickable { expanded = if (open) emptySet() else setOf(order.id) }, horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text("$label · ${order.number}", color = Forest, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                            Text("${order.status.replaceFirstChar { it.uppercase() }} · ${if (order.status == "cancelled") "Cancelled" else if (order.payment == "paid") "Paid" else "Unpaid"}", color = Muted, fontSize = 12.sp)
+                            Text("${order.status.replaceFirstChar { it.uppercase() }} · ${if (order.status == "cancelled") "Cancelled" else when (order.payment) { "paid" -> "Paid"; "paid_test" -> "Paid (test)"; "unpaid" -> "Unpaid"; else -> "Payment unconfirmed" }}", color = Muted, fontSize = 12.sp)
                         }
                         Text("${order.total}  ${if (open) "▴" else "▾"}", color = Forest, fontWeight = FontWeight.Bold)
                     }
@@ -1310,22 +1319,28 @@ private fun OrderCard(store: CounterStore, order: LiveOrder, insideBill: Boolean
             }
         }
         Text(listOf(order.customer, branchLabel(order.branch)).filter { it.isNotBlank() }.joinToString(" · "), color = Ink, fontSize = 14.sp)
+        if (order.service == "dine-in") Text(if (order.tableNo.isBlank()) "Dine in" else "Dine in · Table ${order.tableNo}", color = Muted, fontSize = 13.sp)
         if (order.pickup.isNotBlank()) Text("Pickup ${tidy(order.pickup)}", color = Muted, fontSize = 13.sp)
-        Text(order.items.joinToString(" · ") { it.name }.ifBlank { "Order details" }, color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Column(Modifier.fillMaxWidth().clip(Pill).background(Color(0xFFF0F8F4)).padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            order.items.forEach { line ->
+                Text(line.name, color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                if (line.detail.isNotBlank()) Text(line.detail, color = Muted, fontSize = 12.sp)
+            }
+            if (order.note.isNotBlank()) Text("Note: ${order.note}", color = Ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        }
         Row(Modifier.fillMaxWidth().clip(Pill).background(Track).padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("Order total", color = Muted, fontSize = 12.sp)
             Text(order.total, color = DeepTeal, fontWeight = FontWeight.Bold, fontSize = 20.sp)
         }
-        TextButton(onClick = { details = !details }) { Text(if (details) "Hide details" else "View details & actions", color = Forest) }
-        if (details) {
-        order.items.forEach { line ->
-            Text(line.name, color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-            if (line.detail.isNotBlank()) Text(line.detail, color = Muted, fontSize = 13.sp)
-            if (order.canVoidItems && line.id.isNotBlank()) {
-                TextButton(onClick = { voiding = line }, enabled = !busy) { Text("Void item") }
-            }
+        if (order.canVoidItems || order.canCancel == true || (!insideBill && order.canAddSubOrder) ||
+            (order.canCancel == null && order.status in setOf("new", "preparing"))) {
+            TextButton(onClick = { details = !details }) { Text(if (details) "Hide order actions" else "More order actions", color = Forest) }
         }
-        if (order.note.isNotBlank()) Text(order.note, color = Muted, fontSize = 13.sp)
+        if (details && order.canVoidItems) {
+            order.items.filter { it.id.isNotBlank() }.forEach { line ->
+                TextButton(onClick = { voiding = line }, enabled = !busy) { Text("Void ${line.name}", color = Bad) }
+            }
         }
         if (awaitingCash) {
             // Cash first: the kitchen can start only after the cashier confirms the payment.
