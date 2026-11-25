@@ -376,6 +376,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         watchJob?.cancel()
         watchJob = null
         session = null
+        clearMenuStock()
         members = emptyList()
         menuRows = emptyList()
         orders = emptyList()
@@ -1306,12 +1307,23 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private fun clearMenuStock() {
+        menuStockBranches = emptyList()
+        menuStockItems = emptyList()
+        menuStockRows = emptyList()
+        menuStockDay = ""
+        menuStockNote = ""
+        menuStockBusy = false
+    }
+
     /** Daily serving limits: the server validates branch permissions and saves atomically. */
     fun loadMenuStock() {
         val current = session ?: return
         viewModelScope.launch {
+            clearMenuStock()
             menuStockBusy = true
             val result = io { API.get("/api/v1/business/${current.slug}/menu-inventory", current.token) }
+            if (session != current) return@launch
             menuStockBusy = false
             if (result == null || result.first >= 400) {
                 menuStockNote = if (result == null) "Could not reach daily inventory." else API.message(result.second, "Daily inventory unavailable.")
@@ -1361,6 +1373,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
             val body = JSONObject().put("branch_public_id",branchId).put("item_public_id",itemId)
                 .put("variant_key",variantKey).put("initial_servings",number).put("repeat_daily",repeatDaily)
             val result = io { API.put("/api/v1/business/${current.slug}/menu-inventory",current.token,body) }
+            if (session != current) return@launch
             menuStockBusy = false
             if (result == null || result.first >= 400) {
                 menuStockNote = if (result == null) "Could not reach daily inventory." else API.message(result.second,"Could not save servings.")
