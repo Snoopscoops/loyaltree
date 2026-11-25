@@ -1888,7 +1888,7 @@ def business_category_meta(value: Optional[str]) -> dict:
 # signed snapshot and SHA-256 digest, so later revisions never overwrite the
 # document a business actually accepted.
 LOYALTYTREE_LEGAL_NAME = 'LoyaltyTree Information Technology Solutions'
-LOYALTYTREE_LEGAL_LOCATION = 'Isabela, Philippines'
+LOYALTYTREE_LEGAL_LOCATION = 'Marilao, Bulacan, Philippines'
 LOYALTYTREE_LEGAL_PHONE = '0939 799 2144'
 LOYALTYTREE_LEGAL_EMAIL = 'theloyaltytree@gmail.com'
 # Versioned policy content is shipped with the backend and mirrored in the frontend.

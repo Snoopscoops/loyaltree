@@ -26,10 +26,10 @@ export default function LegalPage({ type='privacy' }) {
     <header style={s.header}><button onClick={()=>navigate('/')} style={s.brand}>LoyaltyTree</button><button onClick={()=>navigate('/')} style={s.back}>← Back to Home</button></header>
     <main style={s.main}>
       <div style={s.eyebrow}>LEGAL</div><h1 style={s.h1}>{doc.title}</h1>
-      <div style={s.updated}>Last updated: 11 October 2026 · Version {doc.version}</div><p style={s.intro}>{doc.intro}</p>
+      <div style={s.updated}>Document version: {doc.version}</div><p style={s.intro}>{doc.intro}</p>
       <div style={s.notice}>These rules operate with the applicable accepted documents and law. A published revision does not silently replace an earlier signed agreement. Customer statutory rights are preserved.</div>
       <div style={s.identityCard}>
-        <div style={s.identityLabel}>PLATFORM OPERATOR</div><div style={s.identityName}>{LEGAL_ENTITY.name}</div><div style={s.identityMeta}>{LEGAL_ENTITY.location}</div>
+        <div style={s.identityLabel}>PLATFORM OPERATOR</div><div style={s.identityName}>{LEGAL_ENTITY.name}</div><div style={s.identityMeta}>{LEGAL_ENTITY.entity_type} · Registered business location: {LEGAL_ENTITY.location}</div>
         <div style={s.identityContacts}><a href={`tel:${LEGAL_ENTITY.phoneHref}`} style={s.identityLink}>{LEGAL_ENTITY.phone}</a><a href={`mailto:${LEGAL_ENTITY.email}`} style={s.identityLink}>{LEGAL_ENTITY.email}</a></div>
       </div>
       <aside style={s.identityCard} aria-label="Key points"><strong>Key points</strong><ul style={s.p}>{doc.summary.map(text=><li key={text}>{text}</li>)}</ul></aside>
