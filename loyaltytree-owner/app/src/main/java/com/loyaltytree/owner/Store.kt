@@ -106,6 +106,8 @@ data class Kpi(val label: String, val value: String, val change: Double?, val in
 data class TrendBar(val label: String, val sales: Double, val orders: Int)
 data class RankedItem(val name: String, val quantity: Int, val sales: String)
 data class InsightGroup(val label: String, val orders: Int, val share: Double, val topItem: String)
+data class ProductBuyerGroup(val dimension: String, val label: String, val orders: Int)
+data class ProductBuyerInsight(val name: String, val quantity: Int, val orders: Int, val groups: List<ProductBuyerGroup>, val hiddenGroups: Int)
 data class InsightCard(val id: String, val title: String, val note: String, val groups: List<InsightGroup>, val hiddenGroups: Int)
 data class ScanCustomer(
     val id: String,
@@ -169,6 +171,9 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     var insightsTop by mutableStateOf<List<NamedCount>>(emptyList())
     var insightsNote by mutableStateOf("")
     var analyticsBranch by mutableStateOf("")
+    var menuAnalyticsPeriod by mutableStateOf("month")
+    var insightProducts by mutableStateOf<List<ProductBuyerInsight>>(emptyList())
+    private var insightRequest = 0
     var insightKpis by mutableStateOf<List<Kpi>>(emptyList())
     var insightTrend by mutableStateOf<List<TrendBar>>(emptyList())
     var insightTrendUnit by mutableStateOf("day")
@@ -632,10 +637,10 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     }
 
     /** Download the sales report (CSV) for the Orders branch filter, then hand it to [done] to share. */
-    fun downloadReport(done: (ShareReport) -> Unit) {
+    fun downloadReport(analytics: Boolean = false, done: (ShareReport) -> Unit) {
         val current = session ?: return
         if (reportBusy) return
-        val query = when (reportRange) {
+        val query = if (analytics) "period=$menuAnalyticsPeriod" else when (reportRange) {
             "yesterday" -> {
                 val day = Calendar.getInstance(TimeZone.getTimeZone("Asia/Manila"))
                 day.add(Calendar.DAY_OF_MONTH, -1)
@@ -645,7 +650,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
             "month" -> "period=month"
             else -> "date=${manila()}"
         }
-        val branch = java.net.URLEncoder.encode(ordersBranch, "UTF-8")
+        val branch = java.net.URLEncoder.encode(if (analytics) analyticsBranch else ordersBranch, "UTF-8")
         viewModelScope.launch {
             reportBusy = true
             reportNote = ""
@@ -764,16 +769,20 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
 
     fun loadInsights() {
         val current = session ?: return
-        val apiPeriod = when (period) {
-            "today" -> "today"
-            "7d" -> "week"
-            "90d" -> "3months"
-            else -> "month"
-        }
+        val apiPeriod = menuAnalyticsPeriod
+        val request = ++insightRequest
         val branch = java.net.URLEncoder.encode(analyticsBranch, "UTF-8")
+        insightKpis = emptyList()
+        insightTrend = emptyList()
+        insightItems = emptyList()
+        insightCards = emptyList()
+        insightProducts = emptyList()
+        insightRange = ""
+        insightsNote = ""
         viewModelScope.launch {
             insightsLoading = true
             val result = io { API.get("/api/v1/business/${current.slug}/menu-orders/insights?period=$apiPeriod&branch=$branch", current.token) }
+            if (request != insightRequest || session?.slug != current.slug) return@launch
             insightsLoading = false
             if (result == null || result.first >= 400) {
                 insights = emptyList()
@@ -817,6 +826,20 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
             }
         }
         insightsTop = insightItems.map { NamedCount(it.name, it.name, it.quantity.toString()) }
+        insightProducts = buildList {
+            val products = json.optJSONArray("product_buyers") ?: JSONArray()
+            for (i in 0 until products.length()) {
+                val product = products.optJSONObject(i) ?: continue
+                val groups = buildList {
+                    val rows = product.optJSONArray("groups") ?: JSONArray()
+                    for (j in 0 until rows.length()) {
+                        val group = rows.optJSONObject(j) ?: continue
+                        add(ProductBuyerGroup(group.optString("dimension"), group.optString("label"), group.optInt("orders")))
+                    }
+                }
+                add(ProductBuyerInsight(product.optString("name"), product.optInt("quantity"), product.optInt("orders"), groups, product.optInt("hidden_groups")))
+            }
+        }
         val titles = mapOf(
             "age" to "Age", "gender" to "Gender", "occupation" to "Occupation", "membership" to "Members vs walk-ins",
             "tenure" to "New vs returning", "time" to "Time of day", "weekday" to "Day of week", "branch" to "Branch"
