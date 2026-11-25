@@ -1,10 +1,13 @@
 import json
 import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from backend.menu_order_access import make_menu_order_operator
+from backend.menu_order_insights import payment_fields
 from backend.menu_order_push import (
     ENV_NAME, FcmSender, TABLE, branch_label, is_unregistered, load_credentials, make_order_pusher,
     order_message, recipients, register_menu_order_push_routes,
@@ -346,15 +349,18 @@ class MainWiringTest(unittest.TestCase):
                     if isinstance(n, ast.AsyncFunctionDef) and n.name == 'public_place_menu_order')
         node.decorator_list = []
         self.pushed = []
+        # Simulates menu_order_branches.sql not run: saved row lacks the branch columns.
+        self.insert_order = Mock(side_effect=lambda db, row: (
+            {key: value for key, value in row.items() if not key.startswith('branch')}, []
+        ))
         scope = {
             'BackgroundTasks': BackgroundTasks, 'Request': Request, 'HTTPException': HTTPException,
             'datetime': datetime, 'timezone': timezone, 'uuid': uuid, 'supabase': None,
             'safe_get_business': lambda p: dict(BUSINESS),
             '_menu_order_resolve_branch': lambda db, bid, branch: ('bgc', 'BGC'),
             '_menu_order_member': lambda *a: None, '_menu_card_read_token': None,
-            '_menu_order_payment': lambda m: ('cash', 'unpaid'),
-            # Simulates menu_order_branches.sql not run: saved row lacks the branch columns.
-            '_menu_order_insert': lambda db, row: ({k: v for k, v in row.items() if not k.startswith('branch')}, []),
+            '_menu_order_payment': payment_fields,
+            '_menu_order_insert': self.insert_order,
             'friendly_db_error': str,
             '_menu_counter_order_public': lambda row: {'public_id': row.get('public_id')},
             '_menu_order_push': lambda business, order: self.pushed.append((business, order)),
@@ -373,17 +379,39 @@ class MainWiringTest(unittest.TestCase):
 
         class Req:
             async def json(self):
-                return {'items': [{'name': 'Latte', 'quantity': 1, 'line_total': 120}], 'order_number': '123'}
+                return {'items': [{'name': 'Latte', 'quantity': 1, 'line_total': 120}],
+                        'order_number': '123', 'payment_method': 'cash', 'payment_status': 'paid'}
 
         tasks = BackgroundTasks()
         result = asyncio.run(handler('biz', Req(), tasks))
         self.assertTrue(result['success'])
+        saved_order = self.insert_order.call_args.args[1]
+        self.assertEqual((saved_order['payment_method'], saved_order['payment_status']), ('cash', 'unpaid'))
         self.assertEqual(self.pushed, [])  # not sent before the response
         self.assertEqual(len(tasks.tasks), 2)  # owner phones (v6) + customer's card (v8)
         asyncio.run(tasks())
         self.assertEqual(self.placed[0]['order_number'], '123')
         business, order = self.pushed[0]
         self.assertEqual((order['branch_public_id'], order['branch_name'], order['order_number']), ('bgc', 'BGC', '123'))
+
+    def test_public_checkout_rejects_electronic_and_unspecified_payments_before_saving(self):
+        import asyncio
+        from fastapi import BackgroundTasks
+
+        handler = self.load()
+        for payment in ({'payment_method': 'card'}, {'payment_method': 'qrph'}, {}):
+            with self.subTest(payment=payment):
+                request = SimpleNamespace(json=AsyncMock(return_value={
+                    'items': [{'name': 'Latte', 'quantity': 1, 'line_total': 120}],
+                    **payment,
+                }))
+                tasks = BackgroundTasks()
+                with self.assertRaises(HTTPException) as caught:
+                    asyncio.run(handler('biz', request, tasks))
+                self.assertEqual(caught.exception.status_code, 400)
+                self.assertIn('Please select cash', caught.exception.detail)
+                self.insert_order.assert_not_called()
+                self.assertEqual(tasks.tasks, [])
 
 
 if __name__ == '__main__':
