@@ -2762,6 +2762,12 @@ private fun BillboardScreen(store: CounterStore) {
 }
 
 @Composable
+private fun NotificationCount(message: String) {
+    Text("${notificationCharacterCount(message)} / $NOTIFICATION_MESSAGE_LIMIT characters", color = if (notificationCharacterCount(message) > NOTIFICATION_MESSAGE_LIMIT) Bad else Muted,
+        fontSize = 12.sp, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.End)
+}
+
+@Composable
 private fun GreetingsScreen(store: CounterStore) {
     var title by remember { mutableStateOf("") }
     var message by remember { mutableStateOf("") }
@@ -2774,7 +2780,8 @@ private fun GreetingsScreen(store: CounterStore) {
             Text("Announcement", fontWeight = FontWeight.Bold, fontSize = 17.sp, color = Ink)
             Text("Pushes to the wallet. Choose the whole business or one branch.", color = Muted, fontSize = 13.sp)
             Field("Title", title, { title = it })
-            Field("Message", message, { message = it })
+            Field("Message", message, { message = limitNotificationText(it) }, lines = 5)
+            NotificationCount(message)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Box(Modifier.weight(1f)) { Choice("Whole business", scope == "business") { scope = "business" } }
                 Box(Modifier.weight(1f)) { Choice("One branch", scope == "branch") { scope = "branch" } }
@@ -2788,7 +2795,8 @@ private fun GreetingsScreen(store: CounterStore) {
                 Text("Birthday greeting", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), color = Ink)
                 Switch(store.birthdayOn, { store.birthdayOn = it }, colors = switchColors())
             }
-            Field("Birthday message", store.birthdayMessage, { store.birthdayMessage = it.take(500) })
+            Field("Birthday message", store.birthdayMessage, { store.birthdayMessage = limitNotificationText(it) }, lines = 5)
+            NotificationCount(store.birthdayMessage)
         }
         Card {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2804,7 +2812,8 @@ private fun GreetingsScreen(store: CounterStore) {
         Card {
             Text("Churn greeting", fontWeight = FontWeight.Bold, color = Ink)
             StepRow("After ${store.churnDays} quiet days", { if (store.churnDays > 7) store.churnDays-- }, { if (store.churnDays < 365) store.churnDays++ })
-            Field("Come back message", store.churnMessage, { store.churnMessage = it.take(500) })
+            Field("Come back message", store.churnMessage, { store.churnMessage = limitNotificationText(it) }, lines = 5)
+            NotificationCount(store.churnMessage)
         }
         if (store.setupStatus.isNotBlank()) Text(store.setupStatus, color = Forest, fontWeight = FontWeight.SemiBold)
         Primary(if (store.loading) "Saving" else "Save greetings", enabled = !store.loading) { store.saveGreetings() }
@@ -3328,6 +3337,22 @@ private fun WalletEditorSample(store: CounterStore, platform: String, color: Col
     val blue = Color(0xFF246AC1)
     val bannerProgress = config.optString("wallet_banner_mode") == "progress"
     val showBanner = bannerProgress || config.optBoolean("wallet_show_background", true)
+    if (!apple) {
+        val googleSecondary = if (store.cardType == "vip") null else if (employee && store.cardType == "membership") field("POSITION", "Sample position") else secondary
+        val googleDetails = buildList {
+            add(field("MEMBER", "Sample Member"))
+            if (store.cardType == "vip" || (hybrid && store.hybridTier)) add(field(if (hybrid) "TIER" else "VIP TIER", tierName))
+            addAll(auxiliary.filter { it.label != "CURRENT TIER" })
+            if (hybrid && pointsEnabled && stampsEnabled) add(field("NEXT STAMP REWARD", stampReward))
+            addAll(details)
+        }.distinct()
+        GoogleWalletEditorSample(
+            business, title, initials, color, foreground, secondaryColor, asset("program_logo_url"),
+            asset("hero_image_url"), metric, googleSecondary, googleDetails, visibleActions.map { it.optString("label") },
+            primary?.optString("label"), showBanner, bannerProgress, stampsEnabled, stamps, goal
+        )
+        return
+    }
     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(25.dp)).background(if (apple) Color(0xFFF0F1F3) else Color(0xFFF7F8FA))
         .border(1.dp, Line, RoundedCornerShape(25.dp)).padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -3418,6 +3443,97 @@ private fun WalletEditorSample(store: CounterStore, platform: String, color: Col
             Text("  Powered by LoyaltyTree", color = Muted, fontSize = 10.sp)
         }
         Text("Preview only. Actual Wallet apps may adjust spacing, text size and system controls.", color = Muted, fontSize = 10.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+    }
+}
+
+/** Google default loyalty template: wide logo/title, native balances, QR,
+ * bottom hero image, then separate details. Apple preview is unchanged. */
+@Composable
+private fun GoogleWalletEditorSample(
+    business: String, title: String, initials: String, color: Color, foreground: Color,
+    secondaryColor: Color, logoUrl: String, heroUrl: String, metric: SampleWalletField,
+    secondary: SampleWalletField?, details: List<SampleWalletField>, actions: List<String>,
+    primaryAction: String?, showBanner: Boolean, bannerProgress: Boolean,
+    stampsEnabled: Boolean, stamps: Int, goal: Int
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val googleInk = Color(0xFF202124)
+    val googleMuted = Color(0xFF5F6368)
+    val googleBlue = Color(0xFF1A73E8)
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(Color(0xFFF1F3F4)).padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+            Text("‹", color = googleInk, fontSize = 32.sp)
+            Text("Google Wallet", color = googleInk, fontSize = 17.sp, fontWeight = FontWeight.Medium)
+            Box(Modifier.size(40.dp).clip(CircleShape).clickable { expanded = !expanded }, contentAlignment = Alignment.Center) {
+                Text("⋮", color = googleInk, fontSize = 26.sp)
+            }
+        }
+        Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(color)) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                // Backend sets wideProgramLogo, which replaces the circular issuer header on Android.
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    WalletArtwork(logoUrl, Modifier.width(62.dp).height(38.dp)) {
+                        Text(initials.ifBlank { "LT" }, color = foreground, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Text(business, color = foreground, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                }
+                Text(title, color = foreground, fontSize = 24.sp, lineHeight = 28.sp, fontWeight = FontWeight.Medium)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    listOfNotNull(metric, secondary).forEach { value ->
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(value.label, color = foreground.copy(alpha = .85f), fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                            Text(value.value, color = foreground, fontSize = 25.sp, lineHeight = 29.sp, fontWeight = FontWeight.Medium)
+                        }
+                    }
+                }
+                Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Color.White).padding(16.dp), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Qr("LOYALTYTREE-PREVIEW-NOT-A-MEMBER", 144)
+                        Text("Sample Member", color = googleInk, fontSize = 13.sp)
+                    }
+                }
+            }
+            // Default Google loyalty pass shows the object/class hero below its barcode.
+            if (showBanner) Box(Modifier.fillMaxWidth().height(106.dp).background(Brush.horizontalGradient(listOf(color, secondaryColor)))) {
+                WalletArtwork(heroUrl, Modifier.fillMaxSize(), crop = true) {
+                    Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(business, color = foreground, fontSize = 12.sp)
+                        Text(title, color = foreground, fontSize = 20.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+                if (bannerProgress && stampsEnabled) Row(Modifier.align(Alignment.Center).clip(Pill).background(color.copy(alpha = .95f)).padding(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    repeat(goal.coerceIn(1, 10)) { index ->
+                        Box(Modifier.size(17.dp).clip(CircleShape).background(if (index < stamps) RewardYellow else foreground.copy(alpha = .23f)))
+                    }
+                }
+            }
+        }
+        if (!primaryAction.isNullOrBlank()) {
+            Box(Modifier.fillMaxWidth().clip(CircleShape).background(Color(0xFFD3E3FD)).clickable { expanded = true }.padding(14.dp),
+                contentAlignment = Alignment.Center) {
+                Text("$primaryAction ↗", color = Color(0xFF174EA6), fontWeight = FontWeight.Medium, fontSize = 14.sp)
+            }
+        }
+        Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Color.White).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            val visible = if (expanded) details else details.take(2)
+            visible.forEachIndexed { index, item ->
+                if (index > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(Color(0xFFE8EAED)))
+                Text(item.label, color = googleMuted, fontSize = 11.sp)
+                Text(item.value, color = googleInk, fontSize = 15.sp)
+            }
+            if (expanded) {
+                actions.forEach { action -> Text("$action ↗", color = googleBlue, fontSize = 14.sp) }
+                Text("Rate Your Experience ↗", color = googleBlue, fontSize = 14.sp)
+                Text("View Rewards / Account ↗", color = googleBlue, fontSize = 14.sp)
+            }
+            TextButton(onClick = { expanded = !expanded }, modifier = Modifier.fillMaxWidth()) {
+                Text(if (expanded) "Show less" else "Details", color = googleBlue)
+            }
+        }
+        Text("SAMPLE · NOT VALID FOR REDEMPTION", color = googleMuted, fontSize = 10.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
     }
 }
 
