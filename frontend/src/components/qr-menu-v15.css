@@ -144,7 +144,15 @@
 .lt-v19-cart-count {font-size:11px;font-weight:750;color:#07543e;background:#e6f5ec;border-radius:999px;padding:4px 9px}
 .lt-v19-cart-subtotal {display:flex;align-items:center;justify-content:space-between;gap:12px;padding:2px 0 7px;color:#18372d;font-size:14px;font-weight:700}
 .lt-v19-cart-subtotal strong {font-size:19px;font-weight:850;white-space:nowrap}
-.lt-qr-v15 .lt-v19-checkout-cta {display:flex;justify-content:center;align-items:center;gap:10px;min-height:48px}
+.lt-qr-v15 .lt-v19-checkout-cta {display:flex;justify-content:center;align-items:center;gap:10px;min-height:52px}
+/* Explicit foreground in the native dialog, including mobile WebKit text fill. */
+.lt-qr-v15 .lt-qr-sheet-foot button.lt-qr-primary.lt-qr-wide {
+  color:#fff; -webkit-text-fill-color:#fff; font-size:16px; line-height:1.35;
+}
+.lt-qr-v15 .lt-qr-sheet-foot .lt-v19-checkout-cta > span {
+  display:inline-block; color:#fff; -webkit-text-fill-color:#fff; font-size:16px;
+  font-weight:800; line-height:1.35; visibility:visible; opacity:1;
+}
 .lt-qr-v15 .lt-qr-sheet-body {overscroll-behavior:contain}
 .lt-qr-v15 .lt-qr-sheet-foot {background:#fff}
 .lt-v19-order-type-title {margin:10px 0 10px;color:#18372d;font-size:16px;font-weight:800;line-height:1.3}
