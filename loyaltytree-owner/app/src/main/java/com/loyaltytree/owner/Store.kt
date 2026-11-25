@@ -47,6 +47,12 @@ data class OptionChoice(val id: String, val name: String, val price: String)
 data class OptionGroup(val id: String, val name: String, val required: Boolean, val appliesToAll: Boolean, val categoryIds: List<String>, val options: List<OptionChoice>) {
     val choices: String get() = options.joinToString(", ") { it.name }
 }
+internal const val NOTIFICATION_MESSAGE_LIMIT = 600
+internal fun notificationCharacterCount(text: String): Int = text.codePointCount(0, text.length)
+internal fun limitNotificationText(text: String): String =
+    if (notificationCharacterCount(text) <= NOTIFICATION_MESSAGE_LIMIT) text
+    else text.substring(0, text.offsetByCodePoints(0, NOTIFICATION_MESSAGE_LIMIT))
+
 data class StampReward(val id: String, val stamps: Int, val name: String)
 data class PointsPrize(val id: String, val name: String, val cost: String)
 data class HourBar(val id: String, val label: String, val count: Int)
@@ -1561,6 +1567,10 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     fun saveGreetings() {
         val current = session ?: return
         if (birthdayRewardOn && birthdayRewardName.isBlank()) { setupStatus = "Name the birthday coupon before turning it on."; return }
+        if (listOf(birthdayMessage, churnMessage).any { notificationCharacterCount(it) > NOTIFICATION_MESSAGE_LIMIT }) {
+            setupStatus = "Messages must be at most 600 characters."
+            return
+        }
         viewModelScope.launch {
             loading = true
             setupStatus = ""
@@ -1583,6 +1593,10 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     fun sendAnnouncement(title: String, message: String, scope: String, branchId: String) {
         val current = session ?: return
         if (title.isBlank() || message.isBlank()) { announcementNote = "Write a title and a message."; return }
+        if (notificationCharacterCount(message) > NOTIFICATION_MESSAGE_LIMIT) {
+            announcementNote = "Message must be at most 600 characters."
+            return
+        }
         if (scope == "branch" && branchId.isBlank()) { announcementNote = "Choose a branch."; return }
         viewModelScope.launch {
             loading = true
