@@ -2441,6 +2441,7 @@ private fun GuestScreen(store: CounterStore, part: String) {
                     Row(verticalAlignment = Alignment.CenterVertically) { Text("Show socials", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold, color = Ink); Switch(store.socialsOn, { store.socialsOn = it }, colors = switchColors()) }
                     Field("Instagram", store.instagramURL, { store.instagramURL = it })
                     Field("Facebook", store.facebookURL, { store.facebookURL = it })
+                    Field("TikTok", store.tiktokURL, { store.tiktokURL = it }, hint = "https://www.tiktok.com/@yourplace")
                     Field("Google review", store.reviewURL, { store.reviewURL = it })
                 }
                 "book" -> {
