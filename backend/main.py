@@ -18965,8 +18965,11 @@ async def public_place_menu_order(public_id: str, request: Request, background_t
     # Optional: the branch the customer picked, and their connected loyalty card.
     branch_public_id, branch_name = _menu_order_resolve_branch(supabase, business.get('id'), payload.get('branch_public_id'))
     member_customer_public_id = _menu_order_member(payload.get('card_token'), business.get('public_id'), _menu_card_read_token)
-    # Test payments only: cash is paid at the counter, QR Ph / card are mock "paid (test)".
-    payment_method, payment_status = _menu_order_payment(payload.get('payment_method'))
+    # Public orders are cash only until electronic merchant payments are activated.
+    # Never allow simulated payments into live order and loyalty records.
+    if payload.get('payment_method') != 'cash':
+        raise HTTPException(status_code=400, detail='Card and QRPH are in test mode. Please select cash.')
+    payment_method, payment_status = _menu_order_payment('cash')
     # Only an existing, verified card can select a real reward. No client-supplied
     # price, points cost, or prize name is ever trusted.
     selected_checkout_reward = None
