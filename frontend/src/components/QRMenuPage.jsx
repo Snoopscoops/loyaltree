@@ -595,6 +595,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
     if (submittingRef.current) return
     if (!cart.length) { setSubmitError('Your cart is empty.'); return }
     if (needsBranch) { setSubmitError('Choose your branch first.'); return }
+    if (service !== 'dine-in') { setSubmitError('Pick up and delivery require verified online payment and are not available yet.'); return }
     if (paymentMethod !== 'cash') { setSubmitError('Card and QRPH are in test mode. Please select cash.'); return }
     if (!apiBase) { setSubmitError('Ordering is not available in preview.'); return }
     if (!pendingIds.current) {
@@ -689,7 +690,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   const nameFromCard = cardName && buyerName.trim() === cardName && !editingName
   // No connected card: the shop needs a name to call the order.
   const nameRequired = !cardName
-  const detailsReady = !(service === 'pickup' && !pickupAt) && !(nameRequired && !buyerName.trim())
+  const detailsReady = service === 'dine-in' && !(service === 'pickup' && !pickupAt) && !(nameRequired && !buyerName.trim())
   const connectedCard = value => {
     const name = value?.name && value.name !== 'Loyalty card' ? value.name : ''
     if (!name) return
@@ -799,9 +800,10 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
             <h3 className="lt-v19-order-type-title">How will you get your order?</h3>
             <div className="lt-v19-order-types" role="group" aria-label="Order type">
               <button type="button" aria-pressed={service === 'dine-in'} onClick={() => { setService('dine-in'); pendingIds.current = null }}><OrderTypeIcon type="dine-in"/><strong>Dine in</strong><span className="lt-v19-choice-indicator" aria-hidden="true">{service === 'dine-in' && <CheckIcon size={13}/>}</span></button>
-              <button type="button" aria-pressed={service === 'pickup'} onClick={() => { setService('pickup'); pendingIds.current = null; if (!slots.length) setSlots(pickupSlots()) }}><OrderTypeIcon type="pickup"/><strong>Pick up</strong><span className="lt-v19-choice-indicator" aria-hidden="true">{service === 'pickup' && <CheckIcon size={13}/>}</span></button>
+              <button type="button" disabled aria-disabled="true" title="Pick up requires online payment"><OrderTypeIcon type="pickup"/><strong>Pick up</strong><small>Coming soon</small></button>
               <button type="button" disabled aria-disabled="true" title="Delivery coming soon"><OrderTypeIcon type="delivery"/><strong>Delivery</strong><small>Coming soon</small></button>
             </div>
+            <small className="lt-qr-field-help is-neutral">Pick up and delivery will be available when online payments are ready.</small>
             {service === 'dine-in'
               ? <label className="lt-qr-field"><span>Table number <em>optional</em></span><input inputMode="numeric" autoComplete="off" placeholder="e.g. 5" value={tableNo} onChange={event => setTableNo(event.target.value.slice(0, 12))} /></label>
               : <label className="lt-qr-field"><span>Pick up time</span><select value={pickupAt} onChange={event => setPickupAt(event.target.value)}><option value="">Choose a time</option>{slots.map(slot => <option key={slot.value} value={slot.value}>{slot.label}</option>)}</select>{!pickupAt && <small className="lt-qr-field-help">Choose a pick up time to continue.</small>}</label>}

@@ -68,7 +68,7 @@ test('public checkout uses the native top layer and follows the visible viewport
   assert.match(css,/\.lt-qr-sheet-foot\s*\{flex-shrink:0; padding-bottom:calc\(14px \+ env\(safe-area-inset-bottom,0px\)\)/)
 })
 
-test('service selection lives only in checkout details and delivery remains unavailable',async()=>{
+test('service selection lives only in checkout details and pickup and delivery require live online payment',async()=>{
   const {readFile}=await import('node:fs/promises')
   const page=await readFile(new URL('../src/components/QRMenuPage.jsx',import.meta.url),'utf8')
   const css=await readFile(new URL('../src/components/qr-menu-v15.css',import.meta.url),'utf8')
@@ -76,7 +76,10 @@ test('service selection lives only in checkout details and delivery remains unav
   const details=page.slice(page.indexOf("{step === 'service' && <div"),page.indexOf("{step === 'payment' && <div"))
   assert.ok(details.includes('className="lt-v19-order-types"'))
   assert.ok(details.includes("setService('dine-in')"))
-  assert.ok(details.includes("setService('pickup')"))
+  assert.ok(details.includes('disabled aria-disabled="true" title="Pick up requires online payment"'))
+  assert.ok(!page.includes("setService('pickup')"))
+  assert.ok(page.includes("const detailsReady = service === 'dine-in'"))
+  assert.ok(page.includes("if (service !== 'dine-in') { setSubmitError"))
   assert.ok(details.includes('disabled aria-disabled="true" title="Delivery coming soon"'))
   assert.ok(!page.includes("setService('delivery')"))
   assert.ok(page.includes('className="lt-v19-cart-subtotal"'))
