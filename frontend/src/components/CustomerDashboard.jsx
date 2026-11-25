@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import './customer-dashboard.css'
+import { tiktokUrl, isTikTokLink } from './guestTikTok.js'
 
 const EMPTY = {
   cover_url: '',
@@ -10,6 +11,7 @@ const EMPTY = {
   links: [],
   instagram_url: '',
   facebook_url: '',
+  tiktok_url: '',
   review_url: '',
   book_published: false,
   book_url: '',
@@ -19,6 +21,7 @@ const EMPTY = {
 }
 
 function socialKind(link) {
+  if (isTikTokLink(link)) return 'tiktok'
   const text = `${link?.label || ''} ${link?.url || ''}`.toLowerCase()
   if (text.includes('instagram')) return 'instagram'
   if (text.includes('facebook') || text.includes('fb.com') || text.includes('fb.me')) return 'facebook'
@@ -28,16 +31,20 @@ function socialKind(link) {
 function socialFields(data) {
   const links = Array.isArray(data?.links) ? data.links : []
   const pick = kind => links.find(link => socialKind(link) && socialKind(link) === kind)?.url || ''
-  return { instagram_url: pick('instagram'), facebook_url: pick('facebook') }
+  return { instagram_url: pick('instagram'), facebook_url: pick('facebook'), tiktok_url: pick('tiktok') }
 }
 
 function socialPayload(form) {
-  const links = []
+  const links = (Array.isArray(form.links) ? form.links : []).filter(link => !socialKind(link))
   const instagram = String(form.instagram_url || '').trim()
   const facebook = String(form.facebook_url || '').trim()
   if (instagram) links.push({ label: 'Instagram', url: instagram })
   if (facebook) links.push({ label: 'Facebook', url: facebook })
-  const { instagram_url, facebook_url, ...rest } = form
+  const tiktok = String(form.tiktok_url || '').trim()
+  if (tiktok && !tiktokUrl(tiktok)) throw new Error('Enter a valid HTTPS TikTok link (tiktok.com).')
+  if (tiktok) links.push({ label: 'TikTok', url: tiktok })
+  if (links.length > 4) throw new Error('Maximum four social links. Contact support to remove an unlisted link.')
+  const { instagram_url, facebook_url, tiktok_url, ...rest } = form
   return { ...rest, links }
 }
 
@@ -200,6 +207,9 @@ export default function CustomerDashboard({ API_BASE, user, onOpen }) {
         </label>
         <label className="lt-cd-field">Facebook
           <input value={form.facebook_url} onChange={e => patch({ facebook_url: e.target.value })} placeholder="https://facebook.com/yourplace" />
+        </label>
+        <label className="lt-cd-field">TikTok
+          <input type="url" inputMode="url" autoCapitalize="none" maxLength={300} value={form.tiktok_url} onChange={e => patch({ tiktok_url: e.target.value })} placeholder="https://www.tiktok.com/@yourplace" />
         </label>
         <label className="lt-cd-field">Google review
           <input value={form.review_url} onChange={e => patch({ review_url: e.target.value })} placeholder="https://g.page/..." />

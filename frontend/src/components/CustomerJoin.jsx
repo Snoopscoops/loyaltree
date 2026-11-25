@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { readBenefitsSession } from './benefitsModel'
 import { requestJsonResponse } from './requestTimeout'
+import { findTikTokLink } from './guestTikTok.js'
 import { readKnownCard, rememberJoinedCard, forgetKnownCard, welcomeTitle, cardProgress, sameBusiness } from './joinWelcomeModel'
 
 const EMPLOYEE_POSITION_OPTIONS = [
@@ -437,6 +438,7 @@ function CustomerJoin({ API_BASE }) {
     const socialText = link => `${link?.label || ''} ${link?.url || ''}`.toLowerCase()
     const instagram = (socials?.links || []).find(link => socialText(link).includes('instagram'))
     const facebook = (socials?.links || []).find(link => /facebook|fb\.com|fb\.me/.test(socialText(link)))
+    const tiktok = findTikTokLink(socials?.links)
     const reviewUrl = socials?.review_url || ''
     return (
       <div style={styles.guestPage}>
@@ -505,7 +507,7 @@ function CustomerJoin({ API_BASE }) {
                 </span>
               </div>
             )}
-            {(instagram || facebook || reviewUrl) && (
+            {(instagram || facebook || tiktok || reviewUrl) && (
               <div style={styles.guestCard}>
                 <span style={styles.guestCopy}>
                   <span style={styles.guestKickerMuted}>Follow and review</span>
@@ -518,6 +520,11 @@ function CustomerJoin({ API_BASE }) {
                     {facebook ? (
                       <a href={facebook.url} target="_blank" rel="noopener noreferrer" aria-label="Facebook" style={{...styles.guestSocial, background: '#1877F2'}}>
                         <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="#fff" d="M14.2 8.5h2.3V5.7h-2.3c-1.9 0-3.4 1.5-3.4 3.4v1.7H8.6v2.8h2.2V20h2.8v-6.4h2.3l.7-2.8h-3v-1.2c0-.6.4-1.1 1-1.1z"/></svg>
+                      </a>
+                    ) : null}
+                    {tiktok ? (
+                      <a href={tiktok.url} target="_blank" rel="noopener noreferrer" aria-label="TikTok" style={{...styles.guestSocial, background: '#111111'}}>
+                        <svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true"><path fill="#fff" d="M16 2c.3 2.7 1.9 4.4 4.5 4.8v3.3a8.1 8.1 0 0 1-4.5-1.5v7.1a6.3 6.3 0 1 1-6.3-6.3c.4 0 .8 0 1.2.1V13a3 3 0 1 0 1.7 2.7V2z"/></svg>
                       </a>
                     ) : null}
                     {reviewUrl ? (
@@ -1096,7 +1103,7 @@ const styles = {
   guestCardTitle: { display: 'block', marginTop: 4, fontSize: 16, fontWeight: 900, letterSpacing: '-0.03em', color: '#0f172a' },
   guestHint: { display: 'block', marginTop: 4, fontSize: 12, fontWeight: 400, color: '#475569' },
   guestLinks: { display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 },
-  guestSocialRow: { display: 'flex', gap: 10, marginTop: 12 },
+  guestSocialRow: { display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 12 },
   guestSocial: { width: 42, height: 42, borderRadius: 14, display: 'grid', placeItems: 'center', textDecoration: 'none', flexShrink: 0 },
   guestJoinArrow: { width: 28, height: 28, borderRadius: 99, border: '1px solid rgba(15,118,110,.35)', color: '#0f766e', background: 'rgba(255,255,255,.7)', display: 'grid', placeItems: 'center', flexShrink: 0 },
   guestArrow: { width: 28, height: 28, borderRadius: 99, border: '1px solid #e2e8f0', color: '#64748b', background: '#fff', display: 'grid', placeItems: 'center', flexShrink: 0 },
