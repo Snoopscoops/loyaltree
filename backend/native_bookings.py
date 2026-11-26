@@ -22,8 +22,6 @@ class Resource(BaseModel):
     name: str = Field(min_length=1,max_length=100)
     capacity: int = Field(ge=1,le=1000)
     duration_minutes: int = Field(ge=30,le=720,multiple_of=30)
-    available_from: time | None = None
-    available_until: time | None = None
     price_centavos: int = Field(default=0,ge=0,le=100000000)
     active: bool = True
 
@@ -83,7 +81,7 @@ def register_native_booking_routes(app, *, db, get_business, require_owner):
         return rows[0] if rows else Settings().model_dump(mode="json")
 
     def resources(bid,br,active_only=False):
-        query=db.table("lt_booking_resources").select("id,kind,name,capacity,duration_minutes,price_centavos,active,available_from,available_until").eq("business_id",bid).eq("branch_id",br)
+        query=db.table("lt_booking_resources").select("id,kind,name,capacity,duration_minutes,price_centavos,active").eq("business_id",bid).eq("branch_id",br)
         if active_only: query=query.eq("active",True)
         return query.order("name").execute().data or []
 
@@ -129,11 +127,6 @@ def register_native_booking_routes(app, *, db, get_business, require_owner):
     def save_resource(slug:str,payload:Resource,branch_id:str,authorization:str=Header(default="")):
         bid=business(slug,authorization)
         if not payload.name.strip(): raise HTTPException(422,"Enter a resource name.")
-        start,end=payload.available_from,payload.available_until
-        if (start is None)!=(end is None) or (start is not None and (start.tzinfo or end.tzinfo or start>=end)):
-            raise HTTPException(422,"Choose both available times in the correct order, or leave both blank.")
-        if payload.kind=="venue" and start is not None:
-            raise HTTPException(422,"Venue packages use branch booking hours.")
         try:
             br=branch(bid,branch_id)
             data=payload.model_dump(mode="json",exclude={"id"})|{"name":payload.name.strip()}
@@ -158,7 +151,7 @@ def register_native_booking_routes(app, *, db, get_business, require_owner):
         try:
             result=[]
             settings={row["branch_id"]:row for row in (db.table("lt_booking_settings").select("branch_id,venue_enabled,table_enabled").eq("business_id",bid).execute().data or [])}
-            all_resources=db.table("lt_booking_resources").select("id,branch_id,kind,name,capacity,duration_minutes,price_centavos,active,available_from,available_until").eq("business_id",bid).eq("active",True).order("name").execute().data or []
+            all_resources=db.table("lt_booking_resources").select("id,branch_id,kind,name,capacity,duration_minutes,price_centavos,active").eq("business_id",bid).eq("active",True).order("name").execute().data or []
             for b in branches(bid):
                 s=settings.get(b["id"],{})
                 rr=[{k:v for k,v in r.items() if k!="branch_id"} for r in all_resources if r["branch_id"]==b["id"] and s.get("venue_enabled" if r["kind"]=="venue" else "table_enabled")]
