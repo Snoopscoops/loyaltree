@@ -128,6 +128,7 @@ class FcmSender:
             # FCM forwards the platform-specific alert to APNs. An iPhone can
             # display this while locked, without app code running in background.
             branch = str(data.get('branch_public_id') or 'all')[:80]
+            booking = data.get('type') == 'new_booking'
             body = ' · '.join(part for part in (
                 str(data.get('note') or ''), str(data.get('total') or ''),
                 str(data.get('items') or '') + ' item(s)' if data.get('items') else '',
@@ -135,10 +136,10 @@ class FcmSender:
             message['message']['apns'] = {
                 'headers': {'apns-push-type': 'alert', 'apns-priority': '10'},
                 'payload': {'aps': {
-                    'alert': {'title': str(data.get('title') or 'New order')[:120], 'body': body},
-                    'sound': 'lt_new_order.caf',
-                    'interruption-level': 'time-sensitive',
-                    'thread-id': 'lt-orders-' + branch,
+                    'alert': {'title': 'New reservation' if booking else str(data.get('title') or 'New order')[:120], 'body': 'Open Reservations to review the request.' if booking else body},
+                    'sound': 'default' if booking else 'lt_new_order.caf',
+                    'interruption-level': 'active' if booking else 'time-sensitive',
+                    'thread-id': ('lt-bookings-' if booking else 'lt-orders-') + branch,
                 }},
             }
         else:
@@ -331,7 +332,7 @@ def make_order_pusher(*, db, environ=None, sender_factory=None):
 
 
 def make_booking_pusher(*, db, environ=None, sender_factory=None):
-    """Owner Android devices only. Booking details never appear in lockscreen data."""
+    """Owner Android and iOS devices only. Booking details never appear in lockscreen data."""
     state = {"sender": None, "key": None}
     lock = threading.Lock()
 
@@ -347,13 +348,13 @@ def make_booking_pusher(*, db, environ=None, sender_factory=None):
                 fcm = state["sender"]
             if fcm is None:
                 return
-            devices = _rows(db.table(TABLE).select("token,role,platform").eq("business_id", business_id).eq("role", "owner").eq("platform", "android").limit(MAX_DEVICES).execute())
+            devices = _rows(db.table(TABLE).select("token,role,platform").eq("business_id", business_id).eq("role", "owner").limit(MAX_DEVICES).execute())
             data = {"type": "new_booking", "business": slug, "booking_id": str(booking_id), "branch_public_id": branch_public_id}
             for device in devices:
-                if device.get("role") != "owner" or device.get("platform") != "android" or not device.get("token"):
+                if device.get("role") != "owner" or device.get("platform") not in ("android", "ios") or not device.get("token"):
                     continue
                 try:
-                    outcome = fcm.send(device["token"], data)
+                    outcome = fcm.send(device["token"], data, platform="ios") if device.get("platform") == "ios" else fcm.send(device["token"], data)
                     if outcome == "unregistered":
                         db.table(TABLE).delete().eq("token", device["token"]).eq("business_id", business_id).execute()
                 except Exception:
