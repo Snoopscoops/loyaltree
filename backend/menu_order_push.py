@@ -154,7 +154,9 @@ class FcmSender:
                 return 'ok'
             if code == 401 and attempt == 0:
                 continue  # expired access token: mint a new one once
-            return 'unregistered' if is_unregistered(resp) else 'error'
+            dead = is_unregistered(resp)
+            _log(f'FCM send rejected platform={platform} http_status={code} unregistered={dead}')
+            return 'unregistered' if dead else 'error'
         return 'error'
 
 
@@ -288,9 +290,11 @@ def make_order_pusher(*, db, environ=None, sender_factory=None):
         try:
             fcm = sender()
             if fcm is None or not business or not order:
+                _log('order delivery skipped: Firebase sender or order context unavailable')
                 return {'sent': 0, 'removed': 0, 'skipped': True}
             devices = recipients(db, business.get('id'), order.get('branch_public_id'))
             if not devices:
+                _log('order delivery: no eligible registered devices')
                 return {'sent': 0, 'removed': 0, 'skipped': False}
             data = order_message(business, order)
             sent, dead = 0, []
@@ -322,6 +326,7 @@ def make_order_pusher(*, db, environ=None, sender_factory=None):
                     db.table(TABLE).delete().eq('token', token).execute()
                 except Exception as e:
                     _log(f'could not remove dead token: {e}')
+            _log(f'order delivery eligible={len(devices)} accepted_by_fcm={sent} unregistered={len(dead)}')
             return {'sent': sent, 'removed': len(dead), 'skipped': False}
         except Exception as e:
             # Never let a push problem surface anywhere near order creation.
