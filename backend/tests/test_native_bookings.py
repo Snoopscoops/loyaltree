@@ -93,7 +93,7 @@ def test_booking_request_schedules_push_only_after_success():
     assert len(calls)==1
 
 
-def test_booking_push_targets_only_owner_android_and_no_customer_details():
+def test_booking_push_targets_only_owner_devices_and_no_customer_details():
     from types import SimpleNamespace
     from backend.menu_order_push import make_booking_pusher, ENV_NAME
     class DB:
@@ -107,10 +107,11 @@ def test_booking_push_targets_only_owner_android_and_no_customer_details():
             return self
         def limit(self,n): return self
         def execute(self):
-            assert self.filters=={"business_id":1,"role":"owner","platform":"android"}
+            assert self.filters=={"business_id":1,"role":"owner"}
             return SimpleNamespace(data=[{"token":"owner-token","role":"owner","platform":"android"},{"token":"staff-token","role":"manager","platform":"android"},{"token":"ios-token","role":"owner","platform":"ios"}])
     calls=[]
-    sender=SimpleNamespace(send=lambda token,data: calls.append((token,data)) or "ok")
+    sender=SimpleNamespace(send=lambda token,data,**kwargs: calls.append((token,data,kwargs)) or "ok")
     push=make_booking_pusher(db=DB(),environ={ENV_NAME:'{"client_email":"test@example.com","private_key":"fake"}'},sender_factory=lambda *args,**kwargs:sender)
     push(1,"demo","main","abc")
-    assert calls==[("owner-token",{"type":"new_booking","business":"demo","booking_id":"abc","branch_public_id":"main"})]
+    payload={"type":"new_booking","business":"demo","booking_id":"abc","branch_public_id":"main"}
+    assert calls==[("owner-token",payload,{}),("ios-token",payload,{"platform":"ios"})]
