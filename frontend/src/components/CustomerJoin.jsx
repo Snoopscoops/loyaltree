@@ -293,6 +293,7 @@ function CustomerJoin({ API_BASE }) {
     try { forgetKnownCard(window.localStorage, welcomeIds) } catch { /* ignore */ }
     setKnownCard(null)
     setKnownProgress(null)
+    for(const id of welcomeIds.filter(Boolean)) window.dispatchEvent(new CustomEvent('lt-menu-card-change',{detail:{business:id,card:null}}))
   }
 
   useEffect(() => {
