@@ -480,10 +480,18 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
             }
             viewModelScope.launch {
                 val result = io { OrderPush.register(context, current.slug, current.token, token) }
-                if (result != null && result.first < 400) {
-                    pushRegistered = signature
-                    pushState = "on"
+                if (session != current) return@launch
+                val body = result?.second as? JSONObject
+                if (result != null && result.first in 200..299 && body?.optBoolean("success") == true) {
+                    if (body.optBoolean("push_ready", false)) {
+                        pushRegistered = signature
+                        pushState = "on"
+                    } else {
+                        pushRegistered = ""
+                        pushState = "server_off"
+                    }
                 } else {
+                    pushRegistered = ""
                     pushState = "server"
                 }
             }
