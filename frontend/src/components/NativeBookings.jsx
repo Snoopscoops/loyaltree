@@ -1,11 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react'
 import './native-bookings.css'
 
-const emptyResource = kind => ({kind,name:'',capacity:kind==='table'?4:30,duration_minutes:kind==='table'?90:240,price_centavos:0,active:true})
+const emptyResource = kind => ({kind,name:'',capacity:kind==='table'?4:30,duration_minutes:kind==='table'?90:240,price_centavos:0,active:true,available_from:null,available_until:null})
 const php = cents => new Intl.NumberFormat('en-PH',{style:'currency',currency:'PHP'}).format(cents/100)
 const manilaDay = (value=new Date()) => {const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Manila',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(value));const get=k=>parts.find(p=>p.type===k)?.value;return get('year')+'-'+get('month')+'-'+get('day')}
 const dateText = value => new Intl.DateTimeFormat('en-PH',{timeZone:'Asia/Manila',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}).format(new Date(value))
 const timeText = value => new Intl.DateTimeFormat('en-PH',{timeZone:'Asia/Manila',hour:'numeric',minute:'2-digit'}).format(new Date(value))
+const hourText = value => value ? timeText('2000-01-01T'+value.slice(0,5)+':00+08:00') : ''
+const slotText = (value,resource) => resource ? timeText(value)+' – '+timeText(new Date(new Date(value).getTime()+resource.duration_minutes*60000)) : timeText(value)
 const labels = {venue:'Book our place',table:'Reserve a table'}
 async function json(url, options={}) {
   const response=await fetch(url,{cache:'no-store',...options,headers:{'Content-Type':'application/json',...options.headers}})
@@ -66,14 +68,14 @@ export function NativeBookingOwner({API_BASE,user}) {
         <h3>{kind==='venue'?'4 · Book our place':'5 · Reserve a table'}</h3>
         <label className="lt-nb-check"><input type="checkbox" checked={settings[kind+'_enabled']} onChange={e=>patch({[kind+'_enabled']:e.target.checked})}/>Show native booking on customer page</label>
         <p>{kind==='venue'?'Exclusive use of this entire branch; blocks all table bookings.':'Each table has its own seating capacity and duration.'}</p>
-        {data.resources.filter(r=>r.kind===kind).map(r=><div className="lt-nb-row" key={r.id}><span><b>{r.name}</b><small>{r.capacity} guests · {r.duration_minutes} min · {r.active?'Active':'Hidden'}{r.price_centavos?' · '+php(r.price_centavos):''}</small></span><button type="button" onClick={()=>setDraft({...r})}>Edit</button></div>)}
-        <button type="button" onClick={()=>setDraft(emptyResource(kind))}>+ {kind==='venue'?'Add venue package':'Add table'}</button>
+        {data.resources.filter(r=>r.kind===kind).map(r=><div className="lt-nb-row" key={r.id}><span><b>{r.name}</b><small>{r.capacity} guests · {r.kind==='table'?(r.available_from&&r.available_until?hourText(r.available_from)+' – '+hourText(r.available_until):'Branch booking hours'):r.duration_minutes+' min'} · {r.active?'Active':'Hidden'}{r.price_centavos?' · '+php(r.price_centavos):''}</small></span><button type="button" onClick={()=>setDraft({...r})}>Edit</button></div>)}
+        <button type="button" onClick={()=>setDraft(kind==='table'?{...emptyResource(kind),available_from:settings.opens_at.slice(0,5),available_until:settings.closes_at.slice(0,5)}:emptyResource(kind))}>+ {kind==='venue'?'Add venue package':'Add table'}</button>
       </div>)}
       <button type="button" onClick={saveSettings}>Save branch settings</button>
     </fieldset>
     {draft&&<fieldset disabled={busy} className="lt-nb-section"><h3>{draft.id?'Edit':'Add'} {draft.kind==='table'?'table':'venue package'}</h3>
       <label>Name<input maxLength="100" value={draft.name} onChange={e=>setDraft({...draft,name:e.target.value})}/></label>
-      <div className="lt-nb-pair"><label>Capacity<input type="number" min="1" max="1000" value={draft.capacity} onChange={e=>setDraft({...draft,capacity:Number(e.target.value)})}/></label><label>Duration (minutes)<input type="number" min="30" max="720" step="30" value={draft.duration_minutes} onChange={e=>setDraft({...draft,duration_minutes:Number(e.target.value)})}/></label></div>
+      <label>Capacity<input type="number" min="1" max="1000" value={draft.capacity} onChange={e=>setDraft({...draft,capacity:Number(e.target.value)})}/></label>{draft.kind==='table'?<><div className="lt-nb-pair"><label>Available from<input type="time" value={draft.available_from?.slice(0,5)||''} onChange={e=>setDraft({...draft,available_from:e.target.value||null})}/></label><label>Available until<input type="time" value={draft.available_until?.slice(0,5)||''} onChange={e=>setDraft({...draft,available_until:e.target.value||null})}/></label></div><small>Leave both blank to use branch booking hours. Customer time slots show the start and end time.</small></>:<label>Duration (minutes)<input type="number" min="30" max="720" step="30" value={draft.duration_minutes} onChange={e=>setDraft({...draft,duration_minutes:Number(e.target.value)})}/></label>}
       {draft.kind==='venue'&&<label>Package price (PHP; quote only)<input type="number" min="0" max="1000000" step="0.01" value={draft.price_centavos/100} onChange={e=>setDraft({...draft,price_centavos:Math.round(Number(e.target.value)*100)})}/></label>}
       <label className="lt-nb-check"><input type="checkbox" checked={draft.active} onChange={e=>setDraft({...draft,active:e.target.checked})}/>Active</label>
       <p>Save branch settings first when adding the first resource. No online deposits in this beta.</p>
@@ -123,9 +125,9 @@ export function NativeBookingCustomer({apiBase='',slug,preferredBranch=''}) {
     {error&&<p role="alert" className="lt-nb-error">{error}</p>}
     {receipt?<div role="status" className="lt-nb-section"><h3>{receipt.status==='pending'?'Request received':receipt.status}</h3><p>{receipt.status==='pending'?'Your booking is not confirmed. The business must approve your request.':'Check the latest status below.'}</p><label>Booking reference<input readOnly value={receipt.reference}/></label><p>Save your reference. No payment was collected.</p></div>:kind&&<form onSubmit={submit}><fieldset disabled={busy}>
       <label>Branch<select value={branch} onChange={e=>{setBranch(e.target.value);setResource('')}}>{places.map(b=><option key={b.public_id} value={b.public_id}>{b.name}</option>)}</select></label>
-      <label>{kind==='venue'?'Venue package':'Table'}<select required value={resource} onChange={e=>setResource(e.target.value)}><option value="">Choose</option>{items.map(r=><option key={r.id} value={r.id}>{r.name} · up to {r.capacity} · {r.duration_minutes} min{r.price_centavos?' · '+php(r.price_centavos):''}</option>)}</select></label>
+      <label>{kind==='venue'?'Venue package':'Table'}<select required value={resource} onChange={e=>setResource(e.target.value)}><option value="">Choose</option>{items.map(r=><option key={r.id} value={r.id}>{r.name} · up to {r.capacity} guests{r.kind==='venue'?' · '+r.duration_minutes+' min':''}{r.price_centavos?' · '+php(r.price_centavos):''}</option>)}</select></label>
       <div className="lt-nb-pair"><label>Date<input required type="date" min={manilaDay()} value={day} onChange={e=>setDay(e.target.value)}/></label><label>Guests<input required type="number" min="1" max={chosen?.capacity||1000} value={guests} onChange={e=>setGuests(Number(e.target.value))}/></label></div>
-      <p>Available times · Asia/Manila</p>{slotLoading?<p>Checking availability…</p>:<div className="lt-nb-chips">{slots.map(t=><button type="button" key={t} aria-pressed={slot===t} onClick={()=>setSlot(t)}>{timeText(t)}</button>)}</div>}
+      <p>Available times · Asia/Manila</p>{slotLoading?<p>Checking availability…</p>:<div className="lt-nb-chips">{slots.map(t=><button type="button" key={t} aria-pressed={slot===t} onClick={()=>setSlot(t)}>{slotText(t,chosen)}</button>)}</div>}
       {resource&&day&&!slotLoading&&!slots.length&&!error&&<p>No available times. Choose another date or resource.</p>}
       <label>Name<input required maxLength="100" autoComplete="name" value={name} onChange={e=>setName(e.target.value)}/></label>
       <label>Contact number<input required type="tel" autoComplete="tel" minLength="7" maxLength="30" value={phone} onChange={e=>setPhone(e.target.value)}/></label>
