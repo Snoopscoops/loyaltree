@@ -51,6 +51,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Restaurant
@@ -145,7 +146,7 @@ private val OwnerDock = listOf(
     "Home" to Icons.Default.Store,
     "Orders" to Icons.Default.Receipt,
     "Menu" to Icons.Default.Restaurant,
-    "Reservations" to Icons.Default.Star,
+    "Reservations" to Icons.Default.DateRange,
     "More" to Icons.Default.MoreHoriz
 )
 
