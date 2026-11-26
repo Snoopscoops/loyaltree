@@ -14,3 +14,5 @@
 .lt-nb-reservation .lt-nb-note-toggle{background:transparent;color:#0f766e;border:0;text-align:left;padding:8px 0;font-weight:700}.lt-nb-submit{display:grid;gap:9px;padding-top:6px}.lt-nb-submit button{min-height:48px;font-size:15px}.lt-nb-receipt-summary{display:grid;gap:8px;margin:0 16px 16px;padding:12px;background:#f0f8f4;border-radius:12px;overflow-wrap:anywhere}.lt-nb-reservation details summary{color:#52766c;font-size:13px}
 .lt-nb-reservation .lt-v20-contact{display:grid;gap:10px}.lt-nb-reservation .lt-v20-private{display:grid;gap:8px;padding:12px;border:1px solid #dce9e3;border-radius:12px;background:#f6faf9}.lt-nb-reservation .lt-v20-contact h3{font-size:13px}
 @media(max-width:320px){.lt-nb-reservation .lt-nb-pair{grid-template-columns:1fr}.lt-nb-reservation .lt-nb-entry{padding:12px;gap:8px}.lt-nb-expanded{padding:0 12px 12px}}
+
+.lt-nb-reference{font-family:ui-monospace,SFMono-Regular,Menlo,monospace!important;letter-spacing:.06em;overflow-wrap:anywhere;font-size:16px!important}.lt-nb-reservation .lt-nb-copy{background:#e7f4ed;color:#073f36;border-color:#c7e2d7}
