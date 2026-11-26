@@ -19,7 +19,7 @@ export function NativeBookingOwner({API_BASE,user}) {
   const root=API_BASE+'/api/v1/business/'+encodeURIComponent(user.business_slug)+'/native-bookings'
   const auth={Authorization:'Bearer '+user.token}
   const [data,setData]=useState(null), [branch,setBranch]=useState(''), [settings,setSettings]=useState(null)
-  const [draft,setDraft]=useState(null), [day,setDay]=useState(''), [filter,setFilter]=useState('all')
+  const [draft,setDraft]=useState(null), [day,setDay]=useState(''), [blockDay,setBlockDay]=useState(''), [filter,setFilter]=useState('all')
   const [busy,setBusy]=useState(false), [error,setError]=useState(''), [notice,setNotice]=useState('')
   const serial=useRef(0)
   async function load(chosen=branch) {
@@ -54,8 +54,8 @@ export function NativeBookingOwner({API_BASE,user}) {
     <fieldset disabled={busy}>
       <div className="lt-nb-pair"><label>Opens<input type="time" value={settings.opens_at.slice(0,5)} onChange={e=>patch({opens_at:e.target.value})}/></label><label>Closes<input type="time" value={settings.closes_at.slice(0,5)} onChange={e=>patch({closes_at:e.target.value})}/></label></div>
       <p>Booking days (Manila time)</p><div className="lt-nb-chips">{['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map((d,i)=><label key={d}><input type="checkbox" checked={settings.weekdays.includes(i+1)} onChange={e=>patch({weekdays:e.target.checked?[...settings.weekdays,i+1]:settings.weekdays.filter(x=>x!==i+1)})}/>{d}</label>)}</div>
-      <label>Blocked dates<input type="date" value={day||''} onChange={e=>setDay(e.target.value)}/></label>
-      <button type="button" disabled={!day||settings.blocked_dates.includes(day)} onClick={()=>patch({blocked_dates:[...settings.blocked_dates,day]})}>Block date</button>
+      <label>Blocked dates<input type="date" value={blockDay} onChange={e=>setBlockDay(e.target.value)}/></label>
+      <button type="button" disabled={!blockDay||settings.blocked_dates.includes(blockDay)} onClick={()=>{patch({blocked_dates:[...settings.blocked_dates,blockDay]});setBlockDay('')}}>Block date</button>
       <div className="lt-nb-chips">{settings.blocked_dates.map(d=><button type="button" key={d} onClick={()=>patch({blocked_dates:settings.blocked_dates.filter(x=>x!==d)})}>{d} ×</button>)}</div>
       {['venue','table'].map(kind=><div className="lt-nb-section" key={kind}>
         <h3>{kind==='venue'?'4 · Book our place':'5 · Reserve a table'}</h3>
@@ -85,14 +85,14 @@ export function NativeBookingOwner({API_BASE,user}) {
   </section>
 }
 
-export function NativeBookingCustomer({apiBase,slug,preferredBranch=''}) {
+export function NativeBookingCustomer({apiBase='',slug,preferredBranch=''}) {
   const root=apiBase+'/api/v1/public/bookings/'+encodeURIComponent(slug)
   const [catalog,setCatalog]=useState([]),[kind,setKind]=useState(''),[branch,setBranch]=useState(''),[resource,setResource]=useState('')
   const [day,setDay]=useState(''),[guests,setGuests]=useState(2),[slots,setSlots]=useState([]),[slot,setSlot]=useState('')
   const [name,setName]=useState(''),[phone,setPhone]=useState(''),[note,setNote]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('')
   const [receipt,setReceipt]=useState(null),[lookup,setLookup]=useState(''),[looking,setLooking]=useState(false),[slotLoading,setSlotLoading]=useState(false)
   const retry=useRef(null), posting=useRef(false)
-  useEffect(()=>{if(!slug||!apiBase)return;const ctrl=new AbortController();setCatalog([]);setKind('');setBranch('');setResource('');setReceipt(null);json(root,{signal:ctrl.signal}).then(x=>{if(!ctrl.signal.aborted)setCatalog(x.branches||[])}).catch(()=>{});return()=>ctrl.abort()},[root])
+  useEffect(()=>{if(!slug)return;const ctrl=new AbortController();setCatalog([]);setKind('');setBranch('');setResource('');setReceipt(null);json(root,{signal:ctrl.signal}).then(x=>{if(!ctrl.signal.aborted)setCatalog(x.branches||[])}).catch(()=>{});return()=>ctrl.abort()},[root])
   const places=catalog.filter(b=>b.resources.some(r=>r.kind===kind))
   const items=places.find(b=>b.public_id===branch)?.resources.filter(r=>r.kind===kind)||[]
   const chosen=items.find(r=>r.id===resource)
