@@ -137,6 +137,7 @@ private sealed class Page {
     data object Stamp : Page()
     data object Alerts : Page()
     data object Reservations : Page()
+    data object Customers : Page()
     data class Customer(val id: String) : Page()
 }
 
@@ -144,7 +145,7 @@ private val OwnerDock = listOf(
     "Home" to Icons.Default.Store,
     "Orders" to Icons.Default.Receipt,
     "Menu" to Icons.Default.Restaurant,
-    "Customers" to Icons.Default.Person,
+    "Reservations" to Icons.Default.Star,
     "More" to Icons.Default.MoreHoriz
 )
 
@@ -200,14 +201,18 @@ private fun OrderAlertHooks(store: CounterStore) {
     val activity = remember(context) { context.findActivity() }
     LaunchedEffect(activity) {
         val intent = activity?.intent
-        if (intent?.getStringExtra(OrderAlerts.EXTRA_OPEN) == OrderAlerts.OPEN_ORDERS) {
+        if (intent?.getStringExtra(OrderAlerts.EXTRA_OPEN) == OrderAlerts.OPEN_BOOKINGS && store.session?.isOwner == true) {
+            intent.removeExtra(OrderAlerts.EXTRA_OPEN)
+            store.openBookingsFromNotification()
+        } else if (intent?.getStringExtra(OrderAlerts.EXTRA_OPEN) == OrderAlerts.OPEN_ORDERS) {
             intent.removeExtra(OrderAlerts.EXTRA_OPEN)
             store.openOrdersFromNotification()
         }
     }
     androidx.compose.runtime.DisposableEffect(activity) {
         val listener = androidx.core.util.Consumer<Intent> { intent ->
-            if (intent.getStringExtra(OrderAlerts.EXTRA_OPEN) == OrderAlerts.OPEN_ORDERS) store.openOrdersFromNotification()
+            if (intent.getStringExtra(OrderAlerts.EXTRA_OPEN) == OrderAlerts.OPEN_BOOKINGS && store.session?.isOwner == true) store.openBookingsFromNotification()
+            else if (intent.getStringExtra(OrderAlerts.EXTRA_OPEN) == OrderAlerts.OPEN_ORDERS) store.openOrdersFromNotification()
         }
         activity?.addOnNewIntentListener(listener)
         onDispose { activity?.removeOnNewIntentListener(listener) }
@@ -569,6 +574,9 @@ private fun Shell(store: CounterStore) {
     var page by remember { mutableStateOf<Page>(Page.None) }
     val view = LocalView.current
     LaunchedEffect(store.session?.slug) { store.refresh() }
+    LaunchedEffect(store.openBookingsTick) {
+        if (store.openBookingsTick > 0) { tab = 3; page = Page.None }
+    }
     LaunchedEffect(store.openOrdersTick) {
         if (store.openOrdersTick > 0) {
             tab = 1
@@ -607,7 +615,7 @@ private fun Shell(store: CounterStore) {
                         0 -> HomeScreen(store, { page = Page.Analytics }, { page = Page.Campaign }) { page = Page.Stamp }
                         1 -> OrdersScreen(store)
                         2 -> MenuScreen(store)
-                        3 -> CustomersScreen(store) { page = Page.Customer(it) }
+                        3 -> ReservationsScreen(store)
                         else -> MoreScreen(store, { page = it }) { tab = 2; page = Page.None }
                     }
                     Page.Analytics -> AnalyticsScreen(store)
@@ -623,6 +631,7 @@ private fun Shell(store: CounterStore) {
                     Page.Stamp -> StampScreen(store)
                     Page.Alerts -> AlertsScreen(store)
                     Page.Reservations -> ReservationsScreen(store)
+                    Page.Customers -> CustomersScreen(store) { page = Page.Customer(it) }
                     is Page.Customer -> CustomerScreen(store, current.id)
                 }
             }
@@ -649,6 +658,7 @@ private fun pageTitle(page: Page, store: CounterStore): String = when (page) {
     Page.Stamp -> if (store.cardType == "points") "Add points" else "Add a stamp"
     Page.Alerts -> "Order alerts"
     Page.Reservations -> "Reservations"
+    Page.Customers -> "Customers"
     is Page.Customer -> store.members.firstOrNull { it.id == page.id }?.name ?: "Customer"
     Page.None -> ""
 }
@@ -1726,6 +1736,7 @@ private fun MoreScreen(store: CounterStore, open: (Page) -> Unit, openMenu: () -
             RowLink("External table link", if (store.reserveOn) "Published" else "Hidden") { open(Page.Guest("reserve")) }
         }
         Section("Your business", "The tools you use after the scan.") {
+            RowLink("Customers", "Loyalty members and customer history") { open(Page.Customers) }
             RowLink("Analytics", "Last 30 days") { open(Page.Analytics) }
             RowLink("Notifications", "Birthday, churn, and announcements") { open(Page.Greetings) }
             RowLink("Digital billboard", if (store.billboardOn) "On · 150 m" else "Off") { open(Page.Billboard) }
@@ -1786,7 +1797,7 @@ private fun OwnerReservations(store: CounterStore, owner: OwnerSession) {
     var confirmation by remember { mutableStateOf<Pair<String, String>?>(null) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    LaunchedEffect(owner, branch, month, refresh) {
+    LaunchedEffect(owner, branch, month, refresh, store.openBookingsTick) {
         loading = true
         error = ""
         data = null
