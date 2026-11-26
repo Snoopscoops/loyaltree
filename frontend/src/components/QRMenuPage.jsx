@@ -1,3 +1,4 @@
+import { NativeBookingCustomer } from './NativeBookings.jsx'
 import React, { useEffect, useId, useRef, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { filterMenuItems, groupMenuCategories, menuItemAvailable, menuSelectionAvailable, menuOptionAvailable, menuItemPrice, toggleMenuOption, validMenuPayload, addCartItem, changeCartQuantity, cartSubtotal, buildMenuOrder, sendMenuOrder, pickupTimeLabel, resolveMenuBranch, PAYMENT_METHODS, paymentReceiptLabel, CASH_NOTICE, payButtonLabel, receiptCopy } from './qrMenuModel'
@@ -798,6 +799,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
         </nav>
         <MenuLoyaltyCard apiBase={apiBase} business={business} refreshKey={`${order?.status||''}:${order?.payment_status||''}`} onReorder={reorderFromHistory} />
         {quickItems.length>0 && !search && category==='all' && !under200 && <section className="lt-v15-usual" aria-label="Order your daily usual"><div className="lt-v15-section-head"><h2>Order Your Daily Usual</h2><small>From a recent order on this device</small></div><div className="lt-v15-usual-list">{quickItems.map(option=><button type="button" key={option.item.public_id} onClick={()=>addUsual(option)}><span className="lt-v15-usual-photo"><MenuItemPhoto item={option.item} available /></span><span><strong>{option.item.name}</strong><small>{money(menuItemPrice(option.item,{}))} base price · Review options</small></span><b aria-hidden="true">＋</b></button>)}</div></section>}
+        {!preview && <NativeBookingCustomer key={business.public_id} apiBase={apiBase} slug={business.public_id} preferredBranch={branchId} />}
         {(data.actions||[]).length>0 && <div className="lt-qr-cafe-actions lt-v15-extras">{data.actions.map(action=><a key={action.id} href={action.url} target="_blank" rel="noreferrer" className={action.id==='book'?'is-book':''}><strong>{action.label}</strong>{action.note?<span>{action.note}</span>:null}</a>)}</div>}
         <section className="lt-qr-stream lt-v15-menu" aria-label="Menu items">
           <div className="lt-v15-section-head"><h2 ref={menuHeading} tabIndex={-1}>{search.trim()?'Search results':selectedCategory?.name||'All items'}</h2><small>{items.length} {items.length===1?'item':'items'}</small></div>

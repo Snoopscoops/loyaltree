@@ -52519,4 +52519,12 @@ profiler.configure(caches=cache_stats, retained_maps=lambda: {
         '_APPLE_EVENT_PKPASS_BUILD_LOCKS', '_APPLE_PASS_DIRTY_AT',
         '_POS_DEVICE_AUTH_CACHE', '_POS_DEVICE_HEARTBEAT_CACHE', '_GOOGLE_GIFT_CLASS_READY_CACHE')})
 register_profiling_routes(app, require_admin=require_admin)
+# Native venue/table booking routes (separate from menu payments).
+try:
+    from .native_bookings import register_native_booking_routes
+except ImportError:
+    from native_bookings import register_native_booking_routes
+register_native_booking_routes(app, db=supabase, get_business=safe_get_business,
+    require_owner=require_owner_session)
+
 profiler.checkpoint('routes_registered')
