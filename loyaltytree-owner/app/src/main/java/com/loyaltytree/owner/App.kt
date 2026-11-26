@@ -555,13 +555,14 @@ private fun SoundCheck(store: CounterStore) {
         SoundRow(
             "Push (rings when the app is closed)",
             when (store.pushState) {
-                "on" -> "This phone is registered"
+                "on" -> "Registered · server ready"
                 "no_firebase" -> "Not set up in this build (google-services.json). Rings only while the app is open."
                 "server" -> "The server did not accept this phone. Rings only while the app is open."
+                "server_off" -> "Registered, but server Firebase push is unavailable. Retry after server check."
                 else -> "Checking"
             },
             when (store.pushState) { "on" -> Health.Good; "checking", "" -> Health.Warn; else -> Health.Bad },
-            if (store.pushState == "on" || store.pushState == "checking") null else "Retry"
+            if (store.pushState == "checking") null else "Recheck"
         ) { store.recheckPush() }
 
         Text("Xiaomi, Oppo, Vivo, Realme: also allow Autostart for LoyaltyTree in the phone's app settings.", color = Muted, fontSize = 12.sp, lineHeight = 17.sp)
