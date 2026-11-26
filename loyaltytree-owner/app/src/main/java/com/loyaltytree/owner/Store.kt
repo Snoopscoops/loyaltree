@@ -294,6 +294,8 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     var pushState by mutableStateOf("")
     /** Bumped when a new-order notification is tapped, so the app jumps to Orders. */
     var openOrdersTick by mutableStateOf(0)
+    var openBookingsTick by mutableStateOf(0)
+    fun openBookingsFromNotification() { if (session?.isOwner == true) openBookingsTick += 1 }
 
     private var watchJob: Job? = null
 
