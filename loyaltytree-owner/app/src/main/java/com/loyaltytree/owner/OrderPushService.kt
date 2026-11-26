@@ -30,6 +30,17 @@ class OrderPushService : FirebaseMessagingService() {
 
     override fun onMessageReceived(message: RemoteMessage) {
         val data = message.data
+        if (data["type"] == "new_booking") {
+            val owner = OrderPush.session(this) ?: return
+            if (!owner.isOwner || data["business"] != owner.slug) return
+            val id = data["booking_id"].orEmpty()
+            if (runCatching { java.util.UUID.fromString(id) }.getOrNull() == null) return
+            if (!OrderAlerts.canNotify(this)) return
+            val key = "seenBookings:" + owner.slug
+            if (id !in OrderAlerts.claim(this, key, listOf(id), firstLoadQuiet = false)) return
+            OrderAlerts.announceBooking(applicationContext, id)
+            return
+        }
         if (data["type"] != "new_order") return
         val signedIn = OrderPush.session(this) ?: return // signed out: stay quiet
         if (data["business"].orEmpty() != signedIn.slug) return
