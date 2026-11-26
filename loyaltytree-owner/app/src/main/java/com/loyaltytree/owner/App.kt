@@ -146,7 +146,7 @@ private val OwnerDock = listOf(
     "Home" to Icons.Default.Store,
     "Orders" to Icons.Default.Receipt,
     "Menu" to Icons.Default.Restaurant,
-    "Reservations" to Icons.Default.DateRange,
+    "Customers" to Icons.Default.Person,
     "More" to Icons.Default.MoreHoriz
 )
 
@@ -577,7 +577,7 @@ private fun Shell(store: CounterStore) {
     val view = LocalView.current
     LaunchedEffect(store.session?.slug) { store.refresh() }
     LaunchedEffect(store.openBookingsTick) {
-        if (store.openBookingsTick > 0) { tab = 3; page = Page.None }
+        if (store.openBookingsTick > 0) { tab = 0; page = Page.Reservations }
     }
     LaunchedEffect(store.openOrdersTick) {
         if (store.openOrdersTick > 0) {
@@ -614,10 +614,10 @@ private fun Shell(store: CounterStore) {
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when (val current = page) {
                     Page.None -> when (tab) {
-                        0 -> HomeScreen(store, { page = Page.Analytics }, { page = Page.Campaign }) { page = Page.Stamp }
+                        0 -> HomeScreen(store, { page = Page.Analytics }, { page = Page.Campaign }, { page = Page.Reservations }) { page = Page.Stamp }
                         1 -> OrdersScreen(store)
                         2 -> MenuScreen(store)
-                        3 -> ReservationsScreen(store)
+                        3 -> CustomersScreen(store) { page = Page.Customer(it) }
                         else -> MoreScreen(store, { page = it }) { tab = 2; page = Page.None }
                     }
                     Page.Analytics -> AnalyticsScreen(store)
@@ -716,7 +716,7 @@ private fun LoginScreen(store: CounterStore) {
 }
 
 @Composable
-private fun HomeScreen(store: CounterStore, openAnalytics: () -> Unit, openCampaign: () -> Unit, openStamp: () -> Unit) {
+private fun HomeScreen(store: CounterStore, openAnalytics: () -> Unit, openCampaign: () -> Unit, openReservations: () -> Unit, openStamp: () -> Unit) {
     val context = LocalContext.current
     val view = LocalView.current
     var enlarged by remember { mutableStateOf(false) }
@@ -769,6 +769,7 @@ private fun HomeScreen(store: CounterStore, openAnalytics: () -> Unit, openCampa
             Box(Modifier.weight(1f)) { Secondary("Analytics", openAnalytics) }
             Box(Modifier.weight(1f)) { Primary("Campaign", onClick = openCampaign) }
         }
+        Secondary("Reservations", openReservations)
         Column(Modifier.fillMaxWidth().clip(Shape).background(Color.White).border(1.dp, Line, Shape)) {
             Row(Modifier.fillMaxWidth().clickable { enlarged = true }.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                 Qr(store.joinLink, 64)
