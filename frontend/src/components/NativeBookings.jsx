@@ -3,7 +3,7 @@ import './native-bookings.css'
 
 const emptyResource = kind => ({kind,name:'',capacity:kind==='table'?4:30,duration_minutes:kind==='table'?90:240,price_centavos:0,active:true})
 const php = cents => new Intl.NumberFormat('en-PH',{style:'currency',currency:'PHP'}).format(cents/100)
-const manilaDay = () => new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Manila',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date())
+const manilaDay = (value=new Date()) => {const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Manila',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(value));const get=k=>parts.find(p=>p.type===k)?.value;return get('year')+'-'+get('month')+'-'+get('day')}
 const dateText = value => new Intl.DateTimeFormat('en-PH',{timeZone:'Asia/Manila',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}).format(new Date(value))
 const timeText = value => new Intl.DateTimeFormat('en-PH',{timeZone:'Asia/Manila',hour:'numeric',minute:'2-digit'}).format(new Date(value))
 const labels = {venue:'Book our place',table:'Reserve a table'}
@@ -20,15 +20,16 @@ export function NativeBookingOwner({API_BASE,user}) {
   const auth={Authorization:'Bearer '+user.token}
   const [data,setData]=useState(null), [branch,setBranch]=useState(''), [settings,setSettings]=useState(null)
   const [draft,setDraft]=useState(null), [day,setDay]=useState(''), [blockDay,setBlockDay]=useState(''), [filter,setFilter]=useState('all')
+  const [month,setMonth]=useState(manilaDay().slice(0,7))
   const [busy,setBusy]=useState(false), [error,setError]=useState(''), [notice,setNotice]=useState('')
   const serial=useRef(0)
-  async function load(chosen=branch) {
+  async function load(chosen=branch,chosenMonth=month) {
     const request=++serial.current
     setBusy(true);setError('');setDraft(null)
     try {
-      const result=await json(root+'?'+query({branch_id:chosen}),{headers:auth})
+      const result=await json(root+'?'+query({branch_id:chosen,month:chosenMonth}),{headers:auth})
       if(request!==serial.current)return
-      setData(result);setBranch(result.branch);setSettings(result.settings)
+      setData(result);setBranch(result.branch);setSettings(result.settings);setMonth(result.month||chosenMonth)
     } catch(e){if(request===serial.current){setError(e.message);setData(null);setSettings(null)}}
     finally{if(request===serial.current)setBusy(false)}
   }
@@ -45,7 +46,11 @@ export function NativeBookingOwner({API_BASE,user}) {
     const {venue_enabled,table_enabled,opens_at,closes_at,weekdays,blocked_dates}=settings
     return write('/settings?'+query({branch_id:branch}),'PUT',{venue_enabled,table_enabled,opens_at,closes_at,weekdays,blocked_dates},'Booking settings saved.')
   }
-  const rows=(data?.bookings||[]).filter(b=>(filter==='all'||b.status===filter)&&(!day||new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Manila',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(b.starts_at))===day))
+  const rows=(data?.bookings||[]).filter(b=>(filter==='all'||b.status===filter)&&(!day||manilaDay(b.starts_at)===day))
+  const [year,monthNumber]=month.split('-').map(Number)
+  const firstDay=(new Date(Date.UTC(year,monthNumber-1,1)).getUTCDay()+6)%7
+  const days=new Date(Date.UTC(year,monthNumber,0)).getUTCDate()
+  const dayCounts=(data?.bookings||[]).reduce((a,b)=>{const d=manilaDay(b.starts_at);if(b.status==='confirmed'||b.status==='pending')a[d]=(a[d]||0)+1;return a},{})
   return <section className="lt-nb" aria-label="Native booking management">
     <header><small>LOYALTYTREE BOOKINGS · BETA</small><h2>Booking settings</h2><p>Manage bookings by branch. Requests are not confirmed until you approve them.</p></header>
     {error&&<p role="alert" className="lt-nb-error">{error}</p>}{notice&&<p role="status">{notice}</p>}
@@ -74,7 +79,9 @@ export function NativeBookingOwner({API_BASE,user}) {
       <p>Save branch settings first when adding the first resource. No online deposits in this beta.</p>
       <div className="lt-nb-pair"><button type="button" onClick={()=>write('/resources?'+query({branch_id:branch}),'POST',draft,'Resource saved.')}>Save</button><button type="button" onClick={()=>setDraft(null)}>Cancel</button></div>
     </fieldset>}
-    <section className="lt-nb-section"><h3>Booking calendar & requests</h3><p>Latest 300 bookings for this branch. Pending requests do not hold space.</p>
+    <section className="lt-nb-section"><h3>Booking calendar & requests</h3><p>Pending requests do not hold space. {data.truncated?'Showing first 500 records; use the date filter cautiously.':'Choose a day or show the whole month.'}</p>
+      <label>Calendar month<input type="month" value={month} disabled={busy} onChange={e=>{if(e.target.value){setDay('');load(branch,e.target.value)}}}/></label>
+      <div className="lt-nb-calendar">{['M','T','W','T','F','S','S'].map((d,i)=><small key={'w'+i}>{d}</small>)}{Array.from({length:firstDay},(_,i)=><span key={'gap'+i}/>)}{Array.from({length:days},(_,i)=>{const d=month+'-'+String(i+1).padStart(2,'0');return <button type="button" key={d} aria-pressed={day===d} onClick={()=>setDay(day===d?'':d)}>{i+1}{dayCounts[d]?<small>{dayCounts[d]} booking{dayCounts[d]===1?'':'s'}</small>:null}</button>})}</div>
       <div className="lt-nb-pair"><label>Filter date<input type="date" value={day} onChange={e=>setDay(e.target.value)}/></label><label>Status<select value={filter} onChange={e=>setFilter(e.target.value)}>{['all','pending','confirmed','declined','cancelled','completed'].map(s=><option key={s}>{s}</option>)}</select></label></div>
       <button type="button" disabled={busy} onClick={()=>load()}>Refresh bookings</button>
       {!rows.length&&<p>No bookings in this view.</p>}
