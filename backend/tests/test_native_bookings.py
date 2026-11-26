@@ -56,3 +56,61 @@ def test_public_reference_lookup_scopes_business_and_returns_only_status():
     assert client.get("/api/v1/public/bookings/one/status/"+code.lower()).json()=={"status":"confirmed"}
     assert client.get("/api/v1/public/bookings/one/status/"+original).json()=={"status":"confirmed"}
     assert client.get("/api/v1/public/bookings/two/status/"+code).status_code==404
+
+
+def test_booking_request_schedules_push_only_after_success():
+    from types import SimpleNamespace
+    ref="12345678-9abc-4def-8123-456789abcdef"
+    class DB:
+        status="pending"
+        def table(self, name):
+            assert name=="branches"
+            return self
+        def select(self,*args): return self
+        def eq(self,*args): return self
+        def order(self,*args): return self
+        def execute(self):
+            return SimpleNamespace(data=[{"id":3,"public_id":"main","name":"Main"}])
+        def rpc(self,name,params):
+            assert name=="lt_booking_request"
+            if self.status=="error":
+                raise RuntimeError("unavailable")
+            return SimpleNamespace(execute=lambda:SimpleNamespace(data={"reference":ref,"status":self.status}))
+    db=DB()
+    calls=[]
+    app=FastAPI()
+    register_native_booking_routes(app,db=db,get_business=lambda slug:{"id":1,"status":"ACTIVE"},require_owner=lambda *_:None,booking_push=lambda *args:calls.append(args))
+    client=TestClient(app)
+    payload={"resource_id":ref,"branch":"main","starts_at":"2026-12-01T10:00:00+08:00","guests":2,"name":"Test","phone":"09171234567","request_id":ref}
+    response=client.post("/api/v1/public/bookings/demo/request",json=payload)
+    assert response.status_code==200
+    assert response.json()["booking_code"]==short_booking_code(ref)
+    assert calls==[(1,"demo","main",ref)]
+    db.status="confirmed"
+    assert client.post("/api/v1/public/bookings/demo/request",json=payload).status_code==200
+    db.status="error"
+    assert client.post("/api/v1/public/bookings/demo/request",json=payload).status_code==503
+    assert len(calls)==1
+
+
+def test_booking_push_targets_only_owner_android_and_no_customer_details():
+    from types import SimpleNamespace
+    from backend.menu_order_push import make_booking_pusher, ENV_NAME
+    class DB:
+        def table(self,name):
+            assert name=="owner_app_devices"
+            self.filters={}
+            return self
+        def select(self,*args): return self
+        def eq(self,key,value):
+            self.filters[key]=value
+            return self
+        def limit(self,n): return self
+        def execute(self):
+            assert self.filters=={"business_id":1,"role":"owner","platform":"android"}
+            return SimpleNamespace(data=[{"token":"owner-token","role":"owner","platform":"android"},{"token":"staff-token","role":"manager","platform":"android"},{"token":"ios-token","role":"owner","platform":"ios"}])
+    calls=[]
+    sender=SimpleNamespace(send=lambda token,data: calls.append((token,data)) or "ok")
+    push=make_booking_pusher(db=DB(),environ={ENV_NAME:'{"client_email":"test@example.com","private_key":"fake"}'},sender_factory=lambda *args,**kwargs:sender)
+    push(1,"demo","main","abc")
+    assert calls==[("owner-token",{"type":"new_booking","business":"demo","booking_id":"abc","branch_public_id":"main"})]
