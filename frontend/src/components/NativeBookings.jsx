@@ -8,6 +8,7 @@ const php = cents => new Intl.NumberFormat('en-PH',{style:'currency',currency:'P
 const manilaDay = (value=new Date()) => {const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Manila',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(value));const get=k=>parts.find(p=>p.type===k)?.value;return get('year')+'-'+get('month')+'-'+get('day')}
 const dateText = value => new Intl.DateTimeFormat('en-PH',{timeZone:'Asia/Manila',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}).format(new Date(value))
 const timeText = value => new Intl.DateTimeFormat('en-PH',{timeZone:'Asia/Manila',hour:'numeric',minute:'2-digit'}).format(new Date(value))
+const displayReference = value => /^[0-9A-HJKMNP-TV-Z]{12}$/i.test(value||'') ? value.toUpperCase().match(/.{4}/g).join('-') : String(value||'')
 const labels = {venue:'Book the entire place',table:'Reserve a table'}
 async function json(url, options={}) {
   const response=await fetch(url,{cache:'no-store',...options,headers:{'Content-Type':'application/json',...options.headers}})
@@ -89,7 +90,7 @@ export function NativeBookingOwner({API_BASE,user}) {
       <div className="lt-nb-pair"><label>Filter date<input type="date" value={day} onChange={e=>setDay(e.target.value)}/></label><label>Status<select value={filter} onChange={e=>setFilter(e.target.value)}>{['all','pending','confirmed','declined','cancelled','completed'].map(s=><option key={s}>{s}</option>)}</select></label></div>
       <button type="button" disabled={busy} onClick={()=>load()}>Refresh bookings</button>
       {!rows.length&&<p>No bookings in this view.</p>}
-      {rows.map(b=><article className="lt-nb-section" key={b.id}><small>Arrival: {dateText(b.starts_at)}{b.kind==='venue'?' – '+timeText(b.ends_at):''}</small><h3>{b.resource_name} · {b.guests} guests</h3><p>{b.customer_name} · {b.phone}</p>{b.note&&<p>{b.note}</p>}<p><b>{b.status}</b>{b.price_centavos?' · '+php(b.price_centavos):''}</p>
+      {rows.map(b=><article className="lt-nb-section" key={b.id}><small>Arrival: {dateText(b.starts_at)}{b.kind==='venue'?' – '+timeText(b.ends_at):''}</small><h3>{b.resource_name} · {b.guests} guests</h3><p>{b.customer_name} · {b.phone}</p>{b.booking_code&&<small>Booking code: {displayReference(b.booking_code)}</small>}{b.note&&<p>{b.note}</p>}<p><b>{b.status}</b>{b.price_centavos?' · '+php(b.price_centavos):''}</p>
         <div className="lt-nb-chips">{(b.status==='pending'?['confirmed','declined']:b.status==='confirmed'?(new Date(b.ends_at)<=new Date()?['completed','cancelled']:['cancelled']):[]).map(s=><button type="button" key={s} disabled={busy} onClick={()=>{if(window.confirm('Change booking to '+s+'?'))write('/'+b.id+'/status','POST',{status:s},'Booking '+s+'.')}}>{s==='confirmed'?'Confirm':s==='declined'?'Decline':s==='completed'?'Complete':'Cancel'}</button>)}</div>
       </article>)}
     </section></>}
@@ -104,6 +105,8 @@ export function NativeBookingCustomer({apiBase='',slug,preferredBranch='',extern
   const [name,setName]=useState(''),[phone,setPhone]=useState(''),[note,setNote]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('')
   const [receipt,setReceipt]=useState(null),[lookup,setLookup]=useState(''),[looking,setLooking]=useState(false),[slotLoading,setSlotLoading]=useState(false)
   const retry=useRef(null), posting=useRef(false)
+  const [copyNotice,setCopyNotice]=useState('')
+  async function copyReference(){const value=displayReference(receipt?.booking_code||receipt?.reference);try{await navigator.clipboard.writeText(value);setCopyNotice('Copied')}catch{setCopyNotice('Select and copy the code manually.')}}
   const [cardToken,setCardToken]=useState(''),[verifiedCard,setVerifiedCard]=useState('')
   const cardIdentity=useRef('')
   const [,setUnusedAddress]=useState('')
@@ -140,10 +143,10 @@ export function NativeBookingCustomer({apiBase='',slug,preferredBranch='',extern
     try{
       if(retry.current?.signature!==signature) retry.current={signature,id:crypto.randomUUID()}
       const result=await json(root+'/request',{method:'POST',body:JSON.stringify({...body,request_id:retry.current.id})})
-      setReceipt({...result,starts_at:body.starts_at});setLookup(result.reference);setName('');setPhone('');setNote('');setNoteOpen(false);setExpanded(false);retry.current=null
+      setReceipt({...result,starts_at:body.starts_at});setLookup(displayReference(result.booking_code||result.reference));setCopyNotice('');setName('');setPhone('');setNote('');setNoteOpen(false);setExpanded(false);retry.current=null
     }catch(e){setError(e.message)}finally{posting.current=false;setBusy(false)}
   }
-  async function track(){setLooking(true);setError('');try{const x=await json(root+'/status/'+encodeURIComponent(lookup.trim()));setReceipt({reference:lookup.trim(),status:x.status})}catch(e){setError(e.message)}finally{setLooking(false)}}
+  async function track(){setLooking(true);setError('');try{const x=await json(root+'/status/'+encodeURIComponent(lookup.trim()));setReceipt(current=>({...((current&&(displayReference(current.booking_code||current.reference)===lookup.trim()||current.reference===lookup.trim()))?current:{}),reference:lookup.trim(),status:x.status}))}catch(e){setError(e.message)}finally{setLooking(false)}}
   if(!catalog.length&&!externalActions.length)return null
   return <section className="lt-nb lt-nb-public lt-nb-reservation">
     <button className="lt-nb-entry" type="button" aria-expanded={expanded} disabled={busy} onClick={()=>setExpanded(v=>!v)}>
@@ -151,7 +154,7 @@ export function NativeBookingCustomer({apiBase='',slug,preferredBranch='',extern
       <span className="lt-nb-entry-copy"><small>Reservations</small><strong>Reserve our place</strong><span>Book a table or plan a private event.</span></span>
       <span className="lt-nb-chevron" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg></span>
     </button>
-    {!expanded&&receipt&&<div className="lt-nb-receipt-summary" role="status"><strong>{receipt.status==='pending'?'Reservation requested':receipt.status}</strong><small>Reference: {receipt.reference}</small><button type="button" onClick={()=>setExpanded(true)}>View booking status</button></div>}
+    {!expanded&&receipt&&<div className="lt-nb-receipt-summary" role="status"><strong>{receipt.status==='pending'?'Reservation requested':receipt.status}</strong><small>Booking code</small><strong className="lt-nb-reference">{displayReference(receipt.booking_code||receipt.reference)}</strong><button type="button" className="lt-nb-copy" onClick={copyReference}>Copy code</button>{copyNotice&&<small role="status">{copyNotice}</small><button type="button" onClick={()=>setExpanded(true)}>View booking status</button></div>}
     <div className="lt-nb-expanded" hidden={!expanded}>
     <h3 className="lt-nb-step-title">What would you like to reserve?</h3>
     <div className="lt-nb-pair lt-nb-types">{['table','venue'].map(k=>{
@@ -161,7 +164,7 @@ export function NativeBookingCustomer({apiBase='',slug,preferredBranch='',extern
     })}</div>
     {externalActions.some(a=>catalog.some(b=>b.resources.some(r=>r.kind===(a.id==='book'?'venue':'table'))))&&<details><summary>Other reservation options</summary>{externalActions.filter(a=>catalog.some(b=>b.resources.some(r=>r.kind===(a.id==='book'?'venue':'table')))).map(a=><a key={a.id} className="lt-nb-external" href={a.url} target="_blank" rel="noreferrer">{a.label}{a.note?' · '+a.note:''}</a>)}</details>}
     {error&&<p role="alert" className="lt-nb-error">{error}</p>}
-    {receipt?<div role="status" className="lt-nb-section"><h3>{receipt.status==='pending'?'Request received':receipt.status}</h3>{receipt.starts_at&&<p>Arrival: {dateText(receipt.starts_at)}</p>}<p>{receipt.status==='pending'?'Your booking is not confirmed. The business must approve your request.':'Check the latest status below.'}</p><label>Booking reference<input readOnly value={receipt.reference}/></label><p>Save your reference. No payment was collected.</p></div>:kind&&<form onSubmit={submit}><fieldset disabled={busy}>
+    {receipt?<div role="status" className="lt-nb-section"><h3>{receipt.status==='pending'?'Request received':receipt.status}</h3>{receipt.starts_at&&<p>Arrival: {dateText(receipt.starts_at)}</p>}<p>{receipt.status==='pending'?'Your booking is not confirmed. The business must approve your request.':'Check the latest status below.'}</p><label>Booking code<input className="lt-nb-reference" readOnly value={displayReference(receipt.booking_code||receipt.reference)} onFocus={e=>e.target.select()}/></label><button type="button" className="lt-nb-copy" onClick={copyReference}>Copy code</button>{copyNotice&&<small role="status">{copyNotice}</small><p>Save your reference. No payment was collected.</p></div>:kind&&<form onSubmit={submit}><fieldset disabled={busy}>
       <div className="lt-nb-form-group"><h3 className="lt-nb-step-title">Booking details</h3>
       <label>Branch<select value={branch} onChange={e=>{setBranch(e.target.value);setResource('')}}>{places.map(b=><option key={b.public_id} value={b.public_id}>{b.name}</option>)}</select></label>
       <label>{kind==='venue'?'Venue package':'Table'}<select required value={resource} onChange={e=>setResource(e.target.value)}><option value="">Choose</option>{items.map(r=><option key={r.id} value={r.id}>{r.name} · up to {r.capacity} guests{r.price_centavos?' · '+php(r.price_centavos):''}</option>)}</select></label>
@@ -179,7 +182,7 @@ export function NativeBookingCustomer({apiBase='',slug,preferredBranch='',extern
       <div className="lt-nb-submit"><small>Your contact details are shared with the business. Requests require confirmation. No deposit is collected here.</small>
       <button disabled={!slot||busy} type="submit">{busy?'Submitting…':'Request reservation'}</button></div>
     </fieldset></form>}
-    {catalog.length>0&&<details><summary>Check booking status</summary><label>Booking reference<input value={lookup} onChange={e=>setLookup(e.target.value)}/></label><button type="button" disabled={looking||!lookup.trim()} onClick={track}>Check status</button></details>}
+    {catalog.length>0&&<details><summary>Check booking status</summary><label>Booking code<input autoCapitalize="characters" autoCorrect="off" spellCheck={false} maxLength={64} placeholder="7KM4-P9TX-2C8A" value={lookup} onChange={e=>{setLookup(e.target.value);setCopyNotice('')}}/></label><small>Enter your code. Spaces and hyphens are optional.</small><button type="button" disabled={looking||!lookup.trim()} onClick={track}>Check status</button></details>}
     </div>
   </section>
 }
