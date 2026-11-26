@@ -39,6 +39,44 @@ object OrderAlerts {
     private const val RING_LIMIT_MS = 30_000L
     const val EXTRA_OPEN = "lt_open"
     const val OPEN_ORDERS = "orders"
+    const val OPEN_BOOKINGS = "bookings"
+    const val BOOKING_CHANNEL_ID = "lt_new_bookings_v1"
+
+    @android.annotation.SuppressLint("MissingPermission")
+    fun announceBooking(context: Context, bookingId: String): Boolean {
+        if (!canNotify(context)) return false
+        if (Build.VERSION.SDK_INT >= 26) {
+            val manager = context.getSystemService(NotificationManager::class.java) ?: return false
+            if (manager.getNotificationChannel(BOOKING_CHANNEL_ID) == null) {
+                manager.createNotificationChannel(NotificationChannel(BOOKING_CHANNEL_ID, "New reservations", NotificationManager.IMPORTANCE_HIGH).apply {
+                    description = "Alerts when a customer requests a table or venue."
+                    enableVibration(true)
+                    lockscreenVisibility = android.app.Notification.VISIBILITY_PRIVATE
+                })
+            }
+        }
+        val launch = context.packageManager.getLaunchIntentForPackage(context.packageName) ?: return false
+        launch.putExtra(EXTRA_OPEN, OPEN_BOOKINGS)
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        val request = ("booking:" + bookingId).hashCode()
+        val pending = PendingIntent.getActivity(context, request, launch, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val note = NotificationCompat.Builder(context, BOOKING_CHANNEL_ID)
+            .setSmallIcon(smallIcon(context))
+            .setContentTitle("New reservation")
+            .setContentText("Open Reservations to review the request.")
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .setContentIntent(pending)
+            .build()
+        return try {
+            NotificationManagerCompat.from(context).notify("booking", request, note)
+            true
+        } catch (_: SecurityException) { false }
+    }
+
     private const val SUMMARY_ID = 7_000_001
 
     private fun rawSound(context: Context): Int =
