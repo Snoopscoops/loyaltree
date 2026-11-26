@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import './native-bookings.css'
+import MenuCheckoutContact from './MenuCheckoutContact'
+import { bookingCardName, readBookingCardToken } from './bookingContactModel'
 
 const emptyResource = kind => ({kind,name:'',capacity:kind==='table'?4:30,duration_minutes:kind==='table'?90:240,price_centavos:0,active:true})
 const php = cents => new Intl.NumberFormat('en-PH',{style:'currency',currency:'PHP'}).format(cents/100)
@@ -102,6 +104,28 @@ export function NativeBookingCustomer({apiBase='',slug,preferredBranch='',extern
   const [name,setName]=useState(''),[phone,setPhone]=useState(''),[note,setNote]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('')
   const [receipt,setReceipt]=useState(null),[lookup,setLookup]=useState(''),[looking,setLooking]=useState(false),[slotLoading,setSlotLoading]=useState(false)
   const retry=useRef(null), posting=useRef(false)
+  const [cardToken,setCardToken]=useState(''),[verifiedCard,setVerifiedCard]=useState('')
+  const cardIdentity=useRef('')
+  const [,setUnusedAddress]=useState('')
+  useEffect(()=>{
+    const sync=event=>{
+      if(event?.type==='lt-menu-card-change'&&event.detail?.business!==slug)return
+      if(event?.type==='storage'&&event.key!==null&&event.key!=='lt-menu-card:'+slug)return
+      let token='';try{token=readBookingCardToken(window.localStorage,slug)}catch{}
+      if(cardIdentity.current!==token){if(cardIdentity.current){setName('');setPhone('')}cardIdentity.current=token;setVerifiedCard('');setCardToken(token)}
+    }
+    sync();window.addEventListener('lt-menu-card-change',sync);window.addEventListener('storage',sync);window.addEventListener('focus',sync)
+    return()=>{window.removeEventListener('lt-menu-card-change',sync);window.removeEventListener('storage',sync);window.removeEventListener('focus',sync)}
+  },[slug,expanded])
+  useEffect(()=>{
+    setVerifiedCard('');if(!expanded||!kind||!cardToken)return
+    const ctrl=new AbortController()
+    json(apiBase+'/api/v1/public/menu/'+encodeURIComponent(slug)+'/card',{headers:{Authorization:'Bearer '+cardToken},signal:ctrl.signal}).then(value=>{
+      if(ctrl.signal.aborted||cardIdentity.current!==cardToken)return
+      setVerifiedCard(cardToken);const saved=bookingCardName(value?.name);if(saved)setName(current=>current.trim()?current:saved)
+    }).catch(()=>{})
+    return()=>ctrl.abort()
+  },[apiBase,slug,expanded,kind,cardToken])
   useEffect(()=>{if(!slug)return;const ctrl=new AbortController();setCatalog([]);setExpanded(false);setKind('');setBranch('');setResource('');setReceipt(null);json(root,{signal:ctrl.signal}).then(x=>{if(!ctrl.signal.aborted)setCatalog(x.branches||[])}).catch(()=>{});return()=>ctrl.abort()},[root])
   const places=catalog.filter(b=>b.resources.some(r=>r.kind===kind))
   const items=places.find(b=>b.public_id===branch)?.resources.filter(r=>r.kind===kind)||[]
@@ -138,8 +162,9 @@ export function NativeBookingCustomer({apiBase='',slug,preferredBranch='',extern
       <div className="lt-nb-pair"><label>Date<input required type="date" min={manilaDay()} value={day} onChange={e=>setDay(e.target.value)}/></label><label>Guests<input required type="number" min="1" max={chosen?.capacity||1000} value={guests} onChange={e=>setGuests(Number(e.target.value))}/></label></div>
       <p>What time will you arrive? · Asia/Manila</p>{slotLoading?<p>Checking availability…</p>:<div className="lt-nb-chips">{slots.map(t=><button type="button" key={t} aria-pressed={slot===t} onClick={()=>setSlot(t)}>{timeText(t)}</button>)}</div>}
       {resource&&day&&!slotLoading&&!slots.length&&!error&&<p>No available times. Choose another date or resource.</p>}
+      {verifiedCard&&verifiedCard===cardToken&&<small>Connected loyalty card · Review your name and contact number before submitting.</small>}
       <label>Name<input required maxLength="100" autoComplete="name" value={name} onChange={e=>setName(e.target.value)}/></label>
-      <label>Contact number<input required type="tel" autoComplete="tel" minLength="7" maxLength="30" value={phone} onChange={e=>setPhone(e.target.value)}/></label>
+      {verifiedCard&&verifiedCard===cardToken?<MenuCheckoutContact key={slug+":"+verifiedCard} apiBase={apiBase} businessId={slug} cardToken={verifiedCard} service="reservation" phone={phone} setPhone={setPhone} address="" setAddress={setUnusedAddress} onName={value=>{const saved=bookingCardName(value);if(saved)setName(current=>current.trim()?current:saved)}}/>:<label>Contact number<input required type="tel" autoComplete="tel" minLength="7" maxLength="30" value={phone} onChange={e=>setPhone(e.target.value)}/></label>}
       <label>Note (optional)<textarea maxLength="500" value={note} onChange={e=>setNote(e.target.value)}/></label>
       <small>Your contact details are shared with the business to arrange this booking. Requests are subject to confirmation; no deposit is collected here.</small>
       <button disabled={!slot||busy} type="submit">{busy?'Submitting…':'Request reservation'}</button>
