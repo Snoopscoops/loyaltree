@@ -24,12 +24,6 @@ create table if not exists public.lt_booking_resources (
   price_centavos integer not null default 0 check(price_centavos between 0 and 100000000),
   active boolean not null default true
 );
-alter table public.lt_booking_resources add column if not exists available_from time, add column if not exists available_until time;
-do $ begin
-  if not exists (select 1 from pg_constraint where conrelid='public.lt_booking_resources'::regclass and conname='lt_booking_resource_hours_check') then
-    alter table public.lt_booking_resources add constraint lt_booking_resource_hours_check check ((available_from is null and available_until is null) or (kind='table' and available_from is not null and available_until is not null and available_from < available_until));
-  end if;
-end $;
 create index if not exists lt_booking_resources_branch_idx on public.lt_booking_resources(branch_id, kind);
 create table if not exists public.lt_bookings (
   id uuid primary key default gen_random_uuid(),
@@ -68,7 +62,7 @@ create or replace function public.lt_booking_slots(
   from public.lt_booking_settings s
   join public.lt_booking_resources r on r.branch_id=s.branch_id and r.business_id=s.business_id
   join public.branches b on b.id=s.branch_id and b.business_id=s.business_id and b.is_active is true
-  cross join lateral generate_series(p_day+greatest(s.opens_at,coalesce(r.available_from,s.opens_at)),p_day+least(s.closes_at,coalesce(r.available_until,s.closes_at))-make_interval(mins=>r.duration_minutes),interval '30 minutes') t
+  cross join lateral generate_series(p_day+s.opens_at,p_day+s.closes_at-make_interval(mins=>r.duration_minutes),interval '30 minutes') t
   where s.business_id=p_business and s.branch_id=p_branch and r.id=p_resource and r.active
     and case when r.kind='venue' then s.venue_enabled else s.table_enabled end
     and p_guests between 1 and r.capacity
