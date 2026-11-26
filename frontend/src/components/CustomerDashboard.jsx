@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import './customer-dashboard.css'
+import { NativeBookingOwner } from './NativeBookings.jsx'
 import { tiktokUrl, isTikTokLink } from './guestTikTok.js'
 
 const EMPTY = {
@@ -217,8 +218,9 @@ export default function CustomerDashboard({ API_BASE, user, onOpen }) {
         <p className="lt-cd-hint">Leave one blank to hide it. Customers see a logo, not a text link.</p>
       </section>
 
+      <NativeBookingOwner key={user.business_slug} API_BASE={API_BASE} user={user} />
       <section className="lt-cd-card">
-        <h2 className="lt-cd-step">4 · Book our place</h2>
+        <h2 className="lt-cd-step">External link · Book our place</h2>
         <StatusBox
           on={form.book_published}
           onText="Shown on the menu"
@@ -235,7 +237,7 @@ export default function CustomerDashboard({ API_BASE, user, onOpen }) {
       </section>
 
       <section className="lt-cd-card">
-        <h2 className="lt-cd-step">5 · Reserve a table</h2>
+        <h2 className="lt-cd-step">External link · Reserve a table</h2>
         <StatusBox
           on={form.reserve_published}
           onText="Shown on the menu"
