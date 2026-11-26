@@ -598,7 +598,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         if (result == null) return "Connection lost. Refresh to check whether the action was saved."
         if (result.first !in 200..299) return API.message(result.second, "Reservation could not be updated.")
         val body = result.second as? JSONObject
-        if (body?.optString("reference") != id || body.optString("status") != next)
+        if (body == null || body.optString("reference") != id || body.optString("status") != next)
             return "Unexpected response. Refresh to check reservation status."
         return null
     }
