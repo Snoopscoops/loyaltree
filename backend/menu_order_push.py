@@ -330,6 +330,40 @@ def make_order_pusher(*, db, environ=None, sender_factory=None):
     return push
 
 
+def make_booking_pusher(*, db, environ=None, sender_factory=None):
+    """Owner Android devices only. Booking details never appear in lockscreen data."""
+    state = {"sender": None, "key": None}
+    lock = threading.Lock()
+
+    def push(business_id, slug, branch_public_id, booking_id):
+        try:
+            env = environ if environ is not None else os.environ
+            raw = env.get(ENV_NAME) or ""
+            with lock:
+                if state["key"] != raw:
+                    info = load_credentials(env)
+                    state["sender"] = (sender_factory or FcmSender)(info, project_id=env.get(PROJECT_ENV_NAME) or info.get("project_id") or DEFAULT_PROJECT_ID) if info else None
+                    state["key"] = raw
+                fcm = state["sender"]
+            if fcm is None:
+                return
+            devices = _rows(db.table(TABLE).select("token,role,platform").eq("business_id", business_id).eq("role", "owner").eq("platform", "android").limit(MAX_DEVICES).execute())
+            data = {"type": "new_booking", "business": slug, "booking_id": str(booking_id), "branch_public_id": branch_public_id}
+            for device in devices:
+                if device.get("role") != "owner" or device.get("platform") != "android" or not device.get("token"):
+                    continue
+                try:
+                    outcome = fcm.send(device["token"], data)
+                    if outcome == "unregistered":
+                        db.table(TABLE).delete().eq("token", device["token"]).eq("business_id", business_id).execute()
+                except Exception:
+                    _log("booking device push failed")
+        except Exception:
+            _log("booking push skipped")
+
+    return push
+
+
 def _clean_token(value):
     token = str(value or '').strip()
     if not token or len(token) > 4096 or any(c.isspace() for c in token):
