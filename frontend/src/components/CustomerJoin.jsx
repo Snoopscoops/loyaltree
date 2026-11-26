@@ -1,3 +1,4 @@
+import { NativeBookingCustomer } from './NativeBookings.jsx'
 import React, { useState, useEffect, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { readBenefitsSession } from './benefitsModel'
@@ -498,6 +499,7 @@ function CustomerJoin({ API_BASE }) {
                 <span style={styles.guestArrow}>{chevron}</span>
               </a>
             )}
+            <NativeBookingCustomer key={slug} apiBase={API_BASE} slug={slug} />
             {wifi && (
               <div style={styles.guestCard}>
                 <span style={styles.guestCopy}>
