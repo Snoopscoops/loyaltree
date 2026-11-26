@@ -150,7 +150,6 @@ export function NativeBookingCustomer({apiBase='',slug,preferredBranch='',extern
   if(!catalog.length&&!externalActions.length)return null
   return <section className="lt-nb lt-nb-public lt-nb-reservation">
     <button className="lt-nb-entry" type="button" aria-expanded={expanded} disabled={busy} onClick={()=>setExpanded(v=>!v)}>
-      <span className="lt-nb-entry-icon" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M16 3v4M8 3v4M3 10h18m-13 5 3 3 5-5"/></svg></span>
       <span className="lt-nb-entry-copy"><small>Reservations</small><strong>Reserve our place</strong><span>Book a table or plan a private event.</span></span>
       <span className="lt-nb-chevron" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6"/></svg></span>
     </button>
