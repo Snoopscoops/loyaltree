@@ -101,6 +101,10 @@ import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.rememberCoroutineScope
+import org.json.JSONObject
+import org.json.JSONArray
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
@@ -132,6 +136,7 @@ private sealed class Page {
     data object Cashiers : Page()
     data object Stamp : Page()
     data object Alerts : Page()
+    data object Reservations : Page()
     data class Customer(val id: String) : Page()
 }
 
@@ -617,6 +622,7 @@ private fun Shell(store: CounterStore) {
                     Page.Cashiers -> CashiersScreen(store)
                     Page.Stamp -> StampScreen(store)
                     Page.Alerts -> AlertsScreen(store)
+                    Page.Reservations -> ReservationsScreen(store)
                     is Page.Customer -> CustomerScreen(store, current.id)
                 }
             }
@@ -642,6 +648,7 @@ private fun pageTitle(page: Page, store: CounterStore): String = when (page) {
     Page.Cashiers -> "Cashiers"
     Page.Stamp -> if (store.cardType == "points") "Add points" else "Add a stamp"
     Page.Alerts -> "Order alerts"
+    Page.Reservations -> "Reservations"
     is Page.Customer -> store.members.firstOrNull { it.id == page.id }?.name ?: "Customer"
     Page.None -> ""
 }
@@ -1714,8 +1721,9 @@ private fun MoreScreen(store: CounterStore, open: (Page) -> Unit, openMenu: () -
             }) { openMenu() }
             RowLink("Wi-Fi", if (store.wifiOn) "Shown on the scan page" else "Hidden") { open(Page.Guest("wifi")) }
             RowLink("Socials", if (store.socialsOn) "Shown on the scan page" else "Hidden") { open(Page.Guest("socials")) }
-            RowLink("Book our place", if (store.bookOn) "Shown on the menu" else "Hidden") { open(Page.Guest("book")) }
-            RowLink("Reserve a table", if (store.reserveOn) "Shown on the menu" else "Hidden") { open(Page.Guest("reserve")) }
+            RowLink("Reservations", "Calendar and booking requests") { open(Page.Reservations) }
+            RowLink("External venue link", if (store.bookOn) "Published" else "Hidden") { open(Page.Guest("book")) }
+            RowLink("External table link", if (store.reserveOn) "Published" else "Hidden") { open(Page.Guest("reserve")) }
         }
         Section("Your business", "The tools you use after the scan.") {
             RowLink("Analytics", "Last 30 days") { open(Page.Analytics) }
@@ -1729,6 +1737,194 @@ private fun MoreScreen(store: CounterStore, open: (Page) -> Unit, openMenu: () -
         Card { Column { Text("Loyalty Tree benefits", fontWeight = FontWeight.SemiBold, color = Muted); Text("Coming soon", color = Muted, fontSize = 13.sp) } }
         Card { RowLink("Account management", "Billing, details, and account") { open(Page.Account) } }
         Secondary("Log out") { store.signOut() }
+    }
+}
+
+private fun bookingObjects(rows: JSONArray?): List<JSONObject> =
+    if (rows == null) emptyList() else (0 until rows.length()).mapNotNull { rows.optJSONObject(it) }
+
+private fun bookingDate(raw: String): java.util.Date? {
+    // Parse the supplied offset rather than assuming the device's timezone.
+    return runCatching {
+        java.time.OffsetDateTime.parse(raw).toInstant().let { java.util.Date(it.toEpochMilli()) }
+    }.getOrNull()
+}
+
+private fun bookingDay(raw: String): String =
+    bookingDate(raw)?.let { SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+        timeZone = TimeZone.getTimeZone("Asia/Manila")
+    }.format(it) }.orEmpty()
+
+private fun bookingWhen(raw: String): String =
+    bookingDate(raw)?.let { SimpleDateFormat("MMM d · h:mm a", Locale.US).apply {
+        timeZone = TimeZone.getTimeZone("Asia/Manila")
+    }.format(it) } ?: raw
+
+private fun bookingMonth(offset: Int = 0, month: String = ""): String {
+    val tz = TimeZone.getTimeZone("Asia/Manila")
+    val format = SimpleDateFormat("yyyy-MM", Locale.US).apply { timeZone = tz; isLenient = false }
+    val cal = java.util.Calendar.getInstance(tz)
+    if (month.isNotBlank()) runCatching { format.parse(month) }.getOrNull()?.let { cal.time = it }
+    cal.add(java.util.Calendar.MONTH, offset)
+    return format.format(cal.time)
+}
+
+@Composable
+private fun ReservationsScreen(store: CounterStore) {
+    val owner = store.session?.takeIf { it.isOwner } ?: return
+    androidx.compose.runtime.key(owner) { OwnerReservations(store, owner) }
+}
+
+@Composable
+private fun OwnerReservations(store: CounterStore, owner: OwnerSession) {
+    var month by remember { mutableStateOf(bookingMonth()) }
+    var branch by remember { mutableStateOf("") }
+    var day by remember { mutableStateOf("") }
+    var filter by remember { mutableStateOf("all") }
+    var refresh by remember { mutableIntStateOf(0) }
+    var data by remember { mutableStateOf<JSONObject?>(null) }
+    var loading by remember { mutableStateOf(true) }
+    var writing by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf("") }
+    var notice by remember { mutableStateOf("") }
+    var confirmation by remember { mutableStateOf<Pair<String, String>?>(null) }
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    LaunchedEffect(owner, branch, month, refresh) {
+        loading = true
+        error = ""
+        data = null
+        val (body, problem) = store.readBookings(owner, branch, month)
+        data = body
+        error = problem
+        loading = false
+    }
+    val busy = loading || writing
+    val body = data
+    val places = bookingObjects(body?.optJSONArray("branches"))
+    val bookings = bookingObjects(body?.optJSONArray("bookings"))
+    val selectedBranch = body?.optString("branch").orEmpty()
+    val shown = bookings.filter { (filter == "all" || it.optString("status") == filter) &&
+        (day.isBlank() || bookingDay(it.optString("starts_at")) == day) }
+    val days = remember(month) {
+        val cal = java.util.Calendar.getInstance(TimeZone.getTimeZone("Asia/Manila"))
+        cal.clear()
+        cal.set(month.take(4).toInt(), month.takeLast(2).toInt() - 1, 1)
+        ((cal.get(java.util.Calendar.DAY_OF_WEEK) + 5) % 7) to cal.getActualMaximum(java.util.Calendar.DAY_OF_MONTH)
+    }
+    Scroll {
+        Text("Reservations", color = Forest, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+        Text("Manage table and private event requests. Manila time.", color = Muted, fontSize = 13.sp)
+        if (places.isNotEmpty()) Card {
+            Text("Branch", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                places.forEach { row ->
+                    val id = row.optString("public_id")
+                    BranchChip(row.optString("name", "Branch"), selectedBranch == id) {
+                        if (!busy && id.isNotBlank() && id != selectedBranch) {
+                            branch = id; day = ""; notice = ""
+                        }
+                    }
+                }
+            }
+        }
+        Card {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(enabled = !busy, onClick = { month = bookingMonth(-1, month); day = ""; notice = "" }) { Text("‹", color = Forest, fontSize = 24.sp) }
+                Text(month, modifier = Modifier.weight(1f), color = Forest, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                TextButton(enabled = !busy, onClick = { month = bookingMonth(1, month); day = ""; notice = "" }) { Text("›", color = Forest, fontSize = 24.sp) }
+            }
+            Row(Modifier.fillMaxWidth()) {
+                listOf("M","T","W","T","F","S","S").forEach { Text(it, Modifier.weight(1f), color = Muted, fontSize = 12.sp, textAlign = TextAlign.Center) }
+            }
+            val counts = bookings.groupingBy { bookingDay(it.optString("starts_at")) }.eachCount()
+            (List(days.first) { 0 } + (1..days.second).toList()).chunked(7).forEach { week ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                    (week + List(7 - week.size) { 0 }).forEach { n ->
+                        val date = month + "-" + n.toString().padStart(2, '0')
+                        val selected = date == day
+                        Box(Modifier.weight(1f).height(44.dp).clip(Pill).background(if (selected) Forest else if (n == 0) Color.Transparent else Ivory)
+                            .clickable(enabled = !busy && n != 0) { day = if (selected) "" else date }, contentAlignment = Alignment.Center) {
+                            if (n != 0) Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(n.toString(), color = if (selected) Color.White else Ink, fontSize = 13.sp)
+                                counts[date]?.let { Text(it.toString(), color = if (selected) Color.White else Gold, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
+                            }
+                        }
+                    }
+                }
+            }
+            TextButton(enabled = !busy, onClick = { day = "" }) { Text(if (day.isBlank()) "Showing whole month" else "Clear day filter · $day", color = Forest) }
+        }
+        if (body?.optBoolean("truncated") == true) Text("Showing the first 500 records only. Calendar totals may be incomplete.", color = Bad, fontSize = 13.sp)
+        if (loading) Text("Loading reservations…", color = Muted)
+        if (writing) Text("Updating reservation…", color = Muted)
+        if (error.isNotBlank()) Text(error, color = Bad, fontSize = 13.sp)
+        if (notice.isNotBlank()) Text(notice, color = Gold, fontSize = 13.sp)
+        Primary("Refresh bookings", enabled = !busy) { refresh++ }
+        if (body != null) {
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("all", "pending", "confirmed", "declined", "cancelled", "completed").forEach { state ->
+                    BranchChip(state.replaceFirstChar { it.uppercase() }, filter == state) { if (!busy) filter = state }
+                }
+            }
+            if (shown.isEmpty()) Text("No reservations in this view.", color = Muted, fontSize = 14.sp)
+            shown.forEach { row ->
+                val state = row.optString("status")
+                val code = row.optString("booking_code").takeUnless { it == "null" }.orEmpty()
+                val id = row.optString("id")
+                Card {
+                    Text(row.optString("resource_name"), color = Forest, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Text(state.replaceFirstChar { it.uppercase() } + " · " + row.optInt("guests") + " guests", color = if (state == "pending") Gold else Muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Info("Arrival", bookingWhen(row.optString("starts_at")))
+                    if (row.optString("kind") == "venue") Info("End", bookingWhen(row.optString("ends_at")))
+                    Info("Customer", row.optString("customer_name"))
+                    Info("Contact", row.optString("phone"))
+                    if (code.isNotBlank()) {
+                        val formatted = code.chunked(4).joinToString("-")
+                        Info("Booking code", formatted)
+                        TextButton(onClick = {
+                            (context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager)?.setPrimaryClip(ClipData.newPlainText("Booking code", formatted))
+                        }) { Text("Copy code", color = Forest) }
+                    }
+                    val note = row.optString("note").takeUnless { it == "null" }.orEmpty()
+                    if (note.isNotBlank()) Info("Note", note)
+                    if (row.optLong("price_centavos") > 0) Info("Venue price", "₱" + String.format(Locale.US, "%.2f", row.optLong("price_centavos") / 100.0))
+                    val actions = when (state) {
+                        "pending" -> listOf("confirmed" to "Confirm", "declined" to "Decline")
+                        "confirmed" -> if ((bookingDate(row.optString("ends_at"))?.time ?: Long.MAX_VALUE) <= System.currentTimeMillis()) listOf("completed" to "Complete", "cancelled" to "Cancel") else listOf("cancelled" to "Cancel")
+                        else -> emptyList()
+                    }
+                    actions.forEach { (next, label) ->
+                        if (id.isNotBlank()) {
+                            if (next == "confirmed") Primary(label, enabled = !busy) { confirmation = id to next }
+                            else TextButton(enabled = !busy, onClick = { confirmation = id to next }) { Text(label, color = if (next == "completed") Forest else Bad) }
+                        }
+                    }
+                }
+            }
+        }
+        Text("Pending requests do not hold space. Availability is checked again when confirming.", color = Muted, fontSize = 12.sp)
+    }
+    confirmation?.let { (id, next) ->
+        val action = when (next) { "confirmed" -> "Confirm"; "declined" -> "Decline"; "completed" -> "Complete"; else -> "Cancel" }
+        AlertDialog(
+            onDismissRequest = { if (!writing) confirmation = null },
+            title = { Text("$action reservation?") },
+            text = { Text(if (next == "confirmed") "Availability will be checked before confirmation." else "This changes the reservation status.") },
+            confirmButton = { TextButton(enabled = !busy, onClick = {
+                confirmation = null
+                writing = true
+                notice = ""
+                scope.launch {
+                    val problem = store.changeBookingStatus(owner, id, next)
+                    notice = if (problem == null) "Reservation $next." else problem
+                    loading = true
+                    writing = false
+                    refresh++
+                }
+            }) { Text(action) } },
+            dismissButton = { TextButton(onClick = { confirmation = null }) { Text("Back") } }
+        )
     }
 }
 
