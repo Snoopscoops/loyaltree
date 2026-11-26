@@ -1743,12 +1743,8 @@ private fun MoreScreen(store: CounterStore, open: (Page) -> Unit, openMenu: () -
 private fun bookingObjects(rows: JSONArray?): List<JSONObject> =
     if (rows == null) emptyList() else (0 until rows.length()).mapNotNull { rows.optJSONObject(it) }
 
-private fun bookingDate(raw: String): java.util.Date? {
-    // Parse the supplied offset rather than assuming the device's timezone.
-    return runCatching {
-        java.time.OffsetDateTime.parse(raw).toInstant().let { java.util.Date(it.toEpochMilli()) }
-    }.getOrNull()
-}
+private fun bookingDate(raw: String): java.util.Date? =
+    OrderTime.parse(raw)?.let { java.util.Date(it) }
 
 private fun bookingDay(raw: String): String =
     bookingDate(raw)?.let { SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
