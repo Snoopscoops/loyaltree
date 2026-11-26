@@ -6,7 +6,7 @@ const php = cents => new Intl.NumberFormat('en-PH',{style:'currency',currency:'P
 const manilaDay = (value=new Date()) => {const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Manila',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(value));const get=k=>parts.find(p=>p.type===k)?.value;return get('year')+'-'+get('month')+'-'+get('day')}
 const dateText = value => new Intl.DateTimeFormat('en-PH',{timeZone:'Asia/Manila',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}).format(new Date(value))
 const timeText = value => new Intl.DateTimeFormat('en-PH',{timeZone:'Asia/Manila',hour:'numeric',minute:'2-digit'}).format(new Date(value))
-const labels = {venue:'Book our place',table:'Reserve a table'}
+const labels = {venue:'Book the entire place',table:'Reserve a table'}
 async function json(url, options={}) {
   const response=await fetch(url,{cache:'no-store',...options,headers:{'Content-Type':'application/json',...options.headers}})
   const data=await response.json().catch(()=>null)
@@ -57,14 +57,16 @@ export function NativeBookingOwner({API_BASE,user}) {
     {!data?<button disabled={busy} onClick={()=>load()}>{busy?'Loading…':'Retry booking settings'}</button>:!data.branches.length?<p>Add an active branch first.</p>:<>
     <label>Branch<select value={branch} disabled={busy} onChange={e=>{setNotice('');load(e.target.value)}}>{data.branches.map(b=><option key={b.public_id} value={b.public_id}>{b.name}</option>)}</select></label>
     <fieldset disabled={busy}>
+      <label className="lt-nb-check"><input type="checkbox" checked={settings.venue_enabled||settings.table_enabled} onChange={e=>patch({venue_enabled:e.target.checked,table_enabled:e.target.checked})}/>Enable “Reserve our place”</label>
+      <p>One customer button. Choose which reservation types this branch offers below, then save branch settings.</p>
       <div className="lt-nb-pair"><label>Opens<input type="time" value={settings.opens_at.slice(0,5)} onChange={e=>patch({opens_at:e.target.value})}/></label><label>Closes<input type="time" value={settings.closes_at.slice(0,5)} onChange={e=>patch({closes_at:e.target.value})}/></label></div>
       <p>Booking days (Manila time)</p><div className="lt-nb-chips">{['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map((d,i)=><label key={d}><input type="checkbox" checked={settings.weekdays.includes(i+1)} onChange={e=>patch({weekdays:e.target.checked?[...settings.weekdays,i+1]:settings.weekdays.filter(x=>x!==i+1)})}/>{d}</label>)}</div>
       <label>Blocked dates<input type="date" value={blockDay} onChange={e=>setBlockDay(e.target.value)}/></label>
       <button type="button" disabled={!blockDay||settings.blocked_dates.includes(blockDay)} onClick={()=>{patch({blocked_dates:[...settings.blocked_dates,blockDay]});setBlockDay('')}}>Block date</button>
       <div className="lt-nb-chips">{settings.blocked_dates.map(d=><button type="button" key={d} onClick={()=>patch({blocked_dates:settings.blocked_dates.filter(x=>x!==d)})}>{d} ×</button>)}</div>
       {['venue','table'].map(kind=><div className="lt-nb-section" key={kind}>
-        <h3>{kind==='venue'?'4 · Book our place':'5 · Reserve a table'}</h3>
-        <label className="lt-nb-check"><input type="checkbox" checked={settings[kind+'_enabled']} onChange={e=>patch({[kind+'_enabled']:e.target.checked})}/>Show native booking on customer page</label>
+        <h3>{labels[kind]}</h3>
+        <label className="lt-nb-check"><input type="checkbox" checked={settings[kind+'_enabled']} onChange={e=>patch({[kind+'_enabled']:e.target.checked})}/>Offer this reservation type</label>
         <p>{kind==='venue'?'Exclusive use of this entire branch; blocks all table bookings.':'Each table has its own seating capacity and duration.'}</p>
         {data.resources.filter(r=>r.kind===kind).map(r=><div className="lt-nb-row" key={r.id}><span><b>{r.name}</b><small>{r.capacity} guests · {r.kind==='venue'?r.duration_minutes+' min · ':''}{r.active?'Active':'Hidden'}{r.price_centavos?' · '+php(r.price_centavos):''}</small></span><button type="button" onClick={()=>setDraft({...r})}>Edit</button></div>)}
         <button type="button" onClick={()=>setDraft(emptyResource(kind))}>+ {kind==='venue'?'Add venue package':'Add table'}</button>
@@ -92,14 +94,15 @@ export function NativeBookingOwner({API_BASE,user}) {
   </section>
 }
 
-export function NativeBookingCustomer({apiBase='',slug,preferredBranch=''}) {
+export function NativeBookingCustomer({apiBase='',slug,preferredBranch='',externalActions=[]}) {
   const root=apiBase+'/api/v1/public/bookings/'+encodeURIComponent(slug)
+  const [expanded,setExpanded]=useState(false)
   const [catalog,setCatalog]=useState([]),[kind,setKind]=useState(''),[branch,setBranch]=useState(''),[resource,setResource]=useState('')
   const [day,setDay]=useState(''),[guests,setGuests]=useState(2),[slots,setSlots]=useState([]),[slot,setSlot]=useState('')
   const [name,setName]=useState(''),[phone,setPhone]=useState(''),[note,setNote]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('')
   const [receipt,setReceipt]=useState(null),[lookup,setLookup]=useState(''),[looking,setLooking]=useState(false),[slotLoading,setSlotLoading]=useState(false)
   const retry=useRef(null), posting=useRef(false)
-  useEffect(()=>{if(!slug)return;const ctrl=new AbortController();setCatalog([]);setKind('');setBranch('');setResource('');setReceipt(null);json(root,{signal:ctrl.signal}).then(x=>{if(!ctrl.signal.aborted)setCatalog(x.branches||[])}).catch(()=>{});return()=>ctrl.abort()},[root])
+  useEffect(()=>{if(!slug)return;const ctrl=new AbortController();setCatalog([]);setExpanded(false);setKind('');setBranch('');setResource('');setReceipt(null);json(root,{signal:ctrl.signal}).then(x=>{if(!ctrl.signal.aborted)setCatalog(x.branches||[])}).catch(()=>{});return()=>ctrl.abort()},[root])
   const places=catalog.filter(b=>b.resources.some(r=>r.kind===kind))
   const items=places.find(b=>b.public_id===branch)?.resources.filter(r=>r.kind===kind)||[]
   const chosen=items.find(r=>r.id===resource)
@@ -117,9 +120,17 @@ export function NativeBookingCustomer({apiBase='',slug,preferredBranch=''}) {
     }catch(e){setError(e.message)}finally{posting.current=false;setBusy(false)}
   }
   async function track(){setLooking(true);setError('');try{const x=await json(root+'/status/'+encodeURIComponent(lookup.trim()));setReceipt({reference:lookup.trim(),status:x.status})}catch(e){setError(e.message)}finally{setLooking(false)}}
-  if(!catalog.length)return null
-  return <section className="lt-nb lt-nb-public"><h2>Make a reservation</h2><p>Your next visit starts here.</p>
-    <div className="lt-nb-pair">{['venue','table'].filter(k=>catalog.some(b=>b.resources.some(r=>r.kind===k))).map(k=><button type="button" key={k} disabled={busy} aria-pressed={kind===k} onClick={()=>open(k)}>{labels[k]}</button>)}</div>
+  if(!catalog.length&&!externalActions.length)return null
+  return <section className="lt-nb lt-nb-public">
+    <button className="lt-nb-entry" type="button" aria-expanded={expanded} disabled={busy} onClick={()=>setExpanded(v=>!v)}>Reserve our place <span aria-hidden="true">{expanded?'−':'+'}</span></button>
+    {expanded&&<>
+    <h2>What would you like to reserve?</h2>
+    <div className="lt-nb-pair">{['table','venue'].map(k=>{
+      const native=catalog.some(b=>b.resources.some(r=>r.kind===k))
+      const external=externalActions.find(a=>a.id===(k==='venue'?'book':'reserve'))
+      return native?<button type="button" key={k} disabled={busy} aria-pressed={kind===k} onClick={()=>open(k)}>{labels[k]}</button>:external?<a key={k} className="lt-nb-external" href={external.url} target="_blank" rel="noreferrer">{labels[k]}</a>:null
+    })}</div>
+    {externalActions.some(a=>catalog.some(b=>b.resources.some(r=>r.kind===(a.id==='book'?'venue':'table'))))&&<details><summary>Other reservation options</summary>{externalActions.filter(a=>catalog.some(b=>b.resources.some(r=>r.kind===(a.id==='book'?'venue':'table')))).map(a=><a key={a.id} className="lt-nb-external" href={a.url} target="_blank" rel="noreferrer">{a.label}{a.note?' · '+a.note:''}</a>)}</details>}
     {error&&<p role="alert" className="lt-nb-error">{error}</p>}
     {receipt?<div role="status" className="lt-nb-section"><h3>{receipt.status==='pending'?'Request received':receipt.status}</h3>{receipt.starts_at&&<p>Arrival: {dateText(receipt.starts_at)}</p>}<p>{receipt.status==='pending'?'Your booking is not confirmed. The business must approve your request.':'Check the latest status below.'}</p><label>Booking reference<input readOnly value={receipt.reference}/></label><p>Save your reference. No payment was collected.</p></div>:kind&&<form onSubmit={submit}><fieldset disabled={busy}>
       <label>Branch<select value={branch} onChange={e=>{setBranch(e.target.value);setResource('')}}>{places.map(b=><option key={b.public_id} value={b.public_id}>{b.name}</option>)}</select></label>
@@ -133,6 +144,7 @@ export function NativeBookingCustomer({apiBase='',slug,preferredBranch=''}) {
       <small>Your contact details are shared with the business to arrange this booking. Requests are subject to confirmation; no deposit is collected here.</small>
       <button disabled={!slot||busy} type="submit">{busy?'Submitting…':'Request reservation'}</button>
     </fieldset></form>}
-    <details><summary>Check booking status</summary><label>Booking reference<input value={lookup} onChange={e=>setLookup(e.target.value)}/></label><button type="button" disabled={looking||!lookup.trim()} onClick={track}>Check status</button></details>
+    {catalog.length>0&&<details><summary>Check booking status</summary><label>Booking reference<input value={lookup} onChange={e=>setLookup(e.target.value)}/></label><button type="button" disabled={looking||!lookup.trim()} onClick={track}>Check status</button></details>}
+    </>}
   </section>
 }
