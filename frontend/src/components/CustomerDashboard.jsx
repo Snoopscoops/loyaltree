@@ -219,8 +219,10 @@ export default function CustomerDashboard({ API_BASE, user, onOpen }) {
       </section>
 
       <NativeBookingOwner key={user.business_slug} API_BASE={API_BASE} user={user} />
-      <section className="lt-cd-card">
-        <h2 className="lt-cd-step">External link · Book our place</h2>
+      <details className="lt-cd-card">
+        <summary className="lt-cd-step" style={{cursor:"pointer"}}>Advanced · External reservation links</summary>
+        <p className="lt-cd-hint">Optional: keep your existing external booking pages. Native booking settings above are saved separately.</p>
+        <h2 className="lt-cd-step">Book our place</h2>
         <StatusBox
           on={form.book_published}
           onText="Shown on the menu"
@@ -234,10 +236,7 @@ export default function CustomerDashboard({ API_BASE, user, onOpen }) {
         <label className="lt-cd-field">Short note
           <input maxLength={40} value={form.book_note} onChange={e => patch({ book_note: e.target.value })} placeholder="Events and space" />
         </label>
-      </section>
-
-      <section className="lt-cd-card">
-        <h2 className="lt-cd-step">External link · Reserve a table</h2>
+        <h2 className="lt-cd-step" style={{marginTop:24}}>Reserve a table</h2>
         <StatusBox
           on={form.reserve_published}
           onText="Shown on the menu"
@@ -248,7 +247,7 @@ export default function CustomerDashboard({ API_BASE, user, onOpen }) {
         <label className="lt-cd-field">Link
           <input value={form.reserve_url} onChange={e => patch({ reserve_url: e.target.value })} placeholder="https://..." />
         </label>
-      </section>
+      </details>
 
       <section className="lt-cd-card">
         <h2 className="lt-cd-step">Already on the scan page</h2>
