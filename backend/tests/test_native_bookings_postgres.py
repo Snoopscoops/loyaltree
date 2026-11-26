@@ -111,18 +111,15 @@ def test_adjacent_slots_and_pending_not_holds(booking_db):
     assert not slots(call,ids[1],day)
 
 
-def test_table_available_hours_and_confirmation_recheck(booking_db):
+def test_branch_hours_limit_arrivals_and_confirmation_rechecks(booking_db):
     call,ids,day,pg=booking_db
     original=slots(call,ids[0],day)
-    call("update lt_booking_resources set available_from='12:00',available_until='15:00' where id=%s",(ids[0],))
+    call("update lt_booking_settings set opens_at='12:00',closes_at='15:00' where branch_id=10")
     limited=slots(call,ids[0],day)
     assert limited==original[4:8]
-    assert slots(call,ids[1],day)==original
+    assert slots(call,ids[1],day)==limited
+    assert slots(call,ids[3],day,branch=11)==original
     booking=request(call,ids[0],limited[0])["reference"]
-    call("update lt_booking_resources set available_from='13:00' where id=%s",(ids[0],))
+    call("update lt_booking_settings set opens_at='13:00' where branch_id=10")
     with pytest.raises(pg.Error,match='unavailable'):
         move(call,booking)
-    with pytest.raises(pg.Error):
-        call("update lt_booking_resources set available_until=null where id=%s",(ids[0],))
-    call("update lt_booking_resources set available_from=null,available_until=null where id=%s",(ids[0],))
-    assert slots(call,ids[0],day)==original
