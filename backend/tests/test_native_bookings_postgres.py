@@ -30,6 +30,7 @@ def booking_db():
                 insert into branches values(10,1,'main','Main',true),(11,1,'second','Second',true),(20,2,'other','Other',true);
                 grant select on branches to service_role;""")
                 c.execute((Path(__file__).resolve().parents[1]/"lt_native_bookings_v1.sql").read_text())
+                c.execute((Path(__file__).resolve().parents[1]/"lt_booking_short_references.sql").read_text())
                 c.execute("insert into lt_booking_settings(branch_id,business_id,venue_enabled,table_enabled) values(10,1,true,true),(11,1,true,true),(20,2,true,true)")
                 c.execute("insert into lt_booking_resources(branch_id,business_id,kind,name,capacity,duration_minutes) values(10,1,'table','T1',4,90),(10,1,'table','T2',6,90),(10,1,'venue','Exclusive',50,240),(11,1,'table','T1',4,90),(20,2,'table','Other',4,90) returning id::text")
                 ids=[x[0] for x in c.fetchall()]
@@ -123,3 +124,18 @@ def test_branch_hours_limit_arrivals_and_confirmation_rechecks(booking_db):
     call("update lt_booking_settings set opens_at='13:00' where branch_id=10")
     with pytest.raises(pg.Error,match='unavailable'):
         move(call,booking)
+
+def test_short_reference_matches_uuid_and_is_stable(booking_db):
+    from backend.native_bookings import short_booking_code
+    call,ids,day,pg=booking_db
+    start=slots(call,ids[0],day)[0]
+    key=str(uuid4())
+    first=request(call,ids[0],start,key)
+    code=call("select booking_code from lt_bookings where business_id=1 and id=%s",(first["reference"],))[0][0]
+    assert code==short_booking_code(first["reference"])
+    assert request(call,ids[0],start,key)==first
+    move(call,first["reference"])
+    assert call("select status from lt_bookings where business_id=1 and booking_code=%s",(code,))==[("confirmed",)]
+    assert not call("select status from lt_bookings where business_id=2 and booking_code=%s",(code,))
+    with pytest.raises(pg.Error):
+        call("select booking_code from lt_bookings",role="anon")

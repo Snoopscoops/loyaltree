@@ -293,6 +293,7 @@ function CustomerJoin({ API_BASE }) {
     try { forgetKnownCard(window.localStorage, welcomeIds) } catch { /* ignore */ }
     setKnownCard(null)
     setKnownProgress(null)
+    for(const id of welcomeIds.filter(Boolean)) window.dispatchEvent(new CustomEvent('lt-menu-card-change',{detail:{business:id,card:null}}))
   }
 
   useEffect(() => {
@@ -492,9 +493,9 @@ function CustomerJoin({ API_BASE }) {
             {menuPublished && (
               <a href={menuHref} style={styles.guestCard}>
                 <span style={styles.guestCopy}>
-                  <span style={styles.guestKickerMuted}>Menu and booking</span>
+                  <span style={styles.guestKickerMuted}>Food &amp; drinks</span>
                   <strong style={styles.guestCardTitle}>Digital menu</strong>
-                  <span style={styles.guestHint}>See the menu or book our place.</span>
+                  <span style={styles.guestHint}>Browse the menu and order.</span>
                 </span>
                 <span style={styles.guestArrow}>{chevron}</span>
               </a>

@@ -51,6 +51,23 @@ def booking_error(exc):
     status, detail = messages.get(message,(503,"Booking service temporarily unavailable."))
     return HTTPException(status_code=status,detail=detail)
 
+BOOKING_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+def short_booking_code(value):
+    raw = UUID(str(value)).bytes
+    n = (int.from_bytes(raw[:6],"big") << 12) | ((raw[6] & 15) << 8) | raw[7]
+    return "".join(BOOKING_ALPHABET[(n >> (i*5)) & 31] for i in range(11,-1,-1))
+
+def booking_lookup(value):
+    # Legacy UUIDs remain valid. Short codes ignore case, hyphens, and whitespace.
+    if len(value)>64: raise HTTPException(404,"Booking reference not found.")
+    try: return "id",str(UUID(value.strip()))
+    except ValueError: pass
+    code=re.sub(r"[\s-]","",value.upper()).translate(str.maketrans("OIL","011"))
+    if len(code)!=12 or any(c not in BOOKING_ALPHABET for c in code):
+        raise HTTPException(404,"Booking reference not found.")
+    return "booking_code",code
+
 def normalize_phone(value):
     if not re.fullmatch(r"[\d+() .-]{7,30}",value):
         raise HTTPException(422,"Enter a valid contact number.")
@@ -105,7 +122,7 @@ def register_native_booking_routes(app, *, db, get_business, require_owner):
             chosen=branch_id or (places[0]["public_id"] if places else "")
             if not chosen: return {"branches":[],"branch":"","settings":Settings().model_dump(mode="json"),"resources":[],"bookings":[]}
             br=branch(bid,chosen)
-            rows=db.table("lt_bookings").select("id,kind,resource_name,starts_at,ends_at,guests,customer_name,phone,note,price_centavos,status,created_at").eq("business_id",bid).eq("branch_id",br).gte("starts_at",lower).lt("starts_at",upper).order("starts_at").limit(501).execute().data or []
+            rows=db.table("lt_bookings").select("id,booking_code,kind,resource_name,starts_at,ends_at,guests,customer_name,phone,note,price_centavos,status,created_at").eq("business_id",bid).eq("branch_id",br).gte("starts_at",lower).lt("starts_at",upper).order("starts_at").limit(501).execute().data or []
             return {"branches":[{"public_id":b["public_id"],"name":b["name"]} for b in places],"branch":chosen,"settings":config(bid,br),"resources":resources(bid,br),"bookings":rows[:500],"month":month,"truncated":len(rows)>500}
         except HTTPException: raise
         except Exception: raise HTTPException(503,"Booking service unavailable.")
@@ -175,13 +192,15 @@ def register_native_booking_routes(app, *, db, get_business, require_owner):
         try: br=branch(bid,payload.branch)
         except HTTPException: raise
         except Exception: raise HTTPException(503,"Bookings temporarily unavailable.")
-        return rpc("lt_booking_request",{"p_business":bid,"p_branch":br,"p_resource":str(payload.resource_id),"p_start":payload.starts_at.astimezone(timezone.utc).isoformat(),"p_guests":payload.guests,"p_name":payload.name.strip(),"p_phone":phone,"p_note":payload.note.strip(),"p_request":str(payload.request_id)})
+        result=rpc("lt_booking_request",{"p_business":bid,"p_branch":br,"p_resource":str(payload.resource_id),"p_start":payload.starts_at.astimezone(timezone.utc).isoformat(),"p_guests":payload.guests,"p_name":payload.name.strip(),"p_phone":phone,"p_note":payload.note.strip(),"p_request":str(payload.request_id)})
+        return result | {"booking_code":short_booking_code(result["reference"])}
 
     @app.get("/api/v1/public/bookings/{slug}/status/{reference}")
-    def public_status(slug:str,reference:UUID):
+    def public_status(slug:str,reference:str):
         bid=business(slug)
+        field,value=booking_lookup(reference)
         try:
-            rows=db.table("lt_bookings").select("status").eq("business_id",bid).eq("id",str(reference)).limit(1).execute().data or []
+            rows=db.table("lt_bookings").select("status").eq("business_id",bid).eq(field,value).limit(1).execute().data or []
         except Exception: raise HTTPException(503,"Status temporarily unavailable.")
         if not rows: raise HTTPException(404,"Booking reference not found.")
         return rows[0]
