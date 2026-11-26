@@ -1,5 +1,6 @@
 """Branch-scoped native reservations. V1 accepts requests only; no payment."""
 from datetime import date, datetime, time, timezone
+from zoneinfo import ZoneInfo
 from uuid import UUID
 import re
 
@@ -89,15 +90,23 @@ def register_native_booking_routes(app, *, db, get_business, require_owner):
         except Exception as exc: raise booking_error(exc) from None
 
     @app.get("/api/v1/business/{slug}/native-bookings")
-    def owner_bookings(slug:str, branch_id:str="", authorization:str=Header(default="")):
+    def owner_bookings(slug:str, branch_id:str="", month:str="", authorization:str=Header(default="")):
         bid=business(slug,authorization)
+        month=month or datetime.now(ZoneInfo("Asia/Manila")).strftime("%Y-%m")
+        try:
+            if not re.fullmatch(r"\d{4}-\d{2}",month): raise ValueError("Invalid month")
+            start=date.fromisoformat(month+"-01")
+            end=date(start.year+int(start.month==12),start.month%12+1,1)
+        except ValueError: raise HTTPException(422,"Choose a valid calendar month.")
+        lower=datetime.combine(start,time.min,ZoneInfo("Asia/Manila")).isoformat()
+        upper=datetime.combine(end,time.min,ZoneInfo("Asia/Manila")).isoformat()
         try:
             places=branches(bid)
             chosen=branch_id or (places[0]["public_id"] if places else "")
             if not chosen: return {"branches":[],"branch":"","settings":Settings().model_dump(mode="json"),"resources":[],"bookings":[]}
             br=branch(bid,chosen)
-            rows=db.table("lt_bookings").select("id,kind,resource_name,starts_at,ends_at,guests,customer_name,phone,note,price_centavos,status,created_at").eq("business_id",bid).eq("branch_id",br).order("starts_at",desc=True).limit(300).execute().data or []
-            return {"branches":[{"public_id":b["public_id"],"name":b["name"]} for b in places],"branch":chosen,"settings":config(bid,br),"resources":resources(bid,br),"bookings":rows}
+            rows=db.table("lt_bookings").select("id,kind,resource_name,starts_at,ends_at,guests,customer_name,phone,note,price_centavos,status,created_at").eq("business_id",bid).eq("branch_id",br).gte("starts_at",lower).lt("starts_at",upper).order("starts_at").limit(501).execute().data or []
+            return {"branches":[{"public_id":b["public_id"],"name":b["name"]} for b in places],"branch":chosen,"settings":config(bid,br),"resources":resources(bid,br),"bookings":rows[:500],"month":month,"truncated":len(rows)>500}
         except HTTPException: raise
         except Exception: raise HTTPException(503,"Booking service unavailable.")
 
