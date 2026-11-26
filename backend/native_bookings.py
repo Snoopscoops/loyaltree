@@ -4,7 +4,8 @@ from zoneinfo import ZoneInfo
 from uuid import UUID
 import re
 
-from fastapi import HTTPException, Header, Query
+from fastapi import HTTPException, Header, Query, BackgroundTasks
+from .menu_order_push import make_booking_pusher
 from pydantic import BaseModel, Field
 from typing import Literal
 
@@ -76,7 +77,8 @@ def normalize_phone(value):
     if not 7<=len(digits)<=15: raise HTTPException(422,"Enter a valid contact number.")
     return digits
 
-def register_native_booking_routes(app, *, db, get_business, require_owner):
+def register_native_booking_routes(app, *, db, get_business, require_owner, booking_push=None):
+    push = booking_push if booking_push is not None else make_booking_pusher(db=db)
     def business(slug, auth=None):
         if auth is not None: require_owner(slug,auth)
         b=get_business(slug)
@@ -185,7 +187,7 @@ def register_native_booking_routes(app, *, db, get_business, require_owner):
         return {"slots":rpc("lt_booking_slots",{"p_business":bid,"p_branch":br,"p_resource":str(resource_id),"p_day":day.isoformat(),"p_guests":guests}) or []}
 
     @app.post("/api/v1/public/bookings/{slug}/request")
-    def submit(slug:str,payload:RequestBooking):
+    def submit(slug:str,payload:RequestBooking,background_tasks:BackgroundTasks):
         bid=business(slug)
         if payload.starts_at.tzinfo is None or not payload.name.strip(): raise HTTPException(422,"Select a valid time and enter your name.")
         phone=normalize_phone(payload.phone)
@@ -193,6 +195,9 @@ def register_native_booking_routes(app, *, db, get_business, require_owner):
         except HTTPException: raise
         except Exception: raise HTTPException(503,"Bookings temporarily unavailable.")
         result=rpc("lt_booking_request",{"p_business":bid,"p_branch":br,"p_resource":str(payload.resource_id),"p_start":payload.starts_at.astimezone(timezone.utc).isoformat(),"p_guests":payload.guests,"p_name":payload.name.strip(),"p_phone":phone,"p_note":payload.note.strip(),"p_request":str(payload.request_id)})
+        # Stable booking ID lets the Android device suppress duplicate alerts on retries.
+        if result.get("status")=="pending":
+            background_tasks.add_task(push,bid,slug,payload.branch,result["reference"])
         return result | {"booking_code":short_booking_code(result["reference"])}
 
     @app.get("/api/v1/public/bookings/{slug}/status/{reference}")
