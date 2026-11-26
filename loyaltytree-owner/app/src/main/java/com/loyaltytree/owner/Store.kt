@@ -294,6 +294,8 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     var pushState by mutableStateOf("")
     /** Bumped when a new-order notification is tapped, so the app jumps to Orders. */
     var openOrdersTick by mutableStateOf(0)
+    var openBookingsTick by mutableStateOf(0)
+    fun openBookingsFromNotification() { if (session?.isOwner == true) openBookingsTick += 1 }
 
     private var watchJob: Job? = null
 
@@ -478,10 +480,18 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
             }
             viewModelScope.launch {
                 val result = io { OrderPush.register(context, current.slug, current.token, token) }
-                if (result != null && result.first < 400) {
-                    pushRegistered = signature
-                    pushState = "on"
+                if (session != current) return@launch
+                val body = result?.second as? JSONObject
+                if (result != null && result.first in 200..299 && body?.optBoolean("success") == true) {
+                    if (body.optBoolean("push_ready", false)) {
+                        pushRegistered = signature
+                        pushState = "on"
+                    } else {
+                        pushRegistered = ""
+                        pushState = "server_off"
+                    }
                 } else {
+                    pushRegistered = ""
                     pushState = "server"
                 }
             }
@@ -572,6 +582,35 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         io { API.get("/api/v1/business/${current.slug}/guest-page", current.token) }?.let { applyGuest(it.second, it.first) }
         io { API.get("/api/v1/business/${current.slug}/branches", current.token) }?.let { applyBranches(it.second, it.first) }
         io { API.get("/api/v1/business/${current.slug}/customer-agreement", current.token) }?.let { applyAgreement(it.second, it.first) }
+    }
+
+    /** Native bookings use the existing authenticated owner API, never the public status endpoint. */
+    suspend fun readBookings(current: OwnerSession, branch: String, month: String): Pair<JSONObject?, String> {
+        if (!current.isOwner || session != current) return null to "Owner access required."
+        val scoped = java.net.URLEncoder.encode(branch, "UTF-8")
+        val period = java.net.URLEncoder.encode(month, "UTF-8")
+        val result = io { API.get("/api/v1/business/${current.slug}/native-bookings?branch_id=$scoped&month=$period", current.token) }
+        if (session != current) return null to "Session changed."
+        if (result == null) return null to "Could not reach reservations. Try again."
+        if (result.first !in 200..299) return null to API.message(result.second, "Could not load reservations.")
+        val body = result.second as? JSONObject ?: return null to "Invalid reservation response."
+        if (body.optJSONArray("bookings") == null || body.optJSONArray("branches") == null)
+            return null to "Incomplete reservation response."
+        return body to ""
+    }
+
+    suspend fun changeBookingStatus(current: OwnerSession, id: String, next: String): String? {
+        if (!current.isOwner || session != current) return "Owner access required."
+        if (runCatching { java.util.UUID.fromString(id) }.getOrNull()?.toString() != id.lowercase() ||
+            next !in setOf("confirmed", "declined", "cancelled", "completed")) return "Invalid reservation action."
+        val result = io { API.post("/api/v1/business/${current.slug}/native-bookings/$id/status", current.token, JSONObject().put("status", next)) }
+        if (session != current) return "Session changed."
+        if (result == null) return "Connection lost. Refresh to check whether the action was saved."
+        if (result.first !in 200..299) return API.message(result.second, "Reservation could not be updated.")
+        val body = result.second as? JSONObject
+        if (body == null || body.optString("reference") != id || body.optString("status") != next)
+            return "Unexpected response. Refresh to check reservation status."
+        return null
     }
 
     fun loadOrders() {

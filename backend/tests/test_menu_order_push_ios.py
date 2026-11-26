@@ -101,3 +101,23 @@ def test_ios_registration_stores_mutes_and_rejects_invalid_payload():
     assert client.post(url,headers=headers,json={'token':'two','platform':'ios','muted_branches':'bgc'}).status_code==400
     assert client.post(url,headers=headers,json={'token':'two','platform':'android'}).status_code==200
     assert 'alerts_on' not in db.rows[TABLE][1]
+
+
+def test_ios_booking_alert_has_sound_and_no_customer_details():
+    sent=[]
+    class Response:
+        status_code=200
+        def json(self): return {"name":"ok"}
+    def post(url, **kw): sent.append(kw["json"]); return Response()
+    sender=FcmSender({"client_email":"test@example.org","private_key":"unused"},post=post)
+    sender.access_token=lambda force=False:"fake-token"
+    payload={"type":"new_booking","business":"biz","booking_id":"id","branch_public_id":"bgc"}
+    assert sender.send("ios-token",payload,platform="ios")=="ok"
+    msg=sent[0]["message"]
+    assert msg["data"]==payload
+    assert msg["apns"]["headers"]["apns-push-type"]=="alert"
+    aps=msg["apns"]["payload"]["aps"]
+    assert aps["alert"]=={"title":"New reservation","body":"Open Reservations to review the request."}
+    assert aps["sound"]=="default"
+    assert aps["thread-id"]=="lt-bookings-bgc"
+    assert "android" not in msg

@@ -128,6 +128,7 @@ class FcmSender:
             # FCM forwards the platform-specific alert to APNs. An iPhone can
             # display this while locked, without app code running in background.
             branch = str(data.get('branch_public_id') or 'all')[:80]
+            booking = data.get('type') == 'new_booking'
             body = ' · '.join(part for part in (
                 str(data.get('note') or ''), str(data.get('total') or ''),
                 str(data.get('items') or '') + ' item(s)' if data.get('items') else '',
@@ -135,10 +136,10 @@ class FcmSender:
             message['message']['apns'] = {
                 'headers': {'apns-push-type': 'alert', 'apns-priority': '10'},
                 'payload': {'aps': {
-                    'alert': {'title': str(data.get('title') or 'New order')[:120], 'body': body},
-                    'sound': 'lt_new_order.caf',
-                    'interruption-level': 'time-sensitive',
-                    'thread-id': 'lt-orders-' + branch,
+                    'alert': {'title': 'New reservation' if booking else str(data.get('title') or 'New order')[:120], 'body': 'Open Reservations to review the request.' if booking else body},
+                    'sound': 'default' if booking else 'lt_new_order.caf',
+                    'interruption-level': 'active' if booking else 'time-sensitive',
+                    'thread-id': ('lt-bookings-' if booking else 'lt-orders-') + branch,
                 }},
             }
         else:
@@ -153,7 +154,9 @@ class FcmSender:
                 return 'ok'
             if code == 401 and attempt == 0:
                 continue  # expired access token: mint a new one once
-            return 'unregistered' if is_unregistered(resp) else 'error'
+            dead = is_unregistered(resp)
+            _log(f'FCM send rejected platform={platform} http_status={code} unregistered={dead}')
+            return 'unregistered' if dead else 'error'
         return 'error'
 
 
@@ -287,9 +290,11 @@ def make_order_pusher(*, db, environ=None, sender_factory=None):
         try:
             fcm = sender()
             if fcm is None or not business or not order:
+                _log('order delivery skipped: Firebase sender or order context unavailable')
                 return {'sent': 0, 'removed': 0, 'skipped': True}
             devices = recipients(db, business.get('id'), order.get('branch_public_id'))
             if not devices:
+                _log('order delivery: no eligible registered devices')
                 return {'sent': 0, 'removed': 0, 'skipped': False}
             data = order_message(business, order)
             sent, dead = 0, []
@@ -321,11 +326,46 @@ def make_order_pusher(*, db, environ=None, sender_factory=None):
                     db.table(TABLE).delete().eq('token', token).execute()
                 except Exception as e:
                     _log(f'could not remove dead token: {e}')
+            _log(f'order delivery eligible={len(devices)} accepted_by_fcm={sent} unregistered={len(dead)}')
             return {'sent': sent, 'removed': len(dead), 'skipped': False}
         except Exception as e:
             # Never let a push problem surface anywhere near order creation.
             _log(f'push skipped: {e}')
             return {'sent': 0, 'removed': 0, 'skipped': True, 'error': str(e)}
+
+    return push
+
+
+def make_booking_pusher(*, db, environ=None, sender_factory=None):
+    """Owner Android and iOS devices only. Booking details never appear in lockscreen data."""
+    state = {"sender": None, "key": None}
+    lock = threading.Lock()
+
+    def push(business_id, slug, branch_public_id, booking_id):
+        try:
+            env = environ if environ is not None else os.environ
+            raw = env.get(ENV_NAME) or ""
+            with lock:
+                if state["key"] != raw:
+                    info = load_credentials(env)
+                    state["sender"] = (sender_factory or FcmSender)(info, project_id=env.get(PROJECT_ENV_NAME) or info.get("project_id") or DEFAULT_PROJECT_ID) if info else None
+                    state["key"] = raw
+                fcm = state["sender"]
+            if fcm is None:
+                return
+            devices = _rows(db.table(TABLE).select("token,role,platform").eq("business_id", business_id).eq("role", "owner").limit(MAX_DEVICES).execute())
+            data = {"type": "new_booking", "business": slug, "booking_id": str(booking_id), "branch_public_id": branch_public_id}
+            for device in devices:
+                if device.get("role") != "owner" or device.get("platform") not in ("android", "ios") or not device.get("token"):
+                    continue
+                try:
+                    outcome = fcm.send(device["token"], data, platform="ios") if device.get("platform") == "ios" else fcm.send(device["token"], data)
+                    if outcome == "unregistered":
+                        db.table(TABLE).delete().eq("token", device["token"]).eq("business_id", business_id).execute()
+                except Exception:
+                    _log("booking device push failed")
+        except Exception:
+            _log("booking push skipped")
 
     return push
 
