@@ -108,7 +108,7 @@ export default function MenuCheckoutContact({apiBase,businessId,cardToken,servic
     }
     const value=await call('',grant,'PUT',{phone:phone.trim(),addresses,default_address_id:defaultId})
     if(current()){
-      setProfile(value);setMessage(remove?'Saved address removed.':'Phone and contact details saved for your next order.')
+      setProfile(value);setMessage(remove?'Saved address removed.':service==='reservation'?'Phone number saved for future reservations and orders.':'Phone and contact details saved for your next order.')
       if(service==='delivery'){const chosen=value.addresses.find(a=>a.id===value.default_address_id);setSelected(chosen?.id||'');setLabel(chosen?.label||'Home');setAddress(chosen?.address||'')}
     }
   })
@@ -116,7 +116,7 @@ export default function MenuCheckoutContact({apiBase,businessId,cardToken,servic
     <h3>Contact details</h3>
     {cardToken && !grant && <div className="lt-v20-private">
       <strong>Use your saved loyalty card details</strong>
-      <small>Verify your email to securely load your registered phone and addresses.</small>
+      <small>Verify your email to securely load your {service==='reservation'?'registered phone number':'registered phone and addresses'}.</small>
       {challenge ? <><label className="lt-qr-field"><span>6-digit verification code</span><input autoComplete="one-time-code" inputMode="numeric" maxLength={6} value={code} onChange={e=>setCode(e.target.value.replace(/\D/g,''))}/></label><button type="button" className="lt-v20-outline" disabled={busy||code.length!==6} onClick={verify}>Verify code</button><button type="button" className="lt-qr-text-button" disabled={busy} onClick={request}>Request another code</button></> : <button type="button" className="lt-v20-outline" disabled={busy||!url} onClick={request}>{busy?'Loading…':'Unlock saved details'}</button>}
     </div>}
     {grant && <small className="lt-v20-verified">✓ Verified loyalty contact</small>}
@@ -126,7 +126,7 @@ export default function MenuCheckoutContact({apiBase,businessId,cardToken,servic
       <label className="lt-qr-field lt-qr-note-field"><span>Delivery address <b className="lt-qr-required">*</b></span><textarea autoComplete="street-address" rows={3} maxLength={500} required placeholder="House / unit, street, barangay, city, province, landmark" value={address} onChange={e=>setAddress(e.target.value)}/></label>
       {grant && <label className="lt-qr-field"><span>Address label</span><input value={label} maxLength={40} placeholder="Home / Office" onChange={e=>setLabel(e.target.value)}/></label>}
     </>}
-    {grant ? <><button type="button" className="lt-v20-outline" disabled={busy||!validContactPhone(phone)||(service==='delivery'&&address.trim().length<5)} onClick={()=>save()}>{busy?'Saving…':service==='delivery'?'Save phone & set address as default':'Save phone number'}</button>{service==='delivery'&&selected && <button type="button" className="lt-qr-text-button" disabled={busy} onClick={()=>save(true)}>Remove selected saved address</button>}<small>Changes apply to this checkout only unless you save them. Your loyalty identity stays unchanged.</small></> : <small>Connect and verify your loyalty card to save details for future orders. Unsaved details are only kept in this checkout.</small>}
+    {grant ? <><button type="button" className="lt-v20-outline" disabled={busy||!validContactPhone(phone)||(service==='delivery'&&address.trim().length<5)} onClick={()=>save()}>{busy?'Saving…':service==='delivery'?'Save phone & set address as default':'Save phone number'}</button>{service==='delivery'&&selected && <button type="button" className="lt-qr-text-button" disabled={busy} onClick={()=>save(true)}>Remove selected saved address</button>}<small>Changes apply to this {service==='reservation'?'reservation':'checkout'} only unless you save them. Your loyalty identity stays unchanged.</small></> : <small>Connect and verify your loyalty card to save details for future {service==='reservation'?'reservations and orders':'orders'}. Unsaved details are only kept in this {service==='reservation'?'reservation':'checkout'}.</small>}
     {message && <p role="status" className="lt-v20-contact-message">{message}</p>}
   </section>
 }
