@@ -5,7 +5,10 @@ from uuid import UUID
 import re
 
 from fastapi import HTTPException, Header, Query, BackgroundTasks
-from .menu_order_push import make_booking_pusher
+try:
+    from .menu_order_push import make_booking_pusher
+except ImportError:  # Render imports modules from the backend working directory.
+    from menu_order_push import make_booking_pusher
 from pydantic import BaseModel, Field
 from typing import Literal
 
