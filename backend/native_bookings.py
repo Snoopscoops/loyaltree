@@ -68,7 +68,7 @@ def register_native_booking_routes(app, *, db, get_business, require_owner):
         return b["id"]
 
     def branches(bid):
-        return db.table("branches").select("id,public_id,name").eq("business_id",bid).eq("is_active",True).order("name").execute().data or []
+        return [b for b in (db.table("branches").select("id,public_id,name").eq("business_id",bid).eq("is_active",True).order("name").execute().data or []) if b.get("public_id")]
 
     def branch(bid,slug):
         row=next((b for b in branches(bid) if b["public_id"]==slug),None)
@@ -141,9 +141,11 @@ def register_native_booking_routes(app, *, db, get_business, require_owner):
         bid=business(slug)
         try:
             result=[]
+            settings={row["branch_id"]:row for row in (db.table("lt_booking_settings").select("branch_id,venue_enabled,table_enabled").eq("business_id",bid).execute().data or [])}
+            all_resources=db.table("lt_booking_resources").select("id,branch_id,kind,name,capacity,duration_minutes,price_centavos,active").eq("business_id",bid).eq("active",True).order("name").execute().data or []
             for b in branches(bid):
-                s=config(bid,b["id"])
-                rr=[r for r in resources(bid,b["id"],True) if s.get("venue_enabled" if r["kind"]=="venue" else "table_enabled")]
+                s=settings.get(b["id"],{})
+                rr=[{k:v for k,v in r.items() if k!="branch_id"} for r in all_resources if r["branch_id"]==b["id"] and s.get("venue_enabled" if r["kind"]=="venue" else "table_enabled")]
                 if rr: result.append({"public_id":b["public_id"],"name":b["name"],"resources":rr})
             return {"branches":result}
         except Exception: raise HTTPException(503,"Bookings temporarily unavailable.")
