@@ -574,6 +574,35 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         io { API.get("/api/v1/business/${current.slug}/customer-agreement", current.token) }?.let { applyAgreement(it.second, it.first) }
     }
 
+    /** Native bookings use the existing authenticated owner API, never the public status endpoint. */
+    suspend fun readBookings(current: OwnerSession, branch: String, month: String): Pair<JSONObject?, String> {
+        if (!current.isOwner || session != current) return null to "Owner access required."
+        val scoped = java.net.URLEncoder.encode(branch, "UTF-8")
+        val period = java.net.URLEncoder.encode(month, "UTF-8")
+        val result = io { API.get("/api/v1/business/${current.slug}/native-bookings?branch_id=$scoped&month=$period", current.token) }
+        if (session != current) return null to "Session changed."
+        if (result == null) return null to "Could not reach reservations. Try again."
+        if (result.first !in 200..299) return null to API.message(result.second, "Could not load reservations.")
+        val body = result.second as? JSONObject ?: return null to "Invalid reservation response."
+        if (body.optJSONArray("bookings") == null || body.optJSONArray("branches") == null)
+            return null to "Incomplete reservation response."
+        return body to ""
+    }
+
+    suspend fun changeBookingStatus(current: OwnerSession, id: String, next: String): String? {
+        if (!current.isOwner || session != current) return "Owner access required."
+        if (runCatching { java.util.UUID.fromString(id) }.getOrNull()?.toString() != id.lowercase() ||
+            next !in setOf("confirmed", "declined", "cancelled", "completed")) return "Invalid reservation action."
+        val result = io { API.post("/api/v1/business/${current.slug}/native-bookings/$id/status", current.token, JSONObject().put("status", next)) }
+        if (session != current) return "Session changed."
+        if (result == null) return "Connection lost. Refresh to check whether the action was saved."
+        if (result.first !in 200..299) return API.message(result.second, "Reservation could not be updated.")
+        val body = result.second as? JSONObject
+        if (body?.optString("reference") != id || body.optString("status") != next)
+            return "Unexpected response. Refresh to check reservation status."
+        return null
+    }
+
     fun loadOrders() {
         val current = session ?: return
         viewModelScope.launch { fetchOrders(current) }
