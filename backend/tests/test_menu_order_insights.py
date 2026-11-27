@@ -240,6 +240,12 @@ class PaymentTests(unittest.TestCase):
         self.assertNotIn('card', methods)
         self.assertEqual(result['paid'], {'orders': 3, 'sales': 380.0})
         self.assertEqual(result['unpaid'], {'orders': 1, 'sales': 100.0})
+        self.assertEqual(result['settlement'], {
+            'cash_confirmed': {'orders': 1, 'sales': 50.0},
+            'test': {'orders': 1, 'sales': 250.0},
+            'unverified': {'orders': 1, 'sales': 80.0},
+            'outstanding': {'orders': 1, 'sales': 100.0},
+        })
         self.assertIn('payments', daily_summary(rows, date(2026, 11, 21)))
 
     def test_owner_marks_a_cash_order_paid(self):
