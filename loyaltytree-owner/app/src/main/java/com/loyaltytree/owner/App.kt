@@ -1134,10 +1134,11 @@ private fun OrderCard(store: CounterStore, order: LiveOrder, insideBill: Boolean
 private fun CounterAdjustmentDialog(store: CounterStore, order: LiveOrder, line: OrderLine?, close: () -> Unit) {
     val busy = store.orderBusy.isNotBlank()
     var reason by remember { mutableStateOf("") }
+    var credential by remember { mutableStateOf("") }
     var quantity by remember { mutableStateOf("1") }
     var error by remember { mutableStateOf("") }
     val count = quantity.toIntOrNull()
-    val valid = reason.isNotBlank() && (line == null || count != null && count in 1..line.quantity)
+    val valid = reason.isNotBlank() && (line == null || count != null && count in 1..line.quantity && credential.isNotBlank())
     val requestId = remember(quantity, reason) { UUID.randomUUID().toString() }
     val action = if (line == null) "Cancel order" else "Void item"
     AlertDialog(
@@ -1150,16 +1151,18 @@ private fun CounterAdjustmentDialog(store: CounterStore, order: LiveOrder, line:
                     Field("Quantity to void", quantity, { if (!busy) quantity = it.filter(Char::isDigit).take(2) }, number = true)
                 }
                 Field("Reason", reason, { if (!busy) reason = it.take(250) }, lines = 2)
+                if (line != null) Field(if (store.session?.isOwner == true) "Confirm owner password" else "Confirm manager PIN", credential, { if (!busy) credential = it.take(256) }, password = true)
                 if (error.isNotBlank()) Text(error, color = Bad)
             }
         },
         confirmButton = {
             TextButton(enabled = !busy && valid, onClick = {
                 val done: (String) -> Unit = { message ->
+                    credential = ""
                     if (message.isEmpty()) close() else error = message
                 }
                 if (line == null) store.cancelCounterOrder(order, reason, done)
-                else if (count != null) store.voidCounterItem(order, requestId, line, count, reason, done)
+                else if (count != null) store.voidCounterItem(order, requestId, line, count, reason, credential, done)
             }) { Text(if (busy) "Saving" else action) }
         },
         dismissButton = { TextButton(enabled = !busy, onClick = close) { Text("Back") } }
