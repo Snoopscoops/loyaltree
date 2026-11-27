@@ -28,6 +28,8 @@ if (!import.meta.env.DEV) {
     const link = event.target.closest?.('a[href]')
     if (!link) return
     const target = new URL(link.href, window.location.href)
+    // Allow same-origin blob downloads generated from fictional report responses.
+    if (target.protocol === 'blob:' && target.origin === window.location.origin && link.hasAttribute('download')) return
     if (target.origin === window.location.origin && target.pathname.startsWith('/menu/')) { event.preventDefault(); window.dispatchEvent(new CustomEvent('fixture-menu-navigation', { detail: target.pathname + target.search })); return }
     if (target.origin === window.location.origin && !target.pathname.startsWith('/dev/')) { event.preventDefault(); addRecord({ ts: new Date().toISOString(), method: 'LINK', path: target.pathname, status: 'blocked' }); return }
     if (target.origin !== window.location.origin && !['blob:', 'data:'].includes(target.protocol)) {
