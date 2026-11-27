@@ -1,4 +1,5 @@
 from datetime import date, datetime, timezone
+from decimal import Decimal
 import unittest
 
 from fastapi import FastAPI, HTTPException
@@ -90,7 +91,7 @@ class DB:
                    if row['business_id'] == params['p_business_id']
                    and row['public_id'] == params['p_order_public_id']
                    and row.get('branch_public_id', '') == params['p_branch'])
-        assert params['p_expected_amount'] == str(row['total'])
+        assert Decimal(params['p_expected_amount']) == Decimal(str(row['total']))
         row['payment_status'] = 'paid'
         return type('RPC', (), {'execute': lambda _: Result({'order': row})})()
 
