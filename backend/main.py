@@ -19203,6 +19203,8 @@ async def owner_update_menu_order_status(public_id: str, order_public_id: str, r
     if reason is not None and (not isinstance(reason, str) or len(reason.strip()) > 250):
         raise HTTPException(status_code=400, detail='Enter a cancellation reason of up to 250 characters.')
     reason = (reason or '').strip() or None
+    if target == 'cancelled' and not reason:
+        raise HTTPException(status_code=400, detail='A cancellation reason is required.')
     try:
         current_order = _supabase_first_row(
             supabase.table('menu_counter_orders').select('*')
@@ -19215,14 +19217,15 @@ async def owner_update_menu_order_status(public_id: str, order_public_id: str, r
     if not current_order:
         raise HTTPException(status_code=404, detail='Order not found')
     _menu_order_check_branch(order_scope, current_order)
+    if target == 'cancelled' and (current_order.get('payment_method') != 'cash' or current_order.get('payment_status') != 'unpaid' or current_order.get('status') != 'new'):
+        raise HTTPException(status_code=409, detail='Only new unpaid cash orders can be cancelled. Paid orders require a verified refund.')
     if target != 'cancelled':
         # Cash orders are prepared only after the cashier confirms payment.
         if _menu_order_cash_unpaid(current_order):
             raise HTTPException(status_code=409, detail='Waiting for payment. Tap "Mark as paid" after the customer pays at the counter.')
     if current_order.get('payment_method') == 'cash' and (
             target == 'cancelled' or (current_order.get('batch_a_stock_tracked') and not _menu_has_reward(current_order))):
-        # Older cashier releases submit only the desired status.
-        cancel_reason = (reason or 'Cancelled at the counter') if target == 'cancelled' else None
+        cancel_reason = reason if target == 'cancelled' else None
         result = await asyncio.to_thread(
             transition_counter_order, supabase, business, order_scope, current_order, target, cancel_reason)
         saved = result['order']
