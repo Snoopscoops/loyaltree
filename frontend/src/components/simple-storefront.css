@@ -34,3 +34,12 @@
 .lt-simple-storefront.lt-qr-v15 .lt-qr-pay-methods input{accent-color:#176653}
 .lt-simple-storefront.lt-qr-v15 .lt-qr-back-button{background:transparent;color:#176653}
 .lt-simple-storefront.lt-qr-v15 .lt-qr-primary:focus-visible,.lt-simple-storefront.lt-qr-v15 .lt-qr-dock-card:focus-visible,.lt-simple-storefront.lt-qr-v15 .lt-qr-back-button:focus-visible{outline:2px solid #176653;outline-offset:3px}
+
+/* Keep branch and share together in the header; long merchant names wrap. */
+.lt-simple-storefront .lt-storefront-header-actions{display:flex;align-items:center;justify-content:flex-end;gap:6px;flex:0 1 auto;min-width:0;max-width:100%}
+.lt-simple-storefront .lt-storefront-header-actions .lt-storefront-location{margin:0;min-width:0;max-width:150px}
+.lt-simple-storefront .lt-storefront-header-actions .lt-qr-branch-drop{min-width:0;max-width:100%}
+.lt-simple-storefront .lt-storefront-header-actions .lt-qr-branch-drop select{width:100%;max-width:150px;min-width:0;text-overflow:ellipsis;font-size:12px;min-height:38px}
+.lt-simple-storefront .lt-storefront-header-actions .lt-v15-branch-name{max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
+.lt-simple-storefront .lt-storefront-title h1{overflow-wrap:anywhere}
+@media(max-width:480px){.lt-simple-storefront.lt-qr-v15 .lt-v15-business-row{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:6px 10px}.lt-simple-storefront .lt-storefront-title{grid-column:2}.lt-simple-storefront .lt-storefront-header-actions{grid-column:1/-1;justify-content:flex-end}.lt-simple-storefront .lt-storefront-header-actions .lt-storefront-location{max-width:min(65%,240px)}.lt-simple-storefront .lt-storefront-header-actions .lt-qr-branch-drop select{max-width:240px}.lt-simple-storefront .lt-storefront-header-actions .lt-v15-branch-name{max-width:220px}}
