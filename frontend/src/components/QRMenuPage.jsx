@@ -872,9 +872,9 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
           {step === 'service' && <div className="lt-qr-pay">
             <h3 className="lt-v19-order-type-title">How will you get your order?</h3>
             <div className="lt-v19-order-types" role="group" aria-label="Order type">
-              <button type="button" aria-pressed={service === 'dine-in'} onClick={() => chooseService('dine-in')}><OrderTypeIcon type="dine-in"/><strong>Dine in</strong><span className="lt-v19-choice-indicator" aria-hidden="true">{service === 'dine-in' && <CheckIcon size={13}/>}</span></button>
-              <button type="button" aria-pressed={service === 'pickup'} onClick={()=>chooseService('pickup')}><OrderTypeIcon type="pickup"/><strong>Pick up</strong><small>Online only</small><span className="lt-v19-choice-indicator" aria-hidden="true">{service === 'pickup' && <CheckIcon size={13}/>}</span></button>
-              <button type="button" aria-pressed={service === 'delivery'} onClick={()=>chooseService('delivery')}><OrderTypeIcon type="delivery"/><strong>Delivery</strong><small>Online only</small><span className="lt-v19-choice-indicator" aria-hidden="true">{service === 'delivery' && <CheckIcon size={13}/>}</span></button>
+              <button type="button" aria-pressed={service === 'dine-in'} onClick={() => chooseService('dine-in')}><OrderTypeIcon type="dine-in"/><strong>Dine in</strong><small>Order at your table</small><span className="lt-v19-choice-indicator" aria-hidden="true">{service === 'dine-in' && <CheckIcon size={13}/>}</span></button>
+              <button type="button" aria-pressed={service === 'pickup'} onClick={()=>chooseService('pickup')}><OrderTypeIcon type="pickup"/><strong>Pick up</strong><small>Collect at the store · preview</small><span className="lt-v19-choice-indicator" aria-hidden="true">{service === 'pickup' && <CheckIcon size={13}/>}</span></button>
+              <button type="button" aria-pressed={service === 'delivery'} onClick={()=>chooseService('delivery')}><OrderTypeIcon type="delivery"/><strong>Delivery</strong><small>To your address · preview</small><span className="lt-v19-choice-indicator" aria-hidden="true">{service === 'delivery' && <CheckIcon size={13}/>}</span></button>
             </div>
             {isOnlinePreview && <div className="lt-v20-preview-note" role="status"><strong>Online ordering preview</strong><small>Card or QRPH only. You can prepare your details, but live payment and order submission are not enabled yet.</small></div>}
             {service === 'dine-in'
@@ -915,7 +915,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
               onSelect={choice => { setSelectedReward(choice); pendingIds.current = null; setSubmitError('') }} />}
             <fieldset className="lt-qr-pay-methods">
               <legend>How will you pay?</legend>
-              {Object.entries({ ...(!isOnlinePreview ? {cash: PAYMENT_METHODS.cash} : {}), card: { label: 'Card · TEST', detail: 'Not available for live payment yet' }, qrph: { label: 'QRPH · TEST', detail: 'Not available for live payment yet' } }).map(([value, method]) => <label key={value} className={paymentMethod === value ? 'is-on' : ''}>
+              {Object.entries({ ...(!isOnlinePreview ? {cash: PAYMENT_METHODS.cash} : {}), card: { label: 'Card · TEST', detail: 'Debit or credit card · live payment unavailable' }, qrph: { label: 'QRPH · TEST', detail: 'Supported QRPH apps · live payment unavailable' } }).map(([value, method]) => <label key={value} className={paymentMethod === value ? 'is-on' : ''}>
                 <input type="radio" name="lt-qr-payment" value={value} checked={paymentMethod === value} disabled={submitting || (!isOnlinePreview && value !== 'cash')} onChange={() => { setPaymentMethod(value); if (value !== 'cash') setSelectedReward(null); pendingIds.current = null; setSubmitError('') }} />
                 <span><strong>{method.label}</strong><small>{method.detail}</small></span>
               </label>)}
