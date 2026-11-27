@@ -180,6 +180,10 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     var purchaseFrequency by mutableStateOf<JSONObject?>(null)
     var insightRange by mutableStateOf("")
     var insightsLoading by mutableStateOf(false)
+    private var insightRequest = 0L
+    private var insightLoadedFor by mutableStateOf<Triple<OwnerSession, String, String>?>(null)
+    val insightsCurrent: Boolean
+        get() = insightLoadedFor != null && insightLoadedFor == session?.let { Triple(it, period, analyticsBranch) }
     var scanCustomer by mutableStateOf<ScanCustomer?>(null)
     var scanNote by mutableStateOf("")
     var scanDone by mutableStateOf("")
@@ -386,6 +390,11 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         watchJob?.cancel()
         watchJob = null
         session = null
+        insightRequest++
+        clearMenuInsights()
+        insightsLoading = false
+        insightsNote = ""
+        analyticsBranch = ""
         churnSettings = null
         churnSettingsNote = ""
         churnSettingsBusy = false
@@ -797,32 +806,45 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         loadInsights()
     }
 
+    private fun clearMenuInsights() {
+        insightLoadedFor = null
+        insights = emptyList()
+        insightsTop = emptyList()
+        insightKpis = emptyList()
+        insightTrend = emptyList()
+        insightItems = emptyList()
+        insightCards = emptyList()
+        purchaseFrequency = null
+        insightRange = ""
+    }
+
     fun loadInsights() {
         val current = session ?: return
-        val apiPeriod = when (period) {
+        if (!current.isOwner) return
+        val selectedPeriod = period
+        val selectedBranch = analyticsBranch
+        val request = ++insightRequest
+        val apiPeriod = when (selectedPeriod) {
             "today" -> "today"
             "7d" -> "week"
             "90d" -> "3months"
             else -> "month"
         }
-        val branch = java.net.URLEncoder.encode(analyticsBranch, "UTF-8")
+        val branch = java.net.URLEncoder.encode(selectedBranch, "UTF-8")
+        clearMenuInsights()
+        insightsLoading = true
+        insightsNote = ""
         viewModelScope.launch {
-            insightsLoading = true
             val result = io { API.get("/api/v1/business/${current.slug}/menu-orders/insights?period=$apiPeriod&branch=$branch", current.token) }
+            if (request != insightRequest || session != current || period != selectedPeriod || analyticsBranch != selectedBranch) return@launch
             insightsLoading = false
-            if (result == null || result.first >= 400) {
-                insights = emptyList()
-                insightsTop = emptyList()
-                insightKpis = emptyList()
-                insightTrend = emptyList()
-                insightItems = emptyList()
-                insightCards = emptyList()
-                purchaseFrequency = null
+            val json = result?.second as? JSONObject
+            if (result == null || result.first !in 200..299 || json == null || json.optJSONObject("kpis") == null) {
                 insightsNote = if (result == null) "Could not reach menu order insights." else API.message(result.second, "Menu order insights are not ready yet.")
                 return@launch
             }
-            val json = result.second as? JSONObject ?: return@launch
             applyInsights(json)
+            insightLoadedFor = Triple(current, selectedPeriod, selectedBranch)
         }
     }
 
