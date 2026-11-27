@@ -155,7 +155,7 @@ function MenuCardLink({ apiBase, business, label, className = 'lt-qr-card-link',
 }
 
 
-function CardHistorySheet({ apiBase, businessId, token, onClose, onReorder, initialTab = 'activity' }) {
+function CardHistorySheet({ apiBase, businessId, token, onClose, onReorder, initialTab = 'activity', rewardSnapshot, joinUrl }) {
   const dialog = useRef(null)
   const [tab, setTab] = useState(initialTab)
   const [filter, setFilter] = useState('all')
@@ -197,6 +197,7 @@ function CardHistorySheet({ apiBase, businessId, token, onClose, onReorder, init
       <div className="lt-v15-history-filters" role="group" aria-label="History section">
         {[['activity','Activity'],['orders','Orders'],['rewards','Rewards']].map(([key,label])=><button key={key} type="button" aria-pressed={tab===key} onClick={()=>setTab(key)}>{label}</button>)}
       </div>
+      {tab==='rewards'&&<section className="lt-storefront-rewards-list" aria-label="Available rewards"><h3>Rewards</h3>{rewardSnapshot ? (Array.isArray(rewardSnapshot.rewards)&&rewardSnapshot.rewards.length?rewardSnapshot.rewards.map((reward,i)=><div key={reward.kind+':'+(reward.id||i)}><span><strong>{reward.name}</strong><small>{reward.detail}</small></span><b>{reward.available?'Available':'Locked'}</b></div>):<p>No available rewards recorded yet.</p>):<p>Reward availability could not be verified. Reopen after refreshing your card.</p>}{joinUrl&&<a href={joinUrl}>Open business rewards &amp; Wallet page</a>}<p>Eligible rewards can be selected at cash checkout. Redemption is confirmed only after payment and order completion.</p></section>}
       {tab === 'orders' ? <>
         {!orderHistory && !ordersError && <p role="status" className="lt-v15-history-state">Loading your orders…</p>}
         {ordersError && <p role="alert" className="lt-v15-history-state">{ordersError}</p>}
@@ -274,7 +275,7 @@ function MenuLoyaltyCard({ apiBase, business, refreshKey, onReorder }) {
       {token && apiBase ? <button type="button" onClick={()=>{setHistoryTab('rewards');setOpen(true)}}>View <span aria-hidden="true">›</span></button>:null}
       {apiBase ? <MenuCardLink storefront apiBase={apiBase} business={business} label={token?'Manage':'Connect'} /> : business.join_url && <a className="lt-qr-card-link" href={business.join_url}>Join</a>}
     </div>
-    {token && open && <CardHistorySheet apiBase={apiBase} businessId={business.public_id} token={token} initialTab={historyTab} onReorder={order=>{onReorder?.(order);setOpen(false)}} onClose={()=>setOpen(false)} />}
+    {token && open && <CardHistorySheet apiBase={apiBase} businessId={business.public_id} token={token} initialTab={historyTab} rewardSnapshot={snapshot} joinUrl={business.join_url} onReorder={order=>{onReorder?.(order);setOpen(false)}} onClose={()=>setOpen(false)} />}
   </section>
 }
 
@@ -284,7 +285,7 @@ function FastConfigureCard({ product, category, branchId, cart, money, onAdd, on
   const inCart = cart.filter(line=>line.item_id===product.public_id).reduce((count,line)=>count+line.quantity,0)
   return <article className={`lt-v15-product lt-qr-dish lt-storefront-product${!available?' is-sold':''}`}>
     <button type="button" className="lt-v15-product-photo" onClick={()=>onOpen(product)} aria-label={`View ${product.name}`}><MenuItemPhoto item={product} available={available}/></button>
-    <div className="lt-v15-product-info"><button type="button" className="lt-storefront-product-name" onClick={()=>onOpen(product)}><h3>{product.name}</h3></button>{showDescription&&product.description&&<p>{product.description}</p>}<strong>{hasOptions?'From ':''}{money(product.base_price)}</strong>{hasOptions&&<small> · Customizable</small>}{inCart>0&&<small className="lt-v15-in-cart"> · {inCart} in cart</small>}</div>
+    <div className="lt-v15-product-info"><button type="button" className="lt-storefront-product-name" onClick={()=>onOpen(product)}><h3>{product.name}</h3></button>{showDescription&&product.description&&<p>{product.description}</p>}<strong>{hasOptions?'Base ':''}{money(product.base_price)}</strong>{hasOptions&&<small> · Customizable</small>}{inCart>0&&<small className="lt-v15-in-cart"> · {inCart} in cart</small>}</div>
     <button type="button" className="lt-storefront-quick-add" disabled={!available} aria-label={available?(hasOptions?'Customize ':'Add ')+product.name:product.name+' sold out'} onClick={()=>hasOptions?onOpen(product):onAdd(product,{},1)}>{available?<StorefrontIcon name="plus" size={19}/>:<span>Sold out</span>}</button>
   </article>
 }
@@ -383,7 +384,6 @@ function serviceLine(service, tableNo, pickupLabel) {
 export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchChange, apiBase = '' }) {
   const [category, setCategory] = useState('all')
   const [search, setSearch] = useState('')
-  const under200 = false
   const [navNotice, setNavNotice] = useState('')
   const [requestedBranch, setRequestedBranch] = useState(initialBranch !== undefined ? initialBranch || '' : data.selected_branch || '')
   const [item, setItem] = useState(null)
@@ -443,7 +443,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   const groups = groupMenuCategories(data.categories || [], data.items || [], branchId)
   const selectedCategory = groups.find(value => value.public_id === category)
   const catalog = category && category !== 'all' ? selectedCategory?.items || [] : groups.flatMap(value => value.items)
-  const items = filterMenuItems(catalog, 'all', search).filter(value => !under200 || (business.currency || 'PHP') !== 'PHP' || Number(value.base_price) < 200)
+  const items = filterMenuItems(catalog, 'all', search)
   const categoryName = Object.fromEntries(groups.flatMap(value => value.items.map(entry => [entry.public_id, value.name])))
   const chooseCategory = id => { focusHeading.current = true; setCategory(id) }
   const previousLines = order?.status === 'completed' ? order.lines : savedReceipt?.status === 'completed' ? savedReceipt.lines : []
@@ -828,7 +828,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
           <button type="button" aria-pressed={category==='all'} onClick={()=>chooseCategory('all')}>All Items</button>
           {groups.map(value=><button type="button" key={value.public_id} aria-pressed={category===value.public_id} onClick={()=>chooseCategory(value.public_id)}>{value.name}</button>)}
         </nav></div>
-        {quickItems.length>0 && !search && category==='all' && !under200 && <section className="lt-v15-usual" aria-label="Order your daily usual"><div className="lt-v15-section-head"><h2>Order Your Daily Usual</h2><small>From a recent order on this device</small></div><div className="lt-v15-usual-list">{quickItems.map(option=><button type="button" key={option.item.public_id} onClick={()=>addUsual(option)}><span className="lt-v15-usual-photo"><MenuItemPhoto item={option.item} available /></span><span><strong>{option.item.name}</strong><small>{money(menuItemPrice(option.item,{}))} base price · Review options</small></span><b aria-hidden="true">＋</b></button>)}</div></section>}
+        {quickItems.length>0 && !search && category==='all' && <section className="lt-v15-usual" aria-label="Order your daily usual"><div className="lt-v15-section-head"><h2>Order Your Daily Usual</h2><small>From a recent order on this device</small></div><div className="lt-v15-usual-list">{quickItems.map(option=><button type="button" key={option.item.public_id} onClick={()=>addUsual(option)}><span className="lt-v15-usual-photo"><MenuItemPhoto item={option.item} available /></span><span><strong>{option.item.name}</strong><small>{money(menuItemPrice(option.item,{}))} base price · Review options</small></span><b aria-hidden="true">＋</b></button>)}</div></section>}
         {(data.actions||[]).some(a=>!['book','reserve'].includes(a.id)) && <div className="lt-qr-cafe-actions lt-v15-extras">{data.actions.filter(a=>!['book','reserve'].includes(a.id)).map(action=><a key={action.id} href={action.url} target="_blank" rel="noreferrer"><strong>{action.label}</strong>{action.note?<span>{action.note}</span>:null}</a>)}</div>}
         <section className="lt-qr-stream lt-v15-menu" aria-label="Menu items">
           <div className="lt-v15-section-head"><h2 ref={menuHeading} tabIndex={-1}>{search.trim()?'Search results':selectedCategory?.name||'All items'}</h2><small>{items.length} {items.length===1?'item':'items'}</small></div>
