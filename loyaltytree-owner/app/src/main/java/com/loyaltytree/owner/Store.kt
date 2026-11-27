@@ -1163,9 +1163,9 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
             create = true, done = done)
     }
 
-    fun voidCounterItem(order: LiveOrder, requestId: String, line: OrderLine, quantity: Int, reason: String, done: (String) -> Unit) {
+    fun voidCounterItem(order: LiveOrder, requestId: String, line: OrderLine, quantity: Int, reason: String, credential: String, done: (String) -> Unit) {
         val body = JSONObject().put("request_id", requestId).put("line_id", line.id)
-            .put("quantity", quantity).put("reason", reason)
+            .put("quantity", quantity).put("reason", reason).put("credential", credential)
         adjustCounterOrder(order.id, "void-item", body, done = done)
     }
 
