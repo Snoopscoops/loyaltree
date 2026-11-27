@@ -52636,6 +52636,7 @@ try:
 except ImportError:
     from native_bookings import register_native_booking_routes
 register_native_booking_routes(app, db=supabase, get_business=safe_get_business,
-    require_owner=require_owner_session, read_card_token=_menu_card_read_token, get_customer=safe_get_customer)
+    require_owner=require_owner_session, read_card_token=_menu_card_read_token, get_customer=safe_get_customer,
+    booking_operator=_menu_order_operator)
 
 profiler.checkpoint('routes_registered')

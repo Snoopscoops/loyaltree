@@ -49,6 +49,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Person
@@ -101,21 +102,44 @@ import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.rememberCoroutineScope
+import org.json.JSONObject
+import org.json.JSONArray
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
 import java.util.UUID
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.res.imageResource
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.material.icons.filled.Payments
+import androidx.compose.material.icons.filled.Group
+import androidx.compose.material.icons.filled.ShoppingBag
+import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.Inventory2
+import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.Animatable
 
-private val Forest = Color(0xFF123C32)
-private val Ink = Color(0xFF163B31)
-private val Ivory = Color(0xFFF4F7F1)
-private val Lime = Color(0xFFD6F675)
-private val Gold = Color(0xFF2F6A52)
-private val Muted = Color(0xFF5E7268)
-private val Line = Color(0xFFE3EADF)
-private val Track = Color(0xFFE6EEE4)
+private val Forest = Color(0xFF0F766E)
+private val Ink = Color(0xFF073F36)
+private val Ivory = Color(0xFFF6FAF9)
+private val Lime = Color(0xFFDDF7EA)
+private val Gold = Color(0xFF0F766E)
+private val Muted = Color(0xFF47675E)
+private val Line = Color(0xFFE0EAE7)
+private val Track = Color(0xFFDDF7EA)
+private val DeepTeal = Color(0xFF073F36)
+private val RewardYellow = Color(0xFFFDB601)
 private val Bad = Color(0xFF9F2D2D)
-private val Shape = RoundedCornerShape(16.dp)
+private val Shape = RoundedCornerShape(20.dp)
 private val Pill = RoundedCornerShape(12.dp)
 
 private sealed class Page {
@@ -132,11 +156,13 @@ private sealed class Page {
     data object Cashiers : Page()
     data object Stamp : Page()
     data object Alerts : Page()
+    data object Reservations : Page()
+    data object Stock : Page()
     data class Customer(val id: String) : Page()
 }
 
 private val OwnerDock = listOf(
-    "Home" to Icons.Default.Store,
+    "Home" to Icons.Default.Home,
     "Orders" to Icons.Default.Receipt,
     "Menu" to Icons.Default.Restaurant,
     "Customers" to Icons.Default.Person,
@@ -152,30 +178,151 @@ private sealed class MenuSheet {
 
 @Composable
 fun LoyaltyTreeApp(store: CounterStore = viewModel()) {
-    var showOpening by remember { mutableStateOf(!store.seenOpening) }
-    LaunchedEffect(showOpening) {
-        if (showOpening) {
-            delay(1500)
-            store.markOpened()
-            showOpening = false
-        }
-    }
-    if (showOpening) {
-        Box(Modifier.fillMaxSize().background(Forest), contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Mark(88)
-                Spacer(Modifier.height(16.dp))
-                Text("Loyalty Tree", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Bold)
-                Text("Business", color = Lime, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-            }
-        }
-        return
-    }
     val current = store.session
+    var login by remember { mutableStateOf(false) }
+    var opening by remember { mutableStateOf(current == null && !store.seenOpening) }
+    LaunchedEffect(current?.slug) {
+        if (current != null) {
+            login = false
+            opening = false
+        }
+    }
     when {
-        current == null -> LoginScreen(store)
+        current == null && login -> {
+            BackHandler { login = false }
+            LoginScreen(store)
+        }
+        current == null -> WelcomeScreen(opening, onFinished = {
+            store.markOpened()
+            opening = false
+        }, onLogin = { opening = false; login = true })
         current.isStaff -> StaffShell(store)
         else -> Shell(store)
+    }
+}
+
+@Composable
+private fun BrandBackdrop(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    Box(modifier.background(Brush.verticalGradient(listOf(Color(0xFFE2F3EA), Ivory, Color(0xFFEAF6F0))))) {
+        Canvas(Modifier.fillMaxSize()) {
+            val radius = size.width * .44f
+            drawCircle(Color(0xFF7BCAA7).copy(alpha = .12f), radius, Offset(size.width * 1.02f, size.height * .12f))
+            drawCircle(Color(0xFF7BCAA7).copy(alpha = .09f), radius * .68f, Offset(size.width * 1.02f, size.height * .12f))
+            drawCircle(RewardYellow.copy(alpha = .055f), radius * .76f, Offset(0f, size.height * .99f))
+            for (row in 0..2) for (col in 0..3) {
+                drawCircle(Forest.copy(alpha = .065f), 2.dp.toPx(),
+                    Offset(size.width - (20 + col * 12).dp.toPx(), (110 + row * 12).dp.toPx()))
+            }
+        }
+        content()
+    }
+}
+
+@Composable
+private fun WelcomeScreen(animate: Boolean, onFinished: () -> Unit, onLogin: () -> Unit) {
+    val context = LocalContext.current
+    val progress = remember { Animatable(if (animate) 0f else 1f) }
+    LaunchedEffect(animate) {
+        if (animate) {
+            progress.snapTo(0f)
+            progress.animateTo(1f, tween(3100, easing = LinearEasing))
+            onFinished()
+        } else progress.snapTo(1f)
+    }
+    val p = progress.value
+    val reveal = if (!animate) 1f else ((p - .74f) / .26f).coerceIn(0f, 1f)
+    val bitmap = ImageBitmap.imageResource(R.drawable.lt_mark)
+    BrandBackdrop(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp)) {
+            Row(Modifier.fillMaxWidth().alpha(if (animate) 0f else 1f), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Mark(44)
+                Text("LoyaltyTree", fontSize = 24.sp, fontWeight = FontWeight.Black, color = DeepTeal)
+            }
+            Column(Modifier.alpha(reveal), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Spacer(Modifier.height(18.dp))
+                Text("DIGITALIZE. SECURE. CONNECT.", color = Forest, fontSize = 12.sp,
+                    letterSpacing = 1.5.sp, fontWeight = FontWeight.Bold)
+                Text("Your business,\nconnected.", color = DeepTeal, fontSize = 38.sp,
+                    lineHeight = 42.sp, fontWeight = FontWeight.Black)
+                Text("Build loyalty. Simplify operations. Grow with your customers.", color = Muted, fontSize = 16.sp, lineHeight = 23.sp)
+            }
+            Column(Modifier.alpha(reveal), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                WelcomeFeature(Icons.Default.Payments, "Digital loyalty rewards", "Apple Wallet & Google Wallet")
+                WelcomeFeature(Icons.Default.Notifications, "Digital billboard", "Promotions and customer engagement")
+                WelcomeFeature(Icons.Default.Restaurant, "Table ordering", "QR menus and live order tracking")
+                WelcomeFeature(Icons.Default.BarChart, "Business digitalization", "Inventory, customers and analytics")
+            }
+            Column(Modifier.alpha(reveal), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Primary("Get started", enabled = !animate) {
+                    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://theloyaltytree.com/signup"))) }
+                }
+                TextButton(onClick = onLogin, enabled = !animate, modifier = Modifier.fillMaxWidth()) {
+                    Text("Already have an account? Log in", color = DeepTeal, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+        if (animate) {
+            val leaves = remember { listOf(
+                Triple(.287109f,.267578f,.070312f), Triple(.427734f,.267578f,.070312f),
+                Triple(.572266f,.267578f,.070312f), Triple(.712891f,.267578f,.070312f),
+                Triple(.287109f,.410156f,.070312f), Triple(.427734f,.410156f,.070312f),
+                Triple(.572266f,.410156f,.070312f), Triple(.712891f,.410156f,.070312f),
+                Triple(.367188f,.542969f,.072266f), Triple(.5f,.519531f,.056641f),
+                Triple(.628906f,.542969f,.072266f)
+            ) }
+            val origins = remember { listOf(-1f to -.7f, -.2f to -1f, .4f to -.9f, 1f to -.7f,
+                -1f to -.25f, -1f to .5f, 1f to -.1f, 1f to .4f, -.85f to 1f, .07f to 1f, .85f to 1f) }
+            Box(Modifier.fillMaxSize().clickable { onFinished() }, contentAlignment = Alignment.Center) {
+                Canvas(Modifier.fillMaxSize()) {
+                    val move = ((p - .76f) / .24f).coerceIn(0f, 1f)
+                    val eased = 1f - (1f - move) * (1f - move) * (1f - move)
+                    val large = minOf(176.dp.toPx(), size.width * .55f)
+                    val small = 44.dp.toPx()
+                    val edge = large + (small - large) * eased
+                    val startX = (size.width - large) / 2f
+                    val startY = size.height * .36f - large / 2f
+                    val x = startX + (24.dp.toPx() - startX) * eased
+                    val y = startY + (24.dp.toPx() - startY) * eased
+                    val complete = ((p - .55f) / .11f).coerceIn(0f, 1f)
+                    if (complete < 1f) {
+                        leaves.forEachIndexed { index, leaf ->
+                            val t = ((p - index * .021f) / .35f).coerceIn(0f, 1f)
+                            val settle = (1f - t) * (1f - t) * (1f - t)
+                            val (sx, sy) = origins[index]
+                            drawCircle(if (index < 4) RewardYellow else Color(0xFF0F7F7C),
+                                edge * leaf.third, Offset(x + edge * leaf.first + sx * size.width * settle,
+                                    y + edge * leaf.second + sy * size.height * settle), alpha = 1f - complete)
+                        }
+                    }
+                    if (complete > 0f) drawImage(bitmap,
+                        dstOffset = IntOffset(x.toInt(), y.toInt()),
+                        dstSize = IntSize(edge.toInt().coerceAtLeast(1), edge.toInt().coerceAtLeast(1)),
+                        alpha = complete)
+                }
+                Column(Modifier.alpha(((p - .59f) / .08f).coerceIn(0f, 1f) * (1f - reveal)),
+                    horizontalAlignment = Alignment.CenterHorizontally) {
+                    Spacer(Modifier.height(138.dp))
+                    Text("LoyaltyTree", color = DeepTeal, fontSize = 30.sp, fontWeight = FontWeight.Black)
+                    Text("Digitalize. Secure. Connect.", color = Forest, fontSize = 12.sp)
+                }
+                Text("Tap to skip", modifier = Modifier.align(Alignment.BottomCenter).padding(18.dp),
+                    color = Muted, fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun WelcomeFeature(icon: ImageVector, title: String, detail: String) {
+    Row(Modifier.fillMaxWidth().clip(Shape).background(Color(0xFFE1F2E9)).padding(14.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Icon(icon, null, tint = Forest, modifier = Modifier.size(26.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, color = DeepTeal, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            Text(detail, color = Muted, fontSize = 12.sp)
+        }
     }
 }
 
@@ -253,6 +400,7 @@ private fun Context.findActivity(): androidx.activity.ComponentActivity? {
 private val StaffDock = listOf(
     "Orders" to Icons.Default.Receipt,
     "Stamps" to Icons.Default.Star,
+    "Bookings" to Icons.Default.DateRange,
     "Me" to Icons.Default.Person
 )
 
@@ -272,15 +420,18 @@ private fun StaffShell(store: CounterStore) {
             tab = it
         }
     }) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).background(Ivory)) {
+        BrandBackdrop(Modifier.fillMaxSize().padding(padding)) {
+        Column(Modifier.fillMaxSize()) {
             StaffHeader(store)
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when (tab) {
                     0 -> OrdersScreen(store)
                     1 -> if (store.staffNeedsBranch) NeedsBranch(store) else StampScreen(store)
+                    2 -> if (store.staffNeedsBranch) NeedsBranch(store) else ReservationsScreen(store)
                     else -> StaffMeScreen(store)
                 }
             }
+        }
         }
     }
 }
@@ -328,6 +479,7 @@ private fun StaffMeScreen(store: CounterStore) {
             Text("• See and update orders for your branch", color = Ink, fontSize = 14.sp)
             Text("• Mark cash orders as paid", color = Ink, fontSize = 14.sp)
             Text("• Scan a card to add stamps or points", color = Ink, fontSize = 14.sp)
+            Text(if (current.role == "manager") "• Manage reservations for your assigned scope" else "• View reservations for your branch", color = Ink, fontSize = 14.sp)
             if (current.canReport) {
                 Text("• See today's sales and download the sales report", color = Ink, fontSize = 14.sp)
                 Text("• Correct stamps", color = Ink, fontSize = 14.sp)
@@ -580,7 +732,8 @@ private fun Shell(store: CounterStore) {
             page = Page.None
         }
     }) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).background(Ivory)) {
+        BrandBackdrop(Modifier.fillMaxSize().padding(padding)) {
+        Column(Modifier.fillMaxSize()) {
             if (page !is Page.None) {
                 NavBar(
                     title = pageTitle(page, store),
@@ -599,7 +752,18 @@ private fun Shell(store: CounterStore) {
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 when (val current = page) {
                     Page.None -> when (tab) {
-                        0 -> HomeScreen(store, { page = Page.Analytics }, { page = Page.Campaign }) { page = Page.Stamp }
+                        0 -> HomeScreen(store,
+                            openAnalytics = { page = Page.Analytics },
+                            openCampaign = { page = Page.Campaign },
+                            openReservations = { page = Page.Reservations },
+                            openStamp = { page = Page.Stamp },
+                            openOrders = { tab = 1; page = Page.None },
+                            openMenu = { tab = 2; page = Page.None },
+                            openStock = { page = Page.Stock },
+                            openCustomers = { tab = 3; page = Page.None },
+                            openAlerts = { page = Page.Alerts },
+                            openAccount = { page = Page.Account }
+                        )
                         1 -> OrdersScreen(store)
                         2 -> MenuScreen(store)
                         3 -> CustomersScreen(store) { page = Page.Customer(it) }
@@ -617,9 +781,12 @@ private fun Shell(store: CounterStore) {
                     Page.Cashiers -> CashiersScreen(store)
                     Page.Stamp -> StampScreen(store)
                     Page.Alerts -> AlertsScreen(store)
+                    Page.Reservations -> ReservationsScreen(store)
+                    Page.Stock -> Scroll { DailyStockCard(store, alwaysOpen = true) }
                     is Page.Customer -> CustomerScreen(store, current.id)
                 }
             }
+        }
         }
     }
 }
@@ -642,6 +809,8 @@ private fun pageTitle(page: Page, store: CounterStore): String = when (page) {
     Page.Cashiers -> "Cashiers"
     Page.Stamp -> if (store.cardType == "points") "Add points" else "Add a stamp"
     Page.Alerts -> "Order alerts"
+    Page.Reservations -> "Reservations"
+    Page.Stock -> "Daily stock"
     is Page.Customer -> store.members.firstOrNull { it.id == page.id }?.name ?: "Customer"
     Page.None -> ""
 }
@@ -697,7 +866,18 @@ private fun LoginScreen(store: CounterStore) {
 }
 
 @Composable
-private fun HomeScreen(store: CounterStore, openAnalytics: () -> Unit, openCampaign: () -> Unit, openStamp: () -> Unit) {
+private fun HomeScreen(
+    store: CounterStore, openAnalytics: () -> Unit, openCampaign: () -> Unit, openReservations: () -> Unit, openStamp: () -> Unit,
+    openOrders: () -> Unit, openMenu: () -> Unit, openStock: () -> Unit, openCustomers: () -> Unit,
+    openAlerts: () -> Unit, openAccount: () -> Unit
+) {
+    var branchMenu by remember { mutableStateOf(false) }
+    val shownOrders = store.orders.filter { store.ordersBranch.isBlank() || it.branchId == store.ordersBranch }
+    val bills = groupCounterBills(shownOrders)
+    val branchName = store.branches.firstOrNull { it.id == store.ordersBranch }?.name
+        ?: if (store.branches.size == 1) store.branches[0].name else "All branches"
+    val metricReady = !store.loading && store.analyticsNote.isBlank() && store.analytics.isNotEmpty()
+    val recent = shownOrders.sortedByDescending { it.createdAt }.take(3)
     val context = LocalContext.current
     val view = LocalView.current
     var enlarged by remember { mutableStateOf(false) }
@@ -715,8 +895,84 @@ private fun HomeScreen(store: CounterStore, openAnalytics: () -> Unit, openCampa
         confirm(view)
     }
     Scroll {
-        Text(store.session?.businessName ?: "Home", color = Forest, fontSize = 30.sp, fontWeight = FontWeight.Bold, lineHeight = 34.sp)
-        Text(if (store.branches.size == 1) store.branches[0].name else "All branches", color = Muted, fontSize = 15.sp)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Mark(44)
+            Text("LoyaltyTree", color = DeepTeal, fontSize = 23.sp, fontWeight = FontWeight.Black, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Box(Modifier.size(40.dp).clip(Pill).clickable { openAlerts() }, contentAlignment = Alignment.Center) {
+                Icon(Icons.Default.Notifications, "Order alerts", tint = DeepTeal)
+            }
+            Box(Modifier.size(40.dp).clip(Pill).background(Track).clickable { openAccount() }, contentAlignment = Alignment.Center) {
+                Icon(Icons.Default.Person, "Account", tint = DeepTeal)
+            }
+        }
+        Box {
+            Row(Modifier.clip(RoundedCornerShape(99.dp)).background(Track).clickable(enabled = store.branches.size > 1) { branchMenu = true }.padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Default.Store, null, tint = DeepTeal, modifier = Modifier.size(18.dp))
+                Text(branchName, color = DeepTeal, fontWeight = FontWeight.SemiBold)
+                if (store.branches.size > 1) Text("⌄", color = DeepTeal)
+            }
+            androidx.compose.material3.DropdownMenu(expanded = branchMenu, onDismissRequest = { branchMenu = false }) {
+                androidx.compose.material3.DropdownMenuItem(text = { Text("All branches") }, onClick = { branchMenu = false; store.chooseOrdersBranch("") })
+                store.branches.forEach { branch ->
+                    androidx.compose.material3.DropdownMenuItem(text = { Text(branch.name) }, onClick = { branchMenu = false; store.chooseOrdersBranch(branch.id) })
+                }
+            }
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Business overview", color = Muted, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+            Text(store.session?.businessName ?: "Your business", color = DeepTeal, fontWeight = FontWeight.Black, fontSize = 30.sp, lineHeight = 34.sp)
+            Text("Build loyalty. Simplify operations.", color = Muted, fontSize = 14.sp)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            DashboardMetric("Confirmed cash today", store.daySummary?.settlement?.firstOrNull { it.id == "cash_confirmed" }?.detail?.substringAfter(" · ", "—") ?: "—", Icons.Default.Payments, Modifier.weight(1f))
+            DashboardMetric("Active bills", if (store.loading || store.ordersNote.isNotBlank()) "—" else bills.count { it.active }.toString(), Icons.Default.ShoppingBag, Modifier.weight(1f))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            DashboardMetric("Customers", if (metricReady) store.memberCount else "—", Icons.Default.Group, Modifier.weight(1f))
+            DashboardMetric("Rewards today", if (metricReady) store.todayRewards else "—", Icons.Default.Star, Modifier.weight(1f), reward = true)
+        }
+        Text("Customers and rewards cover the whole business.", color = Muted, fontSize = 12.sp)
+        Row(Modifier.fillMaxWidth().clip(Shape).background(Brush.horizontalGradient(listOf(DeepTeal, Forest))).clickable { openAnalytics() }.padding(18.dp),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            Icon(Icons.Default.BarChart, null, tint = Color.White, modifier = Modifier.size(34.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Analytics", color = Color.White, fontSize = 23.sp, fontWeight = FontWeight.Black)
+                Text("Sales, products & customer insights", color = Lime, fontSize = 12.sp)
+            }
+            Text("›", color = Color.White, fontSize = 26.sp)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            DashboardAction(when (store.cardType) { "points" -> "Scan to earn"; "stamp" -> "Scan to stamp"; else -> "Scan rewards" }, Icons.Default.QrCodeScanner, Modifier.weight(1f), DeepTeal) { store.clearScan(); openStamp() }
+            DashboardAction("Orders", Icons.Default.Receipt, Modifier.weight(1f), Forest, openOrders)
+            DashboardAction("Menu", Icons.Default.Restaurant, Modifier.weight(1f), Forest, openMenu)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            DashboardAction("Stock", Icons.Default.Inventory2, Modifier.weight(1f), Forest, openStock)
+            DashboardAction("Customers", Icons.Default.Group, Modifier.weight(1f), DeepTeal, openCustomers)
+            DashboardAction("Campaigns", Icons.Default.Notifications, Modifier.weight(1f), Forest, openCampaign)
+        }
+        DashboardAction("Reservations", Icons.Default.DateRange, Modifier.fillMaxWidth(), Forest, openReservations)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Recent activity", color = Ink, fontWeight = FontWeight.Bold, fontSize = 22.sp, modifier = Modifier.weight(1f))
+            TextButton(onClick = openOrders) { Text("View all ›", color = Forest, fontWeight = FontWeight.SemiBold) }
+        }
+        Card {
+            if (recent.isEmpty()) Text(if (store.loading) "Loading orders…" else if (store.ordersNote.isNotBlank()) "Orders temporarily unavailable." else "No recent orders.", color = Muted, fontSize = 14.sp)
+            recent.forEachIndexed { index, order ->
+                if (index > 0) Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
+                Row(Modifier.fillMaxWidth().clickable { openOrders() }.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Box(Modifier.size(40.dp).clip(Pill).background(Track), contentAlignment = Alignment.Center) {
+                        Icon(Icons.Default.ShoppingBag, null, tint = Forest)
+                    }
+                    Column(Modifier.weight(1f)) {
+                        Text(order.number.ifBlank { "Order" }, color = Ink, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(order.total + if (order.branch.isBlank()) "" else " · " + order.branch, color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    Text(order.status.replace('_', ' ').replaceFirstChar { it.uppercase() }, color = if (order.status == "cancelled") Bad else Forest, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+        Text("Loyalty insights", color = Ink, fontWeight = FontWeight.Bold, fontSize = 22.sp)
         Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Track).padding(4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             listOf("Today" to "today", "7 days" to "7d", "30 days" to "30d", "90 days" to "90d").forEach { (label, id) ->
                 val on = store.period == id
@@ -732,24 +988,11 @@ private fun HomeScreen(store: CounterStore, openAnalytics: () -> Unit, openCampa
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Metric("Stamps", if (store.period == "today") store.todayStamps else store.cardStamps, Modifier.weight(1f))
-            Metric("Rewards", if (store.period == "today") store.todayRewards else store.cardRewards, Modifier.weight(1f))
-            Metric("New", if (store.period == "today") store.todayNew else store.cardNew, Modifier.weight(1f))
+            Metric("Stamps", if (metricReady) (if (store.period == "today") store.todayStamps else store.cardStamps) else "—", Modifier.weight(1f))
+            Metric("Rewards", if (metricReady) (if (store.period == "today") store.todayRewards else store.cardRewards) else "—", Modifier.weight(1f))
+            Metric("New", if (metricReady) (if (store.period == "today") store.todayNew else store.cardNew) else "—", Modifier.weight(1f))
         }
-        Primary(when (store.cardType) {
-            "stamp" -> "Add a stamp"
-            "points" -> "Add points"
-            else -> "Add a stamp / points"
-        }) {
-            // Opens the in-app scanner right away. The owner is already signed in, so no cashier login.
-            store.clearScan()
-            openStamp()
-        }
-        Text("${store.memberCount} members  ·  ${store.cameBackRate.toInt()}% came back", color = Forest, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Box(Modifier.weight(1f)) { Secondary("Analytics", openAnalytics) }
-            Box(Modifier.weight(1f)) { Primary("Campaign", onClick = openCampaign) }
-        }
+        Text(if (metricReady) "${store.memberCount} members  ·  ${store.cameBackRate.toInt()}% came back" else "Loyalty insights unavailable", color = Forest, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
         Column(Modifier.fillMaxWidth().clip(Shape).background(Color.White).border(1.dp, Line, Shape)) {
             Row(Modifier.fillMaxWidth().clickable { enlarged = true }.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                 Qr(store.joinLink, 64)
@@ -785,6 +1028,197 @@ private fun HomeScreen(store: CounterStore, openAnalytics: () -> Unit, openCampa
                 Secondary(if (copied) "Copied" else "Copy link") { copyLink() }
             }
         }
+    }
+}
+
+@Composable
+private fun DashboardMetric(label: String, value: String, icon: ImageVector, modifier: Modifier, reward: Boolean = false) {
+    Column(modifier.clip(Shape).background(Color(0xFFEAF6F3)).padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+            Box(Modifier.size(30.dp).clip(Pill).background(if (reward) RewardYellow.copy(alpha = 0.22f) else Track), contentAlignment = Alignment.Center) {
+                Icon(icon, null, tint = if (reward) Color(0xFF815900) else Forest, modifier = Modifier.size(21.dp))
+            }
+            Text(label, color = Ink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f), maxLines = 2)
+        }
+        Text(value, color = Ink, fontSize = 21.sp, fontWeight = FontWeight.Bold, maxLines = 2)
+    }
+}
+
+@Composable
+private fun DashboardAction(label: String, icon: ImageVector, modifier: Modifier, fill: Color, action: () -> Unit) {
+    Column(modifier.heightIn(min = 96.dp).clip(Shape).background(Color(0xFFE1F2E9)).border(1.dp, Line, Shape).clickable { action() }.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        Icon(icon, null, tint = fill, modifier = Modifier.size(28.dp))
+        Spacer(Modifier.height(7.dp))
+        Text(label, color = DeepTeal, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center, lineHeight = 16.sp)
+    }
+}
+
+private val BookingZone = TimeZone.getTimeZone("Asia/Manila")
+
+private fun bookingMonth(value: String = "", offset: Int = 0): String {
+    val calendar = java.util.Calendar.getInstance(BookingZone)
+    calendar.set(java.util.Calendar.DAY_OF_MONTH, 1)
+    if (value.matches(Regex("[0-9]{4}-[0-9]{2}"))) {
+        calendar.set(java.util.Calendar.YEAR, value.take(4).toInt())
+        calendar.set(java.util.Calendar.MONTH, value.takeLast(2).toInt() - 1)
+    }
+    calendar.add(java.util.Calendar.MONTH, offset)
+    return SimpleDateFormat("yyyy-MM", Locale.US).apply { timeZone = BookingZone }.format(calendar.time)
+}
+
+private fun bookingLabel(raw: String, pattern: String): String = OrderTime.parse(raw)?.let {
+    SimpleDateFormat(pattern, Locale.US).apply { timeZone = BookingZone }.format(java.util.Date(it))
+}.orEmpty()
+
+private fun bookingRows(rows: JSONArray?): List<JSONObject> = (0 until (rows?.length() ?: 0)).mapNotNull { rows?.optJSONObject(it) }
+
+@Composable
+private fun ReservationsScreen(store: CounterStore) {
+    val session = store.session ?: return
+    // Never reuse an earlier user's reservations on a shared cashier phone.
+    androidx.compose.runtime.key(session) { ReservationCalendar(store, session) }
+}
+
+@Composable
+private fun ReservationCalendar(store: CounterStore, current: OwnerSession) {
+    var month by remember { mutableStateOf(bookingMonth()) }
+    var branch by remember { mutableStateOf(current.branchId) }
+    var day by remember { mutableStateOf("") }
+    var filter by remember { mutableStateOf("all") }
+    var refresh by remember { mutableIntStateOf(0) }
+    var body by remember { mutableStateOf<JSONObject?>(null) }
+    var loading by remember { mutableStateOf(true) }
+    var writing by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf("") }
+    var notice by remember { mutableStateOf("") }
+    var action by remember { mutableStateOf<Pair<String, String>?>(null) }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(current, month, branch, refresh) {
+        loading = true
+        body = null
+        error = ""
+        val (result, problem) = store.readReservations(current, branch, month)
+        body = result
+        error = problem
+        loading = false
+    }
+    val busy = loading || writing
+    val data = body
+    val branches = bookingRows(data?.optJSONArray("branches"))
+    val bookings = bookingRows(data?.optJSONArray("bookings"))
+    val selectedBranch = data?.optString("branch").orEmpty()
+    val canUpdate = data?.optBoolean("can_update") == true && current.role in listOf("owner", "manager")
+    val shown = bookings.filter {
+        (filter == "all" || it.optString("status") == filter) &&
+            (day.isBlank() || bookingLabel(it.optString("starts_at"), "yyyy-MM-dd") == day)
+    }
+    val days = remember(month) {
+        val cal = java.util.Calendar.getInstance(BookingZone)
+        cal.clear()
+        cal.set(month.take(4).toInt(), month.takeLast(2).toInt() - 1, 1)
+        ((cal.get(java.util.Calendar.DAY_OF_WEEK) + 5) % 7) to cal.getActualMaximum(java.util.Calendar.DAY_OF_MONTH)
+    }
+    Scroll {
+        Text("Reservations", color = Forest, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+        Text(if (current.role == "cashier") "View your branch’s upcoming table and venue bookings." else "Manage table and private-event requests.", color = Muted, fontSize = 13.sp)
+        if (branches.isNotEmpty()) Card {
+            Text("BRANCH", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                branches.forEach { row ->
+                    val id = row.optString("public_id")
+                    BranchChip(row.optString("name", "Branch"), id == selectedBranch) {
+                        if (!busy && id.isNotBlank() && id != selectedBranch) { branch = id; day = ""; notice = "" }
+                    }
+                }
+            }
+        }
+        Card {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(enabled = !busy, onClick = { month = bookingMonth(month, -1); day = ""; notice = "" }) { Text("‹", color = Forest, fontSize = 24.sp) }
+                Text(month, Modifier.weight(1f), color = Forest, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                TextButton(enabled = !busy, onClick = { month = bookingMonth(month, 1); day = ""; notice = "" }) { Text("›", color = Forest, fontSize = 24.sp) }
+            }
+            Row(Modifier.fillMaxWidth()) {
+                listOf("M", "T", "W", "T", "F", "S", "S").forEach { Text(it, Modifier.weight(1f), color = Muted, textAlign = TextAlign.Center, fontSize = 12.sp) }
+            }
+            val counts = bookings.groupingBy { bookingLabel(it.optString("starts_at"), "yyyy-MM-dd") }.eachCount()
+            (List(days.first) { 0 } + (1..days.second).toList()).chunked(7).forEach { week ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                    (week + List(7 - week.size) { 0 }).forEach { n ->
+                        val date = month + "-" + n.toString().padStart(2, '0')
+                        val selected = date == day
+                        Box(Modifier.weight(1f).height(44.dp).clip(Pill).background(if (selected) Forest else if (n == 0) Color.Transparent else Ivory)
+                            .clickable(enabled = !busy && n != 0) { day = if (selected) "" else date }, contentAlignment = Alignment.Center) {
+                            if (n != 0) Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(n.toString(), color = if (selected) Color.White else Ink, fontSize = 13.sp)
+                                counts[date]?.let { Text(it.toString(), color = if (selected) Color.White else Gold, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
+                            }
+                        }
+                    }
+                }
+            }
+            TextButton(enabled = !busy, onClick = { day = "" }) { Text(if (day.isBlank()) "Whole month · Manila time" else "Clear day filter · $day", color = Forest) }
+        }
+        if (data?.optBoolean("truncated") == true) Text("First 500 records only. Calendar totals may be incomplete.", color = Bad, fontSize = 13.sp)
+        if (loading) Text("Loading reservations…", color = Muted)
+        if (writing) Text("Updating reservation…", color = Muted)
+        if (error.isNotBlank()) Text(error, color = Bad)
+        if (notice.isNotBlank()) Text(notice, color = Gold)
+        Primary("Refresh reservations", enabled = !busy) { refresh++ }
+        if (data != null) {
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("all", "pending", "confirmed", "declined", "cancelled", "completed").forEach { value ->
+                    BranchChip(value.replaceFirstChar { it.uppercase() }, filter == value) { if (!busy) filter = value }
+                }
+            }
+            if (shown.isEmpty()) Text("No reservations in this view.", color = Muted)
+            shown.forEach { row ->
+                val id = row.optString("id")
+                val status = row.optString("status")
+                Card {
+                    Text(row.optString("resource_name", "Reservation"), color = Forest, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Text("${status.replaceFirstChar { it.uppercase() }} · ${row.optInt("guests")} guests", color = if (status == "pending") Gold else Muted, fontWeight = FontWeight.SemiBold)
+                    Info("Arrival", bookingLabel(row.optString("starts_at"), "MMM d, h:mm a"))
+                    Info("End", bookingLabel(row.optString("ends_at"), "MMM d, h:mm a"))
+                    Info("Customer", row.optString("customer_name"))
+                    row.optString("booking_code").takeIf { it.isNotBlank() && it != "null" }?.let { Info("Booking code", it.chunked(4).joinToString("-")) }
+                    if (current.role != "cashier") {
+                        row.optString("phone").takeIf { it.isNotBlank() && it != "null" }?.let { Info("Contact", it) }
+                        row.optString("note").takeIf { it.isNotBlank() && it != "null" }?.let { Info("Note", it) }
+                        if (row.optLong("price_centavos") > 0) Info("Venue price", "₱" + String.format(Locale.US, "%.2f", row.optLong("price_centavos") / 100.0))
+                    }
+                    if (canUpdate && id.isNotBlank()) {
+                        val options = when (status) {
+                            "pending" -> listOf("confirmed" to "Confirm", "declined" to "Decline")
+                            "confirmed" -> if ((OrderTime.parse(row.optString("ends_at")) ?: Long.MAX_VALUE) <= System.currentTimeMillis()) listOf("completed" to "Complete", "cancelled" to "Cancel") else listOf("cancelled" to "Cancel")
+                            else -> emptyList()
+                        }
+                        options.forEach { (next, label) ->
+                            if (next == "confirmed") Primary(label, enabled = !busy) { action = id to next }
+                            else TextButton(enabled = !busy, onClick = { action = id to next }) { Text(label, color = if (next == "completed") Forest else Bad) }
+                        }
+                    }
+                }
+            }
+        }
+        if (current.role == "cashier") Text("Only the owner or manager can change reservation status.", color = Muted, fontSize = 12.sp)
+    }
+    action?.let { (id, next) ->
+        val label = when (next) { "confirmed" -> "Confirm"; "declined" -> "Decline"; "completed" -> "Complete"; else -> "Cancel" }
+        AlertDialog(onDismissRequest = { if (!writing) action = null }, title = { Text("$label reservation?") },
+            text = { Text(if (next == "confirmed") "Availability will be checked before confirmation." else "This changes the reservation status.") },
+            confirmButton = { TextButton(enabled = !busy, onClick = {
+                action = null
+                writing = true
+                notice = ""
+                scope.launch {
+                    val problem = store.updateReservation(current, id, next)
+                    notice = problem ?: "Reservation $next."
+                    writing = false
+                    loading = true
+                    refresh++
+                }
+            }) { Text(label) } }, dismissButton = { TextButton(onClick = { action = null }) { Text("Back") } })
     }
 }
 
@@ -1257,6 +1691,120 @@ private fun CounterAddOrderDialog(store: CounterStore, order: LiveOrder, close: 
         },
         dismissButton = { TextButton(enabled = !busy, onClick = close) { Text("Back") } }
     )
+}
+
+@Composable
+private fun DailyStockCard(store: CounterStore, alwaysOpen: Boolean = false) {
+    var stockVisible by remember { mutableStateOf(alwaysOpen) }
+    var stockBranch by remember { mutableStateOf("") }
+    var stockItem by remember { mutableStateOf("") }
+    var stockVariant by remember { mutableStateOf("*") }
+    var stockOpening by remember { mutableStateOf("") }
+    var stockRepeat by remember { mutableStateOf(true) }
+    var stockBranchMenu by remember { mutableStateOf(false) }
+    var stockVariantMenu by remember { mutableStateOf(false) }
+    val stockRow = store.menuStockRows.find { it.branchId == stockBranch && it.itemId == stockItem && it.variantKey == stockVariant }
+    LaunchedEffect(store.menuStockBranches, store.menuStockItems) {
+        if (store.menuStockBranches.none { it.id == stockBranch }) {
+            stockBranch = store.menuStockBranches.firstOrNull()?.id.orEmpty()
+            stockItem = ""
+            stockVariant = "*"
+            stockOpening = ""
+        }
+        if (store.menuStockItems.none { it.id == stockItem }) stockItem = ""
+    }
+    LaunchedEffect(alwaysOpen, store.session?.slug, store.session?.branchId) {
+        if (alwaysOpen) store.loadMenuStock()
+    }
+        Card {
+            Text("Daily stock", color = Forest, fontWeight = FontWeight.Bold, fontSize = 17.sp)
+            if (!alwaysOpen) Secondary(if (stockVisible) "Hide stock" else "Manage stock") {
+                stockVisible = !stockVisible
+                if (stockVisible) store.loadMenuStock()
+            }
+            if (stockVisible) {
+                Text("${store.menuStockDay} · Philippine time", color = Muted, fontSize = 12.sp)
+                if (store.menuStockBusy) Text("Updating stock…", color = Muted)
+                if (store.menuStockNote.isNotBlank()) Text(store.menuStockNote, color = Bad, fontSize = 13.sp)
+                Text("Branch", color = Ink, fontWeight = FontWeight.SemiBold)
+                if (store.session?.role == "manager") {
+                    Text(store.menuStockBranches.singleOrNull()?.name ?: "Ask the owner to assign your branch.", color = Forest, fontWeight = FontWeight.SemiBold)
+                } else Box {
+                    Secondary((store.menuStockBranches.find { it.id == stockBranch }?.name ?: "Choose branch") + "  ▾") {
+                        if (!store.menuStockBusy) stockBranchMenu = true
+                    }
+                    androidx.compose.material3.DropdownMenu(expanded = stockBranchMenu, onDismissRequest = { stockBranchMenu = false }) {
+                        store.menuStockBranches.forEach { branch ->
+                            androidx.compose.material3.DropdownMenuItem(text = { Text(branch.name) }, onClick = {
+                                stockBranch = branch.id
+                                stockItem = ""
+                                stockVariant = "*"
+                                stockOpening = ""
+                                stockBranchMenu = false
+                            })
+                        }
+                    }
+                }
+                Text("Menu items", color = Ink, fontWeight = FontWeight.SemiBold)
+                if (store.menuStockItems.isEmpty() && !store.menuStockBusy) Text("No menu items available.", color = Muted)
+                store.menuStockItems.forEach { menuItem ->
+                    val rows = store.menuStockRows.filter { it.branchId == stockBranch && it.itemId == menuItem.id }
+                    val shared = rows.find { it.variantKey == "*" }
+                    val variantCount = rows.count { it.variantKey != "*" }
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
+                    Row(
+                        Modifier.fillMaxWidth().clickable(enabled = !store.menuStockBusy && stockBranch.isNotBlank() && store.menuStockBranches.any { it.id == stockBranch }) {
+                            stockItem = if (stockItem == menuItem.id) "" else menuItem.id
+                            stockVariant = "*"
+                            stockOpening = ""
+                            stockRepeat = true
+                        }.padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(menuItem.name, color = Ink, fontWeight = FontWeight.SemiBold)
+                            Text(buildString {
+                                append(if (shared == null) "No shared limit" else if (shared.remaining == 0) "Sold out" else "${shared.remaining} remaining")
+                                if (variantCount > 0) append(" · $variantCount variant limits")
+                            }, color = if (shared?.remaining == 0) Bad else Muted, fontSize = 13.sp)
+                        }
+                        Text(if (stockItem == menuItem.id) "Close" else "Edit ›", color = Forest, fontWeight = FontWeight.SemiBold)
+                    }
+                    if (stockItem == menuItem.id) {
+                        Column(Modifier.fillMaxWidth().clip(Shape).background(Ivory).padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (menuItem.variants.isNotEmpty()) {
+                                Box {
+                                    Secondary((if (stockVariant == "*") "All variants · shared" else menuItem.variants.find { it.id == stockVariant }?.name ?: "Choose variant") + "  ▾") {
+                                        if (!store.menuStockBusy) stockVariantMenu = true
+                                    }
+                                    androidx.compose.material3.DropdownMenu(expanded = stockVariantMenu, onDismissRequest = { stockVariantMenu = false }) {
+                                        androidx.compose.material3.DropdownMenuItem(text = { Text("All variants · shared") }, onClick = {
+                                            stockVariant = "*"; stockOpening = ""; stockVariantMenu = false
+                                        })
+                                        menuItem.variants.forEach { option ->
+                                            val variantStock = rows.find { it.variantKey == option.id }
+                                            androidx.compose.material3.DropdownMenuItem(text = { Text(option.name + (variantStock?.let { " · ${it.remaining} left" } ?: " · No limit")) }, onClick = {
+                                                stockVariant = option.id; stockOpening = ""; stockVariantMenu = false
+                                            })
+                                        }
+                                    }
+                                }
+                            }
+                            if (stockRow != null) Text("${stockRow.remaining} left · ${stockRow.reserved} reserved · ${stockRow.consumed} consumed", color = Forest, fontSize = 13.sp)
+                            Field("Opening servings", stockOpening, { stockOpening = it }, hint = stockRow?.opening?.toString() ?: "e.g. 30", number = true)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("Repeat every day", modifier = Modifier.weight(1f), color = Ink)
+                                Switch(stockRepeat, { stockRepeat = it }, colors = switchColors(), enabled = !store.menuStockBusy)
+                            }
+                            Primary(if (store.menuStockBusy) "Saving…" else "Save stock", enabled = !store.menuStockBusy && store.menuStockBranches.any { it.id == stockBranch } && (stockOpening.toIntOrNull()?.let { it in 0..100000 } == true)) {
+                                store.setMenuStock(stockBranch, stockItem, stockVariant, stockOpening, stockRepeat)
+                            }
+                        }
+                    }
+                }
+                Text("Shared and variant limits remain independent.", color = Muted, fontSize = 12.sp)
+            }
+        }
 }
 
 @Composable
@@ -1767,6 +2315,7 @@ private fun MoreScreen(store: CounterStore, open: (Page) -> Unit, openMenu: () -
             RowLink("Reserve a table", if (store.reserveOn) "Shown on the menu" else "Hidden") { open(Page.Guest("reserve")) }
         }
         Section("Your business", "The tools you use after the scan.") {
+            RowLink("Reservations", "Calendar and booking requests") { open(Page.Reservations) }
             RowLink("Analytics", "Last 30 days") { open(Page.Analytics) }
             RowLink("Notifications", "Birthday, churn, and announcements") { open(Page.Greetings) }
             RowLink("Digital billboard", if (store.billboardOn) "On · 150 m" else "Off") { open(Page.Billboard) }
@@ -2620,7 +3169,7 @@ private fun Dock(tab: Int, items: List<Pair<String, ImageVector>> = OwnerDock, o
                 Modifier.weight(1f).clip(RoundedCornerShape(20.dp)).background(if (on) Track else Color.Transparent).clickable { onSelect(index) }.padding(vertical = 6.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Icon(item.second, item.first, tint = Forest, modifier = Modifier.size(20.dp))
+                Icon(item.second, item.first, tint = if (on) Forest else Muted, modifier = Modifier.size(20.dp))
                 Text(item.first, color = if (on) Forest else Muted, fontSize = 10.sp, fontWeight = if (on) FontWeight.Bold else FontWeight.Medium, maxLines = 1)
             }
         }
