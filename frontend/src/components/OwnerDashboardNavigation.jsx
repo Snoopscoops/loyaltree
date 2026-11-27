@@ -39,8 +39,9 @@ function Icon({ name, className = '' }) {
 }
 const tabTitles = {
   tree: 'Home', customers: 'Customers', program: 'Loyalty card', analytics: 'Analytics', announcements: 'Notifications', billboard: 'Digital Billboard', customerdash: 'Customer dashboard', staff: 'Team & locations',
+  orders: 'Menu orders', transactions: 'Transactions', reservations: 'Reservations', payments: 'Merchant payments',
   qrmenu: 'Digital Menu', orderahead: 'Order Ahead', giftcards: 'Gift cards', ltbenefits: 'LT Points', pos: 'Integrations', campaigns: 'Campaigns',
-  satisfaction: 'Satisfaction', billing: 'Billing', referrals: 'Referrals', security: 'Transactions & security',
+  satisfaction: 'Satisfaction', billing: 'Billing', referrals: 'Referrals', security: 'Loyalty audit & security',
   walletqueue: 'Wallet queue', crm: 'Customer segments', retention: 'Retention', operations: 'Branch operations', advanced: 'Advanced tools',
 }
 

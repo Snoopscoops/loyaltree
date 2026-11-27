@@ -1,4 +1,5 @@
 import { prepaidPrice, PH_REFERENCE_DISCOUNTS } from '../src/components/billingPricing.js'
+import {dateRange,manilaDay,validRange,filterOrders,paymentClass,nextStatus} from '../src/components/ownerWorkspaceModel.js'
 // Fictional data only. No native fetch, credentials, charges, or wallet sends.
 export const fixtureSlug = 'demo-daylight'
 export const fixtureUser = { role: 'owner', token: 'local-fixture-not-a-signed-token', name: 'Alex Morgan', business_slug: fixtureSlug, business_public_id: 'demo-business-daylight', business_name: 'Daylight Coffee', business_type: 'coffee' }
@@ -28,6 +29,38 @@ export function createFixtureTransport({ scenario = 'stamp', onRequest = () => {
   const branches = [{ id: 1, public_id: 'demo-branch-main', name: 'Main Café', is_active: true, address: 'Fictional location' }, { id: 2, public_id: 'demo-branch-riverside', name: 'Riverside', is_active: true, address: 'Fictional location' }]
   const customers = ['Jamie Cruz', 'Mika Santos', 'Sam Reyes', 'Avery Tan', 'Riley Lim', 'Casey Lee', 'Jordan Flores', 'Taylor Diaz'].map((name, i) => ({ id: i + 1, public_id: `demo-member-${i + 1}`, identity_id: `demo-person-${i + 1}`, name, email: '', phone: '', stamp_count: [8,6,3,7,1,4,2,8][i], points_balance: [125,80,55,140,20,65,30,100][i], reward_unlocked: i === 0 || i === 7, created_at: date(-50 + i * 3), last_stamped_at: date(-i), last_visit_at: date(-i), program_public_id: 'demo-program-main', branch_public_id: branches[i % 2].public_id,
     membership_status: i === 6 ? 'expired' : 'active', membership_effective_status: i === 6 ? 'expired' : 'active', membership_starts_at: date(-20), membership_expires_at: date(i === 6 ? -2 : i === 2 ? 3 : 25), multipass_total_sessions: 10, multipass_sessions_remaining: Math.max(0,9-i*2), vip_points: 100+i*20, vip_tier: { id:'tier-gold',name:'Gold',color:'#b58c46',discount_percent:10,benefits:['Priority pickup'] }, tier_stamp_count:10+i, employee_id_number:`D-${100+i}`, employee_position:'Team member', city:'Fictional City', is_active:true }))
+  // These IDs and amounts are fictional and only exist in this transport.
+  const sampleOrders = [
+    ['new','paid','cash',145,0,0,0,'Iced Spanish Latte'],
+    ['new','unpaid','cash',110,0,1,1,'Americano'],
+    ['completed','paid_test','qrph',160,0,0,2,'Matcha Latte'],
+    ['completed','paid','cash',290,0,0,0,'Iced Spanish Latte'],
+    ['completed','paid','cash',145,-1,0,0,'Iced Spanish Latte'],
+    ['completed','paid','cash',95,-2,1,1,'Butter Croissant'],
+    ['cancelled','unpaid','cash',105,0,1,3,'Cinnamon Roll'],
+    ['completed','paid','card',110,0,1,4,'Americano']
+  ].map(([status,payment_status,payment_method,total,days,branch,member,item],i)=>({public_id:'demo-menu-order-'+(i+1),order_number:'DEMO-'+String(i+1).padStart(3,'0'),created_at:date(days),status,payment_status,payment_method,total,branch:branches[branch],customer:{name:customers[member].name,public_id:customers[member].public_id},service:'dine-in',table_no:String(i+1),items:[{item_name:item,quantity:total===290?2:1,modifiers:[]}]}))
+  const reportRows = url => {
+    const range=url.searchParams.has('start')?{start:url.searchParams.get('start'),end:url.searchParams.get('end')}:dateRange(url.searchParams.get('period')||'today')
+    return {range,rows:filterOrders(sampleOrders,{...range,branch:url.searchParams.get('branch')||''})}
+  }
+  const reportSummary = rows => {
+    const live=rows.filter(o=>o.status!=='cancelled')
+    const settlement=Object.fromEntries(['cash_confirmed','outstanding','test','unverified'].map(key=>[key,{sales:0,orders:0}]))
+    for(const row of live){const bucket=settlement[paymentClass(row)];if(bucket){bucket.sales+=row.total;bucket.orders++}}
+    return {orders:live.length,sales:live.reduce((n,o)=>n+o.total,0),cancelled:rows.length-live.length,payments:{settlement},simulated:true}
+  }
+  const reportInsights = (rows,range) => {
+    const live=rows.filter(o=>o.status!=='cancelled'),summary=reportSummary(rows)
+    const buyers=new Map(),ranked=new Map()
+    for(const row of live){
+      if(paymentClass(row)==='cash_confirmed'){const key=row.customer.public_id,entry=buyers.get(key)||{orders:0,spent:0};entry.orders++;entry.spent+=row.total;buyers.set(key,entry)}
+      const item=row.items[0],entry=ranked.get(item.item_name)||{name:item.item_name,quantity:0,sales:0};entry.quantity+=item.quantity;entry.sales+=row.total;ranked.set(entry.name,entry)
+    }
+    const counts=[...buyers.values()],repeat=counts.filter(b=>b.orders>1).length
+    const sections=[{key:'age',title:'By age range',groups:[{key:'small',label:'Suppressed demo cohort',orders:1,hidden:true}]},{key:'branch',title:'By branch',groups:branches.map(b=>({key:b.public_id,label:b.name,orders:live.filter(o=>o.branch.public_id===b.public_id).length,hidden:false}))}]
+    return {...range,kpis:{orders:summary.orders,sales:summary.sales},purchase_frequency:{linked_buyers:buyers.size,repeat_buyers:repeat,single_bill_buyers:buyers.size-repeat,repeat_buyer_percent:buyers.size?100*repeat/buyers.size:null,average_cash_spend_per_buyer:buyers.size?counts.reduce((n,b)=>n+b.spent,0)/buyers.size:null,average_bills_per_buyer:buyers.size?counts.reduce((n,b)=>n+b.orders,0)/buyers.size:null},top_items:[...ranked.values()].sort((a,b)=>b.quantity-a.quantity),sections,trend:[{label:'Selected period',orders:summary.orders,sales:summary.sales}],simulated:true}
+  }
   const staff = [{ public_id:'demo-staff-cashier',name:'Morgan Quinn',role:'cashier',is_active:true,branch_public_id:branches[0].public_id,branch_name:branches[0].name },{ public_id:'demo-staff-manager',name:'Alex Rivera',role:'manager',is_active:true,branch_public_id:branches[1].public_id,branch_name:branches[1].name }]
   const notices = [{ id:501,title:'Updates from LoyaltyTree',message:'Your platform announcements stay visible here. This local preview uses fictional data only.' }]
   let announcements = [{ id:101,title:'A little weekend treat',message:'Drop by for your favorite coffee this weekend.',type:'promo',is_active:true,target_scope:'business',created_at:date(-2),notification_count:1,last_notified_at:date(-2),program_public_id:'',branch_public_id:'' }]
@@ -60,10 +93,36 @@ export function createFixtureTransport({ scenario = 'stamp', onRequest = () => {
     const done = (value,status=200) => { onRequest({ts:new Date().toISOString(),method,path:`${url.pathname}${url.search}`,status,simulated:true});return new Response(JSON.stringify(clone(value)),{status,headers:{'Content-Type':'application/json'}}) }
     if(url.hostname==='api.qrserver.com'&&method==='GET'){onRequest({ts:date(),method,path:'/local-placeholder-qr',status:200,simulated:true});return new Response(svg,{headers:{'Content-Type':'image/svg+xml'}})}
     if(method==='GET' && url.pathname==='/__owner-fixtures/api/v1/public/menu/demo-daylight')return qrPublished && selectedPlan!=='starter'?done(publicMenu()):done({detail:'This menu is not available right now.'},404)
+    if(method==='GET'&&url.pathname==='/__owner-fixtures/api/v1/business/demo-business-daylight/merchant-payments/status')return done({version:1,state:'disabled',portal_available:false,available_centavos:null,pending_centavos:null,payout_ready:false})
     const prefix = `/__owner-fixtures/api/v1/business/${fixtureSlug}`
     if(!url.pathname.startsWith(prefix))return done({detail:'Blocked by local fixture transport. No external request was sent.'},501)
     const path = url.pathname.slice(prefix.length)||'/'
     const qrSetup=()=>({is_published:qrPublished,public_url:url.origin+'/menu/'+fixtureSlug,branches:branches.map(branch=>({...branch,public_url:url.origin+'/menu/'+fixtureSlug+'?branch='+branch.public_id}))})
+    if(method==='GET'&&path==='/menu-orders')return done({orders:sampleOrders,branches,simulated:true})
+    if(method==='GET'&&['/menu-orders/summary','/menu-orders/insights','/menu-orders/report'].includes(path)){
+      const {rows,range}=reportRows(url)
+      if(!validRange(range.start,range.end))return done({detail:'Invalid date range.'},400)
+      if(path==='/menu-orders/insights')return done(reportInsights(rows,range))
+      if(path==='/menu-orders/report'&&url.searchParams.get('format')==='csv'){
+        onRequest({ts:date(),method,path:url.pathname+url.search,status:200,simulated:true})
+        return new Response('Fictional report only\nOrder,Status,Payment,Amount\n'+rows.map(o=>[o.order_number,o.status,paymentClass(o),o.total].join(',')).join('\n'),{headers:{'Content-Type':'text/csv'}})
+      }
+      return done({...reportSummary(rows),...range})
+    }
+    if(method==='PATCH'&&/^\/menu-orders\/demo-menu-order-\d+\/status$/.test(path)){
+      const row=sampleOrders.find(o=>o.public_id===path.split('/')[2])
+      if(!row||!nextStatus(row)||body.status!==nextStatus(row))return done({detail:'Order status change not allowed.'},409)
+      row.status=body.status;return done({success:true,simulated:true})
+    }
+    if(method==='GET'&&/^\/customers\/demo-member-\d+\/menu-order-history$/.test(path)){
+      const rows=sampleOrders.filter(o=>o.customer.public_id===path.split('/')[2]).map(o=>({...o,branch_name:o.branch.name,verified_spent:o.status==='completed'&&paymentClass(o)==='cash_confirmed'?o.total:0}))
+      return done({orders:rows,summary:{total_orders:rows.length,completed_paid_orders:rows.filter(o=>o.verified_spent>0).length,total_spent:rows.reduce((n,o)=>n+o.verified_spent,0),complete:true},simulated:true})
+    }
+    if(method==='GET'&&path==='/native-bookings'){
+      const branch=branches.find(b=>b.public_id===url.searchParams.get('branch_id'))||branches[0]
+      const month=url.searchParams.get('month')||manilaDay().slice(0,7)
+      return done({branch:branch.public_id,branches,month,settings:{venue_enabled:false,table_enabled:true,opens_at:'08:00',closes_at:'20:00',weekdays:[1,2,3,4,5,6,7],blocked_dates:[]},resources:[{id:'demo-table',kind:'table',name:'Table 1',capacity:4,duration_minutes:90,price_centavos:0,active:true}],bookings:[],simulated:true})
+    }
     if(path.startsWith('/qr-menu')){
       if(selectedPlan==='starter')return done({detail:'QR Menu is included in Growth and Pro.'},403)
       if(path==='/qr-menu/preview')return done(publicMenu())
