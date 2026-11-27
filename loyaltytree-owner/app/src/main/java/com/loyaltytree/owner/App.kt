@@ -193,7 +193,7 @@ fun LoyaltyTreeApp(store: CounterStore = viewModel()) {
     LaunchedEffect(current?.slug, current?.isStaff, store.openOrdersTick) {
         if (current != null) {
             login = false
-            if (current.isStaff || store.openOrdersTick > 0) finishOpening()
+            if (current.isAdmin || current.isStaff || store.openOrdersTick > 0) finishOpening()
         }
     }
     when {
@@ -203,6 +203,7 @@ fun LoyaltyTreeApp(store: CounterStore = viewModel()) {
         }
         current == null -> WelcomeScreen(opening, onFinished = { finishOpening() },
             onLogin = { finishOpening(); login = true })
+        current.isAdmin -> AdminConsole(store, current)
         current.isStaff -> StaffShell(store)
         else -> Shell(store, opening = opening && store.openOrdersTick == 0,
             onOpeningFinished = { finishOpening() })
@@ -868,7 +869,7 @@ private fun LoginScreen(store: CounterStore) {
         Mark(72)
         Spacer(Modifier.height(16.dp))
         Text("Sign in", color = Forest, fontSize = 32.sp, fontWeight = FontWeight.Bold)
-        Text(if (staff) "Managers and cashiers: use the email and PIN from the owner." else "Use the email for this business.", color = Muted, fontSize = 15.sp, textAlign = TextAlign.Center)
+        Text(if (staff) "Managers and cashiers: use the email and PIN from the owner." else "Use your business or administrator email.", color = Muted, fontSize = 15.sp, textAlign = TextAlign.Center)
         Spacer(Modifier.height(18.dp))
         Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Track).padding(4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             listOf("Owner" to false, "Staff" to true).forEach { (label, value) ->
