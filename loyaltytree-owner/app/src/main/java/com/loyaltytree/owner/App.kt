@@ -1819,6 +1819,18 @@ private fun AnalyticsScreen(store: CounterStore) {
                 }
             }
         }
+        store.purchaseFrequency?.let { frequency ->
+            Text("Customer purchase frequency", color = Forest, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            Card {
+                Info("Linked buyers", frequency.optInt("linked_buyers").toString())
+                Info("Repeat buyers", frequency.optInt("repeat_buyers").toString())
+                Info("Single-bill buyers", frequency.optInt("single_bill_buyers").toString())
+                Info("Repeat buyer rate", if (frequency.isNull("repeat_buyer_percent")) "—" else "${frequency.optDouble("repeat_buyer_percent")}%")
+                Info("Average bills per buyer", if (frequency.isNull("average_bills_per_buyer")) "—" else String.format(Locale.US, "%.2f", frequency.optDouble("average_bills_per_buyer")))
+                Info("Average cash spend per buyer", if (frequency.isNull("average_cash_spend_per_buyer")) "—" else peso(frequency.optDouble("average_cash_spend_per_buyer")))
+                Text("Cash-confirmed linked bills in this period only. Excludes test payments and unlinked purchases.", color = Muted, fontSize = 12.sp)
+            }
+        }
         if (store.insightTrend.any { it.orders > 0 }) {
             Text(when (store.insightTrendUnit) { "hour" -> "Sales by hour"; "week" -> "Sales by week"; else -> "Sales by day" }, color = Forest, fontSize = 18.sp, fontWeight = FontWeight.Bold)
             Card { TrendChart(store.insightTrend) }
