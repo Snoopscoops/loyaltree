@@ -1,0 +1,41 @@
+name: Owner workspace verification
+on:
+  push:
+    branches: [feature/owner-workspace-consolidated]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/feature/owner-workspace-consolidated'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - name: Install ephemeral browser tooling
+        run: |
+          npm install --no-save --package-lock=false playwright@1.56.1
+          npx playwright install --with-deps chromium
+      - name: Isolated browser regression
+        run: |
+          set -euo pipefail
+          npm run dev -- --host 127.0.0.1 --port 4175 --strictPort > /tmp/lt-owner-preview.log 2>&1 &
+          server=$!
+          trap 'kill "$server" 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:4175/dev/owner-dashboard.html >/dev/null; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:4175/dev/owner-dashboard.html >/dev/null
+          node dev/owner-workspace-smoke.mjs
