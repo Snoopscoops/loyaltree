@@ -935,8 +935,13 @@ private fun DaySummaryCard(summary: DaySummary, showBranches: Boolean) {
         if (summary.payments.isNotEmpty()) {
             Text("By payment", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
             summary.payments.forEach { Info(it.name, it.detail) }
-            if (summary.paid.isNotBlank()) Info("Paid", summary.paid)
-            if (summary.unpaid.isNotBlank()) Info("Unpaid", summary.unpaid)
+            if (summary.settlement.isNotEmpty()) {
+                summary.settlement.forEach { Info(it.name, it.detail) }
+                Text("Order-date totals, not a payment-date ledger.", color = Muted, fontSize = 12.sp)
+            } else {
+                if (summary.paid.isNotBlank()) Info("Paid (includes test/unverified)", summary.paid)
+                if (summary.unpaid.isNotBlank()) Info("Unpaid", summary.unpaid)
+            }
         }
         if (showBranches && summary.branches.isNotEmpty()) {
             Text("By branch", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
