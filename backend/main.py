@@ -102,7 +102,7 @@ except ImportError:
     from wallet_rate import upgrade_delivery_budget
     from wallet_bursts import wallet_bursts
 
-from fastapi import FastAPI, HTTPException, Request, Depends, Header, BackgroundTasks, Query
+from fastapi import FastAPI, HTTPException, Request, Depends, Header, BackgroundTasks, Query, Body
 from fastapi.responses import HTMLResponse, JSONResponse, Response, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -5992,6 +5992,8 @@ def issue_campaign_vouchers_to_members(business, campaign, only_customer=None):
     """Give this campaign voucher to members. People who already have one are skipped."""
     if not supabase or not business or not campaign or not campaign.get('id'):
         return 0
+    if campaign.get('automation_kind') == 'winback':
+        return 0
     status = str(campaign.get('status') or 'scheduled').lower()
     if status in ('draft', 'paused', 'ended'):
         return 0
@@ -6135,6 +6137,8 @@ def maybe_issue_campaign_coupons(
     amount = float(gross_amount or 0)
     for campaign in campaigns:
         try:
+            if campaign.get('automation_kind') == 'winback':
+                continue
             if _campaign_effective_status(campaign) != 'active':
                 continue
             scope = str(campaign.get('scope') or 'nationwide')
@@ -23338,6 +23342,8 @@ async def get_branch_manager_dashboard(
                          .gte('qualifying_end_date', today_iso)
                          .order('qualifying_end_date').execute().data or [])
         for campaign in campaign_rows:
+            if campaign.get('automation_kind') == 'winback':
+                continue
             if _campaign_effective_status(campaign) != 'active':
                 continue
             if str(campaign.get('scope') or 'nationwide') != 'nationwide' and branch.get('id') not in _campaign_branch_ids(campaign.get('id')):
@@ -34098,7 +34104,17 @@ async def update_campaign(public_id: str, campaign_public_id: str, req: Campaign
     if not rows:
         raise HTTPException(status_code=404, detail='Campaign not found')
     current = rows[0]
+    if current.get('automation_kind') == 'winback':
+        raise HTTPException(409, 'Edit automatic win-back settings instead.')
     patch = req.dict(exclude_unset=True)
+    date_fields = {'qualifying_start_date', 'qualifying_end_date', 'coupon_start_date', 'coupon_end_date'}
+    schedule_edit = bool(date_fields.intersection(patch))
+    if schedule_edit:
+        if current.get('status') != 'draft' or set(patch) - date_fields:
+            raise HTTPException(409, 'Edit dates on an unpublished draft only. Publish separately.')
+        issues = supabase.table('campaign_coupon_issues').select('id').eq('campaign_id', current['id']).limit(1).execute().data or []
+        if issues:
+            raise HTTPException(409, 'Existing vouchers prevent changing campaign dates.')
     branch_public_ids = patch.pop('branch_public_ids', None)
     merged = _campaign_validate_payload(patch, current)
     scope = str(merged.get('scope') or 'nationwide')
@@ -34112,7 +34128,13 @@ async def update_campaign(public_id: str, campaign_public_id: str, req: Campaign
         raise HTTPException(status_code=400, detail='Select at least one branch')
     patch['updated_at'] = datetime.utcnow().isoformat()
     try:
-        saved = (supabase.table('campaigns').update(patch).eq('id', current.get('id')).execute().data or [{**current, **patch}])[0]
+        query = supabase.table('campaigns').update(patch).eq('id', current.get('id')).eq('business_id', business['id'])
+        if schedule_edit:
+            query = query.eq('status', 'draft').eq('updated_at', current['updated_at'])
+        updated = query.execute().data or []
+        if schedule_edit and not updated:
+            raise HTTPException(409, 'Campaign changed. Refresh before editing.')
+        saved = (updated or [{**current, **patch}])[0]
         if branch_public_ids is not None:
             supabase.table('campaign_branches').delete().eq('campaign_id', current.get('id')).execute()
             if scope != 'nationwide':
@@ -41305,8 +41327,22 @@ async def run_win_back(_: bool = Depends(require_cron)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=friendly_db_error(e))
 
+    try:
+        from . import churn_discount_worker as churn_worker
+    except ImportError:
+        import churn_discount_worker as churn_worker
+    coupons_issued, coupon_errors = 0, 0
     for business in businesses:
         biz_id = business.get('id')
+        try:
+            result = await asyncio.to_thread(churn_worker.scheduled_winback_run, supabase, biz_id)
+            coupons_issued += int(result.get('issued', 0))
+            if result.get('status') in ('processed', 'daily_limit'):
+                continue
+        except Exception:
+            coupon_errors += 1
+            if churn_worker.issuance_enabled():
+                continue
         retention_settings = _retention_message_settings(business)
         inactivity_cutoff = now - timedelta(days=retention_settings['churn_days'])
         try:
@@ -41362,7 +41398,8 @@ async def run_win_back(_: bool = Depends(require_cron)):
             else:
                 errors += 1
 
-    return {"sent": sent, "skipped_recently_sent": skipped, "errors": errors}
+    return {"sent": sent, "skipped_recently_sent": skipped, "errors": errors,
+            "coupons_issued": coupons_issued, "coupon_errors": coupon_errors}
 
 @app.post("/api/v1/cron/membership-expiry-reminders")
 async def run_membership_expiry_reminders(_: bool = Depends(require_cron)):
@@ -52539,6 +52576,44 @@ _lt_benefits = register_lt_benefits_routes(app, db=supabase, get_business=safe_g
     sync_member=_lt_queue_member_cards,
     log=lambda event, **fields: log_event(event, 'warning', **fields), enabled=lt_benefits_feature_enabled)
 
+@app.post('/api/v1/benefits/cards/{customer_public_id}/winback-consent/read')
+def read_winback_consent(customer_public_id: str, payload: dict = Body(...), authorization: str = Header(default='')):
+    if set(payload) != {'card_token'} or not isinstance(payload.get('card_token'), str):
+        raise HTTPException(400, 'Card token required.')
+    member, _ = _lt_benefits.member(authorization)
+    card = _lt_benefits._context(customer_public_id, payload['card_token'])
+    if member.get('email') != card['email']:
+        raise HTTPException(403, 'Verify the email on this card first.')
+    try:
+        rows = supabase.table('churn_marketing_consent').select('allowed,verified_email,notice_version').eq('business_id', int(card['business_id'])).eq('customer_id', int(card['customer_id'])).limit(1).execute().data or []
+    except Exception as exc:
+        raise HTTPException(503, 'Could not load promotional preference.') from exc
+    row = rows[0] if rows else {}
+    return {'allowed': row.get('allowed') is True and row.get('verified_email') == card['email'] and row.get('notice_version') == 'winback-v1', 'business_name': card['business_name'], 'notice_version': 'winback-v1'}
+
+
+@app.put('/api/v1/benefits/cards/{customer_public_id}/winback-consent')
+def update_winback_consent(customer_public_id: str, payload: dict = Body(...), authorization: str = Header(default='')):
+    """Explicit promotional permission, independent of membership consent."""
+    if set(payload) != {'card_token', 'allowed', 'notice_version'} or type(payload.get('allowed')) is not bool or payload.get('notice_version') != 'winback-v1':
+        raise HTTPException(400, 'Explicit win-back preference and current notice required.')
+    if not isinstance(payload.get('card_token'), str):
+        raise HTTPException(400, 'Card token required.')
+    member, _ = _lt_benefits.member(authorization)
+    card = _lt_benefits._context(customer_public_id, payload['card_token'])
+    if member.get('email') != card['email']:
+        raise HTTPException(403, 'Verify the email on this card first.')
+    try:
+        supabase.table('churn_marketing_consent').upsert({
+            'business_id': int(card['business_id']), 'customer_id': int(card['customer_id']),
+            'verified_email': card['email'], 'allowed': payload['allowed'],
+            'notice_version': 'winback-v1', 'updated_at': datetime.utcnow().isoformat(),
+        }, on_conflict='business_id,customer_id').execute()
+    except Exception as exc:
+        raise HTTPException(503, 'Could not save promotional preference.') from exc
+    return {'allowed': payload['allowed'], 'notice_version': 'winback-v1'}
+
+
 _lt_transaction_reconciler = lt_transactions.LTTransactionReconciler(
     db=supabase, benefits=_lt_benefits, enabled=lt_benefits_enabled,
     log=lambda event, **fields: log_event(event, 'info', **fields))
@@ -52561,6 +52636,6 @@ try:
 except ImportError:
     from native_bookings import register_native_booking_routes
 register_native_booking_routes(app, db=supabase, get_business=safe_get_business,
-    require_owner=require_owner_session)
+    require_owner=require_owner_session, read_card_token=_menu_card_read_token, get_customer=safe_get_customer)
 
 profiler.checkpoint('routes_registered')

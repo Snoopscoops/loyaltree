@@ -49,3 +49,17 @@ class ChurnDiscountPolicyTests(unittest.TestCase):
         for kwargs in ({"enabled": 1}, {"discount_percent": 101}, {"daily_limit": 0}):
             with self.assertRaises(ValueError):
                 ChurnPolicy(**kwargs)
+
+
+class ChurnReleaseGuardTests(unittest.TestCase):
+    def test_issuance_remains_disabled_even_with_env_flag(self):
+        from unittest.mock import patch, Mock
+        try:
+            from backend.churn_discount_worker import issuance_enabled, scheduled_winback_run
+        except ImportError:
+            from churn_discount_worker import issuance_enabled, scheduled_winback_run
+        with patch.dict("os.environ", {"CHURN_DISCOUNT_ISSUANCE_ENABLED": "true"}):
+            db = Mock()
+            self.assertFalse(issuance_enabled())
+            self.assertEqual(scheduled_winback_run(db, 5), {"status": "not_active", "issued": 0})
+            db.rpc.assert_not_called()

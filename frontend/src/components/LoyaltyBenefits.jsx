@@ -104,6 +104,37 @@ function HowItWorks() {
   return <section className="lt-benefit-how" id="benefits-how"><div><span className="lt-benefit-eyebrow">A LITTLE LOYALTY GOES FURTHER</span><h2>Your usual favorites.<br/>Some unusual extras.</h2></div><ol><li><span>01</span><h3>Collect LT Points</h3><p>Eligible purchases at participating businesses grow your Benefits balance.</p></li><li><span>02</span><h3>Find your little win</h3><p>Choose an available benefit and exchange your LT Points for a coupon.</p></li><li><span>03</span><h3>Show your same card</h3><p>Visit the merchant. The cashier scans your linked loyalty card and redeems the coupon.</p></li></ol></section>
 }
 
+function WinbackPreference({ request, card, token }) {
+  const [preference, setPreference] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState('')
+  const path = `/cards/${encodeURIComponent(card.customer_public_id)}/winback-consent`
+  const load = useCallback(async (signal) => {
+    setBusy(true); setMessage(''); setPreference(null)
+    try {
+      const value = await request(`${path}/read`, {method:'POST', token, body:{card_token:card.card_token}, signal})
+      if (!signal?.aborted && typeof value.allowed === 'boolean') setPreference(value)
+    } catch (error) { if (!signal?.aborted) setMessage(error.message) }
+    finally { if (!signal?.aborted) setBusy(false) }
+  }, [request, path, token, card.card_token])
+  useEffect(() => { const controller = new AbortController(); load(controller.signal); return () => controller.abort() }, [load])
+  const save = async allowed => {
+    setBusy(true); setMessage('')
+    try {
+      const value = await request(path, {method:'PUT', token, body:{card_token:card.card_token, allowed, notice_version:'winback-v1'}})
+      if (value.allowed !== allowed) throw new Error('Preference not confirmed.')
+      setPreference(previous => ({...previous, allowed:value.allowed})); setMessage('Preference saved.')
+    } catch (error) { setPreference(null); setMessage('Save not confirmed. Refresh your preference before retrying.') }
+    finally { setBusy(false) }
+  }
+  return <section className="lt-benefit-activity"><h2>Promotional preferences</h2>
+    <p>Receive occasional personalized win-back discounts and related wallet updates from {preference?.business_name || 'this card’s business'}. Optional; your loyalty membership and rewards work without it. You can withdraw permission at any time.</p>
+    {preference && <label><input type="checkbox" checked={preference.allowed} disabled={busy} onChange={event => save(event.target.checked)}/> Allow win-back discounts</label>}
+    {!preference && !busy && <button type="button" onClick={() => load()}>Refresh preference</button>}
+    {busy && <p role="status">Checking preference…</p>}{message && <p role="status">{message}</p>}
+  </section>
+}
+
 export default function LoyaltyBenefits({ API_BASE = '' }) {
   const demo = benefitsDemoAllowed({ development: import.meta.env.DEV, hostname: window.location.hostname, search: window.location.search })
   const businessEntry = new URLSearchParams(window.location.search).get('business')
@@ -289,6 +320,7 @@ export default function LoyaltyBenefits({ API_BASE = '' }) {
     <main className="lt-benefit-main">
       {notice && <p className="lt-benefit-success" role="status"><Icon name="check"/>{notice}<button type="button" onClick={() => setNotice('')} aria-label="Dismiss notification">×</button></p>}
       {accountError && <p className="lt-benefit-error" role="alert">{accountError}<button type="button" onClick={session ? () => loadMe(session.token).then(() => setAccountError('')).catch(failure => setAccountError(failure.message)) : auth}>{session ? 'Refresh account' : 'Verify email'}</button></p>}
+      {view === 'account' && !demo && entry?.verified && session?.token && cardReference && <WinbackPreference key={cardReference.customer_public_id + ':' + session.token} request={request} card={cardReference} token={session.token}/> }
       {view === 'discover' && <>
         <section className="lt-benefit-catalog" id="benefits-catalog" aria-labelledby="benefit-catalog-title"><div className="lt-benefit-section-heading"><div><span className="lt-benefit-eyebrow">THE GOOD STUFF</span><h2 id="benefit-catalog-title">Little treats. Big yes.</h2></div><p>Discover benefits from participating businesses.<br/>Find a favorite. Make it yours.</p></div>
           {loading ? <div className="lt-benefit-skeletons" role="status" aria-label="Loading benefits"><span/><span/><span/></div> : error && !catalog.length ? <div className="lt-benefit-empty" role="alert"><Icon name="leaf"/><h3>Let’s try that again.</h3><p>{error}</p><button className="lt-benefit-secondary" type="button" onClick={() => setRetry(value => value + 1)}>Reload benefits</button></div> : !ready ? <div className="lt-benefit-empty"><Icon name="spark"/><h3>{config?.enabled ? 'A little pause for something good.' : 'Good things are on their way.'}</h3><p>{config?.enabled ? 'Benefits is being prepared or is temporarily unavailable. Please check back shortly.' : 'Loyalty Tree Benefits is not open yet. Your existing loyalty cards keep working as usual.'}</p><a href="/" className="lt-benefit-secondary">Visit Loyalty Tree <Icon name="arrow"/></a></div> : <>

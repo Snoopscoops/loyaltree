@@ -50,7 +50,16 @@ def prepare_business_batch(db, business_id, read_verified_members, *, now=None):
             "settings_version": row["updated_at"], "proposals": proposals}
 
 
-def scheduled_winback_run(*args, **kwargs):
-    # Keep this explicit gate until issuing a real coupon and marking its
-    # claim can occur in one transaction with fresh eligibility verification.
-    return {"status": "not_active", "issued": 0, "notifications_sent": 0}
+def issuance_enabled():
+    # Release hold: verified purchase coverage and authoritative redemption
+    # must be completed before the scheduler may issue monetary discounts.
+    return False
+
+
+def scheduled_winback_run(db, business_id):
+    if not issuance_enabled():
+        return {"status": "not_active", "issued": 0}
+    result = db.rpc("churn_issue_business_batch", {"p_business_id": business_id}).execute().data
+    if not isinstance(result, dict):
+        raise RuntimeError("Unexpected win-back issuance result")
+    return result

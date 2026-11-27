@@ -108,6 +108,8 @@ export function NativeBookingCustomer({apiBase='',slug,preferredBranch='',extern
   const [copyNotice,setCopyNotice]=useState('')
   async function copyReference(){const value=displayReference(receipt?.booking_code||receipt?.reference);try{await navigator.clipboard.writeText(value);setCopyNotice('Copied')}catch{setCopyNotice('Select and copy the code manually.')}}
   const [cardToken,setCardToken]=useState(''),[verifiedCard,setVerifiedCard]=useState('')
+  const [history,setHistory]=useState(null),[historyError,setHistoryError]=useState(''),[historyRefresh,setHistoryRefresh]=useState(0)
+  const [historyLoading,setHistoryLoading]=useState(false)
   const cardIdentity=useRef('')
   const [,setUnusedAddress]=useState('')
   useEffect(()=>{
@@ -115,7 +117,7 @@ export function NativeBookingCustomer({apiBase='',slug,preferredBranch='',extern
       if(event?.type==='lt-menu-card-change'&&event.detail?.business!==slug)return
       if(event?.type==='storage'&&event.key!==null&&event.key!=='lt-menu-card:'+slug)return
       let token='';try{token=readBookingCardToken(window.localStorage,slug)}catch{}
-      if(cardIdentity.current!==token){if(cardIdentity.current){setName('');setPhone('')}cardIdentity.current=token;setVerifiedCard('');setCardToken(token)}
+      if(cardIdentity.current!==token){if(cardIdentity.current){setName('');setPhone('')}cardIdentity.current=token;setVerifiedCard('');setCardToken(token);setHistory(null);setHistoryError('');setReceipt(null);setLookup('');retry.current=null}
     }
     sync();window.addEventListener('lt-menu-card-change',sync);window.addEventListener('storage',sync);window.addEventListener('focus',sync)
     return()=>{window.removeEventListener('lt-menu-card-change',sync);window.removeEventListener('storage',sync);window.removeEventListener('focus',sync)}
@@ -130,6 +132,17 @@ export function NativeBookingCustomer({apiBase='',slug,preferredBranch='',extern
     return()=>ctrl.abort()
   },[apiBase,slug,kind,cardToken])
   useEffect(()=>{if(!slug)return;const ctrl=new AbortController();setCatalog([]);setExpanded(false);setNoteOpen(false);setKind('');setBranch('');setResource('');setReceipt(null);json(root,{signal:ctrl.signal}).then(x=>{if(!ctrl.signal.aborted)setCatalog(x.branches||[])}).catch(()=>{});return()=>ctrl.abort()},[root])
+  useEffect(()=>{
+    setHistory(null);setHistoryError('');setHistoryLoading(false)
+    if(!expanded||!cardToken)return
+    const ctrl=new AbortController();setHistoryLoading(true)
+    json(root+'/history',{headers:{Authorization:'Bearer '+cardToken},signal:ctrl.signal}).then(value=>{
+      if(!ctrl.signal.aborted&&cardIdentity.current===cardToken)setHistory({token:cardToken,value})
+    }).catch(e=>{if(!ctrl.signal.aborted&&cardIdentity.current===cardToken)setHistoryError(e.message)})
+      .finally(()=>{if(!ctrl.signal.aborted)setHistoryLoading(false)})
+    return()=>ctrl.abort()
+  },[root,expanded,cardToken,historyRefresh])
+  const memberBookings=history?.token===cardToken?history.value:null
   const places=catalog.filter(b=>b.resources.some(r=>r.kind===kind))
   const items=places.find(b=>b.public_id===branch)?.resources.filter(r=>r.kind===kind)||[]
   const chosen=items.find(r=>r.id===resource)
@@ -139,15 +152,18 @@ export function NativeBookingCustomer({apiBase='',slug,preferredBranch='',extern
     e.preventDefault();if(posting.current||!slot||!chosen)return
     posting.current=true;setBusy(true);setError('')
     const body={resource_id:resource,branch,starts_at:slot,guests,name:name.trim(),phone:phone.trim(),note:note.trim()}
-    const signature=JSON.stringify(body)
+    const submitToken=cardIdentity.current
+    const signature=JSON.stringify([body,submitToken])
     try{
       if(retry.current?.signature!==signature) retry.current={signature,id:crypto.randomUUID()}
-      const result=await json(root+'/request',{method:'POST',body:JSON.stringify({...body,request_id:retry.current.id})})
+      const result=await json(root+'/request',{method:'POST',headers:submitToken?{Authorization:'Bearer '+submitToken}:{},body:JSON.stringify({...body,request_id:retry.current.id})})
+      if(cardIdentity.current!==submitToken)return
+      setHistoryRefresh(v=>v+1)
       setReceipt({...result,starts_at:body.starts_at});setLookup(displayReference(result.booking_code||result.reference));setCopyNotice('');setName('');setPhone('');setNote('');setNoteOpen(false);setExpanded(false);retry.current=null
     }catch(e){setError(e.message)}finally{posting.current=false;setBusy(false)}
   }
   async function track(){setLooking(true);setError('');try{const x=await json(root+'/status/'+encodeURIComponent(lookup.trim()));setReceipt(current=>({...((current&&(displayReference(current.booking_code||current.reference)===lookup.trim()||current.reference===lookup.trim()))?current:{}),reference:lookup.trim(),status:x.status}))}catch(e){setError(e.message)}finally{setLooking(false)}}
-  if(!catalog.length&&!externalActions.length)return null
+  if(!catalog.length&&!externalActions.length&&!cardToken)return null
   return <section className="lt-nb lt-nb-public lt-nb-reservation">
     <button className="lt-nb-entry" type="button" aria-expanded={expanded} disabled={busy} onClick={()=>setExpanded(v=>!v)}>
       <span className="lt-nb-entry-copy"><small>Reservations</small><strong>Reserve our place</strong><span>Book a table or plan a private event.</span></span>
@@ -163,7 +179,7 @@ export function NativeBookingCustomer({apiBase='',slug,preferredBranch='',extern
     })}</div>
     {externalActions.some(a=>catalog.some(b=>b.resources.some(r=>r.kind===(a.id==='book'?'venue':'table'))))&&<details><summary>Other reservation options</summary>{externalActions.filter(a=>catalog.some(b=>b.resources.some(r=>r.kind===(a.id==='book'?'venue':'table')))).map(a=><a key={a.id} className="lt-nb-external" href={a.url} target="_blank" rel="noreferrer">{a.label}{a.note?' · '+a.note:''}</a>)}</details>}
     {error&&<p role="alert" className="lt-nb-error">{error}</p>}
-    {receipt?<div role="status" className="lt-nb-section"><h3>{receipt.status==='pending'?'Request received':receipt.status}</h3>{receipt.starts_at&&<p>Arrival: {dateText(receipt.starts_at)}</p>}<p>{receipt.status==='pending'?'Your booking is not confirmed. The business must approve your request.':'Check the latest status below.'}</p><label>Booking code<input className="lt-nb-reference" readOnly value={displayReference(receipt.booking_code||receipt.reference)} onFocus={e=>e.target.select()}/></label><button type="button" className="lt-nb-copy" onClick={copyReference}>Copy code</button>{copyNotice&&<small role="status">{copyNotice}</small>}<p>Save your reference. No payment was collected.</p></div>:kind&&<form onSubmit={submit}><fieldset disabled={busy}>
+    {receipt?<div role="status" className="lt-nb-section"><h3>{receipt.status==='pending'?'Request received':receipt.status}</h3>{receipt.starts_at&&<p>Arrival: {dateText(receipt.starts_at)}</p>}<p>{receipt.status==='pending'?'Your booking is not confirmed. The business must approve your request.':'Check the latest status below.'}</p><label>Booking code<input className="lt-nb-reference" readOnly value={displayReference(receipt.booking_code||receipt.reference)} onFocus={e=>e.target.select()}/></label><button type="button" className="lt-nb-copy" onClick={copyReference}>Copy code</button>{copyNotice&&<small role="status">{copyNotice}</small>}<p>Save your reference. No payment was collected.</p><button type="button" onClick={()=>{setReceipt(null);setKind('');setError('')}}>Make another reservation</button></div>:kind&&<form onSubmit={submit}><fieldset disabled={busy}>
       <div className="lt-nb-form-group"><h3 className="lt-nb-step-title">Booking details</h3>
       <label>Branch<select value={branch} onChange={e=>{setBranch(e.target.value);setResource('')}}>{places.map(b=><option key={b.public_id} value={b.public_id}>{b.name}</option>)}</select></label>
       <label>{kind==='venue'?'Venue package':'Table'}<select required value={resource} onChange={e=>setResource(e.target.value)}><option value="">Choose</option>{items.map(r=><option key={r.id} value={r.id}>{r.name} · up to {r.capacity} guests{r.price_centavos?' · '+php(r.price_centavos):''}</option>)}</select></label>
@@ -181,7 +197,20 @@ export function NativeBookingCustomer({apiBase='',slug,preferredBranch='',extern
       <div className="lt-nb-submit"><small>Your contact details are shared with the business. Requests require confirmation. No deposit is collected here.</small>
       <button disabled={!slot||busy} type="submit">{busy?'Submitting…':'Request reservation'}</button></div>
     </fieldset></form>}
-    {catalog.length>0&&<details><summary>Check booking status</summary><label>Booking code<input autoCapitalize="characters" autoCorrect="off" spellCheck={false} maxLength={64} placeholder="7KM4-P9TX-2C8A" value={lookup} onChange={e=>{setLookup(e.target.value);setCopyNotice('')}}/></label><small>Enter your code. Spaces and hyphens are optional.</small><button type="button" disabled={looking||!lookup.trim()} onClick={track}>Check status</button></details>}
+    {cardToken&&<details open><summary>My reservations</summary>
+      <small>Bookings made with this connected loyalty card. Older guest bookings can still be checked by code.</small>
+      <button type="button" disabled={historyLoading} onClick={()=>setHistoryRefresh(v=>v+1)}>Refresh reservations</button>
+      {historyLoading&&<p role="status">Loading reservations…</p>}
+      {historyError&&<p role="alert">{historyError}</p>}
+      {memberBookings&&<>{!memberBookings.complete&&<small>Showing the latest 100 reservations.</small>}
+        {!memberBookings.bookings?.length?<p>No linked reservations yet.</p>:memberBookings.bookings.map(b=><article className="lt-nb-section" key={b.id}>
+          <h3>{b.resource_name} · {b.guests} guests</h3><p>{dateText(b.starts_at)} – {timeText(b.ends_at)}</p>
+          <p>{b.status==='pending'?'Awaiting confirmation':b.status}{b.price_centavos?' · Quote '+php(b.price_centavos):''}</p>
+          <small>Booking code: {displayReference(b.booking_code||b.id)}</small>
+        </article>)}
+      </>}
+    </details>}
+    {(catalog.length>0||cardToken)&&<details><summary>Check booking status</summary><label>Booking code<input autoCapitalize="characters" autoCorrect="off" spellCheck={false} maxLength={64} placeholder="7KM4-P9TX-2C8A" value={lookup} onChange={e=>{setLookup(e.target.value);setCopyNotice('')}}/></label><small>Enter your code. Spaces and hyphens are optional.</small><button type="button" disabled={looking||!lookup.trim()} onClick={track}>Check status</button></details>}
     </div>
   </section>
 }

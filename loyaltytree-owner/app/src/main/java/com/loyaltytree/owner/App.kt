@@ -1118,7 +1118,7 @@ private fun OrderCard(store: CounterStore, order: LiveOrder, insideBill: Boolean
         }
         if (order.canCancel == true) {
             Secondary("Cancel order") { if (!busy) cancelling = true }
-        } else if (order.canCancel == null && order.source == "menu" && order.paymentMethod == "cash" && order.paymentStatus == "unpaid" && order.status == "new") {
+        } else if (order.canCancel == null && order.source == "menu" && order.paymentMethod == "cash" && order.payment == "unpaid" && order.status == "new") {
             Secondary(if (busy) "Saving" else "Cancel order") { if (!busy) cancelling = true }
         } else if (order.canCancel == null && order.source != "menu" && next != null && (order.status == "new" || order.status == "preparing")) {
             Secondary(if (busy) "Saving" else "Cancel order") { if (!busy) store.setOrderStatus(order.id, "cancelled") }

@@ -1182,7 +1182,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     }
 
     fun cancelCounterOrder(order: LiveOrder, reason: String, done: (String) -> Unit) {
-        if (order.source != "menu" || order.paymentMethod != "cash" || order.paymentStatus != "unpaid" || order.status != "new") {
+        if (order.source != "menu" || order.paymentMethod != "cash" || order.payment != "unpaid" || order.status != "new") {
             return done("Only new unpaid cash menu orders can be cancelled here.")
         }
         if (reason.isBlank() || reason.trim().length > 250) return done("Enter a cancellation reason.")

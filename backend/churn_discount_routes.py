@@ -5,8 +5,10 @@ from fastapi import Body, Header, HTTPException
 
 try:
     from .churn_discount_policy import ChurnPolicy
+    from .churn_discount_worker import issuance_enabled
 except ImportError:
     from churn_discount_policy import ChurnPolicy
+    from churn_discount_worker import issuance_enabled
 
 
 def register_churn_discount_routes(app, *, db, business_for):
@@ -14,7 +16,7 @@ def register_churn_discount_routes(app, *, db, business_for):
     fields = tuple(asdict(ChurnPolicy()))
 
     def response(policy):
-        return {**asdict(policy), 'issuance_ready': False}
+        return {**asdict(policy), 'issuance_ready': issuance_enabled()}
 
     @app.get(path)
     def get_churn_settings(public_id: str, authorization: str = Header(default='')):
@@ -44,3 +46,11 @@ def register_churn_discount_routes(app, *, db, business_for):
         except Exception as exc:
             raise HTTPException(503, 'Could not save win-back settings.') from exc
         return response(policy)
+
+    @app.get('/api/v1/business/{public_id}/churn-discount-report')
+    def report_churn_settings(public_id: str, authorization: str = Header(default='')):
+        business = business_for(public_id, authorization)
+        try:
+            return db.rpc('churn_discount_report', {'p_business_id': business['id']}).execute().data
+        except Exception as exc:
+            raise HTTPException(503, 'Win-back reporting is unavailable.') from exc
