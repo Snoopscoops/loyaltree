@@ -1169,8 +1169,13 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         adjustCounterOrder(order.id, "void-item", body, done = done)
     }
 
-    fun cancelCounterOrder(order: LiveOrder, reason: String, done: (String) -> Unit) =
-        adjustCounterOrder(order.id, "status", JSONObject().put("status", "cancelled").put("reason", reason), done = done)
+    fun cancelCounterOrder(order: LiveOrder, reason: String, done: (String) -> Unit) {
+        if (order.source != "menu" || order.paymentMethod != "cash" || order.paymentStatus != "unpaid" || order.status != "new") {
+            return done("Only new unpaid cash menu orders can be cancelled here.")
+        }
+        if (reason.isBlank() || reason.trim().length > 250) return done("Enter a cancellation reason.")
+        adjustCounterOrder(order.id, "status", JSONObject().put("status", "cancelled").put("reason", reason.trim()), done = done)
+    }
 
     private fun adjustCounterOrder(id: String, action: String, body: JSONObject, create: Boolean = false, done: (String) -> Unit) {
         val current = session ?: return done("Sign in again to update the order.")
