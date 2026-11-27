@@ -2,7 +2,7 @@
 from decimal import Decimal, InvalidOperation
 from uuid import UUID
 
-from fastapi import BackgroundTasks, Body, Header, HTTPException
+from fastapi import BackgroundTasks, Body, Header, HTTPException, Request
 
 try:
     from .menu_order_access import check_order_branch
@@ -83,7 +83,7 @@ def _text(payload, key, limit, *, required=False):
     return value
 
 
-def register_menu_order_adjustment_routes(app, *, db, operator, normalize_items, price_items, order_public, push_order):
+def register_menu_order_adjustment_routes(app, *, db, operator, normalize_items, price_items, order_public, push_order, verify_void):
     @app.post('/api/v1/business/{public_id}/menu-orders/{order_public_id}/sub-orders')
     def create_counter_suborder(public_id: str, order_public_id: str, background_tasks: BackgroundTasks,
                                 payload: dict = Body(...), authorization: str = Header(default='')):
@@ -148,7 +148,7 @@ def register_menu_order_adjustment_routes(app, *, db, operator, normalize_items,
                 'settled_total': result['settled_total']}
 
     @app.patch('/api/v1/business/{public_id}/menu-orders/{order_public_id}/void-item')
-    def void_counter_item(public_id: str, order_public_id: str,
+    def void_counter_item(public_id: str, order_public_id: str, request: Request,
                           payload: dict = Body(...), authorization: str = Header(default='')):
         business, scope = operator(public_id, authorization)
         order = read_counter_order(db, business, scope, order_public_id)
@@ -157,9 +157,16 @@ def register_menu_order_adjustment_routes(app, *, db, operator, normalize_items,
         quantity = payload.get('quantity')
         if type(quantity) is not int or not 1 <= quantity <= 20:
             raise HTTPException(400, 'Invalid void quantity.')
+        request_id = _request_id(payload)
+        line_id = _text(payload, 'line_id', 32, required=True)
+        reason = _text(payload, 'reason', 250, required=True)
+        credential = payload.get('credential')
+        if not isinstance(credential, str) or not 1 <= len(credential) <= 256:
+            raise HTTPException(400, 'Enter your password or manager PIN to authorize the void.')
+        verify_void(request, business, scope, credential)
         result = counter_order_rpc(db, 'menu_void_counter_order_item',
             p_business_id=business['id'], p_branch=order.get('branch_public_id') or '',
-            p_order_public_id=order_public_id, p_request_id=_request_id(payload),
-            p_line_id=_text(payload, 'line_id', 32, required=True), p_quantity=quantity,
-            p_reason=_text(payload, 'reason', 250, required=True), p_actor=counter_order_actor(scope))
+            p_order_public_id=order_public_id, p_request_id=request_id,
+            p_line_id=line_id, p_quantity=quantity,
+            p_reason=reason, p_actor=counter_order_actor(scope))
         return {'success': True, 'order': order_public(result['order'])}
