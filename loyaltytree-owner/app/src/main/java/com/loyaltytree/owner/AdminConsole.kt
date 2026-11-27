@@ -1,6 +1,12 @@
 package com.loyaltytree.owner
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import java.time.LocalDate
+import java.time.YearMonth
+import java.time.ZoneId
+import java.time.Instant
+import java.math.BigDecimal
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -37,14 +43,15 @@ internal fun AdminConsole(store: CounterStore, current: OwnerSession) {
         var busy by remember { mutableStateOf(true) }
         var note by remember { mutableStateOf("") }
         var data by remember { mutableStateOf<Any?>(null) }
+        var period by remember { mutableIntStateOf(7) }
         val path = when (tab) {
             "Home" -> "/api/v1/admin/overview"
             "Clients" -> "/api/v1/admin/businesses"
-            "Finance" -> "/api/v1/admin/special-invoices"
-            "Activity" -> "/api/v1/admin/overview"
+            "Finance" -> "/api/v1/admin/businesses"
+            "Activity" -> "/api/v1/admin/client-performance?days=$period"
             else -> null
         }
-        LaunchedEffect(current, tab, refresh) {
+        LaunchedEffect(current, tab, refresh, period) {
             busy = true
             data = null
             note = ""
@@ -74,7 +81,7 @@ internal fun AdminConsole(store: CounterStore, current: OwnerSession) {
                 listOf("Home", "Clients", "Finance", "Activity", "Settings").forEach { item ->
                     NavigationBarItem(selected = tab == item, onClick = { if(tab != item) { data = null; note = ""; busy = true; tab = item } },
                         icon = { Text(when(item) { "Home" -> "⌂"; "Clients" -> "▤"; "Finance" -> "₱"; "Activity" -> "↗"; else -> "⚙" }, fontSize = 22.sp) },
-                        label = { Text(item, fontSize = 10.sp) },
+                        label = { Text(if (item == "Activity") "Growth" else item, fontSize = 10.sp) },
                         colors = NavigationBarItemDefaults.colors(indicatorColor = AdminLime, selectedIconColor = AdminInk, selectedTextColor = AdminInk))
                 }
             }
@@ -111,7 +118,7 @@ internal fun AdminConsole(store: CounterStore, current: OwnerSession) {
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             AdminMetric("Due today", "Unavailable", Modifier.weight(1f))
-                            AdminMetric("Errors today", "Unavailable", Modifier.weight(1f))
+                            AdminMetric("Billing calendar", "Open Finance", Modifier.weight(1f))
                         }
                         Text("Daily reporting requires verified server metrics. Missing values are not zero.", fontSize = 12.sp, color = AdminMuted)
                         Text("Network totals", fontWeight = FontWeight.Bold, fontSize = 21.sp, color = AdminInk)
@@ -135,24 +142,33 @@ internal fun AdminConsole(store: CounterStore, current: OwnerSession) {
                             if(rows.length() == 0) Text("No records returned.")
                         }
                     }
-                    "Finance" -> {
-                        Text("Special business invoices only. Paid status is not verified cash collected.", color = AdminMuted)
-                        val rows = data as? JSONArray
-                        if (rows != null) {
-                            val valid = (0 until rows.length()).mapNotNull { rows.optJSONObject(it) }
-                            AdminMetric("Marked paid", countLabel(valid.count { it.optString("status") == "paid" }))
-                            AdminMetric("Overdue", countLabel(valid.count { it.optString("status") == "overdue" }))
-                            valid.forEach { row ->
-                                AdminMetric(row.optString("invoice_number", "Invoice"), row.optString("status", "—"))
+                    "Finance" -> AdminBillingCalendar(data as? JSONArray)
+                    "Activity" -> {
+                        val report = data as? JSONObject
+                        Text("Growth intelligence", fontWeight = FontWeight.Bold, fontSize = 22.sp, color = AdminInk)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            listOf(7, 30, 90).forEach { days ->
+                                FilterChip(selected = period == days, onClick = { period = days }, label = { Text("$days days") })
                             }
                         }
-                    }
-                    "Activity" -> {
-                        val overview = data as? JSONObject
-                        AdminMetric("Recorded activity · 30 days", countLabel(overview?.opt("stamps_30d")))
-                        AdminMetric("Redemptions · 30 days", countLabel(overview?.opt("redemptions_30d")))
-                        Text("Service health", color = AdminInk, fontWeight = FontWeight.Bold)
-                        listOf("Render", "Supabase", "Wallet services", "NextPay").forEach { AdminMetric(it, "Not checked") }
+                        val summary = report?.optJSONObject("summary")
+                        AdminMetric("New loyalty members · selected period", countLabel(summary?.opt("new_customers")))
+                        AdminMetric("Active members", countLabel(summary?.opt("active_members")))
+                        AdminMetric("Returning members", countLabel(summary?.opt("returning_members")))
+                        val ranked = adminRows(report?.optJSONArray("businesses")).mapNotNull { row ->
+                            val n = (row.optJSONObject("crm")?.opt("new_customers") as? Number)?.toDouble()
+                            if (n == null || !n.isFinite() || n < 0) null else row.optString("business_name", "Business") to n
+                        }.sortedByDescending { it.second }.take(10)
+                        Text("New members by business", fontWeight = FontWeight.Bold, color = AdminInk)
+                        val max = ranked.maxOfOrNull { it.second }?.coerceAtLeast(1.0) ?: 1.0
+                        if (ranked.isEmpty()) Text("No verified business breakdown available.", color = AdminMuted)
+                        ranked.forEach { (name, n) ->
+                            Row { Text(name, modifier = Modifier.weight(1f), color = AdminInk); Text(countLabel(n), color = AdminInk) }
+                            Box(Modifier.fillMaxWidth().height(8.dp).background(Color.White, RoundedCornerShape(8.dp))) {
+                                Box(Modifier.fillMaxWidth((n / max).toFloat()).height(8.dp).background(AdminInk, RoundedCornerShape(8.dp)))
+                            }
+                        }
+                        Text("Period totals from client performance. Not a calendar-day registration series.", fontSize = 12.sp, color = AdminMuted)
                     }
                     "Settings" -> {
                         Text("Super administrator", color = AdminInk, fontWeight = FontWeight.Bold)
@@ -172,4 +188,70 @@ private fun AdminMetric(label: String, value: String, modifier: Modifier = Modif
         Text(value, fontSize = 21.sp, fontWeight = FontWeight.SemiBold, color = AdminInk)
 
     }
+}
+
+private fun adminRows(rows: JSONArray?): List<JSONObject> =
+    if (rows == null) emptyList() else (0 until rows.length()).mapNotNull { rows.optJSONObject(it) }
+
+private fun adminDate(raw: String): LocalDate? =
+    runCatching { LocalDate.parse(raw) }.getOrNull()
+        ?: runCatching { Instant.parse(raw).atZone(ZoneId.of("Asia/Manila")).toLocalDate() }.getOrNull()
+        ?: runCatching { java.time.OffsetDateTime.parse(raw).atZoneSameInstant(ZoneId.of("Asia/Manila")).toLocalDate() }.getOrNull()
+
+private fun adminPrice(row: JSONObject): BigDecimal? =
+    row.opt("price_current")?.toString()?.toBigDecimalOrNull()?.takeIf { it.signum() >= 0 }
+
+@Composable
+private fun AdminBillingCalendar(rows: JSONArray?) {
+    val today = LocalDate.now(ZoneId.of("Asia/Manila"))
+    var month by remember { mutableStateOf(YearMonth.from(today)) }
+    var selected by remember { mutableStateOf(today) }
+    val dated = adminRows(rows).mapNotNull { row ->
+        adminDate(row.optString("subscription_expires_at", ""))?.let { it to row }
+    }
+    val daily = dated.filter { it.first == selected }.map { it.second }
+    Text("Subscription renewal calendar", color = AdminInk, fontWeight = FontWeight.Bold, fontSize = 21.sp)
+    Text("Existing subscription expiry and current cycle price. Expected renewal, not an issued invoice or confirmed debt.", color = AdminMuted, fontSize = 12.sp)
+    if (rows == null) { Text("Billing records unavailable.", color = AdminMuted); return }
+    Column(Modifier.fillMaxWidth().background(Color.White, RoundedCornerShape(20.dp)).padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = { month = month.minusMonths(1); selected = month.atDay(1) }) { Text("‹") }
+            Text(month.month.name.lowercase().replaceFirstChar { it.uppercase() } + " " + month.year, modifier = Modifier.weight(1f), fontWeight = FontWeight.Bold, color = AdminInk)
+            TextButton(onClick = { month = month.plusMonths(1); selected = month.atDay(1) }) { Text("›") }
+        }
+        Row { listOf("M","T","W","T","F","S","S").forEach { d -> Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { Text(d, fontSize = 12.sp, color = AdminMuted) } } }
+        val offset = month.atDay(1).dayOfWeek.value - 1
+        for (week in 0..5) {
+            Row {
+                for (day in 0..6) {
+                    val n = week * 7 + day - offset + 1
+                    if (n !in 1..month.lengthOfMonth()) Box(Modifier.weight(1f).height(42.dp))
+                    else {
+                        val date = month.atDay(n)
+                        val count = dated.count { it.first == date }
+                        Column(Modifier.weight(1f).height(42.dp).background(if (date == selected) AdminLime else Color.Transparent, RoundedCornerShape(9.dp)).clickable { selected = date }, horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(n.toString(), color = AdminInk, fontWeight = if (date == selected) FontWeight.Bold else FontWeight.Normal)
+                            if (count > 0) Text("$count due", fontSize = 9.sp, color = AdminMuted)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Text(selected.toString() + " · " + daily.size + " scheduled", fontWeight = FontWeight.Bold, color = AdminInk)
+    val groups = daily.groupBy { it.optString("currency", "PHP") }
+    groups.forEach { (currency, list) ->
+        val prices = list.mapNotNull(::adminPrice)
+        val total = prices.fold(BigDecimal.ZERO) { sum, value -> sum.add(value) }
+        AdminMetric("Known cycle prices · $currency", if (prices.isEmpty()) "Unavailable" else "$currency " + total.toPlainString())
+        if (prices.size != list.size) Text("Some cycle prices are unavailable.", color = AdminMuted)
+    }
+    daily.forEach { row ->
+        val currency = row.optString("currency", "PHP")
+        val price = adminPrice(row)?.toPlainString()
+        AdminMetric(row.optString("name", row.optString("business_name", "Business")) + " · " + row.optString("subscription_status", "status unavailable"),
+            (if (price == null) "Amount unavailable" else "$currency $price") + " · " + row.optString("billing_cycle", "cycle unavailable"))
+    }
+    if (daily.isEmpty()) Text("No recorded subscription expiries on this date.", color = AdminMuted)
+    Text("Special invoices are separate from subscription renewals.", fontSize = 12.sp, color = AdminMuted)
 }
