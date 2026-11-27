@@ -7,7 +7,7 @@ import CustomerDemographicsAdmin from './CustomerDemographicsAdmin'
 import SystemUsageAdmin from './SystemUsageAdmin'
 import BenefitsAdmin from './BenefitsAdmin'
 import { BenefitsAdminCardUpgrade } from './BenefitsCardUpgrade'
-import { filterAdminBusinesses, loadAdminResources, readAdminJson } from './adminData'
+import { filterAdminBusinesses, loadAdminResources, readAdminJson, adminCountLabel } from './adminData'
 
 function BillingBranchEditor({ detail, onSave }) {
   const [count, setCount] = useState(String(detail.branch_count || 1))
@@ -999,7 +999,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   ]
   const activeGroup = adminGroups.find(group => group.tabs.includes(activeAdminTab)) || adminGroups[0]
   const visibleAdminTabs = adminTabs.filter(tab => activeGroup.tabs.includes(tab.key))
-  const metric = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value.toLocaleString() : '—'
+  const metric = adminCountLabel
 
   return (
     <div style={styles.container}>
