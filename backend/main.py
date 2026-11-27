@@ -52447,9 +52447,42 @@ except ImportError:
 # New-order push (FCM). Off until FIREBASE_SERVICE_ACCOUNT_JSON is set on Render.
 _menu_order_push = register_menu_order_push_routes(app, db=supabase, operator=_menu_order_operator,
     get_business=safe_get_business)
+def _verify_menu_void_credential(request, business, scope, credential):
+    """Fresh credential check scoped to the authenticated actor, never persisted in an audit row."""
+    role = scope.get('role')
+    identity = f"{business['id']}:{role}:{scope.get('staff_id') or 'owner'}"
+    _check_auth_bruteforce('menu-void', request, identity)
+    # Count attempts before checking credentials; concurrent requests cannot
+    # bypass the existing process-local limit as easily as failure-only counting.
+    _record_auth_failure('menu-void', request, identity)
+    try:
+        if role == 'owner':
+            stored = business.get('password_hash')
+            valid = isinstance(stored, str) and bool(stored) and owner_password_security.verify_owner_password(
+                credential, stored, legacy_hasher=hash_password)
+        elif role == 'manager' and scope.get('staff_id') is not None:
+            rows = (supabase.table('staff').select('id,role,is_active,pin')
+                    .eq('business_id', business['id']).eq('id', scope['staff_id']).limit(1).execute().data or [])
+            row = rows[0] if rows else {}
+            stored = row.get('pin')
+            valid = (row.get('is_active') is True and row.get('role') == 'manager'
+                     and stored is not None and bool(str(stored))
+                     and hmac.compare_digest(str(stored).encode('utf-8'), credential.encode('utf-8')))
+        else:
+            valid = False
+    except owner_password_security.PasswordWorkBusy as exc:
+        raise HTTPException(503, 'Verification temporarily unavailable. Try again.', headers={'Retry-After': '1'}) from exc
+    except Exception as exc:
+        raise HTTPException(503, 'Verification temporarily unavailable.') from exc
+    if not valid:
+        raise HTTPException(403, 'Incorrect authorization credential.')
+    _clear_auth_failures('menu-void', request, identity)
+
+
 register_menu_order_adjustment_routes(app, db=supabase, operator=_menu_order_operator,
     normalize_items=_menu_normalize_counter_items, price_items=_menu_price_counter_items,
-    order_public=lambda row: _menu_counter_order_public(row, staff=True), push_order=_menu_order_push)
+    order_public=lambda row: _menu_counter_order_public(row, staff=True), push_order=_menu_order_push,
+    verify_void=_verify_menu_void_credential)
 try:
     from .menu_customer_addons import register_customer_addon_routes
 except ImportError:
