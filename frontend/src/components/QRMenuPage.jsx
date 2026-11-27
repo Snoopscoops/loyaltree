@@ -1,4 +1,3 @@
-import { NativeBookingCustomer } from './NativeBookings.jsx'
 import React, { useEffect, useId, useRef, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { filterMenuItems, groupMenuCategories, menuItemAvailable, menuSelectionAvailable, menuOptionAvailable, menuItemPrice, toggleMenuOption, validMenuPayload, addCartItem, changeCartQuantity, cartSubtotal, buildMenuOrder, sendMenuOrder, pickupTimeLabel, resolveMenuBranch, PAYMENT_METHODS, paymentReceiptLabel, CASH_NOTICE, payButtonLabel, receiptCopy } from './qrMenuModel'
@@ -10,9 +9,25 @@ import { addonRequest, canAddToOrder } from './qrMenuAddons'
 import './qr-menu.css'
 import { checkoutRewardIsEligible, checkoutRewardSelectionPayload } from './qrMenuRedemption'
 import './qr-menu-rewards.css' // owner-v11
-import { loyaltyProgress, historyEvents, quickReorderItems, canQuickAdd } from './qrMenuV15'
+import { loyaltyProgress, historyEvents, quickReorderItems } from './qrMenuV15'
 import './qr-menu-v15.css'
+import './simple-storefront.css'
+import { optionLimits, optionsComplete, storefrontShareUrl, storefrontAccent } from './simpleStorefront.js'
 import MenuCheckoutContact, { validContactPhone } from './MenuCheckoutContact'
+
+function StorefrontIcon({name,size=20}) {
+  const paths={
+    menu:<><path d="M3 2v7a3 3 0 0 0 6 0V2M6 2v20M19 2c-3 3-5 6-5 10h5v10M19 2v10"/></>,
+    orders:<><path d="M5 3l3 2 4-2 4 2 3-2v18l-3-2-4 2-4-2-3 2zM9 9h6M9 13h6M9 17h4"/></>,
+    rewards:<><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M5 12v9h14v-9M12 8v13M12 8H8a3 3 0 1 1 3-3zM12 8h4a3 3 0 1 0-3-3z"/></>,
+    cart:<><path d="M2 3h3l3 13h11l3-10H6"/><circle cx="9" cy="21" r="1"/><circle cx="19" cy="21" r="1"/></>,
+    share:<><path d="M12 15V3m-4 4 4-4 4 4M6 11H4v10h16V11h-2"/></>,
+    search:<><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></>,
+    wallet:<><rect x="3" y="5" width="18" height="15" rx="3"/><path d="M3 9h18M15 14h6"/></>,
+    plus:<path d="M12 5v14M5 12h14"/>,
+  }
+  return <svg aria-hidden="true" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>
+}
 
 function MenuItemPhoto({ item, available }) {
   const [failedSource, setFailedSource] = useState(null)
@@ -27,6 +42,7 @@ function ItemDetails({ item, available, branchId, money, onClose, onAdd }) {
   const titleId = useId()
   const [selected, setSelected] = useState({})
   const [quantity, setQuantity] = useState(1)
+  const valid = available && optionsComplete(item,selected) && menuSelectionAvailable(item,branchId,selected)
   useEffect(() => { dialog.current?.showModal() }, [])
   return <dialog ref={dialog} className="lt-qr-sheet" aria-labelledby={titleId} onCancel={event => { event.preventDefault(); onClose() }} onClick={event => { if (event.target === dialog.current) onClose() }}>
     <div className="lt-qr-sheet-content">
@@ -36,13 +52,18 @@ function ItemDetails({ item, available, branchId, money, onClose, onAdd }) {
       {item.description && <p className="lt-qr-description">{item.description}</p>}
       {!available && <p className="lt-qr-sold-note">Currently sold out at this location.</p>}
       {(item.modifier_groups || []).map(group => <fieldset key={group.public_id} className="lt-qr-option-group">
-        <legend>{group.name}</legend><p>{group.selection_type === 'single' ? 'Choose one' : `Choose your options${group.max_selections > 0 ? ` · up to ${group.max_selections}` : ''}`}</p>
-        {group.options.map(option => <label key={option.public_id} className={!menuOptionAvailable(item,branchId,option.public_id)?'is-unavailable':''}><span><input disabled={!menuOptionAvailable(item,branchId,option.public_id)} type={group.selection_type === 'single' ? 'radio' : 'checkbox'} name={group.public_id} checked={(selected[group.public_id] || []).includes(option.public_id)} onChange={() => setSelected(current => toggleMenuOption(current, group, option.public_id))} />{option.name}</span><span>{option.price_delta ? `${option.price_delta > 0 ? '+' : '−'} ${money(Math.abs(option.price_delta))}` : 'Included'}</span></label>)}
+        <legend>{group.name}</legend><p>{(() => { const {minimum,maximum}=optionLimits(group); return (minimum?'Required':'Optional')+' · '+(maximum===1?'Select 1':minimum?'Select at least '+minimum:'Choose your options')+(maximum>1&&Number.isFinite(maximum)?' · Up to '+maximum:'') })()}</p>
+        {(group.options||[]).filter(option=>option.is_active!==false).map(option => {
+          const chosen=(selected[group.public_id]||[]).includes(option.public_id)
+          const sold=!menuOptionAvailable(item,branchId,option.public_id)
+          const limit=group.selection_type!=='single'&&!chosen&&(selected[group.public_id]||[]).length>=optionLimits(group).maximum
+          return <label key={option.public_id} className={sold?'is-unavailable':''}><span><input disabled={sold||limit} type={group.selection_type === 'single' ? 'radio' : 'checkbox'} name={group.public_id} checked={chosen} onChange={() => setSelected(current => toggleMenuOption(current, group, option.public_id))} />{option.name}{sold&&<small> · Sold out</small>}</span><span>{option.price_delta ? `${option.price_delta > 0 ? '+' : '−'} ${money(Math.abs(option.price_delta))}` : 'Included'}</span></label>
+        })}
         {selected[group.public_id]?.length > 0 && <button type="button" className="lt-qr-text-button" onClick={() => setSelected(current => ({ ...current, [group.public_id]: [] }))}>Clear selection</button>}
       </fieldset>)}
       <div className="lt-qr-detail-price"><span>Price with selected options</span><strong>{money(menuItemPrice(item, selected))}</strong></div>
-      {available && menuSelectionAvailable(item,branchId,selected) && <div className="lt-qr-qty"><button type="button" onClick={() => setQuantity(value => Math.max(1, value - 1))} aria-label="Decrease quantity">−</button><span>{quantity}</span><button type="button" onClick={() => setQuantity(value => Math.min(20, value + 1))} aria-label="Increase quantity">+</button></div>}
-      <button type="button" className="lt-qr-primary" disabled={!menuSelectionAvailable(item,branchId,selected)} onClick={() => { onAdd(item, selected, quantity); onClose() }}>{menuSelectionAvailable(item,branchId,selected) ? 'Add to cart' : 'Sold out'}</button>
+      {available && <div className="lt-qr-qty"><button type="button" onClick={() => setQuantity(value => Math.max(1, value - 1))} aria-label="Decrease quantity">−</button><span>{quantity}</span><button type="button" onClick={() => setQuantity(value => Math.min(20, value + 1))} aria-label="Increase quantity">+</button></div>}
+      <button type="button" className="lt-qr-primary lt-storefront-add-detail" disabled={!valid} onClick={() => { if(!valid)return; onAdd(item, selected, quantity); onClose() }}>{!available||!menuSelectionAvailable(item,branchId,selected)?'Sold out':!optionsComplete(item,selected)?'Complete required options':`Add to cart · ${money(menuItemPrice(item,selected)*quantity)}`}</button>
     </div>
   </dialog>
 }
@@ -53,7 +74,7 @@ function recentReceiptStorage() { try { return window.localStorage } catch { ret
 
 const CARD_EVENT = 'lt-menu-card-change'
 
-function MenuCardLink({ apiBase, business, label, className = 'lt-qr-card-link', onConnected }) {
+function MenuCardLink({ apiBase, business, label, className = 'lt-qr-card-link', onConnected, storefront = false }) {
   const storageKey = `lt-menu-card:${business.public_id}`
   const [open, setOpen] = React.useState(false)
   const [email, setEmail] = React.useState('')
@@ -79,6 +100,12 @@ function MenuCardLink({ apiBase, business, label, className = 'lt-qr-card-link',
     window.addEventListener(CARD_EVENT, sync)
     return () => window.removeEventListener(CARD_EVENT, sync)
   }, [business.public_id])
+  useEffect(() => {
+    if (!storefront) return
+    const openConnection = event => { if(event.detail?.business===business.public_id) setOpen(true) }
+    window.addEventListener('lt-menu-connect-card',openConnection)
+    return ()=>window.removeEventListener('lt-menu-connect-card',openConnection)
+  },[storefront,business.public_id])
   const announce = value => { try { window.dispatchEvent(new CustomEvent(CARD_EVENT, { detail: { business: business.public_id, card: value } })) } catch { /* old browsers */ } }
   const post = async (path, body) => {
     const response = await fetch(`${apiBase}/api/v1/public/menu/${encodeURIComponent(business.public_id)}/card/${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
@@ -121,6 +148,7 @@ function MenuCardLink({ apiBase, business, label, className = 'lt-qr-card-link',
           : !challenge ? <><input type="email" aria-label="Email" autoComplete="email" required placeholder="Email on your card" value={email} onChange={event => setEmail(event.target.value)} /><button disabled={busy}>{busy ? 'Sending…' : 'Send code'}</button></>
           : <><input inputMode="numeric" aria-label="Code" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} required placeholder="6-digit code" value={code} onChange={event => setCode(event.target.value)} /><button disabled={busy}>{busy ? 'Checking…' : 'Connect'}</button></>}
         {note && <p role="status">{note}</p>}
+        {!card && business.join_url && <a href={business.join_url}>New here? Join rewards</a>}
       </form>
     </div>}
   </>
@@ -162,7 +190,7 @@ function CardHistorySheet({ apiBase, businessId, token, onClose, onReorder, init
   const formatDate = value => { const date = new Date(value); return value && Number.isFinite(date.getTime()) ? date.toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}) : '' }
   return <dialog ref={dialog} className="lt-v15-history-sheet" aria-label="Loyalty card history" onCancel={event => { event.preventDefault(); onClose() }} onClick={event => { if (event.target === dialog.current) onClose() }}>
     <div className="lt-v15-history-inner">
-      <header className="lt-v15-history-head"><div><span>YOUR LOYALTY CARD</span><h2>Card History</h2></div><button type="button" onClick={onClose} aria-label="Close card history">×</button></header>
+      <header className="lt-v15-history-head"><div><span>YOUR LOYALTY CARD</span><h2>{tab==='orders'?'My orders':tab==='rewards'?'My rewards':'Card history'}</h2></div><button type="button" onClick={onClose} aria-label="Close card history">×</button></header>
       {record && <div className="lt-v15-history-card"><strong>{record.card_name || record.business_name || 'Loyalty card'}</strong><p>{progress.label}</p>
         {progress.goal > 0 && progress.goal <= 20 && <div className="lt-v15-stamps" aria-label={progress.label}>{Array.from({length:progress.goal},(_,i)=><span key={i} className={i<progress.filled?'is-filled':''} aria-hidden="true">{i<progress.filled?'✓':''}</span>)}</div>}
       </div>}
@@ -216,7 +244,8 @@ function MenuLoyaltyCard({ apiBase, business, refreshKey, onReorder }) {
     const openHistory = event => {
       if (event.detail?.business !== business.public_id) return
       region.current?.scrollIntoView?.({ behavior: 'smooth', block: 'center' })
-      if (readToken() && apiBase) {setHistoryTab('activity');setOpen(true)}
+      if (readToken() && apiBase) {setHistoryTab('rewards');setOpen(true)}
+      else if(apiBase) window.dispatchEvent(new CustomEvent('lt-menu-connect-card',{detail:{business:business.public_id}}))
     }
     const openOrders = event => {
       if (event.detail?.business !== business.public_id) return
@@ -240,35 +269,23 @@ function MenuLoyaltyCard({ apiBase, business, refreshKey, onReorder }) {
     return () => controller.abort()
   }, [apiBase, business.public_id, token, refreshKey])
   const progress = loyaltyProgress(snapshot)
-  return <section ref={region} className="lt-v15-loyalty" aria-label="Your loyalty card">
-    <div className="lt-v15-loyalty-top"><span className="lt-v15-loyalty-icon" aria-hidden="true">{business.logo_url ? <img src={business.logo_url} alt="" loading="lazy" /> : "▣"}</span><div><span className="lt-v15-loyalty-kicker">LOYALTY CARD</span><strong>{snapshot?.card_name && snapshot.card_name !== 'Loyalty card' ? snapshot.card_name : business.name}</strong><p>{pending ? 'Checking card…' : snapshot ? progress.label : token ? 'Card details temporarily unavailable' : 'Connect your card to see rewards'}</p></div>
-      {token && apiBase && <button type="button" onClick={()=>{setHistoryTab('activity');setOpen(true)}}>History <span aria-hidden="true">›</span></button>}
+  return <section ref={region} className="lt-v15-loyalty lt-storefront-loyalty" aria-label="Your loyalty card">
+    <div className="lt-v15-loyalty-top"><span className="lt-v15-loyalty-icon" aria-hidden="true">{business.logo_url ? <img src={business.logo_url} alt="" loading="lazy" /> : <StorefrontIcon name="wallet" />}</span><div><strong>{token?(snapshot?.card_name&&snapshot.card_name!=='Loyalty card'?snapshot.card_name:business.name+' rewards'):'Loyalty rewards'}</strong><p>{pending?'Checking card…':snapshot?progress.label:token?'Card details unavailable':'Connect your loyalty card'}</p></div>
+      {token && apiBase ? <button type="button" onClick={()=>{setHistoryTab('rewards');setOpen(true)}}>View <span aria-hidden="true">›</span></button>:null}
+      {apiBase ? <MenuCardLink storefront apiBase={apiBase} business={business} label={token?'Manage':'Connect'} /> : business.join_url && <a className="lt-qr-card-link" href={business.join_url}>Join</a>}
     </div>
-    {snapshot && progress.goal > 0 && progress.goal <= 20 && <div className="lt-v15-stamps" aria-label={progress.label}>{Array.from({length:progress.goal},(_,i)=><span key={i} className={i<progress.filled?'is-filled':''} aria-hidden="true">{i<progress.filled?'✓':''}</span>)}</div>}
     {token && open && <CardHistorySheet apiBase={apiBase} businessId={business.public_id} token={token} initialTab={historyTab} onReorder={order=>{onReorder?.(order);setOpen(false)}} onClose={()=>setOpen(false)} />}
   </section>
 }
 
-function FastConfigureCard({ product, category, branchId, cart, money, onAdd, onOpen, onQuantity }) {
-  const [selected, setSelected] = useState({})
-  const [quantity, setQuantity] = useState(1)
-  const [added, setAdded] = useState(false)
-  useEffect(() => { if (!added) return undefined; const timer = setTimeout(()=>setAdded(false), 850); return () => clearTimeout(timer) }, [added])
+function FastConfigureCard({ product, category, branchId, cart, money, onAdd, onOpen, showDescription=true }) {
   const available = menuItemAvailable(product, branchId)
-  const groups = product.modifier_groups || []
-  const quick = canQuickAdd(groups,selected) && menuSelectionAvailable(product,branchId,selected)
-  const needsDetail = groups.length > 2 || groups.some(g=>!Array.isArray(g.options) || g.options.length > 6)
+  const hasOptions = (product.modifier_groups || []).length > 0
   const inCart = cart.filter(line=>line.item_id===product.public_id).reduce((count,line)=>count+line.quantity,0)
-  return <article className={`lt-v15-product lt-qr-dish${!available?' is-sold':''}`}>
-    <div className="lt-v15-product-top">
-      <button type="button" className="lt-v15-product-photo" onClick={()=>onOpen(product)} aria-label={`Customize ${product.name}`}><MenuItemPhoto item={product} available={available}/></button>
-      <div className="lt-v15-product-info"><small>{category || 'MENU'}</small><h3>{product.name}</h3>{product.description && <p>{product.description}</p>}<strong>{money(menuItemPrice(product,selected))}</strong></div>
-    </div>
-    {available && groups.length > 0 && !needsDetail && <div className="lt-v15-product-options">{groups.map(group=><fieldset key={group.public_id}><legend>{group.name}</legend><div>{group.options.map(option=><button type="button" key={option.public_id} disabled={!menuOptionAvailable(product,branchId,option.public_id)} title={!menuOptionAvailable(product,branchId,option.public_id)?'Sold out today':undefined} aria-pressed={(selected[group.public_id]||[]).includes(option.public_id)} onClick={()=>setSelected(current=>toggleMenuOption(current,group,option.public_id))}>{option.name}{option.price_delta>0?` +${money(option.price_delta)}`:''}</button>)}</div></fieldset>)}</div>}
-    <div className="lt-v15-product-bottom">{available && !needsDetail && <div className="lt-v15-quantity" aria-label={`Quantity for ${product.name}`}><button type="button" onClick={()=>setQuantity(q=>Math.max(1,q-1))} aria-label={`Decrease quantity for ${product.name}`}>−</button><strong>{quantity}</strong><button type="button" onClick={()=>setQuantity(q=>Math.min(20,q+1))} aria-label={`Increase quantity for ${product.name}`}>+</button></div>}
-      {available && inCart>0 && <span className="lt-v15-in-cart">{inCart} in bag</span>}
-      <button type="button" className={`lt-v15-add${added?' is-added':''}`} disabled={!available} onClick={()=>{ if(!quick || needsDetail) return onOpen(product); onAdd(product,selected,quantity);setAdded(true) }}>{!available?'Sold out':added?'✓ Added':quick&&!needsDetail?'Add to Bag':'Choose options'}</button>
-    </div>
+  return <article className={`lt-v15-product lt-qr-dish lt-storefront-product${!available?' is-sold':''}`}>
+    <button type="button" className="lt-v15-product-photo" onClick={()=>onOpen(product)} aria-label={`View ${product.name}`}><MenuItemPhoto item={product} available={available}/></button>
+    <div className="lt-v15-product-info"><button type="button" className="lt-storefront-product-name" onClick={()=>onOpen(product)}><h3>{product.name}</h3></button>{showDescription&&product.description&&<p>{product.description}</p>}<strong>{hasOptions?'From ':''}{money(product.base_price)}</strong>{hasOptions&&<small> · Customizable</small>}{inCart>0&&<small className="lt-v15-in-cart"> · {inCart} in cart</small>}</div>
+    <button type="button" className="lt-storefront-quick-add" disabled={!available} aria-label={available?(hasOptions?'Customize ':'Add ')+product.name:product.name+' sold out'} onClick={()=>hasOptions?onOpen(product):onAdd(product,{},1)}>{available?<StorefrontIcon name="plus" size={19}/>:<span>Sold out</span>}</button>
   </article>
 }
 
@@ -366,7 +383,7 @@ function serviceLine(service, tableNo, pickupLabel) {
 export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchChange, apiBase = '' }) {
   const [category, setCategory] = useState('all')
   const [search, setSearch] = useState('')
-  const [under200, setUnder200] = useState(false)
+  const under200 = false
   const [navNotice, setNavNotice] = useState('')
   const [requestedBranch, setRequestedBranch] = useState(initialBranch !== undefined ? initialBranch || '' : data.selected_branch || '')
   const [item, setItem] = useState(null)
@@ -437,7 +454,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
   const updateCart = change => { if (addonLocked || submittingRef.current) return; addonPending.current = null; pendingIds.current = null; setSubmitError(''); setCart(change) }
   const addItem = (value, selected = {}, quantity = 1) => {
     setReorderNote('')
-    if (needsBranch || !menuSelectionAvailable(value, branchId, selected)) return
+    if (needsBranch || !optionsComplete(value, selected) || !menuSelectionAvailable(value, branchId, selected)) return
     updateCart(current => addCartItem(current, value, selected, quantity))
     if (!addonMode) setOrder(null)
   }
@@ -772,45 +789,54 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
     setContactPhone(''); setDeliveryAddress('')
   }
 
+  const [shareNotice,setShareNotice]=useState('')
+  const [showShareLink,setShowShareLink]=useState(false)
+  const shareUrl=storefrontShareUrl(business.public_id,branchId)
+  const shareMenu=async()=>{
+    setShareNotice('');setShowShareLink(false)
+    try{
+      if(navigator.share){await navigator.share({title:business.name+' menu',url:shareUrl});return}
+      await navigator.clipboard.writeText(shareUrl);setShareNotice('Menu link copied.')
+    }catch(e){if(e?.name==='AbortError')return;setShowShareLink(true);setShareNotice('Copy the menu link below.')}
+  }
+  const openRewards=()=>{setNavNotice('');window.dispatchEvent(new CustomEvent('lt-menu-open-history',{detail:{business:business.public_id}}))}
   const CartOverlay = preview ? 'div' : 'dialog'
-  return <div className={`lt-qr-public lt-qr-cafe lt-qr-v15${preview ? ' lt-qr-is-preview' : ''}${count ? ' lt-qr-has-cart' : ''}`}>
+  return <div className={`lt-qr-public lt-qr-cafe lt-qr-v15 lt-simple-storefront${preview ? ' lt-qr-is-preview' : ''}${count ? ' lt-qr-has-cart' : ''}`} style={{'--storefront-accent':storefrontAccent(data.design?.primary_color)}}>
     <main className="lt-qr-page">
       {preview && <div className="lt-qr-preview-note">Owner preview · {data.is_published ? 'Published' : 'Not published'}</div>}
       {reorderNote && <p className="lt-qr-reorder-notice" role="status">{reorderNote}</p>}
       <header className="lt-qr-cafe-head lt-v15-head">
         <div className="lt-qr-cafe-title lt-v15-business-row">
           {business.logo_url && <img className="lt-qr-cafe-logo" src={business.logo_url} alt="" />}
-          <h1>{business.name}</h1>
-          <div className="lt-qr-cafe-side">
-            {showSelector ? <label className="lt-qr-branch-drop"><select aria-label="Branch" disabled={addonMode} value={branchId} onChange={event=>chooseBranch(event.target.value)}>{!branchId && <option value="" disabled>Choose branch</option>}{branches.map(value=><option key={value.public_id} value={value.public_id}>{value.name}</option>)}</select></label>
-              : branch?.name && <span className="lt-v15-branch-name">{branch.name}</span>}
-            {apiBase ? <MenuCardLink apiBase={apiBase} business={business} /> : business.join_url && <a className="lt-qr-card-link" href={business.join_url}>Connect loyalty card</a>}
-          </div>
+          <div className="lt-storefront-title"><h1>{business.name}</h1><small>Digital menu</small></div>
+          {!preview&&<button type="button" className="lt-storefront-share" onClick={shareMenu}><StorefrontIcon name="share" size={18}/>Share</button>}
         </div>
-        <label className="lt-qr-cafe-search lt-v15-search"><span aria-hidden="true">⌕</span><input type="search" aria-label="Search menu" placeholder="Search the menu" value={search} onChange={event=>setSearch(event.target.value)} /></label>
-        <div className="lt-v15-filter-row">
-          {quickItems.length>0 && <button type="button" onClick={()=>document.querySelector('.lt-v15-usual')?.scrollIntoView({behavior:'smooth'})}>↻ Quick Reorder</button>}
-          {(business.currency||'PHP')==='PHP' && <button type="button" aria-pressed={under200} onClick={()=>setUnder200(value=>!value)}>Under ₱200</button>}
-          <button type="button" onClick={()=>{setUnder200(false);setSearch('');chooseCategory('all')}}>All menu</button>
-        </div>
+        {shareNotice&&<p className="lt-storefront-share-note" role="status">{shareNotice}</p>}
+        {showShareLink&&<input className="lt-storefront-share-url" aria-label="Menu share link" readOnly value={shareUrl} onFocus={e=>e.target.select()}/>}
       </header>
+      {business.hero_url&&data.design?.show_banner!==false&&<img className="lt-storefront-cover" src={business.hero_url} alt="" decoding="async" onError={e=>{e.currentTarget.hidden=true}}/>}
+      <div className="lt-storefront-location">
+        {showSelector ? <label className="lt-qr-branch-drop"><select aria-label="Branch" disabled={addonMode} value={branchId} onChange={event=>chooseBranch(event.target.value)}>{!branchId && <option value="" disabled>Choose branch</option>}{branches.map(value=><option key={value.public_id} value={value.public_id}>{value.name}</option>)}</select></label> : branch?.name && <span className="lt-v15-branch-name">{branch.name}</span>}
+      </div>
       {needsBranch && <section className="lt-qr-branch-picker" aria-labelledby="lt-qr-branch-picker-title"><h2 id="lt-qr-branch-picker-title">Choose your branch</h2><p>Pick your location to browse and order.</p><ul>{branches.map(value=><li key={value.public_id}><button type="button" onClick={()=>chooseBranch(value.public_id)}><span className="lt-qr-branch-picker-copy"><strong>{value.name}</strong>{value.address && <span>{value.address}</span>}</span><i aria-hidden="true">›</i></button></li>)}</ul></section>}
       {!needsBranch && <>
+        <MenuLoyaltyCard apiBase={apiBase} business={business} refreshKey={`${order?.status||''}:${order?.payment_status||''}`} onReorder={reorderFromHistory} />
+        <div className="lt-storefront-menu-controls">
+          <div className="lt-v15-section-head"><h2>Our menu</h2><small>{items.length} items</small></div>
+          <label className="lt-qr-cafe-search lt-v15-search"><StorefrontIcon name="search" size={16}/><input type="search" aria-label="Search menu" placeholder="Search menu..." value={search} onChange={event=>setSearch(event.target.value)}/></label>
         <nav className="lt-v15-categories" aria-label="Menu categories">
           <button type="button" aria-pressed={category==='all'} onClick={()=>chooseCategory('all')}>All Items</button>
           {groups.map(value=><button type="button" key={value.public_id} aria-pressed={category===value.public_id} onClick={()=>chooseCategory(value.public_id)}>{value.name}</button>)}
-        </nav>
-        <MenuLoyaltyCard apiBase={apiBase} business={business} refreshKey={`${order?.status||''}:${order?.payment_status||''}`} onReorder={reorderFromHistory} />
+        </nav></div>
         {quickItems.length>0 && !search && category==='all' && !under200 && <section className="lt-v15-usual" aria-label="Order your daily usual"><div className="lt-v15-section-head"><h2>Order Your Daily Usual</h2><small>From a recent order on this device</small></div><div className="lt-v15-usual-list">{quickItems.map(option=><button type="button" key={option.item.public_id} onClick={()=>addUsual(option)}><span className="lt-v15-usual-photo"><MenuItemPhoto item={option.item} available /></span><span><strong>{option.item.name}</strong><small>{money(menuItemPrice(option.item,{}))} base price · Review options</small></span><b aria-hidden="true">＋</b></button>)}</div></section>}
-        {!preview && <NativeBookingCustomer key={business.public_id} apiBase={apiBase} slug={business.public_id} preferredBranch={branchId} externalActions={(data.actions||[]).filter(a=>a.id==='book'||a.id==='reserve')} />}
-        {(data.actions||[]).some(a=>preview||!["book","reserve"].includes(a.id)) && <div className="lt-qr-cafe-actions lt-v15-extras">{data.actions.filter(a=>preview||!["book","reserve"].includes(a.id)).map(action=><a key={action.id} href={action.url} target="_blank" rel="noreferrer" className={action.id==='book'?'is-book':''}><strong>{action.label}</strong>{action.note?<span>{action.note}</span>:null}</a>)}</div>}
+        {(data.actions||[]).some(a=>!['book','reserve'].includes(a.id)) && <div className="lt-qr-cafe-actions lt-v15-extras">{data.actions.filter(a=>!['book','reserve'].includes(a.id)).map(action=><a key={action.id} href={action.url} target="_blank" rel="noreferrer"><strong>{action.label}</strong>{action.note?<span>{action.note}</span>:null}</a>)}</div>}
         <section className="lt-qr-stream lt-v15-menu" aria-label="Menu items">
           <div className="lt-v15-section-head"><h2 ref={menuHeading} tabIndex={-1}>{search.trim()?'Search results':selectedCategory?.name||'All items'}</h2><small>{items.length} {items.length===1?'item':'items'}</small></div>
-          {items.map(value=><FastConfigureCard key={value.public_id} product={value} category={categoryName[value.public_id]} branchId={branchId} cart={cart} money={money} onOpen={setItem} onAdd={addItem} onQuantity={changeLine} />)}
+          {items.map(value=><FastConfigureCard key={value.public_id} product={value} category={categoryName[value.public_id]} branchId={branchId} cart={cart} money={money} onOpen={setItem} onAdd={addItem} showDescription={data.design?.show_product_description!==false} />)}
           {!items.length && <div className="lt-qr-empty" role="status"><h3>{search?'No matches yet.':'Nothing in this category.'}</h3><p>{search?'Try another word.':'Check another category.'}</p></div>}
         </section>
       </>}
-      <footer className="lt-qr-footer"><img src={loyaltyTreeLogo} alt="" /><span>Menu by <strong>Loyalty Tree</strong></span></footer>
+      <footer className="lt-qr-footer"><img src={loyaltyTreeLogo} alt="" /><span>Powered by <strong>LoyaltyTree</strong></span></footer>
     </main>
     {addonMode && <p className="lt-qr-reorder-notice" role="status">Adding to order {order?.order_number} · Table {order?.table_no || '—'}. Pay separately at the counter. <button type="button" disabled={addonLocked || submitting} onClick={cancelAddon}>Cancel add-on</button></p>}
     {item && <ItemDetails key={item.public_id} item={item} branchId={branchId} available={menuItemAvailable(item, branchId)} money={money} onClose={() => setItem(null)} onAdd={addItem} />}
@@ -840,10 +866,10 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
     {!cartOpen && !needsBranch && <>
       {navNotice && <p className="lt-v15-nav-note" role="status">{navNotice}</p>}
       <nav className="lt-v15-bottom-nav" aria-label="Menu navigation">
-        <button type="button" onClick={()=>{ setNavNotice('');window.scrollTo({top:0,behavior:'smooth'}) }}><span aria-hidden="true">⌂</span>Menu</button>
-        <button type="button" onClick={()=>{setNavNotice('');if(addonMode){openCart()}else if(order){setPayStep('done');setCartOpen(true)}else {let token='';try{token=localStorage.getItem(`lt-menu-card:${business.public_id}`)||''}catch{};if(token && apiBase){window.dispatchEvent(new CustomEvent('lt-menu-open-orders',{detail:{business:business.public_id}}))}else if(savedReceipt){void resumeLastOrder()}else setNavNotice('Connect your loyalty card to view linked previous orders.')}}}><span aria-hidden="true">▤</span>Orders</button>
-        <button type="button" onClick={()=>{setNavNotice('');window.dispatchEvent(new CustomEvent('lt-menu-open-history', { detail: {business:business.public_id} }))}}><span aria-hidden="true">✧</span>Rewards</button>
-        <button type="button" onClick={()=>{if(order && !addonMode && count === 0){setPayStep('done');setCartOpen(true)}else openCart()}}><span className="lt-v19-nav-cart" aria-hidden="true">▣{count > 0 && <b>{count}</b>}</span>Cart<span className="lt-qr-sr">{count > 0 ? `, ${count} items` : ''}</span></button>
+        <button type="button" onClick={()=>{ setNavNotice('');window.scrollTo({top:0,behavior:'smooth'}) }}><StorefrontIcon name="menu"/>Menu</button>
+        <button type="button" onClick={()=>{setNavNotice('');if(addonMode){openCart()}else if(order){setPayStep('done');setCartOpen(true)}else {let token='';try{token=localStorage.getItem(`lt-menu-card:${business.public_id}`)||''}catch{};if(token && apiBase){window.dispatchEvent(new CustomEvent('lt-menu-open-orders',{detail:{business:business.public_id}}))}else if(savedReceipt){void resumeLastOrder()}else {setNavNotice('Connect your loyalty card to view linked previous orders.');if(apiBase)window.dispatchEvent(new CustomEvent('lt-menu-connect-card',{detail:{business:business.public_id}}))}}}}><StorefrontIcon name="orders"/>Orders</button>
+        <button type="button" onClick={openRewards}><StorefrontIcon name="rewards"/>Rewards</button>
+        <button type="button" onClick={()=>{if(order && !addonMode && count === 0){setPayStep('done');setCartOpen(true)}else openCart()}}><span className="lt-v19-nav-cart" aria-hidden="true"><StorefrontIcon name="cart"/>{count > 0 && <b>{count}</b>}</span>Cart<span className="lt-qr-sr">{count > 0 ? `, ${count} items` : ''}</span></button>
       </nav>
     </>}
     {cartOpen && <CartOverlay ref={cartOverlayRef} className="lt-qr-cart" aria-labelledby={preview ? undefined : sheetTitleId} onCancel={event => { event.preventDefault(); closeCart() }} onMouseDown={event => { if (event.target === event.currentTarget) closeCart() }}>
