@@ -18,9 +18,9 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import org.json.JSONArray
 
-private val AdminInk = Color(0xFF202F27)
-private val AdminLime = Color(0xFFD9EF9F)
-private val AdminPaper = Color(0xFFFAFAF8)
+private val AdminInk = Color(0xFF123E34)
+private val AdminLime = Color(0xFFBDE8CF)
+private val AdminPaper = Color(0xFFF2F6F4)
 private val AdminMuted = Color(0xFF65736A)
 
 private fun countLabel(value: Any?): String {
@@ -81,25 +81,40 @@ internal fun AdminConsole(store: CounterStore, current: OwnerSession) {
         }) { inset ->
             Column(Modifier.padding(inset).fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("loyaltytree / admin", color = AdminInk, fontWeight = FontWeight.Bold, fontSize = 19.sp, modifier = Modifier.weight(1f))
+                    Text("LoyaltyTree  /  ADMIN", color = AdminInk, fontWeight = FontWeight.Bold, fontSize = 19.sp, modifier = Modifier.weight(1f))
                     TextButton(onClick = { refresh++ }, enabled = !busy && path != null) { Text("Refresh", color = AdminInk) }
                 }
-                Text(if (tab == "Home") "Command center." else tab, fontSize = 30.sp, fontWeight = FontWeight.Bold, color = AdminInk)
+                Text(if (tab == "Home") "Command center" else tab, fontSize = 30.sp, fontWeight = FontWeight.Bold, color = AdminInk)
                 if (busy) LinearProgressIndicator(Modifier.fillMaxWidth(), color = AdminInk)
                 if (note.isNotEmpty()) Text(note, color = Color(0xFF9C3329))
                 when(tab) {
                     "Home" -> {
                         val overview = data as? JSONObject
                         Column(Modifier.fillMaxWidth().background(AdminInk, RoundedCornerShape(22.dp)).padding(22.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Text("Total collections", color = Color(0xFFB7C8BB), fontSize = 14.sp)
-                            Text("₱ —", color = Color.White, fontSize = 36.sp, fontWeight = FontWeight.Bold)
-                            Text("Reconciled collections not available from overview.", color = AdminLime, fontSize = 12.sp)
-                            TextButton(onClick = { data = null; tab = "Finance" }) { Text("View invoice ledger", color = AdminLime) }
+                            Text("NETWORK OVERVIEW", color = AdminLime, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(countLabel(overview?.opt("total_businesses")), color = Color.White, fontSize = 34.sp, fontWeight = FontWeight.Bold)
+                                    Text("Businesses", color = AdminLime, fontSize = 13.sp)
+                                }
+                                Column(Modifier.weight(1f)) {
+                                    Text(countLabel(overview?.opt("total_branches")), color = Color.White, fontSize = 34.sp, fontWeight = FontWeight.Bold)
+                                    Text("Total branches", color = AdminLime, fontSize = 13.sp)
+                                }
+                            }
+                            Text("Platform-wide totals · refresh for latest records", color = Color(0xFFB7C8BB), fontSize = 12.sp)
                         }
-                        Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-                            AdminMetric("Businesses", countLabel(overview?.opt("total_businesses")), Modifier.weight(1f))
-                            AdminMetric("Branches", countLabel(overview?.opt("total_branches")), Modifier.weight(1f))
+                        Text("Daily report", fontWeight = FontWeight.Bold, fontSize = 21.sp, color = AdminInk)
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            AdminMetric("New members today", "Unavailable", Modifier.weight(1f))
+                            AdminMetric("New businesses today", "Unavailable", Modifier.weight(1f))
                         }
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            AdminMetric("Due today", "Unavailable", Modifier.weight(1f))
+                            AdminMetric("Errors today", "Unavailable", Modifier.weight(1f))
+                        }
+                        Text("Daily reporting requires verified server metrics. Missing values are not zero.", fontSize = 12.sp, color = AdminMuted)
+                        Text("Network totals", fontWeight = FontWeight.Bold, fontSize = 21.sp, color = AdminInk)
                         Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
                             AdminMetric("Customers", countLabel(overview?.opt("total_customers")), Modifier.weight(1f))
                             AdminMetric("Pending businesses", countLabel(overview?.optJSONObject("status_breakdown")?.opt("PENDING")), Modifier.weight(1f))
@@ -152,9 +167,9 @@ internal fun AdminConsole(store: CounterStore, current: OwnerSession) {
 
 @Composable
 private fun AdminMetric(label: String, value: String, modifier: Modifier = Modifier) {
-    Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(modifier.fillMaxWidth().background(Color.White, RoundedCornerShape(18.dp)).padding(15.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(label, fontSize = 13.sp, color = AdminMuted)
         Text(value, fontSize = 21.sp, fontWeight = FontWeight.SemiBold, color = AdminInk)
-        HorizontalDivider(color = Color(0xFFE1E5DF))
+
     }
 }
