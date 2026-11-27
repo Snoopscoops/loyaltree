@@ -66,6 +66,8 @@ class AdjustmentDB(DB):
                 data = None
             else:
                 data = {'order': self.child, 'changed': not self.replay}
+        elif name == 'menu_settle_counter_bill':
+            data = {'order': self.root, 'settled_count': 1, 'settled_total': 50}
         elif name == 'menu_void_counter_order_item':
             data = {'order': self.child, 'changed': True}
         else:
@@ -273,3 +275,26 @@ def test_reward_checkout_retries_use_identical_priced_items(status_handlers):
     assert pending[0]['public_id'] != pending[1]['public_id']
     assert pending[0]['items'] == pending[1]['items']
     assert 'line_id' not in pending[0]['items'][0]
+
+
+@pytest.mark.parametrize(('role', 'actor'), [('owner', 'owner'), ('manager', 'manager:16'), ('cashier', 'cashier:15')])
+def test_settle_bill_uses_one_scoped_rpc(routes, role, actor):
+    client, db, _, _ = routes
+    response = client.patch(path(ROOT, 'settle-bill'), headers={'Authorization': 'Bearer ' + role},
+                            json={'expected': {CHILD: '50.00'}})
+    assert response.status_code == 200
+    assert response.json() == {'success': True, 'settled_count': 1, 'settled_total': 50}
+    assert db.calls == [('menu_settle_counter_bill', {
+        'p_business_id': 1, 'p_branch': 'main', 'p_root': ROOT,
+        'p_actor': actor, 'p_expected': {CHILD: 50.0},
+    })]
+
+
+def test_settle_bill_rejects_wrong_branch_nested_order_and_invalid_amount(routes):
+    client, db, _, _ = routes
+    headers = {'Authorization': 'Bearer cashier'}
+    assert client.patch(path(OTHER, 'settle-bill'), headers=headers, json={'expected': {CHILD: '50'}}).status_code == 403
+    assert client.patch(path(CHILD, 'settle-bill'), headers=headers, json={'expected': {CHILD: '50'}}).status_code == 409
+    for invalid in ('NaN', '-1', '1.001', 'Infinity', 50, True):
+        assert client.patch(path(ROOT, 'settle-bill'), headers=headers, json={'expected': {CHILD: invalid}}).status_code == 400
+    assert not db.calls
