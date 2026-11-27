@@ -472,7 +472,7 @@ function CustomerJoin({ API_BASE }) {
                         const count = match ? Number(match[1]) : 0
                         const goal = match ? Number(match[2]) : 0
                         return goal > 0 && goal <= 12
-                          ? <span className="lt-directory-stamps" aria-hidden="true">{Array.from({length:goal},(_,i)=><span key={i} className={i<count?'filled':''}>{i<count?'✓':''}</span>)}</span>
+                          ? <span className="lt-directory-stamps" aria-hidden="true">{Array.from({length:goal},(_,i)=><span key={i} className={i<count?'filled':''}></span>)}</span>
                           : <span style={styles.guestBarTrack} aria-hidden="true"><span style={{ ...styles.guestBarFill, width: `${knownProgress.percent}%` }} /></span>
                       })()}</>
                     )}
