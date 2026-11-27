@@ -98,6 +98,11 @@ class OperatorTests(unittest.TestCase):
         self.op('biz', 'Bearer ben', allow=('owner', 'manager'))
 
     def test_permission_table(self):
+        self.assertTrue(permissions('cashier')['cancel_order'])
+        self.assertFalse(permissions('cashier')['void_items'])
+        self.assertFalse(permissions('manager')['void_items'])
+        self.assertTrue(permissions('owner')['void_items'])
+        self.assertFalse(permissions('owner')['refund'])
         self.assertFalse(permissions('cashier')['report'])
         self.assertFalse(permissions('cashier')['stamp_corrections'])
         self.assertTrue(permissions('manager')['report'])
