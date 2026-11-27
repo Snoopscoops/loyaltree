@@ -231,7 +231,7 @@ internal fun AdminConsole(store: CounterStore, current: OwnerSession) {
                     }
                     "Settings" -> {
                         Text("Super administrator", color = AdminInk, fontWeight = FontWeight.Bold)
-                        Text("Admin sign-in is required each time the app process restarts. No admin password or token is saved in merchant preferences.", color = AdminMuted)
+                        Text("Administrator sessions are encrypted on this device and restored only after server authorization, for up to seven days. Your password is not stored.", color = AdminMuted)
                         Button(onClick = { store.signOut() }, colors = ButtonDefaults.buttonColors(containerColor = AdminInk), modifier = Modifier.fillMaxWidth()) { Text("Sign out") }
                     }
                 }
@@ -362,13 +362,26 @@ private fun AdminDailyGrowth(report: JSONObject?) {
         AdminMetric("New businesses", countLabel(day?.opt("new_businesses")), Modifier.weight(1f))
         AdminMetric("New branches", countLabel(day?.opt("new_branches")), Modifier.weight(1f))
     }
-    Text("Membership growth · 7 days", fontWeight = FontWeight.Bold, color = AdminInk)
-    val peak = days.maxOfOrNull { it.optInt("new_memberships", 0) }?.coerceAtLeast(1) ?: 1
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        AdminMetric("Points earned", countLabel(day?.opt("points_earned")), Modifier.weight(1f))
+        AdminMetric("Points transactions", countLabel(day?.opt("points_events")), Modifier.weight(1f))
+    }
+    val metrics = listOf("Joins" to "new_memberships", "Stamps" to "stamp_events", "Points" to "points_earned", "Redeemed" to "redemption_events")
+    var chartMetric by remember { mutableStateOf("new_memberships") }
+    Text("Daily trends · 7 days", fontWeight = FontWeight.Bold, color = AdminInk)
+    metrics.chunked(2).forEach { pair ->
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            pair.forEach { (label, field) ->
+                FilterChip(selected = chartMetric == field, onClick = { chartMetric = field }, label = { Text(label) }, modifier = Modifier.weight(1f))
+            }
+        }
+    }
+    val peak = days.maxOfOrNull { it.optInt(chartMetric, 0) }?.coerceAtLeast(1) ?: 1
     Row(Modifier.fillMaxWidth().height(112.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.Bottom) {
         days.takeLast(7).forEach { row ->
             Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(countLabel(row.opt("new_memberships")), fontSize = 11.sp, color = AdminInk)
-                Box(Modifier.fillMaxWidth().height((72f * row.optInt("new_memberships", 0).coerceIn(0,peak) / peak).dp)
+                Text(countLabel(row.opt(chartMetric)), fontSize = 11.sp, color = AdminInk)
+                Box(Modifier.fillMaxWidth().height((72f * row.optInt(chartMetric, 0).coerceIn(0,peak) / peak).dp)
                     .background(AdminInk, RoundedCornerShape(5.dp)))
                 Text(row.optString("date").takeLast(2), fontSize = 11.sp, color = AdminMuted)
             }
@@ -376,17 +389,18 @@ private fun AdminDailyGrowth(report: JSONObject?) {
     }
     Text("Businesses · $selected", fontWeight = FontWeight.Bold, color = AdminInk)
     val businesses = adminRows(report.optJSONArray("businesses")).filter { it.optString("date") == selected }
-        .sortedByDescending { it.optInt("new_memberships") }
+        .sortedByDescending { it.optLong(chartMetric) }
     if (businesses.isEmpty()) Text("No recorded activity for this date.", color = AdminMuted)
     businesses.forEach { row ->
         var expanded by remember(selected, row.optString("business_public_id")) { mutableStateOf(false) }
         Column(Modifier.fillMaxWidth().background(Color.White, RoundedCornerShape(14.dp)).clickable { expanded = !expanded }.padding(12.dp)) {
             Text(row.optString("business_name"), fontWeight = FontWeight.Bold, color = AdminInk)
             Text("Joins: " + countLabel(row.opt("new_memberships")) + " · Stamps: " + countLabel(row.opt("stamp_events")) + " · Redeemed: " + countLabel(row.opt("redemption_events")), color = AdminMuted, fontSize = 12.sp)
+            Text("Points: " + countLabel(row.opt("points_earned")) + " · Active: " + countLabel(row.opt("active_memberships")), color = AdminMuted, fontSize = 12.sp)
             if (expanded) {
                 val branches = adminRows(report.optJSONArray("branches")).filter { it.optString("date") == selected && it.optString("business_public_id") == row.optString("business_public_id") }
                 branches.forEach { b ->
-                    Text(b.optString("branch_name") + " · Stamps " + countLabel(b.opt("stamp_events")) + " · Redeemed " + countLabel(b.opt("redemption_events")), fontSize = 12.sp, color = AdminInk)
+                    Text(b.optString("branch_name") + " · Stamps " + countLabel(b.opt("stamp_events")) + " · Redeemed " + countLabel(b.opt("redemption_events")) + " · Points " + countLabel(b.opt("points_earned")), fontSize = 12.sp, color = AdminInk)
                 }
                 Text("Branch registrations are not attributed.", fontSize = 12.sp, color = AdminMuted)
             }
