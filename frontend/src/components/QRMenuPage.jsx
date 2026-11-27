@@ -813,7 +813,7 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
             <div className="lt-storefront-location">
               {showSelector ? <label className="lt-qr-branch-drop"><select aria-label="Branch" disabled={addonMode} value={branchId} onChange={event=>chooseBranch(event.target.value)}>{!branchId && <option value="" disabled>Choose branch</option>}{branches.map(value=><option key={value.public_id} value={value.public_id}>{value.name}</option>)}</select></label> : branch?.name && <span className="lt-v15-branch-name">{branch.name}</span>}
             </div>
-          {!preview&&<button type="button" className="lt-storefront-share" onClick={shareMenu}><StorefrontIcon name="share" size={18}/>Share</button>}
+          {!preview&&<button type="button" className="lt-storefront-share" aria-label="Share menu" onClick={shareMenu}><StorefrontIcon name="share" size={18}/><span>Share</span></button>}
           </div>
         </div>
         {shareNotice&&<p className="lt-storefront-share-note" role="status">{shareNotice}</p>}

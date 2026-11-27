@@ -47,68 +47,67 @@
 /* LT compact header refinement */
 
 .lt-simple-storefront.lt-qr-v15 .lt-v15-business-row {
-    display: flex;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: center;
-    flex-wrap: wrap;
     gap: 8px;
-    min-width: 0;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.lt-simple-storefront .lt-v15-business-row > .lt-qr-cafe-logo {
+    grid-column: 1;
+    grid-row: 1;
+    width: 36px;
+    height: 36px;
+    object-fit: contain;
 }
 
 .lt-simple-storefront .lt-storefront-title {
-    flex: 1 1 125px;
+    grid-column: 2;
+    grid-row: 1;
     min-width: 0;
 }
 
 .lt-simple-storefront.lt-qr-v15 .lt-storefront-title h1 {
-    font-size: 15px;
+    font-size: 16px;
     line-height: 1.25;
+    white-space: normal;
     overflow-wrap: anywhere;
 }
 
 .lt-simple-storefront .lt-storefront-header-actions {
+    grid-column: 3;
+    grid-row: 1;
     display: flex;
+    flex-wrap: nowrap;
     align-items: center;
-    justify-content: flex-end;
     gap: 6px;
-    margin-left: auto;
     min-width: 0;
-    max-width: 100%;
-}
-
-.lt-simple-storefront .lt-storefront-header-actions
-.lt-storefront-location {
     margin: 0;
-    min-width: 0;
-    max-width: 150px;
 }
 
-.lt-simple-storefront .lt-storefront-header-actions
-.lt-qr-branch-drop select,
+.lt-simple-storefront .lt-storefront-header-actions .lt-storefront-location {
+    margin: 0;
+    max-width: 140px;
+}
+
+.lt-simple-storefront .lt-storefront-header-actions .lt-qr-branch-drop select,
 .lt-simple-storefront .lt-storefront-share {
     box-sizing: border-box;
-    min-height: 40px;
+    height: 38px;
+    min-height: 38px;
     border: 1px solid #dce6df;
-    border-radius: 11px;
     background: #f7faf8;
+    border-radius: 10px;
+    font-weight: 600;
+}
+
+.lt-simple-storefront .lt-storefront-header-actions .lt-qr-branch-drop select {
+    width: 100%;
+    max-width: 140px;
     font-size: 12px;
-    font-weight: 650;
-    box-shadow: none;
-}
-
-.lt-simple-storefront .lt-storefront-header-actions
-.lt-qr-branch-drop select {
-    appearance: none;
-    max-width: 150px;
-    padding: 8px 26px 8px 10px;
     text-overflow: ellipsis;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23476558' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 8px center;
-}
-
-.lt-simple-storefront .lt-storefront-share {
-    padding: 8px 10px;
-    white-space: nowrap;
 }
 
 @media (max-width: 480px) {
@@ -116,12 +115,33 @@
         gap: 6px;
     }
 
-    .lt-simple-storefront.lt-qr-v15 .lt-storefront-title h1 {
-        font-size: 13px;
+    .lt-simple-storefront .lt-v15-business-row > .lt-qr-cafe-logo {
+        width: 32px;
+        height: 32px;
     }
 
-    .lt-simple-storefront .lt-storefront-header-actions
-    .lt-storefront-location {
-        max-width: 125px;
+    .lt-simple-storefront.lt-qr-v15 .lt-storefront-title h1 {
+        font-size: 12px;
+        line-height: 1.25;
+    }
+
+    .lt-simple-storefront .lt-storefront-header-actions .lt-storefront-location {
+        max-width: 105px;
+    }
+
+    .lt-simple-storefront .lt-storefront-header-actions .lt-qr-branch-drop select {
+        max-width: 105px;
+        font-size: 11px;
+        padding: 5px;
+    }
+
+    .lt-simple-storefront .lt-storefront-share {
+        width: 36px;
+        padding: 0;
+        justify-content: center;
+    }
+
+    .lt-simple-storefront .lt-storefront-share span {
+        display: none;
     }
 }
