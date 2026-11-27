@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from 'react'
 import { startVisibilityPolling } from './visibilityPolling'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import OwnerDashboardNavigation from './OwnerDashboardNavigation'
+import { OwnerDailyOverview, OwnerOrders, OwnerAnalyticsWorkspace, OwnerCustomerOrderHistory, OwnerMerchantPayments } from './OwnerWorkspace'
+import { NativeBookingOwner } from './NativeBookings'
 import BenefitsOwner from './BenefitsOwner'
 import CustomerSegmentsChart from './CustomerSegmentsChart'
 import QRMenuSection from './QRMenuSection'
@@ -3382,6 +3384,7 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
       <div className="lt-owner-content" style={{...styles.content,...(isTablet?styles.contentTablet:{}),...(isMobile?styles.contentMobile:{})}}>
         {activeTab === 'tree' && (
           <div className="lt-owner-overview" style={styles.treeTab}>
+            {refreshEnabled && <OwnerDailyOverview key={user.business_slug} API_BASE={API_BASE} user={user} onOpen={setActiveTab} />}
             {showSetupRecommendation({ program, requested: false }) && <div className="lt-owner-industry" style={styles.industryInsight}>
               <div style={styles.industryInsightIcon}>{industry.icon}</div>
               <div>
@@ -3482,9 +3485,9 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
           <div><div className="lt-owner-section-header" style={styles.sectionHeader}><div><h2 className="lt-owner-section-title" style={styles.sectionTitle}>⭐ Customer Satisfaction</h2><p style={styles.satisfactionIntro}>Feedback submitted from customers through their LoyaltyTree Wallet card.</p></div><button onClick={loadSatisfaction} style={styles.viewAnalyticsBtn} disabled={satisfactionLoading}>{satisfactionLoading?'Refreshing…':'↻ Refresh'}</button></div>{satisfactionError&&<div style={styles.satisfactionError}>{satisfactionError}</div>}<div style={{...styles.satisfactionMetrics,...(isMobile?styles.satisfactionMetricsMobile:{})}}>{[['Overall',satisfaction.summary?.average_rating??'—',`${satisfaction.summary?.response_count||0} responses`],['Positive',`${satisfaction.summary?.positive_percent??0}%`,'4–5 star ratings'],['Service',satisfaction.summary?.service_average??'—','Average rating'],['Quality',satisfaction.summary?.quality_average??'—','Average rating'],['Value',satisfaction.summary?.value_average??'—','Average rating']].map(([l,v,h])=><div style={styles.satisfactionMetricCard} key={l}><span style={styles.satisfactionMetricLabel}>{l}</span><strong style={styles.satisfactionMetricValue}>{v}</strong><span style={styles.satisfactionMetricHint}>{h}</span></div>)}</div><div style={styles.satisfactionList}>{satisfactionLoading&&!satisfaction.feedback.length&&<div style={styles.satisfactionEmpty}>Loading feedback…</div>}{!satisfactionLoading&&!satisfaction.feedback.length&&!satisfactionError&&<div style={styles.satisfactionEmpty}>No feedback yet. Customers can tap “Rate Your Experience” from their Wallet card details.</div>}{satisfaction.feedback.map(item=><article key={item.public_id||item.id} style={styles.satisfactionRow}><div style={styles.satisfactionRowTop}><div><strong style={styles.satisfactionName}>{item.customer_name||'Customer'}</strong><span style={styles.satisfactionDate}>{item.created_at?new Date(item.created_at).toLocaleString():''}</span></div><div style={styles.satisfactionStars}>{'★'.repeat(Number(item.rating||0))}<span style={{color:'#e2e8f0'}}>{'★'.repeat(Math.max(0,5-Number(item.rating||0)))}</span></div></div>{(item.service_rating||item.quality_rating||item.value_rating)&&<div style={styles.satisfactionSubratings}>{item.service_rating&&<span>Service <b>{item.service_rating}/5</b></span>}{item.quality_rating&&<span>Quality <b>{item.quality_rating}/5</b></span>}{item.value_rating&&<span>Value <b>{item.value_rating}/5</b></span>}</div>}{item.comment&&<p style={styles.satisfactionComment}>“{item.comment}”</p>}</article>)}</div></div>
         )}
 
-        {refreshEnabled && activeTab === 'analytics' && <section aria-label="Analytics">
+        {refreshEnabled && activeTab === 'analytics' && <OwnerAnalyticsWorkspace key={user.business_slug} API_BASE={API_BASE} user={user} branches={branches} onOpen={setActiveTab}>
           <React.Suspense fallback={<p role="status">Loading business reports…</p>}><AnalyticsDashboard embedded API_BASE={API_BASE} user={user} onLogout={onLogout} designPreview={designPreview} customerMix={<CustomerSegmentsChart stats={stats} scopeLabel={viewingAllPrograms ? 'All programs' : programs.find(p => p.public_id === selectedProgramPublicId)?.program_name || program?.program_name || 'Selected program'} />} /></React.Suspense>
-        </section>}
+        </OwnerAnalyticsWorkspace>}
 
         {activeTab === 'customers' && (
           <div>
@@ -3826,6 +3829,11 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
             onRefreshGrowth={loadGrowthSuite}
           />
         )}
+
+        {refreshEnabled && activeTab === 'orders' && <OwnerOrders key={user.business_slug+'-orders'} API_BASE={API_BASE} user={user} branches={branches} onOpen={setActiveTab} />}
+        {refreshEnabled && activeTab === 'transactions' && <OwnerOrders key={user.business_slug+'-transactions'} API_BASE={API_BASE} user={user} branches={branches} transactions onOpen={setActiveTab} />}
+        {refreshEnabled && activeTab === 'reservations' && <NativeBookingOwner key={user.business_slug} API_BASE={API_BASE} user={user} />}
+        {refreshEnabled && activeTab === 'payments' && <OwnerMerchantPayments key={user.business_slug} API_BASE={API_BASE} user={user} onOpen={setActiveTab} />}
 
         {activeTab === 'qrmenu' && <QRMenuSection API_BASE={API_BASE} user={user} business={business} authFetch={authFetch} onUpgrade={() => setActiveTab('billing')}
           renderBuilder={onChanged => <OrderAheadMenuBuilder API_BASE={API_BASE} user={user} business={business} branches={branches} authFetch={authFetch} onChanged={onChanged} setMessage={setMessage} browseOnly />} />}
@@ -4796,6 +4804,8 @@ function OwnerDashboardOwner({ API_BASE, user, onLogout, designPreview = false }
                     </div>
                   </>
                 )}
+
+                {refreshEnabled && selectedCustomer?.public_id && <OwnerCustomerOrderHistory key={user.business_slug+':'+selectedCustomer.public_id} API_BASE={API_BASE} user={user} customerId={selectedCustomer.public_id} />}
 
                 {(isMembershipCard || isHybridCard || isEmployeeCard) && membershipBenefitStatus.length > 0 && <div style={{marginBottom:14,display:'grid',gap:8}}>
                   <strong style={{fontSize:14,color:'#115e59'}}>{isEmployeeExperience ? 'Employee benefits' : 'Membership benefits'}</strong>
