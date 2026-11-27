@@ -152,6 +152,7 @@ private sealed class Page {
     data object Card : Page()
     data object Account : Page()
     data object Billing : Page()
+    data object Payments : Page()
     data object Points : Page()
     data object Cashiers : Page()
     data object Stamp : Page()
@@ -787,7 +788,8 @@ private fun Shell(store: CounterStore, opening: Boolean, onOpeningFinished: () -
                             openStock = { page = Page.Stock },
                             openCustomers = { tab = 3; page = Page.None },
                             openAlerts = { page = Page.Alerts },
-                            openAccount = { page = Page.Account }
+                            openAccount = { page = Page.Account },
+                            openPayments = { if (store.session?.isOwner == true) page = Page.Payments }
                         )
                         1 -> OrdersScreen(store)
                         2 -> MenuScreen(store)
@@ -802,6 +804,7 @@ private fun Shell(store: CounterStore, opening: Boolean, onOpeningFinished: () -
                     Page.Card -> CardScreen(store)
                     Page.Account -> AccountScreen(store) { page = Page.Billing }
                     Page.Billing -> BillingScreen(store)
+                    Page.Payments -> if (store.session?.isOwner == true) PaymentsPreviewScreen(store) else Scroll { Text("Owner access required.", color = Bad) }
                     Page.Points -> PointsScreen()
                     Page.Cashiers -> CashiersScreen(store)
                     Page.Stamp -> StampScreen(store)
@@ -831,6 +834,7 @@ private fun pageTitle(page: Page, store: CounterStore): String = when (page) {
     Page.Card -> "Card"
     Page.Account -> "Account"
     Page.Billing -> "Billing"
+    Page.Payments -> "Payments"
     Page.Points -> "LT Points"
     Page.Cashiers -> "Cashiers"
     Page.Stamp -> if (store.cardType == "points") "Add points" else "Add a stamp"
@@ -895,7 +899,7 @@ private fun LoginScreen(store: CounterStore) {
 private fun HomeScreen(
     store: CounterStore, openAnalytics: () -> Unit, openCampaign: () -> Unit, openReservations: () -> Unit, openStamp: () -> Unit,
     openOrders: () -> Unit, openMenu: () -> Unit, openStock: () -> Unit, openCustomers: () -> Unit,
-    openAlerts: () -> Unit, openAccount: () -> Unit
+    openAlerts: () -> Unit, openAccount: () -> Unit, openPayments: () -> Unit
 ) {
     var branchMenu by remember { mutableStateOf(false) }
     val shownOrders = store.orders.filter { store.ordersBranch.isBlank() || it.branchId == store.ordersBranch }
@@ -977,7 +981,12 @@ private fun HomeScreen(
             DashboardAction("Customers", Icons.Default.Group, Modifier.weight(1f), DeepTeal, openCustomers)
             DashboardAction("Campaigns", Icons.Default.Notifications, Modifier.weight(1f), Forest, openCampaign)
         }
-        DashboardAction("Reservations", Icons.Default.DateRange, Modifier.fillMaxWidth(), Forest, openReservations)
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            DashboardAction("Reservations", Icons.Default.DateRange, Modifier.weight(1f), Forest, openReservations)
+            if (store.session?.isOwner == true) {
+                DashboardAction("Payments", Icons.Default.Payments, Modifier.weight(1f), DeepTeal, openPayments)
+            }
+        }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Recent activity", color = Ink, fontWeight = FontWeight.Bold, fontSize = 22.sp, modifier = Modifier.weight(1f))
             TextButton(onClick = openOrders) { Text("View all ›", color = Forest, fontWeight = FontWeight.SemiBold) }
@@ -2342,6 +2351,9 @@ private fun MoreScreen(store: CounterStore, open: (Page) -> Unit, openMenu: () -
         }
         Section("Your business", "The tools you use after the scan.") {
             RowLink("Reservations", "Calendar and booking requests") { open(Page.Reservations) }
+            if (store.session?.isOwner == true) {
+                RowLink("Payments", "Digital collections · preview") { open(Page.Payments) }
+            }
             RowLink("Analytics", "Last 30 days") { open(Page.Analytics) }
             RowLink("Notifications", "Birthday, churn, and announcements") { open(Page.Greetings) }
             RowLink("Digital billboard", if (store.billboardOn) "On · 150 m" else "Off") { open(Page.Billboard) }
@@ -2353,6 +2365,174 @@ private fun MoreScreen(store: CounterStore, open: (Page) -> Unit, openMenu: () -
         Card { Column { Text("Loyalty Tree benefits", fontWeight = FontWeight.SemiBold, color = Muted); Text("Coming soon", color = Muted, fontSize = 13.sp) } }
         Card { RowLink("Account management", "Billing, details, and account") { open(Page.Account) } }
         Secondary("Log out") { store.signOut() }
+    }
+}
+
+// Stable v1 contract; provider credentials never enter the native app.
+private enum class PaymentsPreviewTab { Overview, Activation, Destination, Withdrawal, History }
+private data class MerchantPaymentStatus(val state: String, val portal: Boolean, val available: Long?, val pending: Long?, val payoutReady: Boolean) {
+    val active get() = state == "active" && portal
+    val label get() = when (state) {
+        "disabled" -> "API access pending"
+        "registration_required" -> "Registration required"
+        "verification_pending" -> "Verification in progress"
+        "active" -> "Active"
+        "restricted" -> "Requires review"
+        else -> "Unavailable"
+    }
+}
+
+private fun parseMerchantPaymentStatus(body: JSONObject): MerchantPaymentStatus? {
+    if (body.opt("version") != 1) return null
+    val state = body.opt("state") as? String ?: return null
+    if (state !in setOf("disabled", "registration_required", "verification_pending", "active", "restricted")) return null
+    val portal = body.opt("portal_available") == true && state != "disabled"
+    fun amount(key: String): Long? {
+        val value = when (val raw = body.opt(key)) {
+            is Int -> raw.toLong()
+            is Long -> raw
+            else -> return null
+        }
+        return value.takeIf { it in 0L..9_000_000_000_000L }
+    }
+    val active = state == "active" && portal
+    val available = if (active) amount("available_centavos") else null
+    return MerchantPaymentStatus(state, portal, available,
+        if (active) amount("pending_centavos") else null,
+        active && available != null && available > 0 && body.opt("payout_ready") == true)
+}
+
+private fun merchantPaymentAmount(value: Long?): String = if (value == null) "Unavailable" else
+    "₱" + java.text.NumberFormat.getNumberInstance(Locale.US).apply {
+        minimumFractionDigits = 2; maximumFractionDigits = 2
+    }.format(java.math.BigDecimal.valueOf(value, 2))
+
+// Dedicated read-only transport: never follow a redirect carrying the bearer token.
+private suspend fun readMerchantPaymentStatus(session: OwnerSession): MerchantPaymentStatus? =
+    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        if (!session.isOwner || session.token.isBlank() || !Regex("^[A-Za-z0-9_-]{1,128}$").matches(session.slug)) return@withContext null
+        val connection = (java.net.URL("https://api.theloyaltytree.com/api/v1/business/${session.slug}/merchant-payments/status").openConnection() as java.net.HttpURLConnection)
+        try {
+            connection.requestMethod = "GET"
+            connection.instanceFollowRedirects = false
+            connection.useCaches = false
+            connection.connectTimeout = 12000
+            connection.readTimeout = 12000
+            connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("Authorization", "Bearer ${session.token}")
+            if (connection.responseCode != 200) return@withContext null
+            val text = connection.inputStream.bufferedReader().use { reader ->
+                val buffer = CharArray(16385)
+                var count = 0
+                while (count < buffer.size) {
+                    val n = reader.read(buffer, count, buffer.size - count)
+                    if (n < 0) break
+                    count += n
+                }
+                if (count >= buffer.size) "" else String(buffer, 0, count)
+            }
+            parseMerchantPaymentStatus(JSONObject(text))
+        } finally { connection.disconnect() }
+    }
+
+@Composable
+private fun PaymentsPreviewScreen(store: CounterStore) {
+    val session = store.session ?: return
+    if (!session.isOwner) return
+    val context = LocalContext.current
+    // New auth session means new state; never retain balances across accounts.
+    androidx.compose.runtime.key(session.slug, session.token, session.role) {
+        var tab by remember { mutableStateOf(PaymentsPreviewTab.Overview) }
+        var status by remember { mutableStateOf<MerchantPaymentStatus?>(null) }
+        var busy by remember { mutableStateOf(true) }
+        var refresh by remember { mutableIntStateOf(0) }
+        var note by remember { mutableStateOf("") }
+        LaunchedEffect(session.token, refresh) {
+            busy = true; status = null; note = ""
+            val result = try { readMerchantPaymentStatus(session) }
+            catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (_: Exception) { null }
+            if (store.session == session) { status = result; busy = false }
+        }
+        val current = status
+        val portal = !busy && current?.portal == true
+        val active = !busy && current?.active == true
+        // Fixed first-party browser destination. No token, PII or provider URL in the intent.
+        // Portal must require fresh owner authentication and re-check all permissions.
+        fun openPortal(view: String) {
+            if (!portal || store.session != session || view !in setOf("registration", "destination", "withdrawal", "history")) return
+            if (view in setOf("destination", "history", "withdrawal") && !active) return
+            if (view == "withdrawal" && current?.payoutReady != true) return
+            try {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://theloyaltytree.com/merchant-payments?view=$view")))
+                status = null; busy = true; refresh++
+            } catch (_: Exception) { note = "Could not open the secure portal. Please try again." }
+        }
+        BackHandler(tab != PaymentsPreviewTab.Overview) { tab = PaymentsPreviewTab.Overview }
+        Scroll {
+            Text("Digital payments", color = Ink, fontWeight = FontWeight.Black, fontSize = 27.sp)
+            Text(session.businessName, color = Muted, fontSize = 14.sp)
+            Card {
+                Text(if (busy) "CHECKING CONNECTION" else current?.label ?: "STATUS UNAVAILABLE", color = Forest, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Text(when {
+                    busy -> "Checking merchant payment status…"
+                    current == null -> "Could not verify the connection. No payment actions are available."
+                    !portal -> "Digital payments are not enabled yet. Cash orders are unaffected."
+                    else -> "Secure payment services open in your browser. Sign in as the business owner again."
+                }, color = Muted, fontSize = 13.sp, lineHeight = 19.sp)
+                Primary(if (busy) "Checking…" else "Refresh payment status", enabled = !busy) { status = null; busy = true; refresh++ }
+                if (note.isNotBlank()) Text(note, color = Bad, fontSize = 13.sp)
+            }
+            if (tab != PaymentsPreviewTab.Overview) {
+                TextButton(onClick = { tab = PaymentsPreviewTab.Overview }) { Text("‹ Payments overview", color = Forest) }
+            }
+            when (tab) {
+                PaymentsPreviewTab.Overview -> {
+                    Column(Modifier.fillMaxWidth().clip(Shape).background(Brush.horizontalGradient(listOf(DeepTeal, Forest))).padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text("Available balance", color = Lime, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                            Icon(Icons.Default.Payments, null, tint = Lime)
+                        }
+                        Text(merchantPaymentAmount(if (active) current?.available else null), color = Color.White, fontWeight = FontWeight.Black, fontSize = 28.sp)
+                        Text("Pending settlement: ${merchantPaymentAmount(if (active) current?.pending else null)}", color = Lime, fontSize = 13.sp)
+                        Secondary(if (active) "Withdraw funds" else "Withdraw funds · preview") { tab = PaymentsPreviewTab.Withdrawal }
+                    }
+                    Section("Merchant activation", "QRPH and card payments require provider approval.") {
+                        Info("Connection", if (busy) "Checking" else current?.label ?: "Unavailable")
+                        Primary(if (portal) "Manage payment registration" else "Activate payments · preview") { tab = PaymentsPreviewTab.Activation }
+                    }
+                    Section("Payout destination", "Only a provider-verified merchant account may receive funds.") {
+                        RowLink("Linked bank or e-wallet", if (active) "Manage securely" else "Unavailable") { tab = PaymentsPreviewTab.Destination }
+                    }
+                    Section("Transactions", "Separate from cash sales and subscription billing.") {
+                        RowLink("Payment and withdrawal history", if (active) "View securely" else "Unavailable") { tab = PaymentsPreviewTab.History }
+                    }
+                }
+                PaymentsPreviewTab.Activation -> Section("Activate payments", "Registration and verification") {
+                    Info("Business", session.businessName)
+                    Info("Status", current?.label ?: "Unavailable")
+                    Text("Final fees and settlement terms must be accepted before activation. Never submit credentials or verification documents to an unverified destination.", color = Muted, fontSize = 13.sp)
+                    Primary("Open secure registration", enabled = portal) { openPortal("registration") }
+                }
+                PaymentsPreviewTab.Destination -> Section("Payout account", "Verified destination required") {
+                    Info("Account details", if (active) "View in secure portal" else "Unavailable")
+                    Text("Linking or changing a payout account requires fresh owner verification.", color = Muted, fontSize = 13.sp)
+                    Primary("Manage payout account", enabled = active) { openPortal("destination") }
+                }
+                PaymentsPreviewTab.Withdrawal -> Section("Withdraw funds", "Review amount, fees and destination securely") {
+                    Info("Available balance", merchantPaymentAmount(if (active) current?.available else null))
+                    Info("Withdrawal eligibility", if (active && current?.payoutReady == true) "Ready for review" else "Not verified")
+                    Text("The secure portal must re-check balance, destination and owner authentication before a withdrawal.", color = Muted, fontSize = 13.sp)
+                    Secondary("View payout account") { tab = PaymentsPreviewTab.Destination }
+                    Primary("Review withdrawal", enabled = active && current?.payoutReady == true) { openPortal("withdrawal") }
+                }
+                PaymentsPreviewTab.History -> Section("Payment history", "Digital collections, settlements and withdrawals") {
+                    Text(if (active) "View provider-confirmed transactions in the secure portal." else "History unavailable; this does not mean there are zero transactions.", color = Muted, fontSize = 14.sp)
+                    Primary("Open transaction history", enabled = active) { openPortal("history") }
+                }
+            }
+            Text("Planned payment provider: NextPay", color = Muted, fontSize = 12.sp)
+        }
     }
 }
 

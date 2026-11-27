@@ -52639,4 +52639,12 @@ register_native_booking_routes(app, db=supabase, get_business=safe_get_business,
     require_owner=require_owner_session, read_card_token=_menu_card_read_token, get_customer=safe_get_customer,
     booking_operator=_menu_order_operator)
 
+
+# Read-only merchant payments capability.
+try:
+    from .merchant_payments import register_merchant_payment_routes
+except ImportError:
+    from merchant_payments import register_merchant_payment_routes
+register_merchant_payment_routes(app, require_owner=require_owner_session)
+
 profiler.checkpoint('routes_registered')
