@@ -3,18 +3,18 @@
 .lt-directory-v2 .lt-directory-identity{gap:12px!important;margin:2px 0 14px!important}
 .lt-directory-identity img,.lt-directory-identity>div:first-child{width:52px!important;height:52px!important;border-radius:16px!important;flex-shrink:0}
 .lt-directory-identity h1{font-size:20px!important;line-height:1.2!important}
-.lt-directory-v2 .lt-directory-cover{height:108px!important;margin-bottom:12px!important;border-radius:16px!important}
+.lt-directory-v2 .lt-directory-cover{height:auto!important;margin-bottom:12px!important;border-radius:16px!important}
 .lt-directory-v2 .lt-directory-loyalty{background:linear-gradient(145deg,#073f36,#0f695a)!important;border:0!important;padding:20px!important;gap:6px!important;color:#fff}
 .lt-directory-loyalty>span,.lt-directory-loyalty>strong,.lt-directory-loyalty>button{color:#e6f5ee!important}
 .lt-directory-loyalty>strong{font-size:23px!important;color:#fff!important}
-.lt-directory-loyalty>span[aria-hidden=true]{background:#ffffff30!important}
+.lt-directory-loyalty>span[aria-hidden=true]:not(.lt-directory-stamps){background:#ffffff30!important}
 .lt-directory-loyalty>span[aria-hidden=true]:not(.lt-directory-stamps)>span{background:#b9ead4!important}
 .lt-directory-loyalty>a{background:#fff!important;color:#073f36!important;width:100%;box-sizing:border-box;text-align:center}
 .lt-directory-stamps{display:flex!important;flex-wrap:wrap;gap:5px;margin:4px 0;background:transparent!important}
 .lt-directory-loyalty>.lt-directory-stamps{background:transparent!important}
 .lt-directory-stamps>span{display:grid;place-items:center;box-sizing:border-box;width:23px;height:23px;border:1px solid #a7d9c4;border-radius:50%;color:#073f36;font-size:13px;font-weight:800}
 .lt-directory-stamps>span.filled{background:#b9ead4!important}
-.lt-directory-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;align-items:start}
+.lt-directory-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;align-items:stretch}
 .lt-directory-actions:empty{display:none}
 .lt-directory-actions>*{min-width:0}
 .lt-directory-actions>:only-child{grid-column:1/-1}
@@ -34,3 +34,18 @@
 .lt-directory-wifi p{overflow-wrap:anywhere}
 .lt-directory-v2 a:focus-visible,.lt-directory-v2 button:focus-visible,.lt-directory-v2 summary:focus-visible{outline:3px solid #0f766e;outline-offset:3px}
 @media(max-width:340px){.lt-directory-actions{grid-template-columns:1fr}}
+
+/* Preserve the complete merchant artwork and equalize visible tiles. */
+.lt-directory-v2 .lt-directory-cover>img{display:block;width:100%!important;height:auto!important;object-fit:contain!important}
+.lt-directory-v2 .lt-directory-loyalty>.lt-directory-stamps{background:transparent!important}
+.lt-directory-v2 .lt-directory-stamps>span:not(.filled){background:transparent!important}
+.lt-directory-v2 .lt-directory-actions{grid-auto-rows:1fr}
+.lt-directory-v2 .lt-directory-actions>.lt-directory-tile,.lt-directory-v2 .lt-directory-actions>.lt-nb-reservation,.lt-directory-v2 .lt-directory-actions>.lt-nb-reservation>.lt-nb-entry{height:100%;box-sizing:border-box}
+.lt-directory-v2 .lt-directory-actions>*{overflow-wrap:anywhere}
+@supports selector(:has(*)){
+  @media(min-width:380px){.lt-directory-actions:has(>:nth-child(3):last-child):not(:has(.lt-nb-entry[aria-expanded=true],.lt-nb-receipt-summary)){grid-template-columns:repeat(3,minmax(0,1fr))}}
+  .lt-directory-actions:has(.lt-nb-entry[aria-expanded=true],.lt-nb-receipt-summary){grid-auto-rows:auto}
+  .lt-directory-actions:has(.lt-nb-entry[aria-expanded=true],.lt-nb-receipt-summary)>.lt-nb-reservation{height:auto}
+  .lt-directory-actions:has(.lt-nb-entry[aria-expanded=true],.lt-nb-receipt-summary) .lt-nb-entry{height:auto}
+}
+@media(max-width:379px){.lt-directory-actions:has(>:nth-child(3):last-child){grid-template-columns:1fr}}
