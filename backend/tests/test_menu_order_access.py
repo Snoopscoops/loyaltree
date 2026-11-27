@@ -97,7 +97,36 @@ class OperatorTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 403)
         self.op('biz', 'Bearer ben', allow=('owner', 'manager'))
 
+    def test_missing_database_role_cannot_inherit_token_privileges(self):
+        self.db.rows['staff'][1]['role'] = None
+        with self.assertRaises(HTTPException) as ctx:
+            self.op('biz', 'Bearer ben')
+        self.assertEqual(ctx.exception.status_code, 403)
+
+    def test_missing_active_flag_fails_closed(self):
+        self.db.rows['staff'][1]['is_active'] = None
+        with self.assertRaises(HTTPException) as ctx:
+            self.op('biz', 'Bearer ben')
+        self.assertEqual(ctx.exception.status_code, 403)
+
+    def test_manager_with_invalid_assigned_branch_cannot_get_all_branches(self):
+        self.db.rows['branches'][0]['public_id'] = ''
+        with self.assertRaises(HTTPException) as ctx:
+            self.op('biz', 'Bearer ben')
+        self.assertEqual(ctx.exception.status_code, 403)
+
+    def test_owner_obeys_explicit_role_allowlist(self):
+        with self.assertRaises(HTTPException) as ctx:
+            self.op('biz', 'Bearer owner', allow=('manager',))
+        self.assertEqual(ctx.exception.status_code, 403)
+
     def test_permission_table(self):
+        self.assertFalse(any(permissions('unknown').values()))
+        self.assertTrue(permissions('cashier')['cancel_order'])
+        self.assertFalse(permissions('cashier')['void_items'])
+        self.assertTrue(permissions('manager')['void_items'])
+        self.assertTrue(permissions('owner')['void_items'])
+        self.assertFalse(permissions('owner')['refund'])
         self.assertFalse(permissions('cashier')['report'])
         self.assertFalse(permissions('cashier')['stamp_corrections'])
         self.assertTrue(permissions('manager')['report'])
@@ -133,8 +162,11 @@ class RouteTests(unittest.TestCase):
         auth = {'Authorization': 'Bearer ana'}
         self.assertEqual(self.client.patch('/api/v1/business/biz/menu-orders/o2/payment', headers=auth).status_code, 403)
         self.assertEqual(self.db.rows['menu_counter_orders'][1]['payment_status'], 'unpaid')
-        self.assertEqual(self.client.patch('/api/v1/business/biz/menu-orders/o1/payment', headers=auth).json()['payment_status'], 'paid')
-        self.assertEqual(self.client.patch('/api/v1/business/biz/menu-orders/o2/payment', headers={'Authorization': 'Bearer owner'}).status_code, 200)
+        self.assertEqual(self.client.patch('/api/v1/business/biz/menu-orders/o1/payment', headers=auth).status_code, 400)
+        response = self.client.patch('/api/v1/business/biz/menu-orders/o1/payment?expected_amount=200.00', headers=auth)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['payment_status'], 'paid')
+        self.assertEqual(self.client.patch('/api/v1/business/biz/menu-orders/o2/payment?expected_amount=300.00', headers={'Authorization': 'Bearer owner'}).status_code, 200)
 
     def test_summary_and_report_for_managers_only_and_scoped(self):
         self.assertEqual(self.get('/menu-orders/summary', 'ana').status_code, 403)

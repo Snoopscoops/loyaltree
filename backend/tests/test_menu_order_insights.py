@@ -1,4 +1,5 @@
 from datetime import date, datetime, timezone
+from decimal import Decimal
 import unittest
 
 from fastapi import FastAPI, HTTPException
@@ -90,7 +91,7 @@ class DB:
                    if row['business_id'] == params['p_business_id']
                    and row['public_id'] == params['p_order_public_id']
                    and row.get('branch_public_id', '') == params['p_branch'])
-        assert params['p_expected_amount'] == str(row['total'])
+        assert Decimal(params['p_expected_amount']) == Decimal(str(row['total']))
         row['payment_status'] = 'paid'
         return type('RPC', (), {'execute': lambda _: Result({'order': row})})()
 
@@ -240,6 +241,12 @@ class PaymentTests(unittest.TestCase):
         self.assertNotIn('card', methods)
         self.assertEqual(result['paid'], {'orders': 3, 'sales': 380.0})
         self.assertEqual(result['unpaid'], {'orders': 1, 'sales': 100.0})
+        self.assertEqual(result['settlement'], {
+            'cash_confirmed': {'orders': 1, 'sales': 50.0},
+            'test': {'orders': 1, 'sales': 250.0},
+            'unverified': {'orders': 1, 'sales': 80.0},
+            'outstanding': {'orders': 1, 'sales': 100.0},
+        })
         self.assertIn('payments', daily_summary(rows, date(2026, 11, 21)))
 
     def test_owner_marks_a_cash_order_paid(self):
@@ -419,3 +426,17 @@ class ReportTests(unittest.TestCase):
         week = client.get('/api/v1/business/b/menu-orders/report?format=json&period=week', headers=auth).json()
         self.assertEqual(week['orders'], 1)
         self.assertLessEqual(week['start'], week['end'])
+
+
+def test_custom_report_dates():
+    from backend.menu_order_insights import custom_report_days
+    from fastapi import HTTPException
+    today = date(2026, 11, 27)
+    assert custom_report_days('2026-11-01', '2026-11-27', today) == (date(2026, 11, 1), today)
+    for start, end in [('2026-11-27', '2026-11-01'), ('2026-01-01', '2026-11-27'), ('2026-11-01', '2026-11-28'), ('', '2026-11-27')]:
+        try:
+            custom_report_days(start, end, today)
+        except HTTPException as exc:
+            assert exc.status_code == 400
+        else:
+            raise AssertionError('Invalid range accepted')

@@ -97,7 +97,8 @@ data class DaySummary(
     val branches: List<NamedCount>,
     val payments: List<NamedCount> = emptyList(),
     val paid: String = "",
-    val unpaid: String = ""
+    val unpaid: String = "",
+    val settlement: List<NamedCount> = emptyList()
 )
 data class ShareReport(val uri: android.net.Uri?, val filename: String, val text: String)
 data class Cashier(val id: String, val name: String, val email: String, val role: String, val active: Boolean, val branchId: String, val branchName: String)
@@ -163,6 +164,8 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     var ordersBranch by mutableStateOf("")
     var daySummary by mutableStateOf<DaySummary?>(null)
     var reportRange by mutableStateOf("today")
+    var reportStart by mutableStateOf("")
+    var reportEnd by mutableStateOf("")
     var reportBusy by mutableStateOf(false)
     var reportNote by mutableStateOf("")
     var insights by mutableStateOf<List<InsightSection>>(emptyList())
@@ -174,6 +177,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     var insightTrendUnit by mutableStateOf("day")
     var insightItems by mutableStateOf<List<RankedItem>>(emptyList())
     var insightCards by mutableStateOf<List<InsightCard>>(emptyList())
+    var purchaseFrequency by mutableStateOf<JSONObject?>(null)
     var insightRange by mutableStateOf("")
     var insightsLoading by mutableStateOf(false)
     var scanCustomer by mutableStateOf<ScanCustomer?>(null)
@@ -194,6 +198,12 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     var setupStatus by mutableStateOf("")
     var guestStatus by mutableStateOf("")
     var campaignNote by mutableStateOf("")
+    var churnSettings by mutableStateOf<JSONObject?>(null)
+        private set
+    var churnSettingsNote by mutableStateOf("")
+        private set
+    var churnSettingsBusy by mutableStateOf(false)
+        private set
     var announcementNote by mutableStateOf("")
     var announcementRoom by mutableStateOf("")
     var billingNote by mutableStateOf("")
@@ -376,6 +386,9 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         watchJob?.cancel()
         watchJob = null
         session = null
+        churnSettings = null
+        churnSettingsNote = ""
+        churnSettingsBusy = false
         members = emptyList()
         menuRows = emptyList()
         orders = emptyList()
@@ -612,6 +625,12 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
                     add(NamedCount(row.optString("method").ifBlank { "m$i" }, row.optString("label").ifBlank { "Other" }, "${row.optInt("orders")} · ${pesos(row.opt("sales"))}"))
                 }
             },
+            settlement = buildList {
+                val settlement = json.optJSONObject("payments")?.optJSONObject("settlement")
+                listOf("cash_confirmed" to "Confirmed cash", "test" to "Test payments", "unverified" to "Unverified payments", "outstanding" to "Outstanding").forEach { (key, label) ->
+                    settlement?.optJSONObject(key)?.let { row -> add(NamedCount(key, label, "${row.optInt("orders")} · ${pesos(row.opt("sales"))}")) }
+                }
+            },
             paid = json.optJSONObject("payments")?.optJSONObject("paid")?.let { "${it.optInt("orders")} · ${pesos(it.opt("sales"))}" }.orEmpty(),
             unpaid = json.optJSONObject("payments")?.optJSONObject("unpaid")?.let { "${it.optInt("orders")} · ${pesos(it.opt("sales"))}" }.orEmpty(),
             branches = buildList {
@@ -630,7 +649,18 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     fun downloadReport(done: (ShareReport) -> Unit) {
         val current = session ?: return
         if (reportBusy) return
+        if (!current.canReport) return
         val query = when (reportRange) {
+            "custom" -> {
+                val start = reportStart.trim()
+                val end = reportEnd.trim()
+                val valid = Regex("[0-9]{4}-[0-9]{2}-[0-9]{2}")
+                if (!valid.matches(start) || !valid.matches(end) || start > end || end > manila()) {
+                    reportNote = "Enter valid start and end dates (YYYY-MM-DD), not in the future."
+                    return
+                }
+                "start=$start&end=$end"
+            }
             "yesterday" -> {
                 val day = Calendar.getInstance(TimeZone.getTimeZone("Asia/Manila"))
                 day.add(Calendar.DAY_OF_MONTH, -1)
@@ -688,6 +718,13 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
             return null
         }
         return uri
+    }
+
+    fun markBillPaid(rootId: String, expected: Map<String, String>, done: (String) -> Unit) {
+        if (expected.isEmpty()) return done("Refresh the bill before confirming.")
+        val amounts = JSONObject()
+        expected.forEach { (id, amount) -> amounts.put(id, amount) }
+        adjustCounterOrder(rootId, "settle-bill", JSONObject().put("expected", amounts), done = done)
     }
 
     fun markPaid(id: String, rawTotal: String) {
@@ -777,6 +814,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
                 insightTrend = emptyList()
                 insightItems = emptyList()
                 insightCards = emptyList()
+                purchaseFrequency = null
                 insightsNote = if (result == null) "Could not reach menu order insights." else API.message(result.second, "Menu order insights are not ready yet.")
                 return@launch
             }
@@ -788,6 +826,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     private fun num(value: Any?): Double? = if (value == null || value == JSONObject.NULL) null else API.plain(value)?.toDoubleOrNull()
 
     private fun applyInsights(json: JSONObject) {
+        purchaseFrequency = json.optJSONObject("purchase_frequency")
         val now = json.optJSONObject("kpis") ?: JSONObject()
         val change = json.optJSONObject("change") ?: JSONObject()
         insightKpis = listOf(
@@ -1136,14 +1175,19 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
             create = true, done = done)
     }
 
-    fun voidCounterItem(order: LiveOrder, requestId: String, line: OrderLine, quantity: Int, reason: String, done: (String) -> Unit) {
+    fun voidCounterItem(order: LiveOrder, requestId: String, line: OrderLine, quantity: Int, reason: String, credential: String, done: (String) -> Unit) {
         val body = JSONObject().put("request_id", requestId).put("line_id", line.id)
-            .put("quantity", quantity).put("reason", reason)
+            .put("quantity", quantity).put("reason", reason).put("credential", credential)
         adjustCounterOrder(order.id, "void-item", body, done = done)
     }
 
-    fun cancelCounterOrder(order: LiveOrder, reason: String, done: (String) -> Unit) =
-        adjustCounterOrder(order.id, "status", JSONObject().put("status", "cancelled").put("reason", reason), done = done)
+    fun cancelCounterOrder(order: LiveOrder, reason: String, done: (String) -> Unit) {
+        if (order.source != "menu" || order.paymentMethod != "cash" || order.payment != "unpaid" || order.status != "new") {
+            return done("Only new unpaid cash menu orders can be cancelled here.")
+        }
+        if (reason.isBlank() || reason.trim().length > 250) return done("Enter a cancellation reason.")
+        adjustCounterOrder(order.id, "status", JSONObject().put("status", "cancelled").put("reason", reason.trim()), done = done)
+    }
 
     private fun adjustCounterOrder(id: String, action: String, body: JSONObject, create: Boolean = false, done: (String) -> Unit) {
         val current = session ?: return done("Sign in again to update the order.")
@@ -1152,6 +1196,17 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val path = "/api/v1/business/${current.slug}/menu-orders/$id/$action"
             val result = io { if (create) API.post(path, current.token, body) else API.patch(path, current.token, body) }
+            if (action == "settle-bill") {
+                if (session == current) fetchOrders(current)
+                orderBusy = ""
+                if (session != current) return@launch
+                when {
+                    result == null -> done("Payment outcome uncertain. Check the refreshed orders before confirming again.")
+                    result.first >= 400 -> done(API.message(result.second, "Could not settle the bill. Refresh before retrying."))
+                    else -> done("")
+                }
+                return@launch
+            }
             orderBusy = ""
             when {
                 result == null -> done("Could not reach the server. Try again.")
@@ -1483,6 +1538,53 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun loadChurnSettings() {
+        val current = session ?: return
+        if (!current.isOwner || churnSettingsBusy) return
+        churnSettings = null
+        churnSettingsBusy = true
+        churnSettingsNote = ""
+        viewModelScope.launch {
+            val result = io { API.get("/api/v1/business/${current.slug}/churn-discount-settings", current.token) }
+            if (session != current) return@launch
+            churnSettingsBusy = false
+            val json = result?.second as? JSONObject
+            if (result == null || result.first >= 400 || json == null) {
+                churnSettingsNote = "Win-back settings unavailable. Refresh to retry."
+            } else churnSettings = json
+        }
+    }
+
+    fun saveChurnSettings(enabled: Boolean, inactivity: String, discount: String, validity: String, limit: String) {
+        val current = session ?: return
+        if (!current.isOwner || churnSettingsBusy || churnSettings == null) return
+        val days = inactivity.toIntOrNull()
+        val percent = discount.toIntOrNull()
+        val duration = validity.toIntOrNull()
+        val cap = limit.toIntOrNull()
+        if (days == null || days !in 7..365 || percent == null || percent !in 1..100 ||
+            duration == null || duration !in 1..30 || cap == null || cap !in 1..100) {
+            churnSettingsNote = "Use 7–365 inactive days, 1–100% discount, 1–30 validity days and 1–100 vouchers daily."
+            return
+        }
+        churnSettingsBusy = true
+        churnSettingsNote = ""
+        viewModelScope.launch {
+            val body = JSONObject().put("enabled", enabled).put("inactivity_days", days)
+                .put("discount_percent", percent).put("validity_days", duration).put("daily_limit", cap)
+            val result = io { API.put("/api/v1/business/${current.slug}/churn-discount-settings", current.token, body) }
+            if (session != current) return@launch
+            churnSettingsBusy = false
+            val json = result?.second as? JSONObject
+            if (result == null || result.first >= 400 || json == null) {
+                churnSettingsNote = "Save not confirmed. Refresh before retrying."
+            } else {
+                churnSettings = json
+                churnSettingsNote = "Saved. " + if (json.optBoolean("issuance_ready")) "Issuance service ready." else "Automatic issuance is not active yet."
+            }
+        }
+    }
+
     fun loadCampaigns() {
         val current = session ?: return
         viewModelScope.launch {
@@ -1501,14 +1603,20 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
 
     fun startCampaign(name: String, kind: String, value: String, start: String, end: String, scope: String, branchId: String) {
         val current = session ?: return
+        if (!current.isOwner || loading) return
         if (name.isBlank()) { campaignNote = "Name the campaign."; return }
-        if (end < start) { campaignNote = "The end date has to be on or after the start."; return }
+        val datesValid = runCatching {
+            val parser = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).apply { isLenient = false }
+            val pattern = Regex("[0-9]{4}-[0-9]{2}-[0-9]{2}")
+            pattern.matches(start) && pattern.matches(end) && parser.parse(start) != null && parser.parse(end) != null && start >= manila() && end >= start
+        }.getOrDefault(false)
+        if (!datesValid) { campaignNote = "Choose valid dates starting today or later (YYYY-MM-DD)."; return }
         if (scope == "single_branch" && branchId.isBlank()) { campaignNote = "Choose a branch."; return }
         val amount = value.toIntOrNull() ?: 0
         if (kind != "buy_one_take_one" && amount <= 0) { campaignNote = "Enter the discount."; return }
         if (kind == "percent_discount" && amount > 100) { campaignNote = "Percent off cannot be more than 100."; return }
+        loading = true
         viewModelScope.launch {
-            loading = true
             campaignNote = ""
             val label = when (kind) {
                 "percent_discount" -> "$amount% off"
@@ -1536,8 +1644,8 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
             if (kind == "buy_one_take_one") body.put("reward_value", JSONObject.NULL) else body.put("reward_value", amount)
             val result = io { API.post("/api/v1/business/${current.slug}/campaigns", current.token, body) }
             loading = false
-            if (result == null || result.first >= 400) campaignNote = if (result == null) "Could not reach the server." else API.message(result.second, "Could not start the campaign.")
-            else { campaignNote = "Started. The voucher is available from $start until $end, then it ends."; loadCampaigns() }
+            if (result == null || result.first >= 400) campaignNote = if (result == null) "Campaign outcome uncertain. Check the campaign list before creating another." else API.message(result.second, "Could not start the campaign.")
+            else { campaignNote = "Saved. Qualifying purchases: $start to $end. Wallet delivery is not confirmed."; loadCampaigns() }
         }
     }
 

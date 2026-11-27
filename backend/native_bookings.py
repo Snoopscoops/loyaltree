@@ -5,6 +5,7 @@ from uuid import UUID
 import re
 
 from fastapi import HTTPException, Header, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Literal
 
@@ -76,7 +77,7 @@ def normalize_phone(value):
     if not 7<=len(digits)<=15: raise HTTPException(422,"Enter a valid contact number.")
     return digits
 
-def register_native_booking_routes(app, *, db, get_business, require_owner):
+def register_native_booking_routes(app, *, db, get_business, require_owner, read_card_token=None, get_customer=None):
     def business(slug, auth=None):
         if auth is not None: require_owner(slug,auth)
         b=get_business(slug)
@@ -84,6 +85,31 @@ def register_native_booking_routes(app, *, db, get_business, require_owner):
         if auth is None and str(b.get("status","")).upper()!="ACTIVE":
             raise HTTPException(404,"Bookings unavailable.")
         return b["id"]
+
+    def member(slug, bid, authorization):
+        parts = authorization.split(" ", 1)
+        if len(parts) != 2 or parts[0].lower() != "bearer" or not read_card_token or not get_customer:
+            raise HTTPException(401, "Connect your loyalty card.")
+        identity = read_card_token(parts[1], "session")
+        merchant = get_business(slug)
+        if not merchant or str(identity.get("business_public_id")) != str(merchant.get("public_id")):
+            raise HTTPException(401, "Reconnect your loyalty card.")
+        cid = str(identity.get("customer_public_id") or "")
+        customer = get_customer(cid) if cid else None
+        if not customer or str(customer.get("business_id")) != str(bid) or str(customer.get("public_id")) != cid:
+            raise HTTPException(404, "Customer not found.")
+        return customer["id"]
+
+    @app.get("/api/v1/public/bookings/{slug}/history")
+    def customer_history(slug: str, authorization: str = Header(default="")):
+        bid = business(slug)
+        cid = member(slug, bid, authorization)
+        try:
+            rows = (db.table("lt_bookings").select("id,booking_code,kind,resource_name,starts_at,ends_at,guests,status,price_centavos")
+                    .eq("business_id", bid).eq("customer_id", cid).order("starts_at", desc=True).order("id").limit(101).execute().data or [])
+        except Exception as exc:
+            raise HTTPException(503, "Booking history unavailable.") from exc
+        return JSONResponse({"bookings": rows[:100], "complete": len(rows) <= 100}, headers={"Cache-Control": "private, no-store"})
 
     def branches(bid):
         return [b for b in (db.table("branches").select("id,public_id,name").eq("business_id",bid).eq("is_active",True).order("name").execute().data or []) if b.get("public_id")]
@@ -185,14 +211,15 @@ def register_native_booking_routes(app, *, db, get_business, require_owner):
         return {"slots":rpc("lt_booking_slots",{"p_business":bid,"p_branch":br,"p_resource":str(resource_id),"p_day":day.isoformat(),"p_guests":guests}) or []}
 
     @app.post("/api/v1/public/bookings/{slug}/request")
-    def submit(slug:str,payload:RequestBooking):
+    def submit(slug:str,payload:RequestBooking,authorization:str=Header(default="")):
         bid=business(slug)
         if payload.starts_at.tzinfo is None or not payload.name.strip(): raise HTTPException(422,"Select a valid time and enter your name.")
         phone=normalize_phone(payload.phone)
         try: br=branch(bid,payload.branch)
         except HTTPException: raise
         except Exception: raise HTTPException(503,"Bookings temporarily unavailable.")
-        result=rpc("lt_booking_request",{"p_business":bid,"p_branch":br,"p_resource":str(payload.resource_id),"p_start":payload.starts_at.astimezone(timezone.utc).isoformat(),"p_guests":payload.guests,"p_name":payload.name.strip(),"p_phone":phone,"p_note":payload.note.strip(),"p_request":str(payload.request_id)})
+        cid=member(slug,bid,authorization) if authorization else None
+        result=rpc("lt_booking_request_linked",{"p_business":bid,"p_branch":br,"p_resource":str(payload.resource_id),"p_start":payload.starts_at.astimezone(timezone.utc).isoformat(),"p_guests":payload.guests,"p_name":payload.name.strip(),"p_phone":phone,"p_note":payload.note.strip(),"p_request":str(payload.request_id),"p_customer":cid})
         return result | {"booking_code":short_booking_code(result["reference"])}
 
     @app.get("/api/v1/public/bookings/{slug}/status/{reference}")

@@ -87,6 +87,36 @@ def _audience(rows, customers, product_id='', weekday=None, hour=None, today=Non
     return result
 
 
+def purchase_frequency(rows):
+    """Count distinct paid bills, not add-on rows, for linked buyers.
+
+    Only explicitly recorded cash payments enter spending metrics until
+    verified online payment settlement is available. No identities returned.
+    """
+    buyers = defaultdict(lambda: {'bills': set(), 'spend': 0.0})
+    for row in rows:
+        if row.get('status') == 'cancelled' or row.get('payment_status') != 'paid' or row.get('payment_method') != 'cash':
+            continue
+        buyer = str(row.get('member_customer_public_id') or '').strip()
+        root = str(row.get('parent_order_public_id') or row.get('public_id') or '').strip()
+        if not buyer or not root:
+            continue
+        entry = buyers[buyer]
+        entry['bills'].add((str(row.get('branch_public_id') or ''), root))
+        entry['spend'] += _money(row.get('total'))
+    count = len(buyers)
+    repeat = sum(len(entry['bills']) > 1 for entry in buyers.values())
+    return {
+        'linked_buyers': count,
+        'repeat_buyers': repeat,
+        'single_bill_buyers': count - repeat,
+        'repeat_buyer_percent': round(100 * repeat / count, 1) if count else None,
+        'average_bills_per_buyer': round(sum(len(entry['bills']) for entry in buyers.values()) / count, 2) if count else None,
+        'average_cash_spend_per_buyer': round(sum(entry['spend'] for entry in buyers.values()) / count, 2) if count else None,
+        'source': 'cash_confirmed_linked_orders_in_selected_period',
+    }
+
+
 def customer_pulse(rows, customers, *, days=30, branch='', product_id='', weekday=None, hour=None, today=None):
     """Aggregate paid digital-menu orders, product/hour metrics and private cohorts.
 
@@ -187,6 +217,7 @@ def customer_pulse(rows, customers, *, days=30, branch='', product_id='', weekda
             'table_days': len(table_days), 'table_visits': len(table_visits),
             'orders_with_valid_time': timed,
         },
+        'purchase_frequency': purchase_frequency(paid),
         'hourly': hours, 'weekday_hours': weekday_hours,
         'products': products[:100], 'product_hours': product_windows[:100],
         'audience': _audience(paid, customers, product_id, weekday, hour, today),
@@ -198,5 +229,6 @@ def customer_pulse(rows, customers, *, days=30, branch='', product_id='', weekda
             'Per guest and per seating require recorded guest_count and table_session_id; unavailable when not supplied.',
             'Demographic cohorts include only loyalty-linked orders with supplied demographics; small groups are hidden.',
             'This report does not automatically include offline or POS purchases.',
+            'Purchase frequency counts distinct linked cash-paid bills in the selected period, not lifetime visits. Unlinked add-ons are not attributed to a buyer.',
         ]
     }

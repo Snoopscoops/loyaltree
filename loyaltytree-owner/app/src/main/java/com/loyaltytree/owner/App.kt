@@ -886,9 +886,14 @@ private fun SalesReportCard(store: CounterStore) {
         Text("SALES REPORT", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
         Text("Download a file with every order, totals, top items and who bought what. Send it on Messenger, Viber or email.", color = Muted, fontSize = 13.sp, lineHeight = 18.sp)
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("Today" to "today", "Yesterday" to "yesterday", "This week" to "week", "This month" to "month").forEach { (label, id) ->
+            listOf("Today" to "today", "Yesterday" to "yesterday", "This week" to "week", "This month" to "month", "Custom" to "custom").forEach { (label, id) ->
                 BranchChip(label, store.reportRange == id) { store.reportRange = id }
             }
+        }
+        if (store.reportRange == "custom") {
+            Field("From (YYYY-MM-DD)", store.reportStart, { store.reportStart = it.take(10) })
+            Field("To (YYYY-MM-DD)", store.reportEnd, { store.reportEnd = it.take(10) })
+            Text("Up to 92 days, Philippine time.", color = Muted, fontSize = 12.sp)
         }
         Text(if (branchName != null) branchLabel(branchName) else "All branches", color = Forest, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
         Primary(if (store.reportBusy) "Preparing report…" else "Download & share report", enabled = !store.reportBusy) {
@@ -930,8 +935,13 @@ private fun DaySummaryCard(summary: DaySummary, showBranches: Boolean) {
         if (summary.payments.isNotEmpty()) {
             Text("By payment", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
             summary.payments.forEach { Info(it.name, it.detail) }
-            if (summary.paid.isNotBlank()) Info("Paid", summary.paid)
-            if (summary.unpaid.isNotBlank()) Info("Unpaid", summary.unpaid)
+            if (summary.settlement.isNotEmpty()) {
+                summary.settlement.forEach { Info(it.name, it.detail) }
+                Text("Order-date totals, not a payment-date ledger.", color = Muted, fontSize = 12.sp)
+            } else {
+                if (summary.paid.isNotBlank()) Info("Paid (includes test/unverified)", summary.paid)
+                if (summary.unpaid.isNotBlank()) Info("Unpaid", summary.unpaid)
+            }
         }
         if (showBranches && summary.branches.isNotEmpty()) {
             Text("By branch", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
@@ -967,8 +977,16 @@ private fun CounterBillCard(store: CounterStore, bill: CounterBill) {
     }
     var adding by remember(bill.key) { mutableStateOf(false) }
     var expanded by remember(bill.key) { mutableStateOf(setOfNotNull(parent?.id)) }
+    var paymentSnapshot by remember(bill.key) { mutableStateOf<Map<String, String>?>(null) }
+    var paymentError by remember(bill.key) { mutableStateOf("") }
     val busy = store.orderBusy.isNotBlank()
     val limited = store.orders.count { it.source == "menu" } >= 100 || parent == null
+    val live = bill.orders.filter { it.status != "cancelled" }
+    val pending = live.filter { it.payment == "unpaid" }
+    val eligible = !limited && parent != null && parent.status !in listOf("completed", "cancelled") &&
+        pending.isNotEmpty() && live.all { it.source == "menu" && it.paymentMethod == "cash" && it.payment in listOf("paid", "unpaid") } &&
+        pending.all { it.status == "new" && it.rawTotal.toBigDecimalOrNull()?.let { amount -> amount.signum() >= 0 && amount.stripTrailingZeros().scale() <= 2 } == true }
+    val outstanding = pending.mapNotNull { it.rawTotal.toBigDecimalOrNull() }.fold(java.math.BigDecimal.ZERO) { sum, amount -> sum.add(amount) }
     Card {
         Text(parent?.number ?: "Additional orders", color = Forest, fontWeight = FontWeight.Bold, fontSize = 20.sp)
         Text(listOfNotNull(parent?.customer, parent?.tableNo?.takeIf { it.isNotBlank() }?.let { "Table $it" },
@@ -980,6 +998,10 @@ private fun CounterBillCard(store: CounterStore, bill: CounterBill) {
             Column(horizontalAlignment = Alignment.End) { Text("Balance", color = Muted, fontSize = 12.sp); Text(bill.balance?.let(::billMoney) ?: "—", color = Ink, fontWeight = FontWeight.Bold) }
         }
         if (limited) Text("Some order details may not be loaded. Do not use this subtotal as a payment amount.", color = Muted, fontSize = 12.sp)
+        if (eligible) Primary("Mark all as paid · ${billMoney(outstanding)}", enabled = !busy) {
+            paymentError = ""
+            paymentSnapshot = pending.associate { it.id to it.rawTotal }
+        }
         if (parent?.canAddSubOrder == true) Primary("＋ Add order", enabled = !busy) { adding = true }
         bill.orders.forEach { order ->
             androidx.compose.runtime.key(order.id) {
@@ -999,6 +1021,28 @@ private fun CounterBillCard(store: CounterStore, bill: CounterBill) {
             }
         }
         if (parent?.canAddSubOrder == true && adding) CounterAddOrderDialog(store, parent) { adding = false }
+    }
+    val snapshot = paymentSnapshot
+    if (snapshot != null && parent != null) {
+        val amount = snapshot.values.mapNotNull { it.toBigDecimalOrNull() }.fold(java.math.BigDecimal.ZERO) { sum, value -> sum.add(value) }
+        AlertDialog(
+            onDismissRequest = { if (!busy) paymentSnapshot = null },
+            title = { Text("Confirm cash payment") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Confirm receipt of ${billMoney(amount)} for ${snapshot.size} unpaid order(s). Already paid orders are excluded.")
+                    if (paymentError.isNotBlank()) Text(paymentError, color = Bad)
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = !busy && paymentError.isBlank(), onClick = {
+                    store.markBillPaid(parent.id, snapshot) { message ->
+                        if (message.isEmpty()) paymentSnapshot = null else paymentError = message
+                    }
+                }) { Text(if (busy) "Saving" else "Confirm payment") }
+            },
+            dismissButton = { TextButton(enabled = !busy, onClick = { paymentSnapshot = null }) { Text("Back") } }
+        )
     }
 }
 
@@ -1051,7 +1095,7 @@ private fun OrderCard(store: CounterStore, order: LiveOrder, insideBill: Boolean
         order.items.forEach { line ->
             Text(line.name, color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
             if (line.detail.isNotBlank()) Text(line.detail, color = Muted, fontSize = 13.sp)
-            if (order.canVoidItems && line.id.isNotBlank()) {
+            if (order.canVoidItems && store.session?.role in listOf("owner", "manager") && line.id.isNotBlank()) {
                 TextButton(onClick = { voiding = line }, enabled = !busy) { Text("Void item") }
             }
         }
@@ -1074,7 +1118,9 @@ private fun OrderCard(store: CounterStore, order: LiveOrder, insideBill: Boolean
         }
         if (order.canCancel == true) {
             Secondary("Cancel order") { if (!busy) cancelling = true }
-        } else if (order.canCancel == null && next != null && (order.status == "new" || order.status == "preparing")) {
+        } else if (order.canCancel == null && order.source == "menu" && order.paymentMethod == "cash" && order.payment == "unpaid" && order.status == "new") {
+            Secondary(if (busy) "Saving" else "Cancel order") { if (!busy) cancelling = true }
+        } else if (order.canCancel == null && order.source != "menu" && next != null && (order.status == "new" || order.status == "preparing")) {
             Secondary(if (busy) "Saving" else "Cancel order") { if (!busy) store.setOrderStatus(order.id, "cancelled") }
         }
     }
@@ -1088,10 +1134,11 @@ private fun OrderCard(store: CounterStore, order: LiveOrder, insideBill: Boolean
 private fun CounterAdjustmentDialog(store: CounterStore, order: LiveOrder, line: OrderLine?, close: () -> Unit) {
     val busy = store.orderBusy.isNotBlank()
     var reason by remember { mutableStateOf("") }
+    var credential by remember { mutableStateOf("") }
     var quantity by remember { mutableStateOf("1") }
     var error by remember { mutableStateOf("") }
     val count = quantity.toIntOrNull()
-    val valid = reason.isNotBlank() && (line == null || count != null && count in 1..line.quantity)
+    val valid = reason.isNotBlank() && (line == null || count != null && count in 1..line.quantity && credential.isNotBlank())
     val requestId = remember(quantity, reason) { UUID.randomUUID().toString() }
     val action = if (line == null) "Cancel order" else "Void item"
     AlertDialog(
@@ -1104,16 +1151,18 @@ private fun CounterAdjustmentDialog(store: CounterStore, order: LiveOrder, line:
                     Field("Quantity to void", quantity, { if (!busy) quantity = it.filter(Char::isDigit).take(2) }, number = true)
                 }
                 Field("Reason", reason, { if (!busy) reason = it.take(250) }, lines = 2)
+                if (line != null) Field(if (store.session?.isOwner == true) "Confirm owner password" else "Confirm manager PIN", credential, { if (!busy) credential = it.take(256) }, password = true)
                 if (error.isNotBlank()) Text(error, color = Bad)
             }
         },
         confirmButton = {
             TextButton(enabled = !busy && valid, onClick = {
                 val done: (String) -> Unit = { message ->
+                    credential = ""
                     if (message.isEmpty()) close() else error = message
                 }
                 if (line == null) store.cancelCounterOrder(order, reason, done)
-                else if (count != null) store.voidCounterItem(order, requestId, line, count, reason, done)
+                else if (count != null) store.voidCounterItem(order, requestId, line, count, reason, credential, done)
             }) { Text(if (busy) "Saving" else action) }
         },
         dismissButton = { TextButton(enabled = !busy, onClick = close) { Text("Back") } }
@@ -1770,6 +1819,18 @@ private fun AnalyticsScreen(store: CounterStore) {
                 }
             }
         }
+        store.purchaseFrequency?.let { frequency ->
+            Text("Customer purchase frequency", color = Forest, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            Card {
+                Info("Linked buyers", frequency.optInt("linked_buyers").toString())
+                Info("Repeat buyers", frequency.optInt("repeat_buyers").toString())
+                Info("Single-bill buyers", frequency.optInt("single_bill_buyers").toString())
+                Info("Repeat buyer rate", if (frequency.isNull("repeat_buyer_percent")) "—" else "${frequency.optDouble("repeat_buyer_percent")}%")
+                Info("Average bills per buyer", if (frequency.isNull("average_bills_per_buyer")) "—" else String.format(Locale.US, "%.2f", frequency.optDouble("average_bills_per_buyer")))
+                Info("Average cash spend per buyer", if (frequency.isNull("average_cash_spend_per_buyer")) "—" else peso(frequency.optDouble("average_cash_spend_per_buyer")))
+                Text("Cash-confirmed linked bills in this period only. Excludes test payments and unlinked purchases.", color = Muted, fontSize = 12.sp)
+            }
+        }
         if (store.insightTrend.any { it.orders > 0 }) {
             Text(when (store.insightTrendUnit) { "hour" -> "Sales by hour"; "week" -> "Sales by week"; else -> "Sales by day" }, color = Forest, fontSize = 18.sp, fontWeight = FontWeight.Bold)
             Card { TrendChart(store.insightTrend) }
@@ -2080,11 +2141,43 @@ private fun CampaignScreen(store: CounterStore) {
     var value by remember { mutableStateOf("10") }
     var scope by remember { mutableStateOf("nationwide") }
     var branchId by remember { mutableStateOf("") }
-    val start = store.manila()
+    var start by remember { mutableStateOf(store.manila()) }
     val endCal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Manila")).apply { add(java.util.Calendar.DAY_OF_YEAR, 7) }
-    val end = store.manila(endCal)
-    LaunchedEffect(Unit) { store.loadCampaigns() }
+    var end by remember { mutableStateOf(store.manila(endCal)) }
+    LaunchedEffect(store.session?.slug) {
+        store.loadCampaigns()
+        store.loadChurnSettings()
+    }
     Scroll {
+        if (store.session?.isOwner == true) {
+            Text("Automatic win-back discounts", color = Forest, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            val settings = store.churnSettings
+            if (settings != null) {
+                var enabled by remember(settings) { mutableStateOf(settings.optBoolean("enabled")) }
+                var inactive by remember(settings) { mutableStateOf(settings.optInt("inactivity_days", 30).toString()) }
+                var discount by remember(settings) { mutableStateOf(settings.optInt("discount_percent", 10).toString()) }
+                var validity by remember(settings) { mutableStateOf(settings.optInt("validity_days", 7).toString()) }
+                var limit by remember(settings) { mutableStateOf(settings.optInt("daily_limit", 25).toString()) }
+                Card {
+                    Text("Optional discounts for eligible inactive members.", color = Muted, fontSize = 13.sp)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Box(Modifier.weight(1f)) { Choice("Disabled", !enabled) { enabled = false } }
+                        Box(Modifier.weight(1f)) { Choice("Enabled", enabled) { enabled = true } }
+                    }
+                    Field("Inactivity days", inactive, { inactive = it.filter { c -> c in '0'..'9' }.take(3) })
+                    Field("Discount (%)", discount, { discount = it.filter { c -> c in '0'..'9' }.take(3) })
+                    Field("Voucher validity (days)", validity, { validity = it.filter { c -> c in '0'..'9' }.take(2) })
+                    Field("Daily voucher limit", limit, { limit = it.filter { c -> c in '0'..'9' }.take(3) })
+                    if (!settings.optBoolean("issuance_ready")) Text("Settings only. Automatic voucher issuance is not active yet.", color = Muted, fontSize = 13.sp)
+                    Primary("Save win-back settings", enabled = !store.churnSettingsBusy) {
+                        store.saveChurnSettings(enabled, inactive, discount, validity, limit)
+                    }
+                }
+            }
+            if (store.churnSettingsNote.isNotBlank()) Text(store.churnSettingsNote, color = Muted, fontSize = 13.sp)
+            Secondary("Refresh win-back settings") { store.loadChurnSettings() }
+        }
+        Text("Purchase campaigns", color = Forest, fontSize = 18.sp, fontWeight = FontWeight.Bold)
         Text("Members who buy during these dates get the voucher. Stamps stay the same.", color = Muted)
         Field("Campaign name", name, { name = it })
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -2093,15 +2186,18 @@ private fun CampaignScreen(store: CounterStore) {
             }
         }
         if (kind != "buy_one_take_one") Field(if (kind == "percent_discount") "Percent" else "Pesos", value, { value = it })
-        Text("Starts $start · ends $end", color = Muted, fontSize = 13.sp)
+        Field("Starts (YYYY-MM-DD)", start, { start = it.take(10) })
+        Field("Ends (YYYY-MM-DD)", end, { end = it.take(10) })
+        Text("Philippine calendar dates. One voucher per qualifying member.", color = Muted, fontSize = 13.sp)
         Text("The coupon disappears after the end date.", color = Muted, fontSize = 13.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Box(Modifier.weight(1f)) { Choice("Whole business", scope == "nationwide") { scope = "nationwide" } }
             Box(Modifier.weight(1f)) { Choice("One branch", scope == "single_branch") { scope = "single_branch" } }
         }
         if (scope == "single_branch") store.branches.forEach { branch -> Choice(branch.name, branchId == branch.id) { branchId = branch.id } }
-        if (store.campaignNote.isNotBlank()) Text(store.campaignNote, color = if (store.campaignNote.startsWith("Started")) Forest else Bad, fontWeight = FontWeight.SemiBold)
-        Primary(if (store.loading) "Starting" else "Start campaign", enabled = !store.loading) {
+        if (store.campaignNote.isNotBlank()) Text(store.campaignNote, color = if (store.campaignNote.startsWith("Saved")) Forest else Bad, fontWeight = FontWeight.SemiBold)
+        Secondary("Refresh campaigns") { store.loadCampaigns() }
+        Primary(if (store.loading) "Saving…" else "Save campaign", enabled = !store.loading && store.session?.isOwner == true) {
             store.startCampaign(name, kind, value, start, end, scope, branchId)
         }
         store.campaigns.forEach { row ->

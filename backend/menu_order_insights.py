@@ -232,6 +232,7 @@ def payment_breakdown(rows):
     methods['other'] = {'method': 'other', 'label': 'Not recorded', 'orders': 0, 'sales': 0.0}
     paid = {'orders': 0, 'sales': 0.0}
     unpaid = {'orders': 0, 'sales': 0.0}
+    settlement = {key: {'orders': 0, 'sales': 0.0} for key in ('cash_confirmed', 'test', 'unverified', 'outstanding')}
     for row in rows:
         amount = _money(row.get('total'))
         bucket = methods.get(str(row.get('payment_method') or ''), methods['other'])
@@ -240,7 +241,13 @@ def payment_breakdown(rows):
         target = unpaid if str(row.get('payment_status') or '') not in PAID_STATUSES else paid
         target['orders'] += 1
         target['sales'] = round(target['sales'] + amount, 2)
-    return {'by_method': [value for value in methods.values() if value['orders']], 'paid': paid, 'unpaid': unpaid}
+        status = str(row.get('payment_status') or '')
+        method = str(row.get('payment_method') or '')
+        key = ('test' if status == 'paid_test' else 'cash_confirmed' if status == 'paid' and method == 'cash' else 'outstanding' if status not in PAID_STATUSES else 'unverified')
+        bucket = settlement[key]
+        bucket['orders'] += 1
+        bucket['sales'] = round(bucket['sales'] + amount, 2)
+    return {'by_method': [value for value in methods.values() if value['orders']], 'paid': paid, 'unpaid': unpaid, 'settlement': settlement}
 
 
 def _group(key, label, rows, members_needed=False):
@@ -373,6 +380,20 @@ def period_days(period, today):
     return start, end, previous_start, previous_end
 
 
+def custom_report_days(start, end, today):
+    """Inclusive user dates, limited to 92 days to bound report work."""
+    try:
+        first = date.fromisoformat(start)
+        last = date.fromisoformat(end)
+        if first.isoformat() != start or last.isoformat() != end:
+            raise ValueError()
+        if first > last or last > today or (last - first).days >= 92:
+            raise ValueError()
+        return first, last
+    except (ValueError, TypeError):
+        raise HTTPException(400, 'Choose a valid date range of up to 92 days, ending no later than today.')
+
+
 def manila_range_bounds(start_day, end_day):
     start = datetime.combine(start_day, dtime.min, tzinfo=MANILA)
     end = datetime.combine(end_day, dtime.min, tzinfo=MANILA)
@@ -483,6 +504,11 @@ def period_report(rows, previous_rows, customers, period, today, branch=''):
     scoped = filter_branch(rows, branch)
     earlier = filter_branch(previous_rows, branch)
     report = order_insights(rows, customers, today, branch, (end - start).days)
+    try:
+        from .menu_customer_pulse_v192 import purchase_frequency
+    except ImportError:
+        from menu_customer_pulse_v192 import purchase_frequency
+    report['purchase_frequency'] = purchase_frequency(scoped)
     current, before = kpis(scoped), kpis(earlier)
     unit, trend = sales_trend(scoped, period, start, today)
     report.update({
@@ -598,7 +624,10 @@ def sales_report(rows, customers, start_day, end_day, branch='', business_name='
     w.writerow(['Pickup', sum(1 for row in live if row.get('service') != 'dine-in')])
     w.writerow(['Card members', len(members)])
     w.writerow(['Walk-ins', len(live) - len(members)])
-    w.writerow(['Paid orders', payments['paid']['orders'], f"{payments['paid']['sales']:.2f}"])
+    w.writerow(['Paid orders (includes test and unverified)', payments['paid']['orders'], f"{payments['paid']['sales']:.2f}"])
+    for key, label in [('cash_confirmed', 'Confirmed cash on orders in period'), ('test', 'Test payments (not collected)'), ('unverified', 'Other paid records (collection unverified)'), ('outstanding', 'Outstanding or unconfirmed orders')]:
+        bucket = payments['settlement'][key]
+        w.writerow([label, bucket['orders'], f"{bucket['sales']:.2f}"])
     w.writerow(['Cash waiting for payment', len(unpaid_cash), f"{sum(_money(r.get('total')) for r in unpaid_cash):.2f}"])
     w.writerow(['Cancelled (not in sales)', len(cancelled), f"{sum(_money(r.get('total')) for r in cancelled):.2f}"])
     w.writerow([])
@@ -667,6 +696,7 @@ def sales_report(rows, customers, start_day, end_day, branch='', business_name='
     w.writerow(['Age range, gender and occupation come only from loyalty cards connected on the menu.'])
     w.writerow(['Small groups are hidden so one customer cannot be identified. Weekly or monthly reports show more groups.'])
     w.writerow(['Phone numbers and emails are not included.'])
+    w.writerow(['Payments are classified by current status of orders created in the selected period; this is not a payment-date cash ledger.'])
 
     lines = [f"{business_name or 'LoyaltyTree'} · {scope_label}", f"Sales report · {when_label}",
              f"Sales {_peso(sales)} · {len(live)} {'order' if len(live) == 1 else 'orders'}"
@@ -682,7 +712,7 @@ def sales_report(rows, customers, start_day, end_day, branch='', business_name='
         'csv': out.getvalue(), 'text': '\n'.join(lines),
         'filename': report_filename(business_name, branch_name if branch else '', start_day, end_day),
         'start': start_day.isoformat(), 'end': end_day.isoformat(), 'branch': branch or '',
-        'orders': len(live), 'sales': sales, 'cancelled': len(cancelled),
+        'orders': len(live), 'sales': sales, 'cancelled': len(cancelled), 'payments': payments,
     }
 
 
@@ -707,6 +737,12 @@ def register_menu_order_insight_routes(app, *, db, get_business, require_owner, 
         if not business:
             raise HTTPException(status_code=404, detail='Business not found')
         return business
+
+    try:
+        from .churn_discount_routes import register_churn_discount_routes
+    except ImportError:
+        from churn_discount_routes import register_churn_discount_routes
+    register_churn_discount_routes(app, db=db, business_for=business_for)
 
     def scoped_for(public_id, authorization, branch, allow):
         """Owner sees any branch. Managers and cashiers are held to their own branch."""
@@ -743,12 +779,16 @@ def register_menu_order_insight_routes(app, *, db, get_business, require_owner, 
 
     @app.get('/api/v1/business/{public_id}/menu-orders/report')
     def menu_orders_report(public_id: str, date: str = '', branch: str = '', period: str = '', format: str = 'csv',
-                           authorization: str = Header(default='')):
+                           start: str = '', end: str = '', authorization: str = Header(default='')):
         """Download a sales report: one day (default today, Manila) or this week / this month."""
         business, branch, _ = scoped_for(public_id, authorization, branch, ('owner', 'manager'))
         today = datetime.now(MANILA).date()
         chosen = normalize_period(period)
-        if chosen and not date:
+        if start or end:
+            if date or period:
+                raise HTTPException(400, 'Use either a custom range or a preset period.')
+            start_day, end_day = custom_report_days(start, end, today)
+        elif chosen and not date:
             start_day, end_day, _, _ = period_days(chosen, today)
             end_day = end_day - timedelta(days=1)
         else:

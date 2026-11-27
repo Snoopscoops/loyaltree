@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { formatMoney } from './currency'
 
-const todayISO = () => new Date().toISOString().slice(0,10)
+const todayISO = () => new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Manila',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date())
 const plusDays = (iso, days) => {
   const d = new Date(`${iso}T00:00:00`)
   d.setDate(d.getDate() + days)
@@ -45,6 +45,8 @@ export default function Campaigns({ API_BASE, user, business, authFetch }) {
   const [message,setMessage]=useState('')
   const [error,setError]=useState('')
   const [showBuilder,setShowBuilder]=useState(false)
+  const [schedule,setSchedule]=useState(null)
+  const [winback,setWinback]=useState(null)
 
   const card={background:'#fff',border:'1px solid #e2e8f0',borderRadius:16,padding:18,boxShadow:'0 2px 10px rgba(15,23,42,.04)'}
   const input={width:'100%',padding:'10px 11px',border:'1px solid #cbd5e1',borderRadius:10,boxSizing:'border-box',fontSize:13,background:'#fff'}
@@ -70,6 +72,11 @@ export default function Campaigns({ API_BASE, user, business, authFetch }) {
   }
 
   useEffect(()=>{load()},[slug])
+  useEffect(()=>{
+    let active=true;setWinback(null)
+    if(slug&&authFetch)authFetch(`${API_BASE}/api/v1/business/${slug}/churn-discount-report`,{cache:'no-store'}).then(async res=>{if(!res.ok)throw new Error();return res.json()}).then(body=>{if(active)setWinback(body)}).catch(()=>{})
+    return ()=>{active=false}
+  },[slug,API_BASE,authFetch])
 
   const branchByPublicId=useMemo(()=>Object.fromEntries(branches.map(b=>[b.public_id,b])),[branches])
   const statusLabel=c=>String(c?.effective_status||c?.status||'scheduled').replaceAll('_',' ')
@@ -81,7 +88,7 @@ export default function Campaigns({ API_BASE, user, business, authFetch }) {
   }
 
   const selectCampaign=async(c)=>{
-    setSelected(c);setReport(null);setError('')
+    setSelected(c);setReport(null);setSchedule(null);setError('')
     try{
       const res=await authFetch(`${API_BASE}/api/v1/business/${slug}/campaigns/${c.public_id}/report`,{cache:'no-store'})
       const body=await res.json().catch(()=>({}))
@@ -92,14 +99,14 @@ export default function Campaigns({ API_BASE, user, business, authFetch }) {
 
   const toggleBranch=(id)=>setForm(f=>({...f,branch_public_ids:(f.branch_public_ids||[]).includes(id)?f.branch_public_ids.filter(x=>x!==id):[...(f.branch_public_ids||[]),id]}))
 
-  const save=async()=>{
+  const save=async(status='scheduled')=>{
     if(!form.name.trim()){setError('Campaign name is required.');return}
     if(form.scope==='single_branch'&&form.branch_public_ids.length!==1){setError('Choose exactly one branch.');return}
     if(form.scope==='selected_branches'&&!form.branch_public_ids.length){setError('Choose at least one branch.');return}
     setSaving(true);setError('');setMessage('')
     try{
       const payload={
-        ...form,
+        ...form, status,
         name:form.name.trim(),
         description:form.description.trim()||null,
         branch_public_ids:form.scope==='nationwide'?[]:form.branch_public_ids,
@@ -114,11 +121,23 @@ export default function Campaigns({ API_BASE, user, business, authFetch }) {
       const res=await authFetch(`${API_BASE}/api/v1/business/${slug}/campaigns`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
       const body=await res.json().catch(()=>({}))
       if(!res.ok)throw new Error(body.detail||'Could not create campaign')
-      setMessage('Campaign scheduled. Qualifying purchases will issue the seasonal coupon automatically.')
+      setMessage(status==='draft'?'Draft saved. No vouchers issued.':'Campaign scheduled. Existing campaign issuance rules apply.')
       setForm(emptyCampaign());setShowBuilder(false)
       await load()
     }catch(e){setError(e.message||'Could not create campaign')}
     finally{setSaving(false)}
+  }
+
+  const scheduleFields=['qualifying_start_date','qualifying_end_date','coupon_start_date','coupon_end_date']
+  const saveSchedule=async()=>{
+    if(!selected||!schedule||selected.status!=='draft')return
+    if(scheduleFields.some(k=>!schedule[k])||schedule.qualifying_end_date<schedule.qualifying_start_date||schedule.coupon_end_date<schedule.coupon_start_date){setError('Choose valid start and end dates.');return}
+    setSaving(true);setError('')
+    try{
+      const res=await authFetch(`${API_BASE}/api/v1/business/${slug}/campaigns/${selected.public_id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(schedule)})
+      const body=await res.json().catch(()=>({}));if(!res.ok)throw new Error(body.detail||'Could not save dates')
+      setMessage('Draft schedule saved.');setSchedule(null);await load();await selectCampaign(body)
+    }catch(e){setError(e.message)}finally{setSaving(false)}
   }
 
   const setStatus=async(c,status)=>{
@@ -150,6 +169,7 @@ export default function Campaigns({ API_BASE, user, business, authFetch }) {
       {error&&<div style={{marginTop:12,padding:'10px 12px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:10,color:'#b91c1c',fontSize:12}}>{error}</div>}
     </div>
 
+    <div style={card}><h3>Win-back performance</h3><p style={{fontSize:12,color:'#64748b'}}>Lifetime counts from linked coupons. Revenue attribution is not available here.</p>{winback ? <div style={{display:'flex',gap:18,flexWrap:'wrap'}}>{[['Issued',winback.issued],['Redeemed',winback.redeemed],['Expired unused',winback.expired_unused],['Redemption rate',winback.redemption_rate_percent==null?'—':`${winback.redemption_rate_percent}%`]].map(([k,v])=><div key={k}><small>{k}</small><br/><strong>{v??'—'}</strong></div>)}</div>:<p>Win-back report unavailable.</p>}</div>
     {showBuilder&&<div style={card}>
       <div style={{fontSize:11,fontWeight:900,color:'#0f766e'}}>CREATE CAMPAIGN</div>
       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(230px,1fr))',gap:12,marginTop:8}}>
@@ -177,7 +197,7 @@ export default function Campaigns({ API_BASE, user, business, authFetch }) {
         <div style={{gridColumn:'1/-1'}}><label style={label}>Reward details (optional)</label><textarea style={{...input,minHeight:60}} value={form.reward_description} onChange={e=>setForm({...form,reward_description:e.target.value})} placeholder="Terms shown to the team/customer"/></div>
       </div>
       <div style={{marginTop:14,padding:12,borderRadius:12,background:'#f8fafc',fontSize:12,color:'#475569'}}><b>Flow:</b> purchase during <b>{form.qualifying_start_date}</b>–<b>{form.qualifying_end_date}</b> → issue <b>{form.reward_label||rewardLabel(form)}</b> → usable <b>{form.coupon_start_date}</b>–<b>{form.coupon_end_date}</b>.</div>
-      <button disabled={saving} onClick={save} style={{...primary,marginTop:12}}>{saving?'Saving…':'Schedule campaign'}</button>
+      <button disabled={saving} onClick={()=>save()} style={{...primary,marginTop:12}}>{saving?'Saving…':'Schedule campaign'}</button> <button disabled={saving} onClick={()=>save('draft')} style={secondary}>Save draft</button>
     </div>}
 
     <div style={{display:'grid',gridTemplateColumns:'minmax(300px,.85fr) minmax(0,1.35fr)',gap:14}} className="lt-campaign-grid">
@@ -189,7 +209,8 @@ export default function Campaigns({ API_BASE, user, business, authFetch }) {
 
       <div style={card}>
         {!selected?<div style={{padding:30,textAlign:'center',color:'#94a3b8'}}>Select a campaign to view movements and reports.</div>:<>
-          <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'flex-start',flexWrap:'wrap'}}><div><div style={{fontSize:11,fontWeight:900,color:'#0f766e'}}>CAMPAIGN REPORT</div><h2 style={{margin:'3px 0'}}>{selected.name}</h2><div style={{fontSize:12,color:'#64748b'}}>{rewardLabel(selected)} · {selected.qualifying_start_date} → {selected.qualifying_end_date}</div></div><div style={{display:'flex',gap:6}}>{statusLabel(selected)!=='paused'&&statusLabel(selected)!=='ended'&&<button style={secondary} disabled={saving} onClick={()=>setStatus(selected,'paused')}>Pause</button>}{statusLabel(selected)==='paused'&&<button style={secondary} disabled={saving} onClick={()=>setStatus(selected,'scheduled')}>Resume</button>}<button style={secondary} disabled={saving||statusLabel(selected)==='ended'} onClick={()=>setStatus(selected,'ended')}>End</button></div></div>
+          <div style={{display:'flex',justifyContent:'space-between',gap:10,alignItems:'flex-start',flexWrap:'wrap'}}><div><div style={{fontSize:11,fontWeight:900,color:'#0f766e'}}>CAMPAIGN REPORT</div><h2 style={{margin:'3px 0'}}>{selected.name}</h2><div style={{fontSize:12,color:'#64748b'}}>{rewardLabel(selected)} · {selected.qualifying_start_date} → {selected.qualifying_end_date}</div></div><div style={{display:'flex',gap:6}}>{!selected.automation_kind&&statusLabel(selected)!=='draft'&&statusLabel(selected)!=='paused'&&statusLabel(selected)!=='ended'&&<button style={secondary} disabled={saving} onClick={()=>setStatus(selected,'paused')}>Pause</button>}{!selected.automation_kind&&statusLabel(selected)==='paused'&&<button style={secondary} disabled={saving} onClick={()=>setStatus(selected,'scheduled')}>Resume</button>}{!selected.automation_kind&&<button style={secondary} disabled={saving||statusLabel(selected)==='ended'} onClick={()=>setStatus(selected,'ended')}>End</button>}</div></div>
+          {selected.automation_kind==='winback'?<p style={{fontSize:12}}>Managed automatically through win-back settings.</p>:selected.status==='draft'&&<div style={{marginTop:12}}><button style={secondary} disabled={saving} onClick={()=>setSchedule(Object.fromEntries(scheduleFields.map(k=>[k,selected[k]||''])))}>Edit draft dates</button> <button style={primary} disabled={saving||!!schedule} onClick={()=>setStatus(selected,'scheduled')}>Publish campaign</button>{schedule&&<div>{scheduleFields.map(k=><label key={k} style={label}>{k.replaceAll('_',' ')}<input type="date" style={input} value={schedule[k]} onChange={e=>setSchedule({...schedule,[k]:e.target.value})}/></label>)}<button style={primary} disabled={saving} onClick={saveSchedule}>Save dates</button> <button style={secondary} onClick={()=>setSchedule(null)}>Cancel</button></div>}</div>}
           {!report?<div style={{padding:30,textAlign:'center',color:'#94a3b8'}}>Loading report…</div>:<>
             <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(125px,1fr))',gap:8,marginTop:14}}>{[
               ['Coupons issued',report.issued||0],['Redeemed',report.redeemed||0],['Redemption rate',`${Number(report.redemption_rate||0).toFixed(1)}%`],['Gross revenue',formatMoney(report.gross_revenue_from_redemptions||0,currency)],['Discount given',formatMoney(report.discount_given||0,currency)]
