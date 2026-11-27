@@ -14950,7 +14950,7 @@ async def login(req: LoginRequest, request: Request):
                 )
             business = await asyncio.to_thread(owner_password_security.migrate_owner_password, supabase, business, req.password)
             _clear_auth_failures('owner', request, req.email)
-            owner_session_token = create_owner_session_token(business)
+            owner_session_token = create_owner_session_token(business, ttl_seconds=30 * 24 * 60 * 60)
             return {
                 "success": True,
                 "token": owner_session_token,
