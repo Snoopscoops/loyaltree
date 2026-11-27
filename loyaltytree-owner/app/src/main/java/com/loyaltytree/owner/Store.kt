@@ -325,7 +325,75 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         seenOpening = true
     }
 
+    private val adminPrefs get() = getApplication<Application>().getSharedPreferences("lt_admin_secure", Context.MODE_PRIVATE)
+
+    private fun adminKey(create: Boolean): javax.crypto.SecretKey? {
+        val ks = java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        val alias = "loyaltree_admin_session_v1"
+        (ks.getKey(alias, null) as? javax.crypto.SecretKey)?.let { return it }
+        if (!create) return null
+        return javax.crypto.KeyGenerator.getInstance("AES", "AndroidKeyStore").apply {
+            init(android.security.keystore.KeyGenParameterSpec.Builder(alias,
+                android.security.keystore.KeyProperties.PURPOSE_ENCRYPT or android.security.keystore.KeyProperties.PURPOSE_DECRYPT)
+                .setBlockModes(android.security.keystore.KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(android.security.keystore.KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setRandomizedEncryptionRequired(true).build())
+        }.generateKey()
+    }
+
+    private fun clearAdminSession() {
+        adminPrefs.edit().clear().commit()
+        runCatching {
+            java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null); deleteEntry("loyaltree_admin_session_v1") }
+        }
+    }
+
+    private fun persistAdminSession(next: OwnerSession): Boolean = runCatching {
+        val key = adminKey(true) ?: error("Missing secure key")
+        val cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(javax.crypto.Cipher.ENCRYPT_MODE, key)
+        val now = System.currentTimeMillis()
+        val raw = JSONObject().put("token", next.token).put("email", next.email)
+            .put("issued", now).put("expires", now + 7L * 24 * 60 * 60 * 1000).toString()
+        val encoded = android.util.Base64.encodeToString(cipher.doFinal(raw.toByteArray(Charsets.UTF_8)), android.util.Base64.NO_WRAP)
+        adminPrefs.edit().putString("ciphertext", encoded)
+            .putString("iv", android.util.Base64.encodeToString(cipher.iv, android.util.Base64.NO_WRAP)).commit()
+    }.getOrDefault(false)
+
+    private fun restoreAdminSession(): OwnerSession? {
+        val encrypted = adminPrefs.getString("ciphertext", null) ?: return null
+        val restored = runCatching {
+            val key = adminKey(false) ?: error("Missing secure key")
+            val iv = android.util.Base64.decode(adminPrefs.getString("iv", "") ?: "", android.util.Base64.NO_WRAP)
+            val cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(javax.crypto.Cipher.DECRYPT_MODE, key, javax.crypto.spec.GCMParameterSpec(128, iv))
+            val raw = JSONObject(String(cipher.doFinal(android.util.Base64.decode(encrypted, android.util.Base64.NO_WRAP)), Charsets.UTF_8))
+            val now = System.currentTimeMillis()
+            require(now >= raw.getLong("issued") && now < raw.getLong("expires"))
+            val token = raw.getString("token")
+            require(token.isNotBlank())
+            OwnerSession(token, "", "LoyaltyTree", raw.getString("email"), "super_admin")
+        }.getOrNull()
+        if (restored == null) clearAdminSession()
+        return restored
+    }
+
     private fun restore() {
+        restoreAdminSession()?.let { candidate ->
+            // No privileged screen until server authorization succeeds.
+            viewModelScope.launch {
+                loading = true
+                val result = io { API.get("/api/v1/admin/overview", candidate.token) }
+                loading = false
+                if (session != null) return@launch
+                if (result?.first == 200 && result.second is JSONObject) session = candidate
+                else if (result?.first == 401 || result?.first == 403) {
+                    clearAdminSession()
+                    status = "Administrator access expired. Sign in again."
+                } else status = "Could not verify saved administrator session. Reopen with a connection or sign in."
+            }
+            return
+        }
         val raw = prefs.getString("session", null) ?: return
         val json = runCatching { JSONObject(raw) }.getOrNull() ?: return
         // Admin tokens are deliberately memory-only; never restore one from merchant preferences.
@@ -357,6 +425,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     /** Owner: email + password. Staff (manager or cashier): the email + PIN the owner set in Cashiers. Same login API. */
     fun signIn(email: String, password: String, staff: Boolean = false) {
         viewModelScope.launch {
+            if (loading) return@launch
             loading = true
             status = ""
             val result = io { API.post("/api/v1/auth/login", null, JSONObject().put("email", email).put("password", password)) }
@@ -383,7 +452,10 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
                 prefs.edit().remove("session").apply()
                 watchJob?.cancel()
                 watchJob = null
-                session = OwnerSession(token, "", "LoyaltyTree", email, role)
+                clearAdminSession()
+                val next = OwnerSession(token, "", "LoyaltyTree", email, role)
+                if (!persistAdminSession(next)) status = "Secure session storage unavailable; sign-in lasts until the app closes."
+                session = next
                 return@launch
             }
             if (role !in listOf("owner", "manager", "cashier") || slug.isBlank()) {
@@ -396,6 +468,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
                 branchId = json?.optString("branch_public_id").orEmpty().takeIf { it != "null" }.orEmpty(),
                 branchName = json?.optString("branch_name").orEmpty().takeIf { it != "null" }.orEmpty()
             )
+            clearAdminSession()
             saveSession(next)
             session = next
             refresh()
@@ -403,6 +476,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     }
 
     fun signOut() {
+        clearAdminSession()
         // Stop pushes to this phone first (works even if the 12-hour shift sign-in already ended).
         session?.takeUnless { it.isAdmin }?.let { OrderPush.signOut(getApplication<Application>(), it.slug) }
         pushRegistered = ""
