@@ -504,6 +504,11 @@ def period_report(rows, previous_rows, customers, period, today, branch=''):
     scoped = filter_branch(rows, branch)
     earlier = filter_branch(previous_rows, branch)
     report = order_insights(rows, customers, today, branch, (end - start).days)
+    try:
+        from .menu_customer_pulse_v192 import purchase_frequency
+    except ImportError:
+        from menu_customer_pulse_v192 import purchase_frequency
+    report['purchase_frequency'] = purchase_frequency(scoped)
     current, before = kpis(scoped), kpis(earlier)
     unit, trend = sales_trend(scoped, period, start, today)
     report.update({
