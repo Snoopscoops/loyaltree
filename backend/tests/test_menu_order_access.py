@@ -138,8 +138,11 @@ class RouteTests(unittest.TestCase):
         auth = {'Authorization': 'Bearer ana'}
         self.assertEqual(self.client.patch('/api/v1/business/biz/menu-orders/o2/payment', headers=auth).status_code, 403)
         self.assertEqual(self.db.rows['menu_counter_orders'][1]['payment_status'], 'unpaid')
-        self.assertEqual(self.client.patch('/api/v1/business/biz/menu-orders/o1/payment', headers=auth).json()['payment_status'], 'paid')
-        self.assertEqual(self.client.patch('/api/v1/business/biz/menu-orders/o2/payment', headers={'Authorization': 'Bearer owner'}).status_code, 200)
+        self.assertEqual(self.client.patch('/api/v1/business/biz/menu-orders/o1/payment', headers=auth).status_code, 400)
+        response = self.client.patch('/api/v1/business/biz/menu-orders/o1/payment?expected_amount=200.00', headers=auth)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['payment_status'], 'paid')
+        self.assertEqual(self.client.patch('/api/v1/business/biz/menu-orders/o2/payment?expected_amount=300.00', headers={'Authorization': 'Bearer owner'}).status_code, 200)
 
     def test_summary_and_report_for_managers_only_and_scoped(self):
         self.assertEqual(self.get('/menu-orders/summary', 'ana').status_code, 403)
