@@ -97,7 +97,8 @@ data class DaySummary(
     val branches: List<NamedCount>,
     val payments: List<NamedCount> = emptyList(),
     val paid: String = "",
-    val unpaid: String = ""
+    val unpaid: String = "",
+    val settlement: List<NamedCount> = emptyList()
 )
 data class ShareReport(val uri: android.net.Uri?, val filename: String, val text: String)
 data class Cashier(val id: String, val name: String, val email: String, val role: String, val active: Boolean, val branchId: String, val branchName: String)
@@ -612,6 +613,12 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
                 for (i in 0 until methods.length()) {
                     val row = methods.optJSONObject(i) ?: continue
                     add(NamedCount(row.optString("method").ifBlank { "m$i" }, row.optString("label").ifBlank { "Other" }, "${row.optInt("orders")} · ${pesos(row.opt("sales"))}"))
+                }
+            },
+            settlement = buildList {
+                val settlement = json.optJSONObject("payments")?.optJSONObject("settlement")
+                listOf("cash_confirmed" to "Confirmed cash", "test" to "Test payments", "unverified" to "Unverified payments", "outstanding" to "Outstanding").forEach { (key, label) ->
+                    settlement?.optJSONObject(key)?.let { row -> add(NamedCount(key, label, "${row.optInt("orders")} · ${pesos(row.opt("sales"))}")) }
                 }
             },
             paid = json.optJSONObject("payments")?.optJSONObject("paid")?.let { "${it.optInt("orders")} · ${pesos(it.opt("sales"))}" }.orEmpty(),
