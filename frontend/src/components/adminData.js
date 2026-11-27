@@ -28,3 +28,7 @@ export function filterAdminBusinesses(rows, { search = '', status = '', plan = '
     (!type || row.business_type === type) && (!needle || [row.name, row.email, row.address]
       .some(value => String(value || '').toLowerCase().includes(needle))))
 }
+
+export function adminCountLabel(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value.toLocaleString('en-US') : '—'
+}
