@@ -37,11 +37,11 @@ def cash_order(public_id, **changes):
 
 
 def operator(public_id, authorization):
-    if authorization != 'Bearer cashier':
+    if authorization not in ('Bearer cashier', 'Bearer owner'):
         raise HTTPException(401, 'Session expired.')
     if public_id != BUSINESS['public_id']:
         raise HTTPException(403, 'Session does not match this business.')
-    return BUSINESS, SCOPE
+    return BUSINESS, (dict(SCOPE, role='owner', staff_id=None) if authorization == 'Bearer owner' else SCOPE)
 
 
 class AdjustmentDB(DB):
@@ -136,7 +136,9 @@ def test_suborder_rejects_unauthorized_or_nested_request_before_rpc(routes, orde
 def test_void_uses_validated_line_quantity_reason_and_scoped_actor(routes):
     client, db, _, _ = routes
     payload = {'request_id': str(uuid4()), 'line_id': LINE, 'quantity': 1, 'reason': ' wrong item '}
-    headers = {'Authorization': 'Bearer cashier'}
+    assert client.patch(path(CHILD, 'void-item'), headers={'Authorization': 'Bearer cashier'}, json=payload).status_code == 403
+    assert not db.calls
+    headers = {'Authorization': 'Bearer owner'}
     assert client.patch(path(CHILD, 'void-item'), headers=headers, json={**payload, 'quantity': True}).status_code == 400
     assert client.patch(path(CHILD, 'void-item'), headers=headers, json={**payload, 'reason': ' '}).status_code == 400
     assert client.patch(path(OTHER, 'void-item'), headers=headers, json=payload).status_code == 403
@@ -145,7 +147,7 @@ def test_void_uses_validated_line_quantity_reason_and_scoped_actor(routes):
     assert db.calls == [('menu_void_counter_order_item', {
         'p_business_id': 1, 'p_branch': 'main', 'p_order_public_id': CHILD,
         'p_request_id': payload['request_id'], 'p_line_id': LINE, 'p_quantity': 1,
-        'p_reason': 'wrong item', 'p_actor': 'cashier:15',
+        'p_reason': 'wrong item', 'p_actor': 'owner',
     })]
 
 
