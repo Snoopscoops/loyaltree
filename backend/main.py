@@ -52647,4 +52647,11 @@ except ImportError:
     from merchant_payments import register_merchant_payment_routes
 register_merchant_payment_routes(app, require_owner=require_owner_session)
 
+# Super-admin daily aggregate growth reporting.
+try:
+    from .admin_daily_growth import register_daily_growth_routes
+except ImportError:
+    from admin_daily_growth import register_daily_growth_routes
+register_daily_growth_routes(app, db=supabase, require_admin=require_admin)
+
 profiler.checkpoint('routes_registered')
