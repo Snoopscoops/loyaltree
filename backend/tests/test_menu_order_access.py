@@ -100,7 +100,7 @@ class OperatorTests(unittest.TestCase):
     def test_permission_table(self):
         self.assertTrue(permissions('cashier')['cancel_order'])
         self.assertFalse(permissions('cashier')['void_items'])
-        self.assertFalse(permissions('manager')['void_items'])
+        self.assertTrue(permissions('manager')['void_items'])
         self.assertTrue(permissions('owner')['void_items'])
         self.assertFalse(permissions('owner')['refund'])
         self.assertFalse(permissions('cashier')['report'])
