@@ -77,7 +77,7 @@ def normalize_phone(value):
     if not 7<=len(digits)<=15: raise HTTPException(422,"Enter a valid contact number.")
     return digits
 
-def register_native_booking_routes(app, *, db, get_business, require_owner, read_card_token=None, get_customer=None):
+def register_native_booking_routes(app, *, db, get_business, require_owner, read_card_token=None, get_customer=None, booking_operator=None):
     def business(slug, auth=None):
         if auth is not None: require_owner(slug,auth)
         b=get_business(slug)
@@ -85,6 +85,18 @@ def register_native_booking_routes(app, *, db, get_business, require_owner, read
         if auth is None and str(b.get("status","")).upper()!="ACTIVE":
             raise HTTPException(404,"Bookings unavailable.")
         return b["id"]
+
+    def booking_scope(slug, authorization, *, write=False):
+        # Existing standalone callers remain owner-only. Production reuses the
+        # live staff lookup, including current role and active branch assignment.
+        if booking_operator is None:
+            return business(slug, authorization), {"role": "owner", "branch": "", "all_branches": True}
+        allowed = ("owner", "manager") if write else ("owner", "manager", "cashier")
+        b, scope = booking_operator(slug, authorization, allow=allowed)
+        role = scope.get("role")
+        if role not in allowed or (not scope.get("branch") and not scope.get("all_branches")):
+            raise HTTPException(403, "Reservation access is restricted to your assigned branch.")
+        return b["id"], scope
 
     def member(slug, bid, authorization):
         parts = authorization.split(" ", 1)
@@ -134,7 +146,10 @@ def register_native_booking_routes(app, *, db, get_business, require_owner, read
 
     @app.get("/api/v1/business/{slug}/native-bookings")
     def owner_bookings(slug:str, branch_id:str="", month:str="", authorization:str=Header(default="")):
-        bid=business(slug,authorization)
+        bid,scope=booking_scope(slug,authorization)
+        locked=scope.get("branch") or ""
+        if locked and branch_id and branch_id != locked:
+            raise HTTPException(403,"You can only see reservations for your own branch.")
         month=month or datetime.now(ZoneInfo("Asia/Manila")).strftime("%Y-%m")
         try:
             if not re.fullmatch(r"\d{4}-\d{2}",month): raise ValueError("Invalid month")
@@ -145,11 +160,16 @@ def register_native_booking_routes(app, *, db, get_business, require_owner, read
         upper=datetime.combine(end,time.min,ZoneInfo("Asia/Manila")).isoformat()
         try:
             places=branches(bid)
-            chosen=branch_id or (places[0]["public_id"] if places else "")
+            if locked:
+                places=[p for p in places if p["public_id"] == locked]
+                if not places: raise HTTPException(403,"Your branch is not available.")
+            chosen=locked or branch_id or (places[0]["public_id"] if places else "")
             if not chosen: return {"branches":[],"branch":"","settings":Settings().model_dump(mode="json"),"resources":[],"bookings":[]}
             br=branch(bid,chosen)
-            rows=db.table("lt_bookings").select("id,booking_code,kind,resource_name,starts_at,ends_at,guests,customer_name,phone,note,price_centavos,status,created_at").eq("business_id",bid).eq("branch_id",br).gte("starts_at",lower).lt("starts_at",upper).order("starts_at").limit(501).execute().data or []
-            return {"branches":[{"public_id":b["public_id"],"name":b["name"]} for b in places],"branch":chosen,"settings":config(bid,br),"resources":resources(bid,br),"bookings":rows[:500],"month":month,"truncated":len(rows)>500}
+            fields="id,booking_code,kind,resource_name,starts_at,ends_at,guests,customer_name,status,created_at"
+            if scope["role"] != "cashier": fields+=",phone,note,price_centavos"
+            rows=db.table("lt_bookings").select(fields).eq("business_id",bid).eq("branch_id",br).gte("starts_at",lower).lt("starts_at",upper).order("starts_at").limit(501).execute().data or []
+            return {"branches":[{"public_id":b["public_id"],"name":b["name"]} for b in places],"branch":chosen,"settings":config(bid,br) if scope["role"]=="owner" else {},"resources":resources(bid,br) if scope["role"]=="owner" else [],"can_update":scope["role"] in ("owner","manager"),"bookings":rows[:500],"month":month,"truncated":len(rows)>500}
         except HTTPException: raise
         except Exception: raise HTTPException(503,"Booking service unavailable.")
 
@@ -186,7 +206,18 @@ def register_native_booking_routes(app, *, db, get_business, require_owner, read
 
     @app.post("/api/v1/business/{slug}/native-bookings/{booking_id}/status")
     def set_status(slug:str,booking_id:UUID,payload:Transition,authorization:str=Header(default="")):
-        return rpc("lt_booking_transition",{"p_business":business(slug,authorization),"p_id":str(booking_id),"p_status":payload.status})
+        bid,scope=booking_scope(slug,authorization,write=True)
+        locked=scope.get("branch") or ""
+        if locked:
+            # Booking branch is immutable through the booking API. The RPC
+            # still enforces tenant and transition/availability invariants.
+            try:
+                br=branch(bid,locked)
+                rows=db.table("lt_bookings").select("id").eq("business_id",bid).eq("branch_id",br).eq("id",str(booking_id)).limit(1).execute().data or []
+            except HTTPException: raise
+            except Exception: raise HTTPException(503,"Booking service unavailable.")
+            if not rows: raise HTTPException(404,"Booking not found.")
+        return rpc("lt_booking_transition",{"p_business":bid,"p_id":str(booking_id),"p_status":payload.status})
 
     @app.get("/api/v1/public/bookings/{slug}")
     def public_catalog(slug:str):

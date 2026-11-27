@@ -593,6 +593,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     }
 
     fun chooseOrdersBranch(id: String) {
+        if (ordersBranch != id) daySummary = null
         ordersBranch = id
         val current = session ?: return
         viewModelScope.launch { fetchSummary(current) }
@@ -603,8 +604,10 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
             daySummary = null
             return
         }
-        val branch = java.net.URLEncoder.encode(ordersBranch, "UTF-8")
+        val requestedBranch = ordersBranch
+        val branch = java.net.URLEncoder.encode(requestedBranch, "UTF-8")
         val result = io { API.get("/api/v1/business/${current.slug}/menu-orders/summary?branch=$branch", current.token) }
+        if (session != current || ordersBranch != requestedBranch) return
         if (result == null || result.first >= 400) {
             daySummary = null
             return
@@ -1536,6 +1539,26 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
             val who = if (scope == "branch") "the selected branch" else "the whole business"
             announcementNote = if (sent) if (count.isBlank()) "Sent to $who." else "Sent to $count customers in $who." else "Saved, but the wallet push was not accepted."
         }
+    }
+
+    suspend fun readReservations(current: OwnerSession, branch: String, month: String): Pair<JSONObject?, String> {
+        if (session != current || (!current.isOwner && !current.isStaff)) return null to "Sign in again."
+        val encodedBranch = java.net.URLEncoder.encode(branch, "UTF-8")
+        val result = io { API.get("/api/v1/business/${current.slug}/native-bookings?branch_id=$encodedBranch&month=$month", current.token) }
+        if (session != current) return null to "Session changed."
+        val body = result?.second as? JSONObject
+        if (result == null || result.first !in 200..299 || body == null || body.optJSONArray("bookings") == null || body.optJSONArray("branches") == null) {
+            return null to (result?.let { API.message(it.second, "Reservations unavailable. Refresh to retry.") } ?: "Reservations unavailable. Refresh to retry.")
+        }
+        return body to ""
+    }
+
+    suspend fun updateReservation(current: OwnerSession, id: String, next: String): String? {
+        if (session != current || current.role !in listOf("owner", "manager")) return "Owner or manager access required."
+        if (!Regex("[0-9a-fA-F-]{36}").matches(id) || next !in listOf("confirmed", "declined", "cancelled", "completed")) return "Invalid reservation action."
+        val result = io { API.post("/api/v1/business/${current.slug}/native-bookings/$id/status", current.token, JSONObject().put("status", next)) }
+        if (session != current) return "Session changed."
+        return if (result != null && result.first in 200..299) null else result?.let { API.message(it.second, "Update not confirmed. Refresh before retrying.") } ?: "Update not confirmed. Refresh before retrying."
     }
 
     fun loadChurnSettings() {
