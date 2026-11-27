@@ -7,7 +7,7 @@ import CustomerDemographicsAdmin from './CustomerDemographicsAdmin'
 import SystemUsageAdmin from './SystemUsageAdmin'
 import BenefitsAdmin from './BenefitsAdmin'
 import { BenefitsAdminCardUpgrade } from './BenefitsCardUpgrade'
-import { filterAdminBusinesses, loadAdminResources, readAdminJson, adminCountLabel } from './adminData'
+import { filterAdminBusinesses, loadAdminResources, readAdminJson, adminCountLabel, specialInvoiceSnapshot } from './adminData'
 
 function BillingBranchEditor({ detail, onSave }) {
   const [count, setCount] = useState(String(detail.branch_count || 1))
@@ -130,6 +130,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const [expenseReviewing,setExpenseReviewing]=useState('')
   const [specialBusinesses,setSpecialBusinesses]=useState([])
   const [specialInvoices,setSpecialInvoices]=useState([])
+  const [specialLedgerReady,setSpecialLedgerReady]=useState(false)
   const [specialSaving,setSpecialSaving]=useState(false)
   const [specialInvoiceBusy,setSpecialInvoiceBusy]=useState('')
   const [paymentReceivedModal,setPaymentReceivedModal]=useState(null)
@@ -334,7 +335,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
     operations: [['/api/v1/admin/setup-kit-orders', rowsSetter(setSetupKitOrders)]],
     special: [
       ['/api/v1/admin/special-businesses', rowsSetter(setSpecialBusinesses)],
-      ['/api/v1/admin/special-invoices', rowsSetter(setSpecialInvoices)],
+      ['/api/v1/admin/special-invoices', data => { rowsSetter(setSpecialInvoices)(data); setSpecialLedgerReady(true) }],
     ],
   }[tab] || [])
   const reportLoadError = error => setLoadError(error.message || 'Could not load admin data. Please retry.')
@@ -997,6 +998,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
     { label:'Rewards', tabs:['ltbenefits','coupons'] },
     { label:'Operations', tabs:['operations','help','system-usage'] },
   ]
+  const invoiceSnapshot = specialLedgerReady && !loading && !sectionLoading && !loadError ? specialInvoiceSnapshot(specialInvoices) : null
   const activeGroup = adminGroups.find(group => group.tabs.includes(activeAdminTab)) || adminGroups[0]
   const visibleAdminTabs = adminTabs.filter(tab => activeGroup.tabs.includes(tab.key))
   const metric = adminCountLabel
@@ -1862,6 +1864,13 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
             </div>
           </div>
 
+          <div style={styles.statsGrid}>
+            <StatCard label="Issued invoices · loaded ledger" value={metric(invoiceSnapshot?.issued)} />
+            <StatCard label="Marked paid" value={metric(invoiceSnapshot?.paid)} />
+            <StatCard label="Overdue" value={metric(invoiceSnapshot?.overdue)} accent="#b45309" />
+            <StatCard label="Other non-void status" value={metric(invoiceSnapshot?.review)} />
+          </div>
+          <p style={{fontSize:12,color:'#64748b',margin:'8px 0 16px'}}>Special invoices only. Counts reflect the returned ledger, not necessarily all historical invoices. Paid status does not measure actual collections, MRR or merchant settlements. Use the invoice and acknowledgement receipt records to reconcile payments.</p>
           <form onSubmit={saveSpecialBusiness} style={styles.specialFormCard}>
             <div style={styles.sectionHead}>
               <div>
