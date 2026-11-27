@@ -7,7 +7,7 @@
 .lt-storefront-title{flex:1;min-width:0}.lt-simple-storefront.lt-qr-v15 .lt-storefront-title h1{color:var(--storefront-accent);font-size:17px;line-height:1.25;margin:0}.lt-storefront-title small{display:block;color:#64766a;font-size:11px}
 .lt-storefront-share{display:flex;align-items:center;gap:6px;color:var(--storefront-accent);background:#fff;border:1px solid #dce6dd;padding:8px 10px;border-radius:10px;font-size:12px;font-weight:700;min-height:38px;flex:none}
 .lt-storefront-share-note{font-size:12px;color:#526b5c;margin:5px 0}.lt-storefront-share-url{width:100%;min-width:0;box-sizing:border-box;padding:8px;border:1px solid #dce6dd;border-radius:8px;font-size:13px}
-.lt-storefront-cover{display:block;width:100%;height:clamp(100px,28vw,174px);object-fit:cover}.lt-storefront-cover[hidden]{display:none}
+.lt-storefront-cover{display:block;width:calc(100% - 32px);height:auto;max-height:360px;object-fit:contain;object-position:center;margin:10px 16px 0;border-radius:12px;background:#f4f7f3}.lt-storefront-cover[hidden]{display:none}
 .lt-storefront-location{display:flex;align-items:center;margin:10px 16px 8px}.lt-storefront-location:empty{display:none}.lt-simple-storefront .lt-storefront-location .lt-qr-branch-drop select{min-height:36px;width:auto;max-width:100%;font-size:13px;text-align:left;background:#fff}
 .lt-simple-storefront.lt-qr-v15 .lt-storefront-loyalty{background:#edf3eb;border:1px solid #dce9dc;color:var(--storefront-accent);box-shadow:none;padding:8px 10px;border-radius:12px;margin:8px 16px 12px}
 .lt-simple-storefront .lt-v15-loyalty-top{gap:8px}.lt-simple-storefront .lt-v15-loyalty-icon{background:var(--storefront-accent);color:white;width:32px;height:32px;border-radius:9px;padding:5px}.lt-simple-storefront .lt-v15-loyalty-top strong{font-size:13px}.lt-simple-storefront .lt-v15-loyalty-top p{font-size:11px;color:#526b5c;margin:2px 0 0}
@@ -23,3 +23,14 @@
 @media(max-width:360px){.lt-simple-storefront.lt-qr-v15 .lt-storefront-loyalty{margin-inline:10px}.lt-simple-storefront .lt-v15-loyalty-top{gap:5px}.lt-simple-storefront .lt-v15-loyalty-top>button{padding-inline:5px}.lt-simple-storefront .lt-v15-product-photo,.lt-simple-storefront .lt-v15-product-photo .lt-qr-item-visual,.lt-simple-storefront .lt-v15-product-photo .lt-qr-item-photo,.lt-simple-storefront .lt-v15-product-photo .lt-qr-item-placeholder{width:64px;height:64px}}
 
 .lt-storefront-rewards-list{display:grid;gap:9px;margin:12px 0;padding:13px;border:1px solid #e0e8df;border-radius:14px;background:#fff;color:#234c39}.lt-storefront-rewards-list h3{font-size:15px;margin:0}.lt-storefront-rewards-list>div{display:flex;justify-content:space-between;gap:8px;padding:7px 0;border-bottom:1px solid #e6ece5;font-size:12px}.lt-storefront-rewards-list small{display:block;color:#62736a;margin-top:3px}.lt-storefront-rewards-list p{font-size:12px;color:#62736a;margin:0}.lt-storefront-rewards-list a{font-size:13px;font-weight:700;color:#234c39}
+
+/* Keep price on its own row, including products without descriptions. */
+.lt-simple-storefront .lt-storefront-product-name{display:block;width:100%;min-width:0;white-space:normal}
+.lt-simple-storefront .lt-v15-product-info>strong{display:inline-block;margin-top:5px;line-height:1.35;white-space:nowrap}
+/* Merchant branding stays in the storefront; checkout uses a readable LT green. */
+.lt-simple-storefront.lt-qr-v15 .lt-qr-dock-card,.lt-simple-storefront.lt-qr-v15 .lt-qr-primary,.lt-simple-storefront.lt-qr-v15 .lt-qr-primary.lt-qr-wide{background:#176653;color:#fff}
+.lt-simple-storefront.lt-qr-v15 .lt-qr-primary:disabled,.lt-simple-storefront.lt-qr-v15 .lt-qr-primary.lt-qr-wide:disabled{background:#e5ebe7;color:#66756c;opacity:1;cursor:not-allowed}
+.lt-simple-storefront.lt-qr-v15 .lt-qr-pay-choices button[aria-pressed=true],.lt-simple-storefront.lt-qr-v15 .lt-qr-pay-choice button[aria-pressed=true]{background:#e7f2ed;border-color:#176653;color:#164e3d}
+.lt-simple-storefront.lt-qr-v15 .lt-qr-pay-methods input{accent-color:#176653}
+.lt-simple-storefront.lt-qr-v15 .lt-qr-back-button{background:transparent;color:#176653}
+.lt-simple-storefront.lt-qr-v15 .lt-qr-primary:focus-visible,.lt-simple-storefront.lt-qr-v15 .lt-qr-dock-card:focus-visible,.lt-simple-storefront.lt-qr-v15 .lt-qr-back-button:focus-visible{outline:2px solid #176653;outline-offset:3px}
