@@ -2144,8 +2144,40 @@ private fun CampaignScreen(store: CounterStore) {
     var start by remember { mutableStateOf(store.manila()) }
     val endCal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Manila")).apply { add(java.util.Calendar.DAY_OF_YEAR, 7) }
     var end by remember { mutableStateOf(store.manila(endCal)) }
-    LaunchedEffect(Unit) { store.loadCampaigns() }
+    LaunchedEffect(store.session?.slug) {
+        store.loadCampaigns()
+        store.loadChurnSettings()
+    }
     Scroll {
+        if (store.session?.isOwner == true) {
+            Text("Automatic win-back discounts", color = Forest, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            val settings = store.churnSettings
+            if (settings != null) {
+                var enabled by remember(settings) { mutableStateOf(settings.optBoolean("enabled")) }
+                var inactive by remember(settings) { mutableStateOf(settings.optInt("inactivity_days", 30).toString()) }
+                var discount by remember(settings) { mutableStateOf(settings.optInt("discount_percent", 10).toString()) }
+                var validity by remember(settings) { mutableStateOf(settings.optInt("validity_days", 7).toString()) }
+                var limit by remember(settings) { mutableStateOf(settings.optInt("daily_limit", 25).toString()) }
+                Card {
+                    Text("Optional discounts for eligible inactive members.", color = Muted, fontSize = 13.sp)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Box(Modifier.weight(1f)) { Choice("Disabled", !enabled) { enabled = false } }
+                        Box(Modifier.weight(1f)) { Choice("Enabled", enabled) { enabled = true } }
+                    }
+                    Field("Inactivity days", inactive, { inactive = it.filter { c -> c in '0'..'9' }.take(3) })
+                    Field("Discount (%)", discount, { discount = it.filter { c -> c in '0'..'9' }.take(3) })
+                    Field("Voucher validity (days)", validity, { validity = it.filter { c -> c in '0'..'9' }.take(2) })
+                    Field("Daily voucher limit", limit, { limit = it.filter { c -> c in '0'..'9' }.take(3) })
+                    if (!settings.optBoolean("issuance_ready")) Text("Settings only. Automatic voucher issuance is not active yet.", color = Muted, fontSize = 13.sp)
+                    Primary("Save win-back settings", enabled = !store.churnSettingsBusy) {
+                        store.saveChurnSettings(enabled, inactive, discount, validity, limit)
+                    }
+                }
+            }
+            if (store.churnSettingsNote.isNotBlank()) Text(store.churnSettingsNote, color = Muted, fontSize = 13.sp)
+            Secondary("Refresh win-back settings") { store.loadChurnSettings() }
+        }
+        Text("Purchase campaigns", color = Forest, fontSize = 18.sp, fontWeight = FontWeight.Bold)
         Text("Members who buy during these dates get the voucher. Stamps stay the same.", color = Muted)
         Field("Campaign name", name, { name = it })
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
