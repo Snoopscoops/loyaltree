@@ -90,8 +90,12 @@ def routes():
         prices.append((business, branch, items))
         return db.child['items'], 50
 
+    def verify_void(request, business, scope, credential):
+        if credential != 'test-credential':
+            raise HTTPException(403, 'Incorrect authorization credential.')
+
     register_menu_order_adjustment_routes(app, db=db, operator=operator, normalize_items=normalize_items,
-        price_items=price_items, order_public=dict, push_order=lambda *args: pushes.append(args))
+        price_items=price_items, order_public=dict, push_order=lambda *args: pushes.append(args), verify_void=verify_void)
     return TestClient(app), db, prices, pushes
 
 
@@ -138,13 +142,16 @@ def test_suborder_rejects_unauthorized_or_nested_request_before_rpc(routes, orde
 @pytest.mark.parametrize(('token', 'actor'), [('owner', 'owner'), ('manager', 'manager:16')])
 def test_void_uses_validated_line_quantity_reason_and_scoped_actor(routes, token, actor):
     client, db, _, _ = routes
-    payload = {'request_id': str(uuid4()), 'line_id': LINE, 'quantity': 1, 'reason': ' wrong item '}
+    payload = {'request_id': str(uuid4()), 'line_id': LINE, 'quantity': 1, 'reason': ' wrong item ', 'credential': 'test-credential'}
     assert client.patch(path(CHILD, 'void-item'), headers={'Authorization': 'Bearer cashier'}, json=payload).status_code == 403
     assert not db.calls
     headers = {'Authorization': 'Bearer ' + token}
     assert client.patch(path(CHILD, 'void-item'), headers=headers, json={**payload, 'quantity': True}).status_code == 400
     assert client.patch(path(CHILD, 'void-item'), headers=headers, json={**payload, 'reason': ' '}).status_code == 400
     assert client.patch(path(OTHER, 'void-item'), headers=headers, json=payload).status_code == 403
+    assert not db.calls
+    assert client.patch(path(CHILD, 'void-item'), headers=headers, json={k: v for k, v in payload.items() if k != 'credential'}).status_code == 400
+    assert client.patch(path(CHILD, 'void-item'), headers=headers, json={**payload, 'credential': 'wrong'}).status_code == 403
     assert not db.calls
     assert client.patch(path(CHILD, 'void-item'), headers=headers, json=payload).status_code == 200
     assert db.calls == [('menu_void_counter_order_item', {
@@ -176,9 +183,9 @@ def status_handlers():
     return scope, db, notices
 
 
-async def set_status(scope, order_id, status):
+async def set_status(scope, order_id, status, reason=None):
     async def body():
-        return {'status': status}
+        return {'status': status, 'reason': reason}
     tasks = BackgroundTasks()
     response = await scope['owner_update_menu_order_status'](
         'shop', order_id, SimpleNamespace(json=body), tasks, 'Bearer cashier')
@@ -230,11 +237,14 @@ def test_reward_cash_cancellation_uses_the_locking_rpc(status_handlers):
     db.root.update(batch_a_stock_tracked=False, checkout_reward_kind='points_prize',
                    status='new', payment_status='unpaid')
     db.transition = {'order': dict(db.root, status='cancelled'), 'changed': True, 'previous_status': 'new'}
-    result = asyncio.run(set_status(scope, ROOT, 'cancelled'))
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(set_status(scope, ROOT, 'cancelled'))
+    assert exc.value.status_code == 400 and not db.calls
+    result = asyncio.run(set_status(scope, ROOT, 'cancelled', 'Customer changed mind'))
     assert result['order']['status'] == 'cancelled'
     assert db.calls == [('menu_transition_counter_order', {
         'p_business_id': 1, 'p_branch': 'main', 'p_order_public_id': ROOT, 'p_target': 'cancelled',
-        'p_actor': 'cashier:15', 'p_reason': 'Cancelled at the counter',
+        'p_actor': 'cashier:15', 'p_reason': 'Customer changed mind',
     })]
 
 
