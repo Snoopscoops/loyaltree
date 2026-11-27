@@ -198,6 +198,12 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     var setupStatus by mutableStateOf("")
     var guestStatus by mutableStateOf("")
     var campaignNote by mutableStateOf("")
+    var churnSettings by mutableStateOf<JSONObject?>(null)
+        private set
+    var churnSettingsNote by mutableStateOf("")
+        private set
+    var churnSettingsBusy by mutableStateOf(false)
+        private set
     var announcementNote by mutableStateOf("")
     var announcementRoom by mutableStateOf("")
     var billingNote by mutableStateOf("")
@@ -380,6 +386,9 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         watchJob?.cancel()
         watchJob = null
         session = null
+        churnSettings = null
+        churnSettingsNote = ""
+        churnSettingsBusy = false
         members = emptyList()
         menuRows = emptyList()
         orders = emptyList()
@@ -1526,6 +1535,53 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
             val count = API.plain(json.opt("_push_target_count")).orEmpty()
             val who = if (scope == "branch") "the selected branch" else "the whole business"
             announcementNote = if (sent) if (count.isBlank()) "Sent to $who." else "Sent to $count customers in $who." else "Saved, but the wallet push was not accepted."
+        }
+    }
+
+    fun loadChurnSettings() {
+        val current = session ?: return
+        if (!current.isOwner || churnSettingsBusy) return
+        churnSettings = null
+        churnSettingsBusy = true
+        churnSettingsNote = ""
+        viewModelScope.launch {
+            val result = io { API.get("/api/v1/business/${current.slug}/churn-discount-settings", current.token) }
+            if (session != current) return@launch
+            churnSettingsBusy = false
+            val json = result?.second as? JSONObject
+            if (result == null || result.first >= 400 || json == null) {
+                churnSettingsNote = "Win-back settings unavailable. Refresh to retry."
+            } else churnSettings = json
+        }
+    }
+
+    fun saveChurnSettings(enabled: Boolean, inactivity: String, discount: String, validity: String, limit: String) {
+        val current = session ?: return
+        if (!current.isOwner || churnSettingsBusy || churnSettings == null) return
+        val days = inactivity.toIntOrNull()
+        val percent = discount.toIntOrNull()
+        val duration = validity.toIntOrNull()
+        val cap = limit.toIntOrNull()
+        if (days == null || days !in 7..365 || percent == null || percent !in 1..100 ||
+            duration == null || duration !in 1..30 || cap == null || cap !in 1..100) {
+            churnSettingsNote = "Use 7–365 inactive days, 1–100% discount, 1–30 validity days and 1–100 vouchers daily."
+            return
+        }
+        churnSettingsBusy = true
+        churnSettingsNote = ""
+        viewModelScope.launch {
+            val body = JSONObject().put("enabled", enabled).put("inactivity_days", days)
+                .put("discount_percent", percent).put("validity_days", duration).put("daily_limit", cap)
+            val result = io { API.put("/api/v1/business/${current.slug}/churn-discount-settings", current.token, body) }
+            if (session != current) return@launch
+            churnSettingsBusy = false
+            val json = result?.second as? JSONObject
+            if (result == null || result.first >= 400 || json == null) {
+                churnSettingsNote = "Save not confirmed. Refresh before retrying."
+            } else {
+                churnSettings = json
+                churnSettingsNote = "Saved. " + if (json.optBoolean("issuance_ready")) "Issuance service ready." else "Automatic issuance is not active yet."
+            }
         }
     }
 
