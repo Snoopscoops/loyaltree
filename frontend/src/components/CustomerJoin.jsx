@@ -429,7 +429,6 @@ function CustomerJoin({ API_BASE }) {
     const slug = businessInfo?.public_id || businessSlug || ''
     const cover = businessInfo?.hero_image_url || ''
     const logo = businessInfo?.logo_url || ''
-    const place = businessInfo?.category?.label || ''
     const wifi = businessInfo?.guest_wifi?.published ? businessInfo.guest_wifi : null
     const socials = businessInfo?.guest_socials?.published ? businessInfo.guest_socials : null
     const menuHref = `/menu/${encodeURIComponent(slug)}`
@@ -452,7 +451,6 @@ function CustomerJoin({ API_BASE }) {
               : <div style={styles.guestMark}>{businessName.slice(0, 1)}</div>}
             <div style={styles.guestCopy}>
               <h1 style={styles.guestName}>{businessName}</h1>
-              {place ? <p style={styles.guestPlace}>{place}</p> : null}
             </div>
           </div>
           {cover ? (
@@ -553,7 +551,20 @@ function CustomerJoin({ API_BASE }) {
                 </span>
               </div>
             )}
-
+            <section className="lt-directory-actions" aria-label="Coming soon">
+              {[
+                { title: 'LT Benefits', hint: 'More perks from LoyaltyTree.', icon: <><path d="M3 8h18v4H3zM5 12v9h14v-9M12 8v13"/><path d="M12 8C5 8 5 3 8 3c2 0 4 5 4 5s2-5 4-5c3 0 3 5-4 5Z"/></> },
+                { title: 'Games', hint: 'Play and discover rewards.', icon: <><rect x="3" y="6" width="18" height="12" rx="5"/><path d="M7 10v4m-2-2h4m6 0h.01m3 0h.01"/></> },
+              ].map(item => (
+                <div key={item.title} style={{ ...styles.guestSoon, minWidth: 0, alignItems: 'flex-start', flexDirection: 'column', justifyContent: 'flex-start', gap: 8, padding: 13, borderRadius: 15 }}>
+                  <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6, width: '100%' }}>
+                    <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="#0f766e" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{item.icon}</svg>
+                    <span style={{ ...styles.guestSoonPill, marginLeft: 0, background: '#e7eee9', color: '#52665b', fontWeight: 750, whiteSpace: 'nowrap' }}>Coming soon</span>
+                  </span>
+                  <span style={styles.guestCopy}><strong style={styles.guestCardTitle}>{item.title}</strong><span style={styles.guestHint}>{item.hint}</span></span>
+                </div>
+              ))}
+            </section>
           </section>
           <footer style={styles.guestFooter}>Powered by <strong>LoyaltyTree</strong></footer>
         </main>
