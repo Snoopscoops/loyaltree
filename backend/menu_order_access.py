@@ -23,14 +23,13 @@ def _first(result):
 
 
 def permissions(role):
-    staff = role in ('manager', 'cashier')
     return {
-        'orders': True,
+        'orders': role in ALL_ROLES,
         'mark_paid': role in ALL_ROLES,
         'cancel_order': role in ALL_ROLES,
         'void_items': role in ('owner', 'manager'),
         'refund': False,  # NextPay refund processing is not enabled.
-        'stamps': True,
+        'stamps': role in ALL_ROLES,
         'stamp_corrections': role in ('owner', 'manager'),
         'summary': role in REPORT_ROLES,
         'report': role in REPORT_ROLES,
@@ -39,7 +38,7 @@ def permissions(role):
         'customers': role == 'owner',
         'billing': role == 'owner',
         'staff': role == 'owner',
-        'settings': not staff,
+        'settings': role == 'owner',
     }
 
 
@@ -59,6 +58,8 @@ def make_menu_order_operator(*, db, get_business, get_claims):
             raise HTTPException(status_code=404, detail='Business not found')
         role = str(claims.get('role') or '').lower()
         if role == 'owner':
+            if role not in allow:
+                raise HTTPException(status_code=403, detail='This role is not permitted.')
             scope = {'role': 'owner', 'name': claims.get('name') or business.get('name') or '', 'staff_id': None,
                      'branch': '', 'branch_name': '', 'all_branches': True, 'needs_branch': False}
             return business, scope
@@ -69,9 +70,9 @@ def make_menu_order_operator(*, db, get_business, get_claims):
                            .eq('id', claims.get('staff_id')).eq('business_id', business.get('id')).limit(1).execute())
         except Exception:
             raise HTTPException(status_code=503, detail='Staff sign-in is temporarily unavailable. Try again.')
-        if not staff or staff.get('is_active') is False:
+        if not staff or staff.get('is_active') is not True:
             raise HTTPException(status_code=403, detail='This staff account is inactive. Ask the owner.')
-        role = str(staff.get('role') or role).lower()
+        role = str(staff.get('role') or '').lower()
         if role not in ('manager', 'cashier'):
             raise HTTPException(status_code=403, detail='Business staff access required')
         if role not in allow:
@@ -84,7 +85,7 @@ def make_menu_order_operator(*, db, get_business, get_claims):
                                 .eq('id', staff.get('branch_id')).eq('business_id', business.get('id')).limit(1).execute())
             except Exception:
                 raise HTTPException(status_code=503, detail='Could not load your branch. Try again.')
-            if not branch or branch.get('is_active') is False:
+            if not branch or branch.get('is_active') is not True or not str(branch.get('public_id') or '').strip():
                 raise HTTPException(status_code=403, detail='Your branch is not available. ' + NO_BRANCH)
             branch_public_id, branch_name = str(branch.get('public_id') or ''), str(branch.get('name') or '')
         needs_branch = role == 'cashier' and not branch_public_id
