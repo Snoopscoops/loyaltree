@@ -809,15 +809,17 @@ export function QRMenuBrowser({ data, preview = false, initialBranch, onBranchCh
         <div className="lt-qr-cafe-title lt-v15-business-row">
           {business.logo_url && <img className="lt-qr-cafe-logo" src={business.logo_url} alt="" />}
           <div className="lt-storefront-title"><h1>{business.name}</h1><small>Digital menu</small></div>
+          <div className="lt-storefront-header-actions">
+            <div className="lt-storefront-location">
+              {showSelector ? <label className="lt-qr-branch-drop"><select aria-label="Branch" disabled={addonMode} value={branchId} onChange={event=>chooseBranch(event.target.value)}>{!branchId && <option value="" disabled>Choose branch</option>}{branches.map(value=><option key={value.public_id} value={value.public_id}>{value.name}</option>)}</select></label> : branch?.name && <span className="lt-v15-branch-name">{branch.name}</span>}
+            </div>
           {!preview&&<button type="button" className="lt-storefront-share" onClick={shareMenu}><StorefrontIcon name="share" size={18}/>Share</button>}
+          </div>
         </div>
         {shareNotice&&<p className="lt-storefront-share-note" role="status">{shareNotice}</p>}
         {showShareLink&&<input className="lt-storefront-share-url" aria-label="Menu share link" readOnly value={shareUrl} onFocus={e=>e.target.select()}/>}
       </header>
       {business.hero_url&&data.design?.show_banner!==false&&<img className="lt-storefront-cover" src={business.hero_url} alt="" decoding="async" onError={e=>{e.currentTarget.hidden=true}}/>}
-      <div className="lt-storefront-location">
-        {showSelector ? <label className="lt-qr-branch-drop"><select aria-label="Branch" disabled={addonMode} value={branchId} onChange={event=>chooseBranch(event.target.value)}>{!branchId && <option value="" disabled>Choose branch</option>}{branches.map(value=><option key={value.public_id} value={value.public_id}>{value.name}</option>)}</select></label> : branch?.name && <span className="lt-v15-branch-name">{branch.name}</span>}
-      </div>
       {needsBranch && <section className="lt-qr-branch-picker" aria-labelledby="lt-qr-branch-picker-title"><h2 id="lt-qr-branch-picker-title">Choose your branch</h2><p>Pick your location to browse and order.</p><ul>{branches.map(value=><li key={value.public_id}><button type="button" onClick={()=>chooseBranch(value.public_id)}><span className="lt-qr-branch-picker-copy"><strong>{value.name}</strong>{value.address && <span>{value.address}</span>}</span><i aria-hidden="true">›</i></button></li>)}</ul></section>}
       {!needsBranch && <>
         <MenuLoyaltyCard apiBase={apiBase} business={business} refreshKey={`${order?.status||''}:${order?.payment_status||''}`} onReorder={reorderFromHistory} />
