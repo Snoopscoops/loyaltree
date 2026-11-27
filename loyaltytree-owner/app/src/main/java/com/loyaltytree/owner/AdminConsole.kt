@@ -46,6 +46,7 @@ internal fun AdminConsole(store: CounterStore, current: OwnerSession) {
         var period by remember { mutableIntStateOf(7) }
         var invoices by remember { mutableStateOf<JSONArray?>(null) }
         var analytics by remember { mutableStateOf<JSONObject?>(null) }
+        var dailyGrowth by remember { mutableStateOf<JSONObject?>(null) }
         val path = when (tab) {
             "Home" -> "/api/v1/admin/overview"
             "Clients" -> "/api/v1/admin/businesses"
@@ -83,6 +84,7 @@ internal fun AdminConsole(store: CounterStore, current: OwnerSession) {
             }
             invoices = null
             analytics = null
+            dailyGrowth = null
             if (extraPath != null) {
                 val extra = withContext(Dispatchers.IO) {
                     try { API.get(extraPath, current.token) }
@@ -99,6 +101,20 @@ internal fun AdminConsole(store: CounterStore, current: OwnerSession) {
                     if (tab == "Finance") invoices = extra.second as? JSONArray
                     if (tab == "Activity") analytics = extra.second as? JSONObject
                 }
+            }
+            if (tab == "Activity") {
+                val daily = withContext(Dispatchers.IO) {
+                    try { API.get("/api/v1/admin/daily-growth?days=7", current.token) }
+                    catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                    catch (_: Exception) { null }
+                }
+                if (store.session !== current) return@LaunchedEffect
+                if (daily?.first == 401 || daily?.first == 403) {
+                    store.signOut()
+                    store.status = "Administrator access expired. Sign in again."
+                    return@LaunchedEffect
+                }
+                if (daily?.first == 200) dailyGrowth = daily.second as? JSONObject
             }
             busy = false
         }
@@ -172,6 +188,7 @@ internal fun AdminConsole(store: CounterStore, current: OwnerSession) {
                     "Activity" -> {
                         val report = data as? JSONObject
                         Text("Growth intelligence", fontWeight = FontWeight.Bold, fontSize = 22.sp, color = AdminInk)
+                        AdminDailyGrowth(dailyGrowth)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             listOf(7, 30, 90).forEach { days ->
                                 FilterChip(selected = period == days, onClick = { period = days }, label = { Text("$days days") })
@@ -193,7 +210,7 @@ internal fun AdminConsole(store: CounterStore, current: OwnerSession) {
                                 Box(Modifier.fillMaxWidth((views / peak).toFloat()).height(8.dp).background(AdminInk, RoundedCornerShape(8.dp)))
                             }
                         }
-                        Text("Traffic is not a customer registration count. Exact calendar-day joins are not provided by this verified schema.", fontSize = 12.sp, color = AdminMuted)
+                        Text("Traffic is separate from recorded customer memberships.", fontSize = 12.sp, color = AdminMuted)
                         AdminMetric("New loyalty members · selected period", countLabel(summary?.opt("new_customers")))
                         AdminMetric("Active members", countLabel(summary?.opt("active_members")))
                         AdminMetric("Returning members", countLabel(summary?.opt("returning_members")))
@@ -309,4 +326,71 @@ private fun AdminBillingCalendar(rows: JSONArray?, invoices: JSONArray?) {
                 (amount?.let { "₱" + it.toPlainString() } ?: "Amount unavailable") + " · " + row.optString("status", "Unknown"))
         }
     }
+}
+
+@Composable
+private fun AdminDailyGrowth(report: JSONObject?) {
+    Text("Daily acquisition & activity", fontWeight = FontWeight.Bold, fontSize = 20.sp, color = AdminInk)
+    if (report == null) {
+        Text("Daily report unavailable. Refresh when the reporting API is available.", color = AdminMuted)
+        return
+    }
+    val today = report.optString("today")
+    val days = adminRows(report.optJSONArray("daily"))
+    var selected by remember(today) { mutableStateOf(today) }
+    val day = days.firstOrNull { it.optString("date") == selected }
+    Text("Philippine time · select a date", color = AdminMuted, fontSize = 12.sp)
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        days.takeLast(7).forEach { row ->
+            val date = row.optString("date")
+            Column(Modifier.weight(1f).background(if (selected == date) AdminLime else Color.White, RoundedCornerShape(9.dp))
+                .clickable { selected = date }.padding(vertical = 10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(date.takeLast(2), fontSize = 13.sp, color = AdminInk)
+                Text(countLabel(row.opt("new_memberships")), fontSize = 11.sp, color = AdminMuted)
+            }
+        }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        AdminMetric("New memberships", countLabel(day?.opt("new_memberships")), Modifier.weight(1f))
+        AdminMetric("Stamp events", countLabel(day?.opt("stamp_events")), Modifier.weight(1f))
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        AdminMetric("Active memberships", countLabel(day?.opt("active_memberships")), Modifier.weight(1f))
+        AdminMetric("Redemptions", countLabel(day?.opt("redemption_events")), Modifier.weight(1f))
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        AdminMetric("New businesses", countLabel(day?.opt("new_businesses")), Modifier.weight(1f))
+        AdminMetric("New branches", countLabel(day?.opt("new_branches")), Modifier.weight(1f))
+    }
+    Text("Membership growth · 7 days", fontWeight = FontWeight.Bold, color = AdminInk)
+    val peak = days.maxOfOrNull { it.optInt("new_memberships", 0) }?.coerceAtLeast(1) ?: 1
+    Row(Modifier.fillMaxWidth().height(112.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.Bottom) {
+        days.takeLast(7).forEach { row ->
+            Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(countLabel(row.opt("new_memberships")), fontSize = 11.sp, color = AdminInk)
+                Box(Modifier.fillMaxWidth().height((72f * row.optInt("new_memberships", 0).coerceIn(0,peak) / peak).dp)
+                    .background(AdminInk, RoundedCornerShape(5.dp)))
+                Text(row.optString("date").takeLast(2), fontSize = 11.sp, color = AdminMuted)
+            }
+        }
+    }
+    Text("Businesses · $selected", fontWeight = FontWeight.Bold, color = AdminInk)
+    val businesses = adminRows(report.optJSONArray("businesses")).filter { it.optString("date") == selected }
+        .sortedByDescending { it.optInt("new_memberships") }
+    if (businesses.isEmpty()) Text("No recorded activity for this date.", color = AdminMuted)
+    businesses.forEach { row ->
+        var expanded by remember(selected, row.optString("business_public_id")) { mutableStateOf(false) }
+        Column(Modifier.fillMaxWidth().background(Color.White, RoundedCornerShape(14.dp)).clickable { expanded = !expanded }.padding(12.dp)) {
+            Text(row.optString("business_name"), fontWeight = FontWeight.Bold, color = AdminInk)
+            Text("Joins: " + countLabel(row.opt("new_memberships")) + " · Stamps: " + countLabel(row.opt("stamp_events")) + " · Redeemed: " + countLabel(row.opt("redemption_events")), color = AdminMuted, fontSize = 12.sp)
+            if (expanded) {
+                val branches = adminRows(report.optJSONArray("branches")).filter { it.optString("date") == selected && it.optString("business_public_id") == row.optString("business_public_id") }
+                branches.forEach { b ->
+                    Text(b.optString("branch_name") + " · Stamps " + countLabel(b.opt("stamp_events")) + " · Redeemed " + countLabel(b.opt("redemption_events")), fontSize = 12.sp, color = AdminInk)
+                }
+                Text("Branch registrations are not attributed.", fontSize = 12.sp, color = AdminMuted)
+            }
+        }
+    }
+    Text("Memberships count card records, not unique people across programs. Stamp events are not visits or net balances.", color = AdminMuted, fontSize = 12.sp)
 }
