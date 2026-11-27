@@ -1539,14 +1539,20 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
 
     fun startCampaign(name: String, kind: String, value: String, start: String, end: String, scope: String, branchId: String) {
         val current = session ?: return
+        if (!current.isOwner || loading) return
         if (name.isBlank()) { campaignNote = "Name the campaign."; return }
-        if (end < start) { campaignNote = "The end date has to be on or after the start."; return }
+        val datesValid = runCatching {
+            val parser = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).apply { isLenient = false }
+            val pattern = Regex("[0-9]{4}-[0-9]{2}-[0-9]{2}")
+            pattern.matches(start) && pattern.matches(end) && parser.parse(start) != null && parser.parse(end) != null && start >= manila() && end >= start
+        }.getOrDefault(false)
+        if (!datesValid) { campaignNote = "Choose valid dates starting today or later (YYYY-MM-DD)."; return }
         if (scope == "single_branch" && branchId.isBlank()) { campaignNote = "Choose a branch."; return }
         val amount = value.toIntOrNull() ?: 0
         if (kind != "buy_one_take_one" && amount <= 0) { campaignNote = "Enter the discount."; return }
         if (kind == "percent_discount" && amount > 100) { campaignNote = "Percent off cannot be more than 100."; return }
+        loading = true
         viewModelScope.launch {
-            loading = true
             campaignNote = ""
             val label = when (kind) {
                 "percent_discount" -> "$amount% off"
@@ -1574,8 +1580,8 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
             if (kind == "buy_one_take_one") body.put("reward_value", JSONObject.NULL) else body.put("reward_value", amount)
             val result = io { API.post("/api/v1/business/${current.slug}/campaigns", current.token, body) }
             loading = false
-            if (result == null || result.first >= 400) campaignNote = if (result == null) "Could not reach the server." else API.message(result.second, "Could not start the campaign.")
-            else { campaignNote = "Started. The voucher is available from $start until $end, then it ends."; loadCampaigns() }
+            if (result == null || result.first >= 400) campaignNote = if (result == null) "Campaign outcome uncertain. Check the campaign list before creating another." else API.message(result.second, "Could not start the campaign.")
+            else { campaignNote = "Saved. Qualifying purchases: $start to $end. Wallet delivery is not confirmed."; loadCampaigns() }
         }
     }
 
