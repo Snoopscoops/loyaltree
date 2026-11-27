@@ -7,7 +7,7 @@ import CustomerDemographicsAdmin from './CustomerDemographicsAdmin'
 import SystemUsageAdmin from './SystemUsageAdmin'
 import BenefitsAdmin from './BenefitsAdmin'
 import { BenefitsAdminCardUpgrade } from './BenefitsCardUpgrade'
-import { filterAdminBusinesses, loadAdminResources, readAdminJson } from './adminData'
+import { filterAdminBusinesses, loadAdminResources, readAdminJson, adminCountLabel, specialInvoiceSnapshot } from './adminData'
 
 function BillingBranchEditor({ detail, onSave }) {
   const [count, setCount] = useState(String(detail.branch_count || 1))
@@ -130,6 +130,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
   const [expenseReviewing,setExpenseReviewing]=useState('')
   const [specialBusinesses,setSpecialBusinesses]=useState([])
   const [specialInvoices,setSpecialInvoices]=useState([])
+  const [specialLedgerReady,setSpecialLedgerReady]=useState(false)
   const [specialSaving,setSpecialSaving]=useState(false)
   const [specialInvoiceBusy,setSpecialInvoiceBusy]=useState('')
   const [paymentReceivedModal,setPaymentReceivedModal]=useState(null)
@@ -334,7 +335,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
     operations: [['/api/v1/admin/setup-kit-orders', rowsSetter(setSetupKitOrders)]],
     special: [
       ['/api/v1/admin/special-businesses', rowsSetter(setSpecialBusinesses)],
-      ['/api/v1/admin/special-invoices', rowsSetter(setSpecialInvoices)],
+      ['/api/v1/admin/special-invoices', data => { rowsSetter(setSpecialInvoices)(data); setSpecialLedgerReady(true) }],
     ],
   }[tab] || [])
   const reportLoadError = error => setLoadError(error.message || 'Could not load admin data. Please retry.')
@@ -990,11 +991,29 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
     { key:'referrals', label:'Referrals', icon:'↗', description:'See which businesses earned the 1-month referral bonus.' },
   ]
   const activeAdminTabMeta = adminTabs.find(tab => tab.key === activeAdminTab) || adminTabs[0]
+  const adminGroups = [
+    { label:'Overview', tabs:['overview'] },
+    { label:'Businesses', tabs:['businesses','special','partners','referrals'] },
+    { label:'Intelligence', tabs:['performance','platform','demographics'] },
+    { label:'Rewards', tabs:['ltbenefits','coupons'] },
+    { label:'Operations', tabs:['operations','help','system-usage'] },
+  ]
+  const invoiceSnapshot = specialLedgerReady && !loading && !sectionLoading && !loadError ? specialInvoiceSnapshot(specialInvoices) : null
+  const activeGroup = adminGroups.find(group => group.tabs.includes(activeAdminTab)) || adminGroups[0]
+  const visibleAdminTabs = adminTabs.filter(tab => activeGroup.tabs.includes(tab.key))
+  const metric = adminCountLabel
 
   return (
     <div style={styles.container}>
       <style>{`
         .admin-tab-nav::-webkit-scrollbar { display: none; }
+        .admin-command-groups { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
+        .admin-command-groups button { border:1px solid #d8e5df; background:white; color:#34594c; min-height:42px; padding:9px 16px; border-radius:10px; font-weight:750; cursor:pointer; }
+        .admin-command-groups button[aria-pressed=true] { background:#176653; color:white; border-color:#176653; }
+        .admin-command-groups button:focus-visible,.admin-command-shortcuts button:focus-visible { outline:2px solid #176653; outline-offset:3px; }
+        .admin-command-shortcuts { display:grid; grid-template-columns:repeat(auto-fit,minmax(155px,1fr)); gap:10px; margin:16px 0; }
+        .admin-command-shortcuts button { text-align:left; padding:14px; border:1px solid #d8e5df; border-radius:12px; background:#fff; color:#234c39; cursor:pointer; font-size:14px; font-weight:750; }
+        .admin-command-shortcuts small { display:block; margin-top:5px; color:#64748b; font-weight:500; line-height:1.4; }
         @media (max-width: 760px) {
           .admin-shell-body { padding: 16px !important; }
           .admin-tab-nav { margin-left: -16px !important; margin-right: -16px !important; padding-left: 16px !important; padding-right: 16px !important; }
@@ -1013,7 +1032,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
           <span style={{ fontSize: 28 }}>🌳</span>
           <div>
             <h1 style={styles.brandName}>LoyaltyTree Admin</h1>
-            <p style={styles.brandTagline}>{overview?.total_businesses ?? 0} businesses on the platform</p>
+            <p style={styles.brandTagline}>{metric(overview?.total_businesses)} businesses on the platform</p>
           </div>
         </div>
         <button onClick={onLogout} style={styles.logoutBtn}>Log out</button>
@@ -1030,8 +1049,11 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
           <button onClick={() => setShowCreateModal(true)} style={styles.approveBtn}>+ Create business</button>
         </div>
 
-        <div className="admin-tab-nav" style={styles.adminTabNav}>
-          {adminTabs.map(tab => {
+        <nav aria-label="Admin sections" className="admin-command-groups">
+          {adminGroups.map(group => <button type="button" key={group.label} aria-pressed={activeGroup.label === group.label} onClick={() => setActiveAdminTab(group.tabs[0])}>{group.label}</button>)}
+        </nav>
+        <div className="admin-tab-nav" aria-label={activeGroup.label + ' tools'} style={styles.adminTabNav}>
+          {visibleAdminTabs.map(tab => {
             const active = activeAdminTab === tab.key
             const badge =
               tab.key === 'businesses'
@@ -1047,6 +1069,7 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
                 type="button"
                 className="admin-tab-button"
                 onClick={() => setActiveAdminTab(tab.key)}
+                aria-pressed={active}
                 style={{...styles.adminTabButton,...(active ? styles.adminTabButtonActive : {})}}
               >
                 <span style={styles.adminTabIcon}>{tab.icon}</span>
@@ -1755,20 +1778,34 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
         {/* Overview cards — deliberately limited to six headline metrics */}
         {activeAdminTab === 'overview' && (
           <>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,flexWrap:'wrap',marginBottom:12}}>
+              <span style={{fontSize:13,color:'#64748b'}}>{loading?'Refreshing overview…':loadError?'Some data is unavailable. Retry before using figures.':overview?'Latest loaded platform snapshot':'Overview not available'}</span>
+              <button type="button" style={styles.viewBtn} disabled={loading} onClick={loadData}>Refresh overview</button>
+            </div>
+            <div className="admin-command-shortcuts">
+              {[
+                ['businesses','Business directory','Accounts, onboarding and access'],
+                ['special','Billing and invoices','Special contracts and payment records'],
+                ['performance','Client performance','Retention and recorded activity'],
+                ['system-usage','System monitoring','Runtime and Wallet measurements'],
+                ['operations','Operations','Announcements and fulfillment'],
+                ['help','Support insights','Questions and FAQ review'],
+              ].map(([key,label,description])=><button type="button" key={key} onClick={()=>setActiveAdminTab(key)}>{label}<small>{description}</small></button>)}
+            </div>
             <div style={styles.statsGrid}>
-              <StatCard label="Total businesses" value={overview?.total_businesses ?? '—'} />
-              <StatCard label="Active" value={overview?.status_breakdown?.ACTIVE ?? 0} accent="#0d9488" />
-              <StatCard label="Pending" value={overview?.status_breakdown?.PENDING ?? 0} accent="#d97706" />
-              <StatCard label="Total customers" value={overview?.total_customers ?? 0} />
-              <StatCard label="Recorded activity · 30d" value={overview?.stamps_30d ?? 0} accent="#2563eb" />
-              <StatCard label="Redemptions · 30d" value={overview?.redemptions_30d ?? 0} accent="#7c3aed" />
+              <StatCard label="Total businesses" value={metric(overview?.total_businesses)} />
+              <StatCard label="Active" value={metric(overview?.status_breakdown?.ACTIVE)} accent="#0d9488" />
+              <StatCard label="Pending" value={metric(overview?.status_breakdown?.PENDING)} accent="#d97706" />
+              <StatCard label="Total customers" value={metric(overview?.total_customers)} />
+              <StatCard label="Recorded activity · 30d" value={metric(overview?.stamps_30d)} accent="#2563eb" />
+              <StatCard label="Redemptions · 30d" value={metric(overview?.redemptions_30d)} accent="#7c3aed" />
             </div>
 
             <div style={styles.overviewStatusStrip}>
               <span style={styles.overviewStatusLabel}>Account status</span>
-              <span style={styles.overviewStatusPill}>Active <b>{overview?.status_breakdown?.ACTIVE ?? 0}</b></span>
-              <span style={styles.overviewStatusPill}>Suspended <b>{overview?.status_breakdown?.SUSPENDED ?? 0}</b></span>
-              <span style={styles.overviewStatusPill}>Rejected <b>{overview?.status_breakdown?.REJECTED ?? 0}</b></span>
+              <span style={styles.overviewStatusPill}>Active <b>{metric(overview?.status_breakdown?.ACTIVE)}</b></span>
+              <span style={styles.overviewStatusPill}>Suspended <b>{metric(overview?.status_breakdown?.SUSPENDED)}</b></span>
+              <span style={styles.overviewStatusPill}>Rejected <b>{metric(overview?.status_breakdown?.REJECTED)}</b></span>
             </div>
 
         {overview?.plan_breakdown && (
@@ -1827,6 +1864,13 @@ function AdminDashboard({ API_BASE, user, onLogout }) {
             </div>
           </div>
 
+          <div style={styles.statsGrid}>
+            <StatCard label="Issued invoices · loaded ledger" value={metric(invoiceSnapshot?.issued)} />
+            <StatCard label="Marked paid" value={metric(invoiceSnapshot?.paid)} />
+            <StatCard label="Overdue" value={metric(invoiceSnapshot?.overdue)} accent="#b45309" />
+            <StatCard label="Other non-void status" value={metric(invoiceSnapshot?.review)} />
+          </div>
+          <p style={{fontSize:12,color:'#64748b',margin:'8px 0 16px'}}>Special invoices only. Counts reflect the returned ledger, not necessarily all historical invoices. Paid status does not measure actual collections, MRR or merchant settlements. Use the invoice and acknowledgement receipt records to reconcile payments.</p>
           <form onSubmit={saveSpecialBusiness} style={styles.specialFormCard}>
             <div style={styles.sectionHead}>
               <div>
