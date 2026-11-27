@@ -230,7 +230,7 @@ test('menu page has no All branches option and blocks ordering until a branch is
   const source=await readFile(new URL('../src/components/QRMenuPage.jsx',import.meta.url),'utf8')
   assert.equal(source.includes('All branches'),false)
   assert.ok(source.includes('Choose your branch'))
-  assert.ok(source.includes('if (needsBranch || !menuSelectionAvailable(value, branchId, selected)) return'))
+  assert.ok(source.includes('if (needsBranch || !optionsComplete(value, selected) || !menuSelectionAvailable(value, branchId, selected)) return'))
   assert.ok(source.includes('disabled={checkingCard || needsBranch}'))
   assert.ok(source.includes("!cartOpen && !needsBranch"))
   assert.equal(source.includes('Location unavailable'),false)
