@@ -8,7 +8,7 @@ permissions:
 jobs:
   verify:
     if: github.ref == 'refs/heads/feature/owner-workspace-consolidated'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 12
     defaults:
       run:
@@ -25,8 +25,9 @@ jobs:
       - run: npm run build
       - name: Install ephemeral browser tooling
         run: |
-          npm install --no-save --package-lock=false playwright@1.56.1
-          npx playwright install --with-deps chromium
+          npm install --prefix "$RUNNER_TEMP/lt-browser" --no-save --package-lock=false playwright@1.56.1
+          ln -s "$RUNNER_TEMP/lt-browser/node_modules/playwright" node_modules/playwright
+          "$RUNNER_TEMP/lt-browser/node_modules/.bin/playwright" install --with-deps chromium
       - name: Isolated browser regression
         run: |
           set -euo pipefail
