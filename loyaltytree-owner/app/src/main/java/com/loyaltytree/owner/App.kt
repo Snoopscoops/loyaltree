@@ -152,6 +152,7 @@ private sealed class Page {
     data object Card : Page()
     data object Account : Page()
     data object Billing : Page()
+    data object Payments : Page()
     data object Points : Page()
     data object Cashiers : Page()
     data object Stamp : Page()
@@ -787,7 +788,8 @@ private fun Shell(store: CounterStore, opening: Boolean, onOpeningFinished: () -
                             openStock = { page = Page.Stock },
                             openCustomers = { tab = 3; page = Page.None },
                             openAlerts = { page = Page.Alerts },
-                            openAccount = { page = Page.Account }
+                            openAccount = { page = Page.Account },
+                            openPayments = { if (store.session?.isOwner == true) page = Page.Payments }
                         )
                         1 -> OrdersScreen(store)
                         2 -> MenuScreen(store)
@@ -802,6 +804,7 @@ private fun Shell(store: CounterStore, opening: Boolean, onOpeningFinished: () -
                     Page.Card -> CardScreen(store)
                     Page.Account -> AccountScreen(store) { page = Page.Billing }
                     Page.Billing -> BillingScreen(store)
+                    Page.Payments -> if (store.session?.isOwner == true) PaymentsPreviewScreen(store) else Scroll { Text("Owner access required.", color = Bad) }
                     Page.Points -> PointsScreen()
                     Page.Cashiers -> CashiersScreen(store)
                     Page.Stamp -> StampScreen(store)
@@ -831,6 +834,7 @@ private fun pageTitle(page: Page, store: CounterStore): String = when (page) {
     Page.Card -> "Card"
     Page.Account -> "Account"
     Page.Billing -> "Billing"
+    Page.Payments -> "Payments"
     Page.Points -> "LT Points"
     Page.Cashiers -> "Cashiers"
     Page.Stamp -> if (store.cardType == "points") "Add points" else "Add a stamp"
@@ -895,7 +899,7 @@ private fun LoginScreen(store: CounterStore) {
 private fun HomeScreen(
     store: CounterStore, openAnalytics: () -> Unit, openCampaign: () -> Unit, openReservations: () -> Unit, openStamp: () -> Unit,
     openOrders: () -> Unit, openMenu: () -> Unit, openStock: () -> Unit, openCustomers: () -> Unit,
-    openAlerts: () -> Unit, openAccount: () -> Unit
+    openAlerts: () -> Unit, openAccount: () -> Unit, openPayments: () -> Unit
 ) {
     var branchMenu by remember { mutableStateOf(false) }
     val shownOrders = store.orders.filter { store.ordersBranch.isBlank() || it.branchId == store.ordersBranch }
@@ -977,7 +981,12 @@ private fun HomeScreen(
             DashboardAction("Customers", Icons.Default.Group, Modifier.weight(1f), DeepTeal, openCustomers)
             DashboardAction("Campaigns", Icons.Default.Notifications, Modifier.weight(1f), Forest, openCampaign)
         }
-        DashboardAction("Reservations", Icons.Default.DateRange, Modifier.fillMaxWidth(), Forest, openReservations)
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            DashboardAction("Reservations", Icons.Default.DateRange, Modifier.weight(1f), Forest, openReservations)
+            if (store.session?.isOwner == true) {
+                DashboardAction("Payments", Icons.Default.Payments, Modifier.weight(1f), DeepTeal, openPayments)
+            }
+        }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Recent activity", color = Ink, fontWeight = FontWeight.Bold, fontSize = 22.sp, modifier = Modifier.weight(1f))
             TextButton(onClick = openOrders) { Text("View all ›", color = Forest, fontWeight = FontWeight.SemiBold) }
@@ -2342,6 +2351,9 @@ private fun MoreScreen(store: CounterStore, open: (Page) -> Unit, openMenu: () -
         }
         Section("Your business", "The tools you use after the scan.") {
             RowLink("Reservations", "Calendar and booking requests") { open(Page.Reservations) }
+            if (store.session?.isOwner == true) {
+                RowLink("Payments", "Digital collections · preview") { open(Page.Payments) }
+            }
             RowLink("Analytics", "Last 30 days") { open(Page.Analytics) }
             RowLink("Notifications", "Birthday, churn, and announcements") { open(Page.Greetings) }
             RowLink("Digital billboard", if (store.billboardOn) "On · 150 m" else "Off") { open(Page.Billboard) }
@@ -2353,6 +2365,100 @@ private fun MoreScreen(store: CounterStore, open: (Page) -> Unit, openMenu: () -
         Card { Column { Text("Loyalty Tree benefits", fontWeight = FontWeight.SemiBold, color = Muted); Text("Coming soon", color = Muted, fontSize = 13.sp) } }
         Card { RowLink("Account management", "Billing, details, and account") { open(Page.Account) } }
         Secondary("Log out") { store.signOut() }
+    }
+}
+
+// UI-only preparation. No provider, API, credential, bank details, or money-moving
+// action is connected. Do not enable from local UI state; future activation must
+// come from authorized server-side merchant provisioning and provider verification.
+private enum class PaymentsPreviewTab { Overview, Activation, Destination, Withdrawal, History }
+
+@Composable
+private fun PaymentsPreviewScreen(store: CounterStore) {
+    val session = store.session ?: return
+    if (!session.isOwner) return
+    // Key local navigation to the authenticated account; nothing is persisted.
+    androidx.compose.runtime.key(session.slug, session.email, session.role) {
+        var tab by remember { mutableStateOf(PaymentsPreviewTab.Overview) }
+        BackHandler(tab != PaymentsPreviewTab.Overview) { tab = PaymentsPreviewTab.Overview }
+        Scroll {
+            Text("Digital payments", color = Ink, fontWeight = FontWeight.Black, fontSize = 27.sp)
+            Text(session.businessName, color = Muted, fontSize = 14.sp)
+            Card {
+                Text("PREVIEW · NOT CONNECTED", color = Forest, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Text("NextPay API access is pending. Registration, collections and withdrawals are not available in this build. Cash orders are unaffected.", color = Muted, fontSize = 13.sp, lineHeight = 19.sp)
+            }
+            if (tab != PaymentsPreviewTab.Overview) {
+                TextButton(onClick = { tab = PaymentsPreviewTab.Overview }) { Text("‹ Payments overview", color = Forest) }
+            }
+            when (tab) {
+                PaymentsPreviewTab.Overview -> {
+                    Column(Modifier.fillMaxWidth().clip(Shape).background(Brush.horizontalGradient(listOf(DeepTeal, Forest))).padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text("Available balance", color = Lime, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                            Icon(Icons.Default.Payments, null, tint = Lime)
+                        }
+                        Text("Unavailable", color = Color.White, fontWeight = FontWeight.Black, fontSize = 28.sp)
+                        Text("Pending settlement: unavailable", color = Lime, fontSize = 13.sp)
+                        Secondary("Withdraw funds · preview") { tab = PaymentsPreviewTab.Withdrawal }
+                        Text("No funds can be transferred yet.", color = Lime, fontSize = 12.sp)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        DashboardMetric("Digital collections today", "—", Icons.Default.Payments, Modifier.weight(1f))
+                        DashboardMetric("Withdrawn this month", "—", Icons.Default.Receipt, Modifier.weight(1f))
+                    }
+                    Section("Merchant activation", "Prepare to accept QRPH and card payments.") {
+                        Info("Connection", "API access pending")
+                        Info("Business verification", "Not checked")
+                        Primary("Activate payments · preview") { tab = PaymentsPreviewTab.Activation }
+                    }
+                    Section("Payout destination", "Funds will go to a provider-verified merchant account when enabled.") {
+                        RowLink("Linked bank or e-wallet", "Not available to verify") { tab = PaymentsPreviewTab.Destination }
+                    }
+                    Section("Transactions", "Separate from cash sales and LoyaltyTree subscription billing.") {
+                        RowLink("Payment and withdrawal history", "Unavailable until connected") { tab = PaymentsPreviewTab.History }
+                    }
+                }
+                PaymentsPreviewTab.Activation -> {
+                    Section("Activate payments", "Registration preview · no information is submitted.") {
+                        Info("Business", session.businessName)
+                        Info("Merchant account", "Not checked")
+                        Info("QRPH", "Activation required")
+                        Info("Cards", "Separate activation may be required")
+                        Text("When enabled, review your business information, complete provider-required verification, register a verified payout destination and wait for approval.", color = Muted, fontSize = 13.sp, lineHeight = 19.sp)
+                        Text("Proposed merchant transaction fee: 5%. Final fees and settlement terms will be shown before activation.", color = Muted, fontSize = 13.sp, lineHeight = 19.sp)
+                        Primary("Register merchant", enabled = false) {}
+                    }
+                }
+                PaymentsPreviewTab.Destination -> {
+                    Section("Payout account", "A verified destination will be required before withdrawals.") {
+                        Info("Account holder", "Unavailable")
+                        Info("Bank or e-wallet", "Unavailable")
+                        Info("Verification", "Not checked")
+                        Text("No account details are collected in this preview. Linking or changing an account will require fresh owner verification and provider confirmation.", color = Muted, fontSize = 13.sp, lineHeight = 19.sp)
+                        Primary("Link payout account", enabled = false) {}
+                    }
+                }
+                PaymentsPreviewTab.Withdrawal -> {
+                    Section("Withdraw funds", "Preview only · no payout request can be created.") {
+                        Info("Available balance", "Unavailable")
+                        Info("Withdrawal amount", "Unavailable")
+                        Info("Destination", "Verified account required")
+                        Info("Withdrawal fee", "Unavailable")
+                        Info("Net transfer", "Unavailable")
+                        Text("A real withdrawal will require an available provider-confirmed balance, a verified destination, a fee review and fresh owner authentication.", color = Muted, fontSize = 13.sp, lineHeight = 19.sp)
+                        Secondary("View payout account") { tab = PaymentsPreviewTab.Destination }
+                        Primary("Confirm withdrawal", enabled = false) {}
+                    }
+                }
+                PaymentsPreviewTab.History -> {
+                    Section("Payment history", "Digital collections, settlements and withdrawals will appear here after activation.") {
+                        Text("History unavailable. This is not a confirmed zero balance or an empty transaction history.", color = Muted, fontSize = 14.sp, lineHeight = 20.sp)
+                    }
+                }
+            }
+            Text("Planned payment provider: NextPay", color = Muted, fontSize = 12.sp)
+        }
     }
 }
 
