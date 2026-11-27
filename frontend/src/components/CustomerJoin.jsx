@@ -1,4 +1,5 @@
 import { NativeBookingCustomer } from './NativeBookings.jsx'
+import './customer-directory-v2.css'
 import React, { useState, useEffect, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { readBenefitsSession } from './benefitsModel'
@@ -443,9 +444,9 @@ function CustomerJoin({ API_BASE }) {
     const tiktok = findTikTokLink(socials?.links)
     const reviewUrl = socials?.review_url || ''
     return (
-      <div style={styles.guestPage}>
-        <main style={styles.guestMain}>
-          <div style={styles.guestIdentity}>
+      <div className="lt-directory-v2" style={styles.guestPage}>
+        <main className="lt-directory-main" style={styles.guestMain}>
+          <div className="lt-directory-identity" style={styles.guestIdentity}>
             {logo
               ? <img src={logo} alt="" style={styles.guestLogo} />
               : <div style={styles.guestMark}>{businessName.slice(0, 1)}</div>}
@@ -455,20 +456,27 @@ function CustomerJoin({ API_BASE }) {
             </div>
           </div>
           {cover ? (
-            <section style={styles.guestBanner}>
+            <section className="lt-directory-cover" style={styles.guestBanner}>
               <img src={cover} alt="" style={styles.guestCover} />
             </section>
           ) : null}
           <section style={styles.guestCards}>
             {knownCard ? (
-              <div style={styles.guestWelcome}>
+              <div className="lt-directory-loyalty" style={styles.guestWelcome}>
                 <span style={styles.guestKicker}>Your loyalty card</span>
                 <strong style={styles.guestJoinTitle}>{welcomeTitle(knownCard.name)}</strong>
                 {knownProgress ? (
                   <>
                     <span style={styles.guestWelcomeCount}>{knownProgress.label}</span>
                     {knownProgress.percent !== null && (
-                      <span style={styles.guestBarTrack} aria-hidden="true"><span style={{ ...styles.guestBarFill, width: `${knownProgress.percent}%` }} /></span>
+                      <>{(() => {
+                        const match = /^(\d+) \/ (\d+) stamps$/.exec(knownProgress.label)
+                        const count = match ? Number(match[1]) : 0
+                        const goal = match ? Number(match[2]) : 0
+                        return goal > 0 && goal <= 12
+                          ? <span className="lt-directory-stamps" aria-hidden="true">{Array.from({length:goal},(_,i)=><span key={i} className={i<count?'filled':''}>{i<count?'✓':''}</span>)}</span>
+                          : <span style={styles.guestBarTrack} aria-hidden="true"><span style={{ ...styles.guestBarFill, width: `${knownProgress.percent}%` }} /></span>
+                      })()}</>
                     )}
                     {knownProgress.note ? <span style={styles.guestHint}>{knownProgress.note}</span> : null}
                   </>
@@ -490,25 +498,31 @@ function CustomerJoin({ API_BASE }) {
                 <span style={styles.guestJoinArrow}>{chevron}</span>
               </button>
             )}
+            <section className="lt-directory-actions" aria-label="Customer services">
             {menuPublished && (
-              <a href={menuHref} style={styles.guestCard}>
+              <a href={menuHref} className="lt-directory-tile" style={styles.guestCard}>
                 <span style={styles.guestCopy}>
                   <span style={styles.guestKickerMuted}>Food &amp; drinks</span>
-                  <strong style={styles.guestCardTitle}>Digital menu</strong>
+                  <strong style={styles.guestCardTitle}>Order now</strong>
                   <span style={styles.guestHint}>Browse the menu and order.</span>
                 </span>
                 <span style={styles.guestArrow}>{chevron}</span>
               </a>
             )}
             <NativeBookingCustomer key={slug} apiBase={API_BASE} slug={slug} />
+            {knownCard?.customerId && <a className="lt-directory-tile" style={styles.guestCard} href={`${API_BASE}/wallet/${encodeURIComponent(knownCard.customerId)}`}>
+              <span style={styles.guestCopy}><span style={styles.guestKickerMuted}>Loyalty</span><strong style={styles.guestCardTitle}>My rewards</strong><span style={styles.guestHint}>View your card and rewards.</span></span><span style={styles.guestArrow}>{chevron}</span>
+            </a>}
+            {menuPublished && knownCard?.token && <a className="lt-directory-tile" style={styles.guestCard} href={menuHref+'?view=activity'}>
+              <span style={styles.guestCopy}><span style={styles.guestKickerMuted}>Your history</span><strong style={styles.guestCardTitle}>Activity</strong><span style={styles.guestHint}>Orders and loyalty activity.</span></span><span style={styles.guestArrow}>{chevron}</span>
+            </a>}
+            </section>
             {wifi && (
-              <div style={styles.guestCard}>
-                <span style={styles.guestCopy}>
-                  <span style={styles.guestKickerMuted}>Guest wi-fi</span>
-                  <strong style={styles.guestCardTitle}>Wifi</strong>
-                  <span style={styles.guestHint}>{wifi.name}{wifi.password ? ` · ${wifi.password}` : ''}</span>
-                </span>
-              </div>
+              <details className="lt-directory-wifi">
+                <summary><strong>Guest Wi-Fi</strong><span aria-hidden="true">⌄</span></summary>
+                <p style={styles.guestHint}>Network: {wifi.name}</p>
+                {wifi.password && <p style={styles.guestHint}>Password: {wifi.password}</p>}
+              </details>
             )}
             {(instagram || facebook || tiktok || reviewUrl) && (
               <div style={styles.guestCard}>
@@ -539,12 +553,7 @@ function CustomerJoin({ API_BASE }) {
                 </span>
               </div>
             )}
-            <div style={styles.guestSoon}>
-              <span>
-                <span style={styles.guestKickerMuted}>Loyalty Tree <span style={styles.guestSoonPill}>Coming soon</span></span>
-                <strong style={styles.guestCardTitle}>LT Benefits</strong>
-              </span>
-            </div>
+
           </section>
           <footer style={styles.guestFooter}>Powered by <strong>LoyaltyTree</strong></footer>
         </main>
