@@ -180,11 +180,17 @@ private sealed class MenuSheet {
 fun LoyaltyTreeApp(store: CounterStore = viewModel()) {
     val current = store.session
     var login by remember { mutableStateOf(false) }
-    var opening by remember { mutableStateOf(current == null && !store.seenOpening) }
-    LaunchedEffect(current?.slug) {
+    // One opening per activity ViewModel, including a restored owner session.
+    // A notification deep link must go straight to Orders instead of the intro.
+    var opening by remember { mutableStateOf(!store.seenOpening) }
+    fun finishOpening() {
+        store.markOpened()
+        opening = false
+    }
+    LaunchedEffect(current?.slug, current?.isStaff, store.openOrdersTick) {
         if (current != null) {
             login = false
-            opening = false
+            if (current.isStaff || store.openOrdersTick > 0) finishOpening()
         }
     }
     when {
@@ -192,12 +198,11 @@ fun LoyaltyTreeApp(store: CounterStore = viewModel()) {
             BackHandler { login = false }
             LoginScreen(store)
         }
-        current == null -> WelcomeScreen(opening, onFinished = {
-            store.markOpened()
-            opening = false
-        }, onLogin = { opening = false; login = true })
+        current == null -> WelcomeScreen(opening, onFinished = { finishOpening() },
+            onLogin = { finishOpening(); login = true })
         current.isStaff -> StaffShell(store)
-        else -> Shell(store)
+        else -> Shell(store, opening = opening && store.openOrdersTick == 0,
+            onOpeningFinished = { finishOpening() })
     }
 }
 
@@ -231,7 +236,6 @@ private fun WelcomeScreen(animate: Boolean, onFinished: () -> Unit, onLogin: () 
     }
     val p = progress.value
     val reveal = if (!animate) 1f else ((p - .74f) / .26f).coerceIn(0f, 1f)
-    val bitmap = ImageBitmap.imageResource(R.drawable.lt_mark)
     BrandBackdrop(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp)) {
@@ -263,54 +267,74 @@ private fun WelcomeScreen(animate: Boolean, onFinished: () -> Unit, onLogin: () 
                 }
             }
         }
-        if (animate) {
-            val leaves = remember { listOf(
-                Triple(.287109f,.267578f,.070312f), Triple(.427734f,.267578f,.070312f),
-                Triple(.572266f,.267578f,.070312f), Triple(.712891f,.267578f,.070312f),
-                Triple(.287109f,.410156f,.070312f), Triple(.427734f,.410156f,.070312f),
-                Triple(.572266f,.410156f,.070312f), Triple(.712891f,.410156f,.070312f),
-                Triple(.367188f,.542969f,.072266f), Triple(.5f,.519531f,.056641f),
-                Triple(.628906f,.542969f,.072266f)
-            ) }
-            val origins = remember { listOf(-1f to -.7f, -.2f to -1f, .4f to -.9f, 1f to -.7f,
-                -1f to -.25f, -1f to .5f, 1f to -.1f, 1f to .4f, -.85f to 1f, .07f to 1f, .85f to 1f) }
-            Box(Modifier.fillMaxSize().clickable { onFinished() }, contentAlignment = Alignment.Center) {
-                Canvas(Modifier.fillMaxSize()) {
-                    val move = ((p - .76f) / .24f).coerceIn(0f, 1f)
-                    val eased = 1f - (1f - move) * (1f - move) * (1f - move)
-                    val large = minOf(176.dp.toPx(), size.width * .55f)
-                    val small = 44.dp.toPx()
-                    val edge = large + (small - large) * eased
-                    val startX = (size.width - large) / 2f
-                    val startY = size.height * .36f - large / 2f
-                    val x = startX + (24.dp.toPx() - startX) * eased
-                    val y = startY + (24.dp.toPx() - startY) * eased
-                    val complete = ((p - .55f) / .11f).coerceIn(0f, 1f)
-                    if (complete < 1f) {
-                        leaves.forEachIndexed { index, leaf ->
-                            val t = ((p - index * .021f) / .35f).coerceIn(0f, 1f)
-                            val settle = (1f - t) * (1f - t) * (1f - t)
-                            val (sx, sy) = origins[index]
-                            drawCircle(if (index < 4) RewardYellow else Color(0xFF0F7F7C),
-                                edge * leaf.third, Offset(x + edge * leaf.first + sx * size.width * settle,
-                                    y + edge * leaf.second + sy * size.height * settle), alpha = 1f - complete)
-                        }
-                    }
-                    if (complete > 0f) drawImage(bitmap,
-                        dstOffset = IntOffset(x.toInt(), y.toInt()),
-                        dstSize = IntSize(edge.toInt().coerceAtLeast(1), edge.toInt().coerceAtLeast(1)),
-                        alpha = complete)
+        if (animate) OpeningArtwork(p, reveal, targetX = 24, targetY = 24, onFinished = onFinished)
+    }
+}
+
+@Composable
+private fun OpeningArtwork(p: Float, reveal: Float, targetX: Int, targetY: Int, onFinished: () -> Unit) {
+    val bitmap = ImageBitmap.imageResource(R.drawable.lt_mark)
+    val leaves = remember { listOf(
+        Triple(.287109f,.267578f,.070312f), Triple(.427734f,.267578f,.070312f),
+        Triple(.572266f,.267578f,.070312f), Triple(.712891f,.267578f,.070312f),
+        Triple(.287109f,.410156f,.070312f), Triple(.427734f,.410156f,.070312f),
+        Triple(.572266f,.410156f,.070312f), Triple(.712891f,.410156f,.070312f),
+        Triple(.367188f,.542969f,.072266f), Triple(.5f,.519531f,.056641f),
+        Triple(.628906f,.542969f,.072266f)
+    ) }
+    val origins = remember { listOf(-1f to -.7f, -.2f to -1f, .4f to -.9f, 1f to -.7f,
+        -1f to -.25f, -1f to .5f, 1f to -.1f, 1f to .4f, -.85f to 1f, .07f to 1f, .85f to 1f) }
+    Box(Modifier.fillMaxSize().clickable { onFinished() }, contentAlignment = Alignment.Center) {
+        Canvas(Modifier.fillMaxSize()) {
+            val move = ((p - .76f) / .24f).coerceIn(0f, 1f)
+            val eased = 1f - (1f - move) * (1f - move) * (1f - move)
+            val large = minOf(176.dp.toPx(), size.width * .55f)
+            val small = 44.dp.toPx()
+            val edge = large + (small - large) * eased
+            val startX = (size.width - large) / 2f
+            val startY = size.height * .36f - large / 2f
+            val x = startX + (targetX.dp.toPx() - startX) * eased
+            val y = startY + (targetY.dp.toPx() - startY) * eased
+            val complete = ((p - .55f) / .11f).coerceIn(0f, 1f)
+            if (complete < 1f) {
+                leaves.forEachIndexed { index, leaf ->
+                    val t = ((p - index * .021f) / .35f).coerceIn(0f, 1f)
+                    val settle = (1f - t) * (1f - t) * (1f - t)
+                    val (sx, sy) = origins[index]
+                    drawCircle(if (index < 4) RewardYellow else Color(0xFF0F7F7C),
+                        edge * leaf.third, Offset(x + edge * leaf.first + sx * size.width * settle,
+                            y + edge * leaf.second + sy * size.height * settle), alpha = 1f - complete)
                 }
-                Column(Modifier.alpha(((p - .59f) / .08f).coerceIn(0f, 1f) * (1f - reveal)),
-                    horizontalAlignment = Alignment.CenterHorizontally) {
-                    Spacer(Modifier.height(138.dp))
-                    Text("LoyaltyTree", color = DeepTeal, fontSize = 30.sp, fontWeight = FontWeight.Black)
-                    Text("Digitalize. Secure. Connect.", color = Forest, fontSize = 12.sp)
-                }
-                Text("Tap to skip", modifier = Modifier.align(Alignment.BottomCenter).padding(18.dp),
-                    color = Muted, fontSize = 12.sp)
             }
+            if (complete > 0f) drawImage(bitmap,
+                dstOffset = IntOffset(x.toInt(), y.toInt()),
+                dstSize = IntSize(edge.toInt().coerceAtLeast(1), edge.toInt().coerceAtLeast(1)),
+                alpha = complete)
         }
+        Column(Modifier.alpha(((p - .59f) / .08f).coerceIn(0f, 1f) * (1f - reveal)),
+            horizontalAlignment = Alignment.CenterHorizontally) {
+            Spacer(Modifier.height(138.dp))
+            Text("LoyaltyTree", color = DeepTeal, fontSize = 30.sp, fontWeight = FontWeight.Black)
+            Text("Digitalize. Secure. Connect.", color = Forest, fontSize = 12.sp)
+        }
+        Text("Tap to skip", modifier = Modifier.align(Alignment.BottomCenter).padding(18.dp),
+            color = Muted, fontSize = 12.sp)
+    }
+}
+
+@Composable
+private fun OwnerOpeningOverlay(onFinished: () -> Unit) {
+    val progress = remember { Animatable(0f) }
+    LaunchedEffect(Unit) {
+        progress.animateTo(1f, tween(3100, easing = LinearEasing))
+        onFinished()
+    }
+    val p = progress.value
+    val reveal = ((p - .74f) / .26f).coerceIn(0f, 1f)
+    // The Home header uses 16dp horizontal and 12dp vertical padding.
+    // Keep the real dashboard composed under the artwork, including alerts.
+    BrandBackdrop(Modifier.fillMaxSize().alpha(1f - ((p - .90f) / .10f).coerceIn(0f, 1f))) {
+        OpeningArtwork(p, reveal, targetX = 16, targetY = 12, onFinished = onFinished)
     }
 }
 
@@ -711,7 +735,7 @@ private fun SoundCheck(store: CounterStore) {
 }
 
 @Composable
-private fun Shell(store: CounterStore) {
+private fun Shell(store: CounterStore, opening: Boolean, onOpeningFinished: () -> Unit) {
     var tab by remember { mutableIntStateOf(0) }
     var page by remember { mutableStateOf<Page>(Page.None) }
     val view = LocalView.current
@@ -727,6 +751,7 @@ private fun Shell(store: CounterStore) {
     val saving = page is Page.Guest || page is Page.Billboard || page is Page.Card
     Scaffold(containerColor = Ivory, bottomBar = {
         Dock(tab) {
+            if (opening) onOpeningFinished()
             tick(view)
             tab = it
             page = Page.None
@@ -787,6 +812,7 @@ private fun Shell(store: CounterStore) {
                 }
             }
         }
+        if (opening && tab == 0 && page is Page.None) OwnerOpeningOverlay(onOpeningFinished)
         }
     }
 }

@@ -293,7 +293,8 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     var accountStatus by mutableStateOf("")
     var analyticsProgram by mutableStateOf("")
     var analyticsNote by mutableStateOf("")
-    var seenOpening by mutableStateOf(prefs.getBoolean("seenOpening", false))
+    // Session-local: preserve across recomposition/configuration, not across launches.
+    var seenOpening by mutableStateOf(false)
     var staffNeedsBranch by mutableStateOf(false)
     var alertsOn by mutableStateOf(prefs.getBoolean("orderAlerts", true))
     var mutedBranches by mutableStateOf(prefs.getStringSet("mutedBranches", emptySet())?.toSet() ?: emptySet())
@@ -317,7 +318,6 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
 
     fun markOpened() {
         seenOpening = true
-        prefs.edit().putBoolean("seenOpening", true).apply()
     }
 
     private fun restore() {

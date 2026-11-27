@@ -71,10 +71,25 @@ def reserve_reward_order(db, row, *, business_id, customer_id, reward):
 
 
 def finalize_reward_order(db, *, business_id, order_public_id, target):
-    response = db.rpc('menu_finalize_cash_reward_order', {
-        'p_business_id': business_id, 'p_order_public_id': order_public_id,
-        'p_target': target,
-    }).execute()
+    try:
+        response = db.rpc('menu_finalize_cash_reward_order', {
+            'p_business_id': business_id, 'p_order_public_id': order_public_id,
+            'p_target': target,
+        }).execute()
+    except Exception as exc:
+        # Never forward arbitrary database messages. Translate only known
+        # business-rule failures from this RPC; the DB transaction is unchanged.
+        message = getattr(exc, 'message', None)
+        if getattr(exc, 'code', None) == 'P0001':
+            if message == 'Another stamp reward order is pending for this card cycle. Resolve it first':
+                raise HTTPException(409, 'Another stamp reward order is pending on this card cycle. Resolve the earlier order before completing the final reward. Do not charge the customer again.') from exc
+            if message == 'Cash payment must be confirmed before redeeming this reward':
+                raise HTTPException(409, 'Confirm cash payment before completing this reward order.') from exc
+            if message == 'Reward reservation expired. Cancel this order and place a new one':
+                raise HTTPException(409, 'This reward reservation expired. Ask an authorized manager to review this order before taking further payment.') from exc
+            if message in ('Stamp reward already claimed or no longer available', 'Not enough available points. Cancel the order or select another reward', 'Linked loyalty card no longer matches'):
+                raise HTTPException(409, 'This reward is no longer available for the linked card. Ask an authorized manager to review the order and payment.') from exc
+        raise HTTPException(503, 'Reward completion could not be confirmed. Keep this order open and refresh before retrying; do not charge the customer again.') from exc
     if not isinstance(response.data, dict) or not response.data.get('public_id'):
         raise RuntimeError('Redemption was not confirmed; order was not changed')
     return response.data

@@ -115,3 +115,28 @@ def test_sql_contract_guards_payment_idempotency_and_claims():
                  'status=\'redeemed\'', "status='released'", 'REVOKE ALL ON FUNCTION',
                  'service_role', 'menu_order_redemptions'):
         assert term in sql
+
+
+@pytest.mark.parametrize('code,message,status,expected', [
+    ('P0001', 'Another stamp reward order is pending for this card cycle. Resolve it first', 409, 'Resolve the earlier order'),
+    ('P0001', 'Cash payment must be confirmed before redeeming this reward', 409, 'Confirm cash payment'),
+    ('P0001', 'Reward reservation expired. Cancel this order and place a new one', 409, 'reservation expired'),
+    ('P0001', 'Not enough available points. Cancel the order or select another reward', 409, 'no longer available'),
+    ('XX000', 'private database detail', 503, 'could not be confirmed'),
+])
+def test_reward_finalize_explains_known_blockers_without_leaking_db_details(code, message, status, expected):
+    class DBError(Exception):
+        pass
+    class FailingRPC(RPC):
+        def execute(self):
+            error = DBError(message)
+            error.code, error.message = code, message
+            raise error
+    db = FailingRPC(None)
+    with pytest.raises(HTTPException) as result:
+        finalize_reward_order(db, business_id=11, order_public_id='order-1', target='completed')
+    assert result.value.status_code == status
+    assert expected in result.value.detail
+    assert 'private database detail' not in result.value.detail
+    assert len(db.calls) == 1
+    assert db.calls[0][1]['p_target'] == 'completed'

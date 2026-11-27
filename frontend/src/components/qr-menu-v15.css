@@ -171,3 +171,10 @@
 .lt-v20-contact .lt-v20-verified{color:#087051;font-weight:800}
 .lt-v20-contact-message{margin:0;font-size:12px;line-height:1.4;color:#174d3c;background:#e7f5eb;padding:9px;border-radius:8px}
 .lt-v19-order-types button small{color:inherit}
+
+/* Keep checkout choice captions visible and readable in the mobile sheet. */
+.lt-qr-v15 .lt-v19-order-types button{min-height:126px;height:auto;white-space:normal}
+.lt-qr-v15 .lt-v19-order-types button > strong,.lt-qr-v15 .lt-v19-order-types button > small{display:block;max-width:100%;white-space:normal;overflow:visible;overflow-wrap:anywhere;text-align:center;opacity:1}
+.lt-qr-v15 .lt-v19-order-types button > small{font-size:11px;line-height:1.35;color:inherit}
+.lt-qr-v15 .lt-qr-pay-methods label > span{min-width:0;flex:1;white-space:normal}
+.lt-qr-v15 .lt-qr-pay-methods label > span > small{display:block;white-space:normal;overflow-wrap:anywhere;line-height:1.4;color:#47675e;opacity:1}
