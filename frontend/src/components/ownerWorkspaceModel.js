@@ -35,19 +35,20 @@ export function paymentClass(row) {
 export function filterOrders(rows,{branch='',start='',end='',search='',status='',payment=''}={}) {
   const term=search.trim().toLowerCase()
   return asArray(rows).filter(row=>{
+    if (!row || typeof row !== 'object') return false
     const day=manilaDay(row.created_at)
     const id=row.branch?.public_id||row.branch_public_id||''
     return (!branch||id===branch)&&(!start||(day&&day>=start))&&(!end||(day&&day<=end))&&
       (!status||row.status===status)&&(!payment||paymentClass(row)===payment)&&
-      (!term||[row.order_number,row.customer?.name,...asArray(row.items).map(item=>item.item_name||item.name)].some(value=>String(value||'').toLowerCase().includes(term)))
+      (!term||[row.order_number,row.customer?.name,...asArray(row.items).map(item=>item?.item_name||item?.name)].some(value=>String(value||'').toLowerCase().includes(term)))
   })
 }
 export function nextStatus(row) {
   if (paymentClass(row)!=='cash_confirmed') return null
-  return ({new:'preparing',preparing:'ready',ready:'completed'})[row.status]||null
+  return row.status==='new'?'preparing':row.status==='preparing'?'ready':row.status==='ready'?'completed':null
 }
 export function money(value,currency='PHP') {
-  if (value==null||value===''||!Number.isFinite(Number(value))) return '—'
+  if (!['string','number'].includes(typeof value)||(typeof value==='string'&&!value.trim())||!Number.isFinite(Number(value))) return '—'
   return new Intl.NumberFormat('en-PH',{style:'currency',currency}).format(Number(value))
 }
 export function validMerchantStatus(data) {
