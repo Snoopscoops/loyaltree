@@ -2,6 +2,8 @@ name: Customer dashboard verification
 on:
   push:
     branches: [verify/customer-dashboard-v2]
+  pull_request:
+    branches: [feature/customer-dashboard-v2]
 permissions:
   contents: read
 jobs:
