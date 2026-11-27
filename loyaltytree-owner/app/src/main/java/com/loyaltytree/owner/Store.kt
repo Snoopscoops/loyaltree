@@ -690,6 +690,13 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         return uri
     }
 
+    fun markBillPaid(rootId: String, expected: Map<String, String>, done: (String) -> Unit) {
+        if (expected.isEmpty()) return done("Refresh the bill before confirming.")
+        val amounts = JSONObject()
+        expected.forEach { (id, amount) -> amounts.put(id, amount) }
+        adjustCounterOrder(rootId, "settle-bill", JSONObject().put("expected", amounts), done = done)
+    }
+
     fun markPaid(id: String, rawTotal: String) {
         val amount = rawTotal.toBigDecimalOrNull()?.toPlainString() ?: run {
             ordersNote = "Refresh the order before confirming payment."
