@@ -967,8 +967,16 @@ private fun CounterBillCard(store: CounterStore, bill: CounterBill) {
     }
     var adding by remember(bill.key) { mutableStateOf(false) }
     var expanded by remember(bill.key) { mutableStateOf(setOfNotNull(parent?.id)) }
+    var paymentSnapshot by remember(bill.key) { mutableStateOf<Map<String, String>?>(null) }
+    var paymentError by remember(bill.key) { mutableStateOf("") }
     val busy = store.orderBusy.isNotBlank()
     val limited = store.orders.count { it.source == "menu" } >= 100 || parent == null
+    val live = bill.orders.filter { it.status != "cancelled" }
+    val pending = live.filter { it.payment == "unpaid" }
+    val eligible = !limited && parent != null && parent.status !in listOf("completed", "cancelled") &&
+        pending.isNotEmpty() && live.all { it.source == "menu" && it.paymentMethod == "cash" && it.payment in listOf("paid", "unpaid") } &&
+        pending.all { it.status == "new" && it.rawTotal.toBigDecimalOrNull()?.let { amount -> amount.signum() >= 0 && amount.stripTrailingZeros().scale() <= 2 } == true }
+    val outstanding = pending.mapNotNull { it.rawTotal.toBigDecimalOrNull() }.fold(java.math.BigDecimal.ZERO) { sum, amount -> sum.add(amount) }
     Card {
         Text(parent?.number ?: "Additional orders", color = Forest, fontWeight = FontWeight.Bold, fontSize = 20.sp)
         Text(listOfNotNull(parent?.customer, parent?.tableNo?.takeIf { it.isNotBlank() }?.let { "Table $it" },
@@ -980,6 +988,10 @@ private fun CounterBillCard(store: CounterStore, bill: CounterBill) {
             Column(horizontalAlignment = Alignment.End) { Text("Balance", color = Muted, fontSize = 12.sp); Text(bill.balance?.let(::billMoney) ?: "—", color = Ink, fontWeight = FontWeight.Bold) }
         }
         if (limited) Text("Some order details may not be loaded. Do not use this subtotal as a payment amount.", color = Muted, fontSize = 12.sp)
+        if (eligible) Primary("Mark all as paid · ${billMoney(outstanding)}", enabled = !busy) {
+            paymentError = ""
+            paymentSnapshot = pending.associate { it.id to it.rawTotal }
+        }
         if (parent?.canAddSubOrder == true) Primary("＋ Add order", enabled = !busy) { adding = true }
         bill.orders.forEach { order ->
             androidx.compose.runtime.key(order.id) {
@@ -999,6 +1011,28 @@ private fun CounterBillCard(store: CounterStore, bill: CounterBill) {
             }
         }
         if (parent?.canAddSubOrder == true && adding) CounterAddOrderDialog(store, parent) { adding = false }
+    }
+    val snapshot = paymentSnapshot
+    if (snapshot != null && parent != null) {
+        val amount = snapshot.values.mapNotNull { it.toBigDecimalOrNull() }.fold(java.math.BigDecimal.ZERO) { sum, value -> sum.add(value) }
+        AlertDialog(
+            onDismissRequest = { if (!busy) paymentSnapshot = null },
+            title = { Text("Confirm cash payment") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Confirm receipt of ${billMoney(amount)} for ${snapshot.size} unpaid order(s). Already paid orders are excluded.")
+                    if (paymentError.isNotBlank()) Text(paymentError, color = Bad)
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = !busy && paymentError.isBlank(), onClick = {
+                    store.markBillPaid(parent.id, snapshot) { message ->
+                        if (message.isEmpty()) paymentSnapshot = null else paymentError = message
+                    }
+                }) { Text(if (busy) "Saving" else "Confirm payment") }
+            },
+            dismissButton = { TextButton(enabled = !busy, onClick = { paymentSnapshot = null }) { Text("Back") } }
+        )
     }
 }
 
@@ -1051,7 +1085,7 @@ private fun OrderCard(store: CounterStore, order: LiveOrder, insideBill: Boolean
         order.items.forEach { line ->
             Text(line.name, color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
             if (line.detail.isNotBlank()) Text(line.detail, color = Muted, fontSize = 13.sp)
-            if (order.canVoidItems && line.id.isNotBlank()) {
+            if (order.canVoidItems && store.session?.role in listOf("owner", "manager") && line.id.isNotBlank()) {
                 TextButton(onClick = { voiding = line }, enabled = !busy) { Text("Void item") }
             }
         }
