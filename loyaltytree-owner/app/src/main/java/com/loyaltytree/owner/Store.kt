@@ -177,6 +177,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     var insightTrendUnit by mutableStateOf("day")
     var insightItems by mutableStateOf<List<RankedItem>>(emptyList())
     var insightCards by mutableStateOf<List<InsightCard>>(emptyList())
+    var purchaseFrequency by mutableStateOf<JSONObject?>(null)
     var insightRange by mutableStateOf("")
     var insightsLoading by mutableStateOf(false)
     var scanCustomer by mutableStateOf<ScanCustomer?>(null)
@@ -804,6 +805,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
                 insightTrend = emptyList()
                 insightItems = emptyList()
                 insightCards = emptyList()
+                purchaseFrequency = null
                 insightsNote = if (result == null) "Could not reach menu order insights." else API.message(result.second, "Menu order insights are not ready yet.")
                 return@launch
             }
@@ -815,6 +817,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     private fun num(value: Any?): Double? = if (value == null || value == JSONObject.NULL) null else API.plain(value)?.toDoubleOrNull()
 
     private fun applyInsights(json: JSONObject) {
+        purchaseFrequency = json.optJSONObject("purchase_frequency")
         val now = json.optJSONObject("kpis") ?: JSONObject()
         val change = json.optJSONObject("change") ?: JSONObject()
         insightKpis = listOf(
