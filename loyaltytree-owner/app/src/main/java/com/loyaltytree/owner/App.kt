@@ -886,9 +886,14 @@ private fun SalesReportCard(store: CounterStore) {
         Text("SALES REPORT", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
         Text("Download a file with every order, totals, top items and who bought what. Send it on Messenger, Viber or email.", color = Muted, fontSize = 13.sp, lineHeight = 18.sp)
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("Today" to "today", "Yesterday" to "yesterday", "This week" to "week", "This month" to "month").forEach { (label, id) ->
+            listOf("Today" to "today", "Yesterday" to "yesterday", "This week" to "week", "This month" to "month", "Custom" to "custom").forEach { (label, id) ->
                 BranchChip(label, store.reportRange == id) { store.reportRange = id }
             }
+        }
+        if (store.reportRange == "custom") {
+            Field("From (YYYY-MM-DD)", store.reportStart, { store.reportStart = it.take(10) })
+            Field("To (YYYY-MM-DD)", store.reportEnd, { store.reportEnd = it.take(10) })
+            Text("Up to 92 days, Philippine time.", color = Muted, fontSize = 12.sp)
         }
         Text(if (branchName != null) branchLabel(branchName) else "All branches", color = Forest, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
         Primary(if (store.reportBusy) "Preparing report…" else "Download & share report", enabled = !store.reportBusy) {
