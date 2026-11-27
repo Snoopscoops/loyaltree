@@ -28,7 +28,7 @@ def permissions(role):
         'orders': True,
         'mark_paid': role in ALL_ROLES,
         'cancel_order': role in ALL_ROLES,
-        'void_items': role == 'owner',
+        'void_items': role in ('owner', 'manager'),
         'refund': False,  # NextPay refund processing is not enabled.
         'stamps': True,
         'stamp_corrections': role in ('owner', 'manager'),
