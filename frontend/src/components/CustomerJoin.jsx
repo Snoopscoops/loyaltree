@@ -1,4 +1,5 @@
 import { NativeBookingCustomer } from './NativeBookings.jsx'
+import './customer-directory-v2.css'
 import React, { useState, useEffect, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { readBenefitsSession } from './benefitsModel'
@@ -428,7 +429,6 @@ function CustomerJoin({ API_BASE }) {
     const slug = businessInfo?.public_id || businessSlug || ''
     const cover = businessInfo?.hero_image_url || ''
     const logo = businessInfo?.logo_url || ''
-    const place = businessInfo?.category?.label || ''
     const wifi = businessInfo?.guest_wifi?.published ? businessInfo.guest_wifi : null
     const socials = businessInfo?.guest_socials?.published ? businessInfo.guest_socials : null
     const menuHref = `/menu/${encodeURIComponent(slug)}`
@@ -443,32 +443,38 @@ function CustomerJoin({ API_BASE }) {
     const tiktok = findTikTokLink(socials?.links)
     const reviewUrl = socials?.review_url || ''
     return (
-      <div style={styles.guestPage}>
-        <main style={styles.guestMain}>
-          <div style={styles.guestIdentity}>
+      <div className="lt-directory-v2" style={styles.guestPage}>
+        <main className="lt-directory-main" style={styles.guestMain}>
+          <div className="lt-directory-identity" style={styles.guestIdentity}>
             {logo
               ? <img src={logo} alt="" style={styles.guestLogo} />
               : <div style={styles.guestMark}>{businessName.slice(0, 1)}</div>}
             <div style={styles.guestCopy}>
               <h1 style={styles.guestName}>{businessName}</h1>
-              {place ? <p style={styles.guestPlace}>{place}</p> : null}
             </div>
           </div>
           {cover ? (
-            <section style={styles.guestBanner}>
+            <section className="lt-directory-cover" style={styles.guestBanner}>
               <img src={cover} alt="" style={styles.guestCover} />
             </section>
           ) : null}
           <section style={styles.guestCards}>
             {knownCard ? (
-              <div style={styles.guestWelcome}>
+              <div className="lt-directory-loyalty" style={styles.guestWelcome}>
                 <span style={styles.guestKicker}>Your loyalty card</span>
                 <strong style={styles.guestJoinTitle}>{welcomeTitle(knownCard.name)}</strong>
                 {knownProgress ? (
                   <>
                     <span style={styles.guestWelcomeCount}>{knownProgress.label}</span>
                     {knownProgress.percent !== null && (
-                      <span style={styles.guestBarTrack} aria-hidden="true"><span style={{ ...styles.guestBarFill, width: `${knownProgress.percent}%` }} /></span>
+                      <>{(() => {
+                        const match = /^(\d+) \/ (\d+) stamps$/.exec(knownProgress.label)
+                        const count = match ? Number(match[1]) : 0
+                        const goal = match ? Number(match[2]) : 0
+                        return goal > 0 && goal <= 12
+                          ? <span className="lt-directory-stamps" aria-hidden="true">{Array.from({length:goal},(_,i)=><span key={i} className={i<count?'filled':''}>{i<count?'✓':''}</span>)}</span>
+                          : <span style={styles.guestBarTrack} aria-hidden="true"><span style={{ ...styles.guestBarFill, width: `${knownProgress.percent}%` }} /></span>
+                      })()}</>
                     )}
                     {knownProgress.note ? <span style={styles.guestHint}>{knownProgress.note}</span> : null}
                   </>
@@ -490,25 +496,31 @@ function CustomerJoin({ API_BASE }) {
                 <span style={styles.guestJoinArrow}>{chevron}</span>
               </button>
             )}
+            <section className="lt-directory-actions" aria-label="Customer services">
             {menuPublished && (
-              <a href={menuHref} style={styles.guestCard}>
+              <a href={menuHref} className="lt-directory-tile" style={styles.guestCard}>
                 <span style={styles.guestCopy}>
                   <span style={styles.guestKickerMuted}>Food &amp; drinks</span>
-                  <strong style={styles.guestCardTitle}>Digital menu</strong>
+                  <strong style={styles.guestCardTitle}>Order now</strong>
                   <span style={styles.guestHint}>Browse the menu and order.</span>
                 </span>
                 <span style={styles.guestArrow}>{chevron}</span>
               </a>
             )}
             <NativeBookingCustomer key={slug} apiBase={API_BASE} slug={slug} />
+            {knownCard?.customerId && <a className="lt-directory-tile" style={styles.guestCard} href={`${API_BASE}/wallet/${encodeURIComponent(knownCard.customerId)}`}>
+              <span style={styles.guestCopy}><span style={styles.guestKickerMuted}>Loyalty</span><strong style={styles.guestCardTitle}>My rewards</strong><span style={styles.guestHint}>View your card and rewards.</span></span><span style={styles.guestArrow}>{chevron}</span>
+            </a>}
+            {menuPublished && knownCard?.token && <a className="lt-directory-tile" style={styles.guestCard} href={menuHref+'?view=activity'}>
+              <span style={styles.guestCopy}><span style={styles.guestKickerMuted}>Your history</span><strong style={styles.guestCardTitle}>Activity</strong><span style={styles.guestHint}>Orders and loyalty activity.</span></span><span style={styles.guestArrow}>{chevron}</span>
+            </a>}
+            </section>
             {wifi && (
-              <div style={styles.guestCard}>
-                <span style={styles.guestCopy}>
-                  <span style={styles.guestKickerMuted}>Guest wi-fi</span>
-                  <strong style={styles.guestCardTitle}>Wifi</strong>
-                  <span style={styles.guestHint}>{wifi.name}{wifi.password ? ` · ${wifi.password}` : ''}</span>
-                </span>
-              </div>
+              <details className="lt-directory-wifi">
+                <summary><strong>Guest Wi-Fi</strong><span aria-hidden="true">⌄</span></summary>
+                <p style={styles.guestHint}>Network: {wifi.name}</p>
+                {wifi.password && <p style={styles.guestHint}>Password: {wifi.password}</p>}
+              </details>
             )}
             {(instagram || facebook || tiktok || reviewUrl) && (
               <div style={styles.guestCard}>
@@ -539,12 +551,20 @@ function CustomerJoin({ API_BASE }) {
                 </span>
               </div>
             )}
-            <div style={styles.guestSoon}>
-              <span>
-                <span style={styles.guestKickerMuted}>Loyalty Tree <span style={styles.guestSoonPill}>Coming soon</span></span>
-                <strong style={styles.guestCardTitle}>LT Benefits</strong>
-              </span>
-            </div>
+            <section className="lt-directory-actions" aria-label="Coming soon">
+              {[
+                { title: 'LT Benefits', hint: 'More perks from LoyaltyTree.', icon: <><path d="M3 8h18v4H3zM5 12v9h14v-9M12 8v13"/><path d="M12 8C5 8 5 3 8 3c2 0 4 5 4 5s2-5 4-5c3 0 3 5-4 5Z"/></> },
+                { title: 'Games', hint: 'Play and discover rewards.', icon: <><rect x="3" y="6" width="18" height="12" rx="5"/><path d="M7 10v4m-2-2h4m6 0h.01m3 0h.01"/></> },
+              ].map(item => (
+                <div key={item.title} style={{ ...styles.guestSoon, minWidth: 0, alignItems: 'flex-start', flexDirection: 'column', justifyContent: 'flex-start', gap: 8, padding: 13, borderRadius: 15 }}>
+                  <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6, width: '100%' }}>
+                    <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="#0f766e" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{item.icon}</svg>
+                    <span style={{ ...styles.guestSoonPill, marginLeft: 0, background: '#e7eee9', color: '#52665b', fontWeight: 750, whiteSpace: 'nowrap' }}>Coming soon</span>
+                  </span>
+                  <span style={styles.guestCopy}><strong style={styles.guestCardTitle}>{item.title}</strong><span style={styles.guestHint}>{item.hint}</span></span>
+                </div>
+              ))}
+            </section>
           </section>
           <footer style={styles.guestFooter}>Powered by <strong>LoyaltyTree</strong></footer>
         </main>
