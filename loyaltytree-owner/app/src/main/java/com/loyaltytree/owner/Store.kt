@@ -31,6 +31,7 @@ data class OwnerSession(
     /** Managers and cashiers sign in with their staff email + PIN and get the limited, orders-first app. */
     val isStaff get() = role == "manager" || role == "cashier"
     val isOwner get() = role == "owner"
+    val isAdmin get() = role == "super_admin"
     /** Owner and managers see the daily summary and can download the sales report. */
     val canReport get() = role == "owner" || role == "manager"
     /** Removing stamps is a correction: owner and managers only. */
@@ -327,6 +328,11 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     private fun restore() {
         val raw = prefs.getString("session", null) ?: return
         val json = runCatching { JSONObject(raw) }.getOrNull() ?: return
+        // Admin tokens are deliberately memory-only; never restore one from merchant preferences.
+        if (json.optString("role") !in listOf("owner", "manager", "cashier")) {
+            prefs.edit().remove("session").apply()
+            return
+        }
         session = OwnerSession(
             json.optString("token"),
             json.optString("slug"),
@@ -365,6 +371,21 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
             }
             val role = json?.optString("role").orEmpty().lowercase()
             val slug = json?.optString("business_slug").orEmpty()
+            if (role == "super_admin") {
+                if (staff) { status = "Use Owner sign-in for administrator access."; return@launch }
+                loading = true
+                val verified = io { API.get("/api/v1/admin/overview", token) }
+                loading = false
+                if (verified == null || verified.first != 200 || verified.second !is JSONObject) {
+                    status = "Administrator access could not be verified. Try again."
+                    return@launch
+                }
+                prefs.edit().remove("session").apply()
+                watchJob?.cancel()
+                watchJob = null
+                session = OwnerSession(token, "", "LoyaltyTree", email, role)
+                return@launch
+            }
             if (role !in listOf("owner", "manager", "cashier") || slug.isBlank()) {
                 status = "This account can't use the LoyaltyTree app. Use an owner, manager or cashier account."
                 return@launch
@@ -383,7 +404,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
 
     fun signOut() {
         // Stop pushes to this phone first (works even if the 12-hour shift sign-in already ended).
-        session?.let { OrderPush.signOut(getApplication<Application>(), it.slug) }
+        session?.takeUnless { it.isAdmin }?.let { OrderPush.signOut(getApplication<Application>(), it.slug) }
         pushRegistered = ""
         pushState = ""
         OrderAlerts.stopRinging()
@@ -409,6 +430,7 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
 
     fun refresh() {
         val current = session ?: return
+        if (current.isAdmin) return
         if (current.isStaff) {
             refreshStaff(current)
             return
