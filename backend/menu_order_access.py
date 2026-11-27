@@ -26,7 +26,10 @@ def permissions(role):
     staff = role in ('manager', 'cashier')
     return {
         'orders': True,
-        'mark_paid': True,
+        'mark_paid': role in ALL_ROLES,
+        'cancel_order': role in ALL_ROLES,
+        'void_items': role == 'owner',
+        'refund': False,  # NextPay refund processing is not enabled.
         'stamps': True,
         'stamp_corrections': role in ('owner', 'manager'),
         'summary': role in REPORT_ROLES,
