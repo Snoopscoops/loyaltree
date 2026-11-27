@@ -425,3 +425,17 @@ class ReportTests(unittest.TestCase):
         week = client.get('/api/v1/business/b/menu-orders/report?format=json&period=week', headers=auth).json()
         self.assertEqual(week['orders'], 1)
         self.assertLessEqual(week['start'], week['end'])
+
+
+def test_custom_report_dates():
+    from backend.menu_order_insights import custom_report_days
+    from fastapi import HTTPException
+    today = date(2026, 11, 27)
+    assert custom_report_days('2026-11-01', '2026-11-27', today) == (date(2026, 11, 1), today)
+    for start, end in [('2026-11-27', '2026-11-01'), ('2026-01-01', '2026-11-27'), ('2026-11-01', '2026-11-28'), ('', '2026-11-27')]:
+        try:
+            custom_report_days(start, end, today)
+        except HTTPException as exc:
+            assert exc.status_code == 400
+        else:
+            raise AssertionError('Invalid range accepted')
