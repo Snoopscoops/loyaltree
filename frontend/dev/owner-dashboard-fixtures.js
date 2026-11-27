@@ -60,10 +60,15 @@ export function createFixtureTransport({ scenario = 'stamp', onRequest = () => {
     const done = (value,status=200) => { onRequest({ts:new Date().toISOString(),method,path:`${url.pathname}${url.search}`,status,simulated:true});return new Response(JSON.stringify(clone(value)),{status,headers:{'Content-Type':'application/json'}}) }
     if(url.hostname==='api.qrserver.com'&&method==='GET'){onRequest({ts:date(),method,path:'/local-placeholder-qr',status:200,simulated:true});return new Response(svg,{headers:{'Content-Type':'image/svg+xml'}})}
     if(method==='GET' && url.pathname==='/__owner-fixtures/api/v1/public/menu/demo-daylight')return qrPublished && selectedPlan!=='starter'?done(publicMenu()):done({detail:'This menu is not available right now.'},404)
+    if(method==='GET'&&url.pathname==='/__owner-fixtures/api/v1/business/demo-business-daylight/merchant-payments/status')return done({version:1,state:'disabled',portal_available:false,available_centavos:null,pending_centavos:null,payout_ready:false})
     const prefix = `/__owner-fixtures/api/v1/business/${fixtureSlug}`
     if(!url.pathname.startsWith(prefix))return done({detail:'Blocked by local fixture transport. No external request was sent.'},501)
     const path = url.pathname.slice(prefix.length)||'/'
     const qrSetup=()=>({is_published:qrPublished,public_url:url.origin+'/menu/'+fixtureSlug,branches:branches.map(branch=>({...branch,public_url:url.origin+'/menu/'+fixtureSlug+'?branch='+branch.public_id}))})
+    if(method==='GET'&&path==='/menu-orders')return done({orders:[],branches,simulated:true})
+    if(method==='GET'&&path==='/menu-orders/summary')return done({orders:0,sales:0,cancelled:0,payments:{settlement:{cash_confirmed:{sales:0,orders:0},outstanding:{sales:0,orders:0},test:{sales:0,orders:0},unverified:{sales:0,orders:0}}},simulated:true})
+    if(method==='GET'&&path==='/menu-orders/insights')return done({kpis:{orders:0,sales:0},purchase_frequency:{linked_buyers:0,repeat_buyers:0,single_bill_buyers:0,repeat_buyer_percent:null,average_cash_spend_per_buyer:null,average_bills_per_buyer:null},top_items:[],sections:[],trend:[],simulated:true})
+    if(method==='GET'&&/^\/customers\/demo-member-\d+\/menu-order-history$/.test(path))return done({orders:[],summary:{total_orders:0,completed_paid_orders:0,total_spent:0,complete:true},simulated:true})
     if(path.startsWith('/qr-menu')){
       if(selectedPlan==='starter')return done({detail:'QR Menu is included in Growth and Pro.'},403)
       if(path==='/qr-menu/preview')return done(publicMenu())
