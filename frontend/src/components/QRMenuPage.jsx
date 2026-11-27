@@ -203,6 +203,9 @@ function MenuLoyaltyCard({ apiBase, business, refreshKey, onReorder }) {
   useEffect(() => {
     const readToken = () => { try { return localStorage.getItem(`lt-menu-card:${business.public_id}`) || '' } catch { return '' } }
     setToken(readToken())
+    if (new URLSearchParams(window.location.search).get('view') === 'activity' && readToken() && apiBase) {
+      setHistoryTab('activity');setOpen(true)
+    }
     const sync = event => {
       if (event.detail?.business !== business.public_id) return
       const next = readToken()
