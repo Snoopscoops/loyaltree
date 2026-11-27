@@ -380,6 +380,20 @@ def period_days(period, today):
     return start, end, previous_start, previous_end
 
 
+def custom_report_days(start, end, today):
+    """Inclusive user dates, limited to 92 days to bound report work."""
+    try:
+        first = date.fromisoformat(start)
+        last = date.fromisoformat(end)
+        if first.isoformat() != start or last.isoformat() != end:
+            raise ValueError()
+        if first > last or last > today or (last - first).days >= 92:
+            raise ValueError()
+        return first, last
+    except (ValueError, TypeError):
+        raise HTTPException(400, 'Choose a valid date range of up to 92 days, ending no later than today.')
+
+
 def manila_range_bounds(start_day, end_day):
     start = datetime.combine(start_day, dtime.min, tzinfo=MANILA)
     end = datetime.combine(end_day, dtime.min, tzinfo=MANILA)
@@ -754,12 +768,16 @@ def register_menu_order_insight_routes(app, *, db, get_business, require_owner, 
 
     @app.get('/api/v1/business/{public_id}/menu-orders/report')
     def menu_orders_report(public_id: str, date: str = '', branch: str = '', period: str = '', format: str = 'csv',
-                           authorization: str = Header(default='')):
+                           start: str = '', end: str = '', authorization: str = Header(default='')):
         """Download a sales report: one day (default today, Manila) or this week / this month."""
         business, branch, _ = scoped_for(public_id, authorization, branch, ('owner', 'manager'))
         today = datetime.now(MANILA).date()
         chosen = normalize_period(period)
-        if chosen and not date:
+        if start or end:
+            if date or period:
+                raise HTTPException(400, 'Use either a custom range or a preset period.')
+            start_day, end_day = custom_report_days(start, end, today)
+        elif chosen and not date:
             start_day, end_day, _, _ = period_days(chosen, today)
             end_day = end_day - timedelta(days=1)
         else:
