@@ -750,7 +750,13 @@ private fun Shell(store: CounterStore, opening: Boolean, onOpeningFinished: () -
         }
     }
     OrderAlertHooks(store)
-    BackHandler(page !is Page.None) { page = Page.None }
+    val backFromPage: () -> Unit = {
+        page = when (page) {
+            Page.CustomerIntelligence, Page.ProductIntelligence -> Page.Analytics
+            else -> Page.None
+        }
+    }
+    BackHandler(page !is Page.None) { backFromPage() }
     val saving = page is Page.Guest || page is Page.Billboard || page is Page.Card
     Scaffold(containerColor = Ivory, bottomBar = {
         Dock(tab) {
@@ -765,7 +771,7 @@ private fun Shell(store: CounterStore, opening: Boolean, onOpeningFinished: () -
             if (page !is Page.None) {
                 NavBar(
                     title = pageTitle(page, store),
-                    onBack = { page = Page.None },
+                    onBack = backFromPage,
                     action = if (saving) if (store.loading) "Saving" else "Save" else null,
                     onAction = {
                         when (page) {
@@ -782,8 +788,6 @@ private fun Shell(store: CounterStore, opening: Boolean, onOpeningFinished: () -
                     Page.None -> when (tab) {
                         0 -> HomeScreen(store,
                             openAnalytics = { page = Page.Analytics },
-                            openCustomerIntelligence = { if (store.session?.isOwner == true) page = Page.CustomerIntelligence },
-                            openProductIntelligence = { if (store.session?.isOwner == true) page = Page.ProductIntelligence },
                             openCampaign = { page = Page.Campaign },
                             openReservations = { page = Page.Reservations },
                             openStamp = { page = Page.Stamp },
@@ -800,7 +804,7 @@ private fun Shell(store: CounterStore, opening: Boolean, onOpeningFinished: () -
                         3 -> CustomersScreen(store) { page = Page.Customer(it) }
                         else -> MoreScreen(store, { page = it }) { tab = 2; page = Page.None }
                     }
-                    Page.Analytics -> AnalyticsScreen(store)
+                    Page.Analytics -> AnalyticsScreen(store, openCustomerIntelligence = { page = Page.CustomerIntelligence }, openProductIntelligence = { page = Page.ProductIntelligence })
                     Page.CustomerIntelligence -> IntelligenceScreen(store, customer = true, openCustomers = { tab = 3; page = Page.None }, openWinBack = { page = Page.Greetings })
                     Page.ProductIntelligence -> IntelligenceScreen(store, customer = false)
                     Page.Campaign -> CampaignScreen(store)
@@ -907,8 +911,7 @@ private fun LoginScreen(store: CounterStore) {
 private fun HomeScreen(
     store: CounterStore, openAnalytics: () -> Unit, openCampaign: () -> Unit, openReservations: () -> Unit, openStamp: () -> Unit,
     openOrders: () -> Unit, openMenu: () -> Unit, openStock: () -> Unit, openCustomers: () -> Unit,
-    openAlerts: () -> Unit, openAccount: () -> Unit, openPayments: () -> Unit,
-    openCustomerIntelligence: () -> Unit, openProductIntelligence: () -> Unit
+    openAlerts: () -> Unit, openAccount: () -> Unit, openPayments: () -> Unit
 ) {
     var branchMenu by remember { mutableStateOf(false) }
     val shownOrders = store.orders.filter { store.ordersBranch.isBlank() || it.branchId == store.ordersBranch }
@@ -979,12 +982,6 @@ private fun HomeScreen(
                 Text("Sales, products & customer insights", color = Lime, fontSize = 12.sp)
             }
             Text("›", color = Color.White, fontSize = 26.sp)
-        }
-        if (store.session?.isOwner == true) {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                DashboardAction("Customer Intelligence", Icons.Default.Group, Modifier.weight(1f), DeepTeal, openCustomerIntelligence)
-                DashboardAction("Product Intelligence", Icons.Default.Inventory2, Modifier.weight(1f), Forest, openProductIntelligence)
-            }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             DashboardAction(when (store.cardType) { "points" -> "Scan to earn"; "stamp" -> "Scan to stamp"; else -> "Scan rewards" }, Icons.Default.QrCodeScanner, Modifier.weight(1f), DeepTeal) { store.clearScan(); openStamp() }
@@ -2370,10 +2367,6 @@ private fun MoreScreen(store: CounterStore, open: (Page) -> Unit, openMenu: () -
                 RowLink("Payments", "Digital collections · preview") { open(Page.Payments) }
             }
             RowLink("Analytics", "Sales and loyalty overview") { open(Page.Analytics) }
-            if (store.session?.isOwner == true) {
-                RowLink("Customer Intelligence", "Repeat buyers, spending and customer groups") { open(Page.CustomerIntelligence) }
-                RowLink("Product Intelligence", "Top items and purchasing patterns") { open(Page.ProductIntelligence) }
-            }
             RowLink("Notifications", "Birthday, churn, and announcements") { open(Page.Greetings) }
             RowLink("Digital billboard", if (store.billboardOn) "On · 150 m" else "Off") { open(Page.Billboard) }
             RowLink("Card setup", store.cardName) { open(Page.Card) }
@@ -2568,14 +2561,20 @@ private fun IntelligenceScreen(
     }
     val view = LocalView.current
     var query by remember { mutableStateOf("") }
-    LaunchedEffect(store.session, store.period) { store.loadInsights() }
+    LaunchedEffect(store.session, store.period) {
+        if (store.period !in setOf("today", "7d", "30d")) store.selectRange("30d")
+        else store.loadInsights()
+    }
+    val summaryTitle = when (store.period) {
+        "today" -> "Daily summary"
+        "7d" -> "Weekly summary"
+        else -> "Monthly summary"
+    }
     Scroll {
-        Text(if (customer) "Understand your customers" else "Understand your products",
-            color = Forest, fontSize = 25.sp, fontWeight = FontWeight.Bold)
-        Text(if (customer) "Purchase frequency, customer spending and buying patterns."
-            else "Ranked menu items and demand across your selected period.", color = Muted, fontSize = 13.sp)
+        Text(summaryTitle, color = Forest, fontSize = 26.sp, fontWeight = FontWeight.Bold)
+        Text("Today, week-to-date or month-to-date · Manila time", color = Muted, fontSize = 12.sp)
         Row(Modifier.fillMaxWidth().clip(Pill).background(Track).padding(4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            listOf("Today" to "today", "7 days" to "7d", "30 days" to "30d", "90 days" to "90d").forEach { (label, id) ->
+            listOf("Daily" to "today", "Weekly" to "7d", "Monthly" to "30d").forEach { (label, id) ->
                 val on = store.period == id
                 Box(Modifier.weight(1f).clip(RoundedCornerShape(9.dp)).background(if (on) Forest else Color.Transparent)
                     .clickable { tick(view); if (!on) store.selectRange(id) }.padding(vertical = 10.dp), contentAlignment = Alignment.Center) {
@@ -2589,7 +2588,7 @@ private fun IntelligenceScreen(
                 store.branches.forEach { branch -> BranchChip(branch.name, store.analyticsBranch == branch.id) { store.chooseAnalyticsBranch(branch.id) } }
             }
         }
-        if (store.insightsLoading || !store.insightsCurrent) {
+        if (store.period !in setOf("today", "7d", "30d") || store.insightsLoading || !store.insightsCurrent) {
             Card {
                 Text(if (store.insightsLoading) "Loading insights…" else store.insightsNote.ifBlank { "Insights are not ready yet." }, color = Muted)
             }
@@ -2604,13 +2603,16 @@ private fun IntelligenceScreen(
                         Metric("Linked buyers", frequency.optInt("linked_buyers").toString(), Modifier.weight(1f))
                         Metric("Repeat buyers", frequency.optInt("repeat_buyers").toString(), Modifier.weight(1f))
                     }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Metric("Repeat rate", if (frequency.isNull("repeat_buyer_percent")) "—" else "${frequency.optDouble("repeat_buyer_percent")}%", Modifier.weight(1f))
+                        Metric("Avg cash spend", if (frequency.isNull("average_cash_spend_per_buyer")) "—" else peso(frequency.optDouble("average_cash_spend_per_buyer")), Modifier.weight(1f))
+                    }
+                    Text("Distinct linked cash-paid bills in the selected period. Not lifetime spending or visits.", color = Muted, fontSize = 12.sp)
+                    Text("Detailed breakdown", color = Forest, fontSize = 20.sp, fontWeight = FontWeight.Bold)
                     Card {
                         Text("Purchase frequency", color = Forest, fontSize = 17.sp, fontWeight = FontWeight.Bold)
                         Info("Single-bill buyers", frequency.optInt("single_bill_buyers").toString())
-                        Info("Repeat buyer rate", if (frequency.isNull("repeat_buyer_percent")) "—" else "${frequency.optDouble("repeat_buyer_percent")}%")
                         Info("Average bills per buyer", if (frequency.isNull("average_bills_per_buyer")) "—" else String.format(Locale.US, "%.2f", frequency.optDouble("average_bills_per_buyer")))
-                        Info("Average cash spend", if (frequency.isNull("average_cash_spend_per_buyer")) "—" else peso(frequency.optDouble("average_cash_spend_per_buyer")))
-                        Text("Distinct linked cash-paid bills in the selected period. Not lifetime spending or visits.", color = Muted, fontSize = 12.sp)
                     }
                 }
                 val groups = store.insightCards.filter { it.id in setOf("age", "gender", "occupation", "membership", "tenure") }
@@ -2619,7 +2621,19 @@ private fun IntelligenceScreen(
                 groups.forEach { InsightCardView(it) }
                 Text("Demographics come from linked loyalty cards only. Small groups remain hidden by the server.", color = Muted, fontSize = 12.sp)
             } else {
-                Text("Top-selling items", color = Forest, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                val top = store.insightItems.maxByOrNull { it.quantity }
+                Card {
+                    Text("Top ordered product", color = Muted, fontSize = 12.sp)
+                    Text(top?.name ?: "—", color = Forest, fontSize = 23.sp, fontWeight = FontWeight.Bold)
+                    if (top != null) Info("Quantity ordered", top.quantity.toString())
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Metric("Menu orders", store.insightKpis.firstOrNull { it.label == "Orders" }?.value ?: "—", Modifier.weight(1f))
+                    Metric("Order value", store.insightKpis.firstOrNull { it.label == "Sales" }?.value ?: "—", Modifier.weight(1f))
+                }
+                Text("Non-cancelled menu orders, including unpaid orders. Order value is not verified collected revenue.", color = Muted, fontSize = 12.sp)
+                Text("Detailed breakdown", color = Forest, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Text("Top ordered items", color = Forest, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                 Text("Ranked by quantity within the returned top-item list. This is not a complete inventory or a least-selling report.", color = Muted, fontSize = 12.sp)
                 if (store.insightItems.isEmpty()) {
                     Card { Text("No ranked menu items for this period.", color = Muted) }
@@ -2634,7 +2648,7 @@ private fun IntelligenceScreen(
                     }
                 }
                 if (store.insightTrend.any { it.orders > 0 }) {
-                    Text("Overall menu sales trend", color = Forest, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Text("Overall menu order value trend", color = Forest, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                     Card { TrendChart(store.insightTrend) }
                 }
                 val patterns = store.insightCards.filter { it.id in setOf("time", "weekday", "branch") }
@@ -2653,7 +2667,7 @@ private fun IntelligenceScreen(
 }
 
 @Composable
-private fun AnalyticsScreen(store: CounterStore) {
+private fun AnalyticsScreen(store: CounterStore, openCustomerIntelligence: () -> Unit, openProductIntelligence: () -> Unit) {
     val view = LocalView.current
     LaunchedEffect(store.session?.slug, store.period) { store.loadInsights() }
     val month = java.util.Calendar.getInstance().get(java.util.Calendar.MONTH) + 1
@@ -2667,6 +2681,13 @@ private fun AnalyticsScreen(store: CounterStore) {
     }
     Scroll {
         Text(store.analyticsProgram.ifBlank { "This business" }, color = Forest, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+        if (store.session?.isOwner == true) {
+            Card {
+                RowLink("Customer Intelligence", "Buying frequency and customer groups", openCustomerIntelligence)
+                RowLink("Product Intelligence", "Product rankings and demand patterns", openProductIntelligence)
+            }
+        }
+        Text("Business overview", color = Forest, fontSize = 18.sp, fontWeight = FontWeight.Bold)
         Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Track).padding(4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             listOf("Today" to "today", "This week" to "7d", "This month" to "30d", "3 months" to "90d").forEach { (label, id) ->
                 val on = store.period == id
