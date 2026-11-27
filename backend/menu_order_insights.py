@@ -738,6 +738,12 @@ def register_menu_order_insight_routes(app, *, db, get_business, require_owner, 
             raise HTTPException(status_code=404, detail='Business not found')
         return business
 
+    try:
+        from .churn_discount_routes import register_churn_discount_routes
+    except ImportError:
+        from churn_discount_routes import register_churn_discount_routes
+    register_churn_discount_routes(app, db=db, business_for=business_for)
+
     def scoped_for(public_id, authorization, branch, allow):
         """Owner sees any branch. Managers and cashiers are held to their own branch."""
         if operator is None:
