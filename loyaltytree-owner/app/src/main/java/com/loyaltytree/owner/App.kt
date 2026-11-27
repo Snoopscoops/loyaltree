@@ -2124,9 +2124,9 @@ private fun CampaignScreen(store: CounterStore) {
     var value by remember { mutableStateOf("10") }
     var scope by remember { mutableStateOf("nationwide") }
     var branchId by remember { mutableStateOf("") }
-    val start = store.manila()
+    var start by remember { mutableStateOf(store.manila()) }
     val endCal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Manila")).apply { add(java.util.Calendar.DAY_OF_YEAR, 7) }
-    val end = store.manila(endCal)
+    var end by remember { mutableStateOf(store.manila(endCal)) }
     LaunchedEffect(Unit) { store.loadCampaigns() }
     Scroll {
         Text("Members who buy during these dates get the voucher. Stamps stay the same.", color = Muted)
@@ -2137,15 +2137,18 @@ private fun CampaignScreen(store: CounterStore) {
             }
         }
         if (kind != "buy_one_take_one") Field(if (kind == "percent_discount") "Percent" else "Pesos", value, { value = it })
-        Text("Starts $start · ends $end", color = Muted, fontSize = 13.sp)
+        Field("Starts (YYYY-MM-DD)", start, { start = it.take(10) })
+        Field("Ends (YYYY-MM-DD)", end, { end = it.take(10) })
+        Text("Philippine calendar dates. One voucher per qualifying member.", color = Muted, fontSize = 13.sp)
         Text("The coupon disappears after the end date.", color = Muted, fontSize = 13.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Box(Modifier.weight(1f)) { Choice("Whole business", scope == "nationwide") { scope = "nationwide" } }
             Box(Modifier.weight(1f)) { Choice("One branch", scope == "single_branch") { scope = "single_branch" } }
         }
         if (scope == "single_branch") store.branches.forEach { branch -> Choice(branch.name, branchId == branch.id) { branchId = branch.id } }
-        if (store.campaignNote.isNotBlank()) Text(store.campaignNote, color = if (store.campaignNote.startsWith("Started")) Forest else Bad, fontWeight = FontWeight.SemiBold)
-        Primary(if (store.loading) "Starting" else "Start campaign", enabled = !store.loading) {
+        if (store.campaignNote.isNotBlank()) Text(store.campaignNote, color = if (store.campaignNote.startsWith("Saved")) Forest else Bad, fontWeight = FontWeight.SemiBold)
+        Secondary("Refresh campaigns") { store.loadCampaigns() }
+        Primary(if (store.loading) "Saving…" else "Save campaign", enabled = !store.loading && store.session?.isOwner == true) {
             store.startCampaign(name, kind, value, start, end, scope, branchId)
         }
         store.campaigns.forEach { row ->
