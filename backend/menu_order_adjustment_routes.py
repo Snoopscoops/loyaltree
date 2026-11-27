@@ -1,5 +1,5 @@
 """Staff-only Batch A activity on independently paid counter orders."""
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from uuid import UUID
 
 from fastapi import BackgroundTasks, Body, Header, HTTPException
@@ -116,6 +116,36 @@ def register_menu_order_adjustment_routes(app, *, db, operator, normalize_items,
         if result.get('changed'):
             background_tasks.add_task(push_order, business, child)
         return {'success': True, 'order': order_public(child)}
+
+    @app.patch('/api/v1/business/{public_id}/menu-orders/{order_public_id}/settle-bill')
+    def settle_counter_bill(public_id: str, order_public_id: str,
+                            payload: dict = Body(...), authorization: str = Header(default='')):
+        business, scope = operator(public_id, authorization)
+        if scope.get('role') not in ('owner', 'manager', 'cashier'):
+            raise HTTPException(403, 'Staff payment access required.')
+        root = read_counter_order(db, business, scope, order_public_id)
+        if root.get('parent_order_public_id'):
+            raise HTTPException(409, 'Select the main order.')
+        expected = payload.get('expected')
+        if not isinstance(expected, dict) or not 1 <= len(expected) <= 100:
+            raise HTTPException(400, 'Confirm the outstanding order amounts.')
+        amounts = {}
+        for key, value in expected.items():
+            try:
+                if not isinstance(key, str) or not 1 <= len(key) <= 96 or not isinstance(value, str) or len(value) > 32:
+                    raise ValueError()
+                amount = Decimal(value)
+                if not amount.is_finite() or not 0 <= amount <= Decimal('1000000000') or amount != amount.quantize(Decimal('0.01')):
+                    raise ValueError()
+                # JSON numbers with cent precision; database compares numeric values.
+                amounts[key] = float(amount)
+            except (InvalidOperation, ValueError):
+                raise HTTPException(400, 'Invalid outstanding amount.')
+        result = counter_order_rpc(db, 'menu_settle_counter_bill',
+            p_business_id=business['id'], p_branch=root.get('branch_public_id'),
+            p_root=order_public_id, p_actor=counter_order_actor(scope), p_expected=amounts)
+        return {'success': True, 'settled_count': result['settled_count'],
+                'settled_total': result['settled_total']}
 
     @app.patch('/api/v1/business/{public_id}/menu-orders/{order_public_id}/void-item')
     def void_counter_item(public_id: str, order_public_id: str,
