@@ -8,7 +8,7 @@
 .lt-directory-loyalty>span,.lt-directory-loyalty>strong,.lt-directory-loyalty>button{color:#e6f5ee!important}
 .lt-directory-loyalty>strong{font-size:23px!important;color:#fff!important}
 .lt-directory-loyalty>span[aria-hidden=true]{background:#ffffff30!important}
-.lt-directory-loyalty>span[aria-hidden=true]>span{background:#b9ead4!important}
+.lt-directory-loyalty>span[aria-hidden=true]:not(.lt-directory-stamps)>span{background:#b9ead4!important}
 .lt-directory-loyalty>a{background:#fff!important;color:#073f36!important;width:100%;box-sizing:border-box;text-align:center}
 .lt-directory-stamps{display:flex!important;flex-wrap:wrap;gap:5px;margin:4px 0;background:transparent!important}
 .lt-directory-loyalty>.lt-directory-stamps{background:transparent!important}
