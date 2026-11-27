@@ -34,7 +34,7 @@ def _day(value):
 
 def _bucket():
     return {"new_memberships": 0, "new_businesses": 0, "new_branches": 0,
-            "stamp_events": 0, "redemption_events": 0, "active_memberships": 0}
+            "stamp_events": 0, "redemption_events": 0, "points_events": 0, "points_earned": 0, "active_memberships": 0}
 
 def build_daily_report(db, days, now=None):
     now = now or datetime.now(timezone.utc)
@@ -70,9 +70,10 @@ def build_daily_report(db, days, now=None):
         if d in series:
             series[d]["new_memberships"] += 1
             per_business[(d,bid)]["new_memberships"] += 1
-    per_branch = defaultdict(lambda: {"stamp_events":0,"redemption_events":0})
-    for table in ("stamp_events","redemption_events"):
-        for r in _rows(db,table,"id,business_id,customer_id,branch_id,created_at",start,end):
+    per_branch = defaultdict(lambda: {"stamp_events":0,"redemption_events":0,"points_events":0,"points_earned":0})
+    for table in ("stamp_events","redemption_events","points_events"):
+        columns = "id,business_id,customer_id,branch_id,created_at" + (",points_earned" if table == "points_events" else "")
+        for r in _rows(db,table,columns,start,end):
             bid = r["business_id"]
             if bid not in businesses:
                 continue
@@ -81,6 +82,9 @@ def build_daily_report(db, days, now=None):
                 continue
             series[d][table] += 1
             per_business[(d,bid)][table] += 1
+            points = int(r.get("points_earned") or 0) if table == "points_events" else 0
+            series[d]["points_earned"] += points
+            per_business[(d,bid)]["points_earned"] += points
             cid = r.get("customer_id")
             if cid is not None:
                 active[d].add((bid,cid))
@@ -88,8 +92,10 @@ def build_daily_report(db, days, now=None):
             branch = branches.get(r.get("branch_id"))
             if branch and branch["business_id"] == bid:
                 per_branch[(d,bid,branch["id"])][table] += 1
+                per_branch[(d,bid,branch["id"])]["points_earned"] += points
             else:
                 per_branch[(d,bid,None)][table] += 1
+                per_branch[(d,bid,None)]["points_earned"] += points
     for d, ids in active.items():
         series[d]["active_memberships"] = len(ids)
     for key, ids in active_business.items():
@@ -106,7 +112,8 @@ def build_daily_report(db, days, now=None):
             "businesses":rows,"branches":branch_rows,
             "definitions":{"new_memberships":"Customer card records; not unique humans across programs.",
             "stamp_events":"Recorded stamp events, not net balance or visits.",
-            "active_memberships":"Distinct customer cards with stamp or redemption activity.",
+            "active_memberships":"Distinct customer cards with stamp, points or redemption activity.",
+            "points_earned":"Sum of recorded points_earned; not outstanding balance.",
             "branch_registrations":"Unavailable: no direct branch attribution."}}
 
 def register_daily_growth_routes(app, db, require_admin):
