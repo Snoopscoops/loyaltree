@@ -163,6 +163,8 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     var ordersBranch by mutableStateOf("")
     var daySummary by mutableStateOf<DaySummary?>(null)
     var reportRange by mutableStateOf("today")
+    var reportStart by mutableStateOf("")
+    var reportEnd by mutableStateOf("")
     var reportBusy by mutableStateOf(false)
     var reportNote by mutableStateOf("")
     var insights by mutableStateOf<List<InsightSection>>(emptyList())
@@ -630,7 +632,18 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
     fun downloadReport(done: (ShareReport) -> Unit) {
         val current = session ?: return
         if (reportBusy) return
+        if (!current.canReport) return
         val query = when (reportRange) {
+            "custom" -> {
+                val start = reportStart.trim()
+                val end = reportEnd.trim()
+                val valid = Regex("[0-9]{4}-[0-9]{2}-[0-9]{2}")
+                if (!valid.matches(start) || !valid.matches(end) || start > end || end > manila()) {
+                    reportNote = "Enter valid start and end dates (YYYY-MM-DD), not in the future."
+                    return
+                }
+                "start=$start&end=$end"
+            }
             "yesterday" -> {
                 val day = Calendar.getInstance(TimeZone.getTimeZone("Asia/Manila"))
                 day.add(Calendar.DAY_OF_MONTH, -1)
@@ -1159,6 +1172,17 @@ class CounterStore(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val path = "/api/v1/business/${current.slug}/menu-orders/$id/$action"
             val result = io { if (create) API.post(path, current.token, body) else API.patch(path, current.token, body) }
+            if (action == "settle-bill") {
+                if (session == current) fetchOrders(current)
+                orderBusy = ""
+                if (session != current) return@launch
+                when {
+                    result == null -> done("Payment outcome uncertain. Check the refreshed orders before confirming again.")
+                    result.first >= 400 -> done(API.message(result.second, "Could not settle the bill. Refresh before retrying."))
+                    else -> done("")
+                }
+                return@launch
+            }
             orderBusy = ""
             when {
                 result == null -> done("Could not reach the server. Try again.")
