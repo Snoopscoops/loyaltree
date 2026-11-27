@@ -45,7 +45,7 @@ function Period({period,onChange,custom=false}){
   return <div className="lt-ws-pills" role="group" aria-label="Reporting period">{[...PERIODS,...(custom?[['custom','Custom']]:[])].map(([value,label])=><button key={value} type="button" aria-pressed={period===value} onClick={()=>onChange(value)}>{label}</button>)}</div>
 }
 function Branch({branches,branch,onChange}){
-  return <label>Branch<select value={branch} onChange={e=>onChange(e.target.value)}><option value="">All branches</option>{asArray(branches).filter(b=>b.public_id).map(b=><option key={b.public_id} value={b.public_id}>{b.name}</option>)}</select></label>
+  return <label>Branch<select aria-label="Branch" value={branch} onChange={e=>onChange(e.target.value)}><option value="">All branches</option>{asArray(branches).filter(b=>b.public_id).map(b=><option key={b.public_id} value={b.public_id}>{b.name}</option>)}</select></label>
 }
 function Settlement({data}){
   const settlement=data?.payments?.settlement
