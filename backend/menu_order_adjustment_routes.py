@@ -122,8 +122,8 @@ def register_menu_order_adjustment_routes(app, *, db, operator, normalize_items,
                           payload: dict = Body(...), authorization: str = Header(default='')):
         business, scope = operator(public_id, authorization)
         order = read_counter_order(db, business, scope, order_public_id)
-        if scope.get('role') != 'owner':
-            raise HTTPException(403, 'Owner authorization is required to void items.')
+        if scope.get('role') not in ('owner', 'manager'):
+            raise HTTPException(403, 'Owner or manager authorization is required to void items.')
         quantity = payload.get('quantity')
         if type(quantity) is not int or not 1 <= quantity <= 20:
             raise HTTPException(400, 'Invalid void quantity.')
