@@ -44,6 +44,8 @@ internal fun AdminConsole(store: CounterStore, current: OwnerSession) {
         var note by remember { mutableStateOf("") }
         var data by remember { mutableStateOf<Any?>(null) }
         var period by remember { mutableIntStateOf(7) }
+        var invoices by remember { mutableStateOf<JSONArray?>(null) }
+        var analytics by remember { mutableStateOf<JSONObject?>(null) }
         val path = when (tab) {
             "Home" -> "/api/v1/admin/overview"
             "Clients" -> "/api/v1/admin/businesses"
@@ -72,6 +74,30 @@ internal fun AdminConsole(store: CounterStore, current: OwnerSession) {
                     tab in listOf("Home", "Activity") && response.second is JSONObject -> data = response.second
                     tab in listOf("Clients", "Finance") && response.second is JSONArray -> data = response.second
                     else -> note = "Unexpected response. Refresh to retry."
+                }
+            }
+            val extraPath = when(tab) {
+                "Finance" -> "/api/v1/admin/special-invoices"
+                "Activity" -> "/api/v1/admin/platform-analytics?days=$period"
+                else -> null
+            }
+            invoices = null
+            analytics = null
+            if (extraPath != null) {
+                val extra = withContext(Dispatchers.IO) {
+                    try { API.get(extraPath, current.token) }
+                    catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                    catch (_: Exception) { null }
+                }
+                if (store.session !== current) return@LaunchedEffect
+                if (extra?.first == 401 || extra?.first == 403) {
+                    store.signOut()
+                    store.status = "Administrator access expired. Sign in again."
+                    return@LaunchedEffect
+                }
+                if (extra?.first == 200) {
+                    if (tab == "Finance") invoices = extra.second as? JSONArray
+                    if (tab == "Activity") analytics = extra.second as? JSONObject
                 }
             }
             busy = false
@@ -142,7 +168,7 @@ internal fun AdminConsole(store: CounterStore, current: OwnerSession) {
                             if(rows.length() == 0) Text("No records returned.")
                         }
                     }
-                    "Finance" -> AdminBillingCalendar(data as? JSONArray)
+                    "Finance" -> AdminBillingCalendar(data as? JSONArray, invoices)
                     "Activity" -> {
                         val report = data as? JSONObject
                         Text("Growth intelligence", fontWeight = FontWeight.Bold, fontSize = 22.sp, color = AdminInk)
@@ -152,6 +178,22 @@ internal fun AdminConsole(store: CounterStore, current: OwnerSession) {
                             }
                         }
                         val summary = report?.optJSONObject("summary")
+                        Text("Recorded platform acquisition", fontWeight = FontWeight.Bold, color = AdminInk)
+                        AdminMetric("Completed customer join events", countLabel(analytics?.opt("customer_join_completions")))
+                        AdminMetric("Business signup events", countLabel(analytics?.opt("business_signups")))
+                        if (analytics?.optBoolean("sample_truncated") == true) Text("Report is sampled; totals may be incomplete.", color = AdminMuted)
+                        val traffic = adminRows(analytics?.optJSONArray("daily")).takeLast(7)
+                        Text("Daily page views · last 7 reported days", fontWeight = FontWeight.Bold, color = AdminInk)
+                        val peak = traffic.mapNotNull { (it.opt("views") as? Number)?.toDouble()?.takeIf { n -> n.isFinite() && n >= 0 } }.maxOrNull()?.coerceAtLeast(1.0) ?: 1.0
+                        if (traffic.isEmpty()) Text("Daily traffic unavailable.", color = AdminMuted)
+                        traffic.forEach { day ->
+                            val views = (day.opt("views") as? Number)?.toDouble()?.takeIf { it.isFinite() && it >= 0 }
+                            Row { Text(day.optString("date", "—"), modifier = Modifier.weight(1f), color = AdminMuted); Text(countLabel(views), color = AdminInk) }
+                            if (views != null) Box(Modifier.fillMaxWidth().height(8.dp).background(Color.White, RoundedCornerShape(8.dp))) {
+                                Box(Modifier.fillMaxWidth((views / peak).toFloat()).height(8.dp).background(AdminInk, RoundedCornerShape(8.dp)))
+                            }
+                        }
+                        Text("Traffic is not a customer registration count. Exact calendar-day joins are not provided by this verified schema.", fontSize = 12.sp, color = AdminMuted)
                         AdminMetric("New loyalty members · selected period", countLabel(summary?.opt("new_customers")))
                         AdminMetric("Active members", countLabel(summary?.opt("active_members")))
                         AdminMetric("Returning members", countLabel(summary?.opt("returning_members")))
@@ -202,7 +244,7 @@ private fun adminPrice(row: JSONObject): BigDecimal? =
     row.opt("price_current")?.toString()?.toBigDecimalOrNull()?.takeIf { it.signum() >= 0 }
 
 @Composable
-private fun AdminBillingCalendar(rows: JSONArray?) {
+private fun AdminBillingCalendar(rows: JSONArray?, invoices: JSONArray?) {
     val today = LocalDate.now(ZoneId.of("Asia/Manila"))
     var month by remember { mutableStateOf(YearMonth.from(today)) }
     var selected by remember { mutableStateOf(today) }
@@ -210,6 +252,7 @@ private fun AdminBillingCalendar(rows: JSONArray?) {
         adminDate(row.optString("subscription_expires_at", ""))?.let { it to row }
     }
     val daily = dated.filter { it.first == selected }.map { it.second }
+    val invoiceDates = adminRows(invoices).filter { it.optString("status") != "void" }.mapNotNull { row -> adminDate(row.optString("due_date", ""))?.let { it to row } }
     Text("Subscription renewal calendar", color = AdminInk, fontWeight = FontWeight.Bold, fontSize = 21.sp)
     Text("Existing subscription expiry and current cycle price. Expected renewal, not an issued invoice or confirmed debt.", color = AdminMuted, fontSize = 12.sp)
     if (rows == null) { Text("Billing records unavailable.", color = AdminMuted); return }
@@ -229,9 +272,10 @@ private fun AdminBillingCalendar(rows: JSONArray?) {
                     else {
                         val date = month.atDay(n)
                         val count = dated.count { it.first == date }
+                        val invoiceCount = invoiceDates.count { it.first == date }
                         Column(Modifier.weight(1f).height(42.dp).background(if (date == selected) AdminLime else Color.Transparent, RoundedCornerShape(9.dp)).clickable { selected = date }, horizontalAlignment = Alignment.CenterHorizontally) {
                             Text(n.toString(), color = AdminInk, fontWeight = if (date == selected) FontWeight.Bold else FontWeight.Normal)
-                            if (count > 0) Text("$count due", fontSize = 9.sp, color = AdminMuted)
+                            if (count > 0 || invoiceCount > 0) Text("$count R · $invoiceCount I", fontSize = 9.sp, color = AdminMuted)
                         }
                     }
                 }
@@ -253,5 +297,16 @@ private fun AdminBillingCalendar(rows: JSONArray?) {
             (if (price == null) "Amount unavailable" else "$currency $price") + " · " + row.optString("billing_cycle", "cycle unavailable"))
     }
     if (daily.isEmpty()) Text("No recorded subscription expiries on this date.", color = AdminMuted)
-    Text("Special invoices are separate from subscription renewals.", fontSize = 12.sp, color = AdminMuted)
+    Text("Special invoice ledger", fontWeight = FontWeight.Bold, fontSize = 21.sp, color = AdminInk)
+    Text("R = renewal · I = issued invoice. These amounts are separate to avoid double counting.", fontSize = 12.sp, color = AdminMuted)
+    if (invoices == null) Text("Invoice records unavailable.", color = AdminMuted)
+    else {
+        val selectedInvoices = invoiceDates.filter { it.first == selected }.map { it.second }
+        if (selectedInvoices.isEmpty()) Text("No non-void invoices due on this date.", color = AdminMuted)
+        selectedInvoices.forEach { row ->
+            val amount = row.opt("total_amount")?.toString()?.toBigDecimalOrNull()?.takeIf { it.signum() >= 0 }
+            AdminMetric(row.optString("business_name", "Business") + " · " + row.optString("invoice_number", "Invoice"),
+                (amount?.let { "₱" + it.toPlainString() } ?: "Amount unavailable") + " · " + row.optString("status", "Unknown"))
+        }
+    }
 }
